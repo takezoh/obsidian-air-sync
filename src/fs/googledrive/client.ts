@@ -228,7 +228,6 @@ export class DriveClient {
 						method: "PUT",
 						headers: {
 							"Content-Type": mimeType,
-							"Content-Length": String(chunk.byteLength),
 							"Content-Range": `bytes ${offset}-${end - 1}/${totalSize}`,
 						},
 						body: chunk,
@@ -264,7 +263,6 @@ export class DriveClient {
 				method: "PUT",
 				headers: {
 					"Content-Type": mimeType,
-					"Content-Length": "0",
 				},
 				body: new ArrayBuffer(0),
 			}
