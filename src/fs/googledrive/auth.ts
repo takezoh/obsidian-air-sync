@@ -5,8 +5,7 @@ import { assertTokenResponse } from "./types";
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const SCOPES = "https://www.googleapis.com/auth/drive";
-const REDIRECT_URI =
-	"https://takezoh.github.io/obsidian-smart-sync-oauth-relay/callback/";
+const REDIRECT_URI = "https://smartsync.takezoh.dev/callback/";
 
 // Injected at build time via esbuild define (see esbuild.config.mjs)
 const GOOGLE_CLIENT_ID: string = process.env.GOOGLE_CLIENT_ID ?? "";
