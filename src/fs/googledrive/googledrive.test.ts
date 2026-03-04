@@ -737,10 +737,15 @@ describe("GoogleDriveFs circular parent reference", () => {
 	});
 });
 
-// ---- Fix 3: Chunked resumable upload ----
+// ---- Fix 3: Resumable upload (single PUT + resume-on-retry) ----
 
-describe("DriveClient chunked resumable upload", () => {
-	it("uploads in multiple chunks (308 → 308 → 200)", async () => {
+/** Type for accessing private resumeCache on DriveClient in tests */
+interface DriveClientInternal {
+	resumeCache: Map<string, { uploadUrl: string; totalSize: number; createdAt: number }>;
+}
+
+describe("DriveClient resumable upload", () => {
+	it("uploads large file via resumable session (init + single PUT)", async () => {
 		const { GoogleAuth } = await import("./auth");
 		const { DriveClient } = await import("./client");
 
@@ -748,54 +753,20 @@ describe("DriveClient chunked resumable upload", () => {
 		auth.setTokens("refresh", "access", Date.now() + 3600_000);
 
 		let callCount = 0;
-		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(
-			async (...args) => {
-				const opts = args[0] as { url: string; method?: string; headers?: Record<string, string> };
-				callCount++;
-
-				// First call: initiate resumable upload
-				if (callCount === 1) {
-					return mockRes({}, { headers: { location: "https://upload.example.com/resumable-session" } });
-				}
-
-				// Chunk uploads: check Content-Range header
-				const contentRange = opts.headers?.["Content-Range"] ?? "";
-
-				// Second call: first chunk → 308
-				if (callCount === 2) {
-					const err = Object.assign(new Error("Resume Incomplete"), {
-						status: 308,
-						headers: { range: "bytes=0-5242879" },
-					});
-					throw err;
-				}
-
-				// Third call: second chunk → 308
-				if (callCount === 3) {
-					const err = Object.assign(new Error("Resume Incomplete"), {
-						status: 308,
-						headers: { range: "bytes=0-10485759" },
-					});
-					throw err;
-				}
-
-				// Fourth call: final chunk → 200
-				if (callCount === 4) {
-					expect(contentRange).toMatch(/bytes \d+-\d+\/\d+/);
-					return mockRes({
-						id: "uploaded-file",
-						name: "large.bin",
-						mimeType: "application/octet-stream",
-						md5Checksum: "finalhash",
-					});
-				}
-
-				throw new Error("Unexpected call");
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(async () => {
+			callCount++;
+			if (callCount === 1) {
+				return mockRes({}, { headers: { location: "https://upload.example.com/resumable-session" } });
 			}
-		);
+			return mockRes({
+				id: "uploaded-file",
+				name: "large.bin",
+				mimeType: "application/octet-stream",
+				md5Checksum: "finalhash",
+			});
+		});
 
 		const client = new DriveClient(auth);
-		// Create 12MB content (will require 3 chunks at 5MB each)
 		const content = new ArrayBuffer(12 * 1024 * 1024);
 		const result = await client.uploadFile(
 			"large.bin",
@@ -807,60 +778,284 @@ describe("DriveClient chunked resumable upload", () => {
 		);
 
 		expect(result.id).toBe("uploaded-file");
-		expect(callCount).toBe(4); // 1 init + 3 chunk uploads
+		expect(callCount).toBe(2); // 1 init + 1 upload
 
 		mockRequestUrl.mockRestore();
 	});
 
-	it("parses Range header to determine resume offset", async () => {
+	it("caches resume URL on upload failure and resumes on retry", async () => {
 		const { GoogleAuth } = await import("./auth");
 		const { DriveClient } = await import("./client");
 
 		const auth = new GoogleAuth();
 		auth.setTokens("refresh", "access", Date.now() + 3600_000);
 
-		const uploadedRanges: string[] = [];
+		const fileSize = 6 * 1024 * 1024;
+		const content = new ArrayBuffer(fileSize);
 		let callCount = 0;
-		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(
-			async (...args) => {
-				const opts = args[0] as { headers?: Record<string, string> };
-				callCount++;
-				if (callCount === 1) {
-					return mockRes({}, { headers: { location: "https://upload.example.com/session" } });
-				}
 
-				const cr = opts.headers?.["Content-Range"];
-				if (cr) uploadedRanges.push(cr);
-
-				if (callCount === 2) {
-					// Simulate server only received first 3MB (not the full 5MB chunk)
-					const err = Object.assign(new Error("Resume Incomplete"), {
-						status: 308,
-						headers: { range: "bytes=0-3145727" },
-					});
-					throw err;
-				}
-
-				// Final chunk completes
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(async (req) => {
+			callCount++;
+			if (callCount === 1) {
+				// Init: return session URL
+				return mockRes({}, { headers: { location: "https://upload.example.com/session-abc" } });
+			}
+			if (callCount === 2) {
+				// First PUT: fails midway
+				throw Object.assign(new Error("Connection reset"), { status: 500 });
+			}
+			if (callCount === 3) {
+				// Status query: 308 with Range header (Google received first 2MB)
+				throw Object.assign(new Error("Resume Incomplete"), {
+					status: 308,
+					headers: { range: "bytes=0-2097151" },
+				});
+			}
+			if (callCount === 4) {
+				// Resume PUT: verify Content-Range header
+				const headers = typeof req === "string" ? {} : (req.headers ?? {}) as Record<string, string>;
+				const contentRange = headers["Content-Range"] ?? "";
+				expect(contentRange).toBe(`bytes 2097152-${fileSize - 1}/${fileSize}`);
 				return mockRes({
-					id: "f1",
+					id: "resumed-file",
 					name: "file.bin",
 					mimeType: "application/octet-stream",
 				});
 			}
-		);
+			throw new Error("Unexpected call");
+		});
 
 		const client = new DriveClient(auth);
-		const content = new ArrayBuffer(6 * 1024 * 1024); // 6MB
-		await client.uploadFile("file.bin", "parent", content);
 
-		// Second chunk should start from byte 3145728 (3MB)
-		expect(uploadedRanges[1]).toMatch(/^bytes 3145728-/);
+		// First attempt: should fail and cache the resume URL
+		await expect(
+			client.uploadFile("file.bin", "parent", content)
+		).rejects.toThrow();
+
+		// Verify cache was populated
+		const cache = (client as unknown as DriveClientInternal).resumeCache;
+		expect(cache.size).toBe(1);
+		expect(cache.get("parent/file.bin")?.uploadUrl).toBe("https://upload.example.com/session-abc");
+
+		// Second attempt (retry): should query status and resume
+		const result = await client.uploadFile("file.bin", "parent", content);
+		expect(result.id).toBe("resumed-file");
+		expect(callCount).toBe(4); // init + fail + status + resume
+
+		// Cache should be cleared after successful resume
+		expect(cache.size).toBe(0);
 
 		mockRequestUrl.mockRestore();
 	});
 
-	it("propagates non-308 errors during chunk upload", async () => {
+	it("falls back to fresh upload when status query fails", async () => {
+		const { GoogleAuth } = await import("./auth");
+		const { DriveClient } = await import("./client");
+
+		const auth = new GoogleAuth();
+		auth.setTokens("refresh", "access", Date.now() + 3600_000);
+
+		const fileSize = 6 * 1024 * 1024;
+		const content = new ArrayBuffer(fileSize);
+		let callCount = 0;
+
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(async () => {
+			callCount++;
+			if (callCount === 1) {
+				// Init
+				return mockRes({}, { headers: { location: "https://upload.example.com/session-1" } });
+			}
+			if (callCount === 2) {
+				// First PUT fails
+				throw Object.assign(new Error("Timeout"), { status: 408 });
+			}
+			if (callCount === 3) {
+				// Status query: fails with 404 (session expired)
+				throw Object.assign(new Error("Not Found"), { status: 404 });
+			}
+			if (callCount === 4) {
+				// Fresh init
+				return mockRes({}, { headers: { location: "https://upload.example.com/session-2" } });
+			}
+			if (callCount === 5) {
+				// Fresh PUT succeeds
+				return mockRes({
+					id: "fresh-file",
+					name: "file.bin",
+					mimeType: "application/octet-stream",
+				});
+			}
+			throw new Error("Unexpected call");
+		});
+
+		const client = new DriveClient(auth);
+
+		// First attempt fails
+		await expect(client.uploadFile("file.bin", "parent", content)).rejects.toThrow();
+
+		// Retry: status query fails → fresh upload
+		const result = await client.uploadFile("file.bin", "parent", content);
+		expect(result.id).toBe("fresh-file");
+		expect(callCount).toBe(5); // init + fail + status(fail) + init + put
+
+		mockRequestUrl.mockRestore();
+	});
+
+	it("returns completed file when status query returns 200", async () => {
+		const { GoogleAuth } = await import("./auth");
+		const { DriveClient } = await import("./client");
+
+		const auth = new GoogleAuth();
+		auth.setTokens("refresh", "access", Date.now() + 3600_000);
+
+		const fileSize = 6 * 1024 * 1024;
+		const content = new ArrayBuffer(fileSize);
+		let callCount = 0;
+
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(async () => {
+			callCount++;
+			if (callCount === 1) {
+				return mockRes({}, { headers: { location: "https://upload.example.com/session-done" } });
+			}
+			if (callCount === 2) {
+				throw Object.assign(new Error("Reset"), { status: 500 });
+			}
+			if (callCount === 3) {
+				// Status query returns 200 — upload already completed
+				return mockRes({
+					id: "already-done",
+					name: "file.bin",
+					mimeType: "application/octet-stream",
+				});
+			}
+			throw new Error("Unexpected call");
+		});
+
+		const client = new DriveClient(auth);
+
+		await expect(client.uploadFile("file.bin", "parent", content)).rejects.toThrow();
+
+		const result = await client.uploadFile("file.bin", "parent", content);
+		expect(result.id).toBe("already-done");
+		expect(callCount).toBe(3); // init + fail + status(200)
+
+		mockRequestUrl.mockRestore();
+	});
+
+	it("ignores expired cache entries", async () => {
+		const { GoogleAuth } = await import("./auth");
+		const { DriveClient } = await import("./client");
+
+		const auth = new GoogleAuth();
+		auth.setTokens("refresh", "access", Date.now() + 3600_000);
+
+		const fileSize = 6 * 1024 * 1024;
+		const content = new ArrayBuffer(fileSize);
+		let callCount = 0;
+
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(async () => {
+			callCount++;
+			if (callCount === 1) {
+				return mockRes({}, { headers: { location: "https://upload.example.com/fresh" } });
+			}
+			return mockRes({
+				id: "fresh-upload",
+				name: "file.bin",
+				mimeType: "application/octet-stream",
+			});
+		});
+
+		const client = new DriveClient(auth);
+		const cache = (client as unknown as DriveClientInternal).resumeCache;
+
+		// Manually insert an expired cache entry (7 hours old)
+		cache.set("parent/file.bin", {
+			uploadUrl: "https://upload.example.com/expired",
+			totalSize: fileSize,
+			createdAt: Date.now() - 7 * 60 * 60 * 1000,
+		});
+
+		// Should ignore expired cache and do fresh upload
+		const result = await client.uploadFile("file.bin", "parent", content);
+		expect(result.id).toBe("fresh-upload");
+		expect(callCount).toBe(2); // init + put (no status query)
+
+		mockRequestUrl.mockRestore();
+	});
+
+	it("ignores cache when file size differs", async () => {
+		const { GoogleAuth } = await import("./auth");
+		const { DriveClient } = await import("./client");
+
+		const auth = new GoogleAuth();
+		auth.setTokens("refresh", "access", Date.now() + 3600_000);
+
+		let callCount = 0;
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(async () => {
+			callCount++;
+			if (callCount === 1) {
+				return mockRes({}, { headers: { location: "https://upload.example.com/new" } });
+			}
+			return mockRes({
+				id: "new-file",
+				name: "file.bin",
+				mimeType: "application/octet-stream",
+			});
+		});
+
+		const client = new DriveClient(auth);
+		const cache = (client as unknown as DriveClientInternal).resumeCache;
+
+		// Cache entry with different totalSize
+		cache.set("parent/file.bin", {
+			uploadUrl: "https://upload.example.com/old",
+			totalSize: 10 * 1024 * 1024,
+			createdAt: Date.now(),
+		});
+
+		const content = new ArrayBuffer(6 * 1024 * 1024);
+		const result = await client.uploadFile("file.bin", "parent", content);
+		expect(result.id).toBe("new-file");
+		expect(callCount).toBe(2); // fresh init + put
+
+		mockRequestUrl.mockRestore();
+	});
+
+	it("uses existingFileId as cache key when provided", async () => {
+		const { GoogleAuth } = await import("./auth");
+		const { DriveClient } = await import("./client");
+
+		const auth = new GoogleAuth();
+		auth.setTokens("refresh", "access", Date.now() + 3600_000);
+
+		const fileSize = 6 * 1024 * 1024;
+		const content = new ArrayBuffer(fileSize);
+		let callCount = 0;
+
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(async () => {
+			callCount++;
+			if (callCount === 1) {
+				return mockRes({}, { headers: { location: "https://upload.example.com/session" } });
+			}
+			if (callCount === 2) {
+				throw Object.assign(new Error("Fail"), { status: 500 });
+			}
+			throw new Error("Unexpected call");
+		});
+
+		const client = new DriveClient(auth);
+		await expect(
+			client.uploadFile("file.bin", "parent", content, "application/octet-stream", "existing-id-123")
+		).rejects.toThrow();
+
+		const cache = (client as unknown as DriveClientInternal).resumeCache;
+		expect(cache.has("existing-id-123")).toBe(true);
+		expect(cache.has("parent/file.bin")).toBe(false);
+
+		mockRequestUrl.mockRestore();
+	});
+
+	it("propagates errors during resumable upload", async () => {
 		const { GoogleAuth } = await import("./auth");
 		const { DriveClient } = await import("./client");
 
@@ -873,7 +1068,6 @@ describe("DriveClient chunked resumable upload", () => {
 			if (callCount === 1) {
 				return mockRes({}, { headers: { location: "https://upload.example.com/session" } });
 			}
-			// Chunk upload fails with 500
 			const err = Object.assign(new Error("Internal Server Error"), {
 				status: 500,
 			});
@@ -890,7 +1084,7 @@ describe("DriveClient chunked resumable upload", () => {
 		mockRequestUrl.mockRestore();
 	});
 
-	it("handles single chunk upload (file just over threshold)", async () => {
+	it("handles file just over threshold", async () => {
 		const { GoogleAuth } = await import("./auth");
 		const { DriveClient } = await import("./client");
 
@@ -903,7 +1097,6 @@ describe("DriveClient chunked resumable upload", () => {
 			if (callCount === 1) {
 				return mockRes({}, { headers: { location: "https://upload.example.com/session" } });
 			}
-			// Single chunk completes immediately
 			return mockRes({
 				id: "f1",
 				name: "medium.bin",
@@ -912,13 +1105,28 @@ describe("DriveClient chunked resumable upload", () => {
 		});
 
 		const client = new DriveClient(auth);
-		// Exactly 5MB + 1 byte — triggers resumable but fits in one chunk
 		const content = new ArrayBuffer(5 * 1024 * 1024 + 1);
 		const result = await client.uploadFile("medium.bin", "parent", content);
 
 		expect(result.id).toBe("f1");
-		expect(callCount).toBe(2); // 1 init + 1 chunk
+		expect(callCount).toBe(2); // 1 init + 1 upload
 
 		mockRequestUrl.mockRestore();
+	});
+
+	it("clearResumeCache removes all entries", async () => {
+		const { GoogleAuth } = await import("./auth");
+		const { DriveClient } = await import("./client");
+
+		const auth = new GoogleAuth();
+		const client = new DriveClient(auth);
+		const cache = (client as unknown as DriveClientInternal).resumeCache;
+
+		cache.set("key1", { uploadUrl: "url1", totalSize: 100, createdAt: Date.now() });
+		cache.set("key2", { uploadUrl: "url2", totalSize: 200, createdAt: Date.now() });
+		expect(cache.size).toBe(2);
+
+		client.clearResumeCache();
+		expect(cache.size).toBe(0);
 	});
 });

@@ -60,7 +60,7 @@ src/
 │  main.ts (SmartSyncPlugin)                          │
 │  - Lifecycle management                             │
 │  - Command, ribbon, status bar registration         │
-│  - Auto-sync timer & event-driven sync              │
+│  - Auto-sync timer, event-driven & foreground sync  │
 │  - Backend initialization & connection flow         │
 ├─────────────────────────────────────────────────────┤
 │  sync/service.ts (SyncService)                      │
@@ -355,7 +355,8 @@ Google Drive REST API v3 client. Uses Obsidian's `requestUrl()` to bypass CORS.
 | `listAllFiles(rootFolderId)` | Recursively enumerate all files via DFS from root |
 | `downloadFile(fileId)` | Download file content |
 | `uploadFile(...)` | Multipart upload (small files) |
-| `uploadFileResumable(...)` | Resumable upload (files > 5 MB) |
+| `uploadFileResumable(...)` | Resumable upload (files > 5 MB) with resume-on-retry |
+| `clearResumeCache()` | Clear cached resume URLs (call on plugin unload) |
 | `createFolder(name, parentId)` | Create a folder |
 | `updateFileMetadata(...)` | Update metadata (PATCH) |
 | `deleteFile(fileId, permanent)` | Delete file (trash or permanent) |
@@ -514,7 +515,7 @@ Displays:
 
 ---
 
-## Auto-sync & event-driven sync
+## Auto-sync, event-driven & foreground sync
 
 ### Auto-sync timer
 
@@ -535,6 +536,10 @@ this.registerEvent(this.app.vault.on("rename", onVaultChange));
 ### Network reconnect sync
 
 Listens for `window "online"` events. When the browser/app comes back online, triggers a sync if connected and not already syncing. Listener is cleaned up via `this.register()` on unload.
+
+### Foreground resume sync
+
+Listens for `document "visibilitychange"` events. When the app returns to foreground (`document.visibilityState === "visible"`), triggers a debounced sync via `shouldSync()` guard. Especially important on mobile where the app is frequently backgrounded and may miss vault changes or remote updates while suspended. Listener is cleaned up via `this.register()` on unload.
 
 ### Status bar
 
@@ -628,6 +633,21 @@ Vault `rename` events trigger a debounced sync like any other change. The sync e
 ### Large file handling
 
 `IFileSystem.read()` / `write()` operate on `ArrayBuffer` (no streaming). Files exceeding available memory will cause issues. Mitigation: use exclude patterns (e.g., `*.zip`, `*.pdf`) to skip large binary files. Files > 5 MB use resumable upload on Drive.
+
+### Upload resume-on-retry
+
+`DriveClient` caches the resumable upload session URL in a `Map<cacheKey, { uploadUrl, totalSize, createdAt }>` when a PUT fails midway. On the next `SyncService` retry (which re-runs the full sync cycle), `uploadFileResumable()` finds the cached URL, queries Google for how many bytes were received (`Content-Range: bytes */{total}` → 308 with `Range` header), and sends only the remaining bytes. Cache entries expire after 6 hours (Google allows up to 7 days). If the status query fails or returns an unparseable response, the cache entry is discarded and a fresh upload begins (graceful degradation).
+
+Cache key: `existingFileId` when updating an existing file, or `${parentId}/${name}` for new files.
+
+### Download resume — not feasible
+
+Resumable download cannot be implemented due to two Obsidian API limitations:
+
+1. **`requestUrl()` does not expose partial data on failure** — the `ArrayBuffer` is only available on success. When a download fails midway, there is no way to know how many bytes were received, so a `Range` request cannot be constructed for the remainder
+2. **`DataAdapter` has no binary append API** — `writeBinary()` overwrites the entire file and `append()` is text-only. Even if chunked downloads via `Range` headers were used (each chunk as an independent successful request), there is no way to incrementally write binary chunks to disk. Chunks must be accumulated in memory, which defeats the purpose of resumable download since a failure loses all accumulated data
+
+`FileSystemAdapter` (desktop-only) adds `getBasePath()` but no low-level file I/O (no `fs.open`/`fs.write` with offset). Using Node.js `fs` directly would break mobile compatibility (`isDesktopOnly: false`).
 
 ### Initial sync flow
 
