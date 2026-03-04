@@ -1,0 +1,630 @@
+# Smart Sync — Architecture
+
+This document describes the technical design of the Smart Sync plugin, based on the implemented code.
+
+## Overview
+
+A plugin for bidirectional sync between an Obsidian vault and Google Drive. Uses 3-state comparison (local / remote / last sync record) for accurate change detection, with 3-way merge support for text files.
+
+Backends are swappable via `IFileSystem` + `IBackendProvider` abstraction. The initial implementation covers Google Drive only, but the same interface allows adding Dropbox, S3, etc.
+
+## File structure
+
+```
+src/
+├── main.ts                         # Plugin entry point (lifecycle management)
+├── settings.ts                     # SmartSyncSettings type & defaults
+├── fs/
+│   ├── types.ts                    # FileEntity, SyncRecord, MixedEntity, SyncDecision, DecisionType, ConflictStrategy
+│   ├── interface.ts                # IFileSystem interface
+│   ├── backend.ts                  # IBackendProvider interface
+│   ├── registry.ts                 # Backend registry (getBackendProvider, getAllBackendProviders)
+│   ├── local/
+│   │   └── index.ts                # LocalFs — Obsidian Vault API wrapper
+│   ├── googledrive/
+│   │   ├── index.ts                # GoogleDriveFs — IFileSystem implementation (cache + incremental fetch)
+│   │   ├── client.ts               # DriveClient — Drive REST API v3 client
+│   │   ├── auth.ts                 # GoogleAuth — OAuth 2.0 + PKCE
+│   │   ├── provider.ts             # GoogleDriveProvider — IBackendProvider implementation
+│   │   └── types.ts                # Drive API response types + validation functions
+│   └── mock/
+│       └── index.ts                # MockFs — in-memory IFileSystem for testing
+├── sync/
+│   ├── engine.ts                   # buildMixedEntities() + computeDecisions() — 3-state decision table
+│   ├── executor.ts                 # SyncExecutor — executes IFileSystem operations based on decisions
+│   ├── service.ts                  # SyncService — sync orchestration (retry, exclusion, UI integration)
+│   ├── state.ts                    # SyncStateStore — IndexedDB-based sync state persistence
+│   ├── conflict.ts                 # resolveConflict() — conflict resolution strategy execution
+│   └── merge.ts                    # threeWayMerge() + isMergeEligible() — 3-way merge via node-diff3
+├── queue/
+│   └── async-queue.ts              # AsyncMutex — promise-based mutual exclusion
+├── utils/
+│   ├── hash.ts                     # sha256() — Web Crypto API
+│   └── glob.ts                     # matchGlob() — glob pattern matching (regex conversion + cache)
+├── ui/
+│   ├── settings.ts                 # SmartSyncSettingTab — settings tab UI
+│   ├── conflict-modal.ts           # ConflictModal — individual conflict resolution modal
+│   └── conflict-summary-modal.ts   # ConflictSummaryModal — bulk conflict resolution modal
+└── __mocks__/
+    ├── obsidian.ts                 # Obsidian API mock (for vitest)
+    └── sync-test-helpers.ts        # Test helpers (MockFs creation, file utilities, etc.)
+```
+
+## Layer architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│  main.ts (SmartSyncPlugin)                          │
+│  - Lifecycle management                             │
+│  - Command, ribbon, status bar registration         │
+│  - Auto-sync timer & event-driven sync              │
+│  - Backend initialization & connection flow         │
+├─────────────────────────────────────────────────────┤
+│  sync/service.ts (SyncService)                      │
+│  - Sync orchestration                               │
+│  - Retry (exponential backoff + jitter, max 3)      │
+│  - Mutual exclusion (syncMutex)                     │
+│  - Conflict UI dispatch                             │
+│  - Progress & result notification                   │
+├─────────────────────────────────────────────────────┤
+│  sync/engine.ts        sync/executor.ts             │
+│  - 3-state decision    - Translates decisions into  │
+│    table                 IFileSystem operations      │
+│  - MixedEntity build   - Updates SyncRecords        │
+│                        - Delegates conflict resolve  │
+├─────────────────────────────────────────────────────┤
+│  sync/state.ts         sync/conflict.ts             │
+│  - IndexedDB CRUD      - resolveConflict()          │
+│  - sync-records store  - 6 strategy implementations │
+│  - sync-content store  sync/merge.ts                │
+│    (for 3-way merge)   - node-diff3 wrapper         │
+├─────────────────────────────────────────────────────┤
+│  fs/interface.ts (IFileSystem)                      │
+│  - list, stat, read, write, mkdir, delete, rename   │
+├──────────────────┬──────────────────────────────────┤
+│  fs/local/       │  fs/googledrive/                 │
+│  LocalFs         │  GoogleDriveFs                   │
+│  (Vault API)     │  (Drive REST API v3)             │
+│                  │  + DriveClient + GoogleAuth      │
+└──────────────────┴──────────────────────────────────┘
+```
+
+**Dependency direction**: `main.ts` → `SyncService` → `engine/executor` → `IFileSystem`. The sync engine is unaware of which backend is in use.
+
+---
+
+## Core data models
+
+### FileEntity (`fs/types.ts`)
+
+Unified data model representing a single file/folder on the file system.
+
+```typescript
+interface FileEntity {
+  path: string;                        // Vault-relative path (common key)
+  isDirectory: boolean;
+  size: number;                        // Bytes
+  mtime: number;                       // Last modified (Unix ms)
+  hash: string;                        // SHA-256 (empty string = not computed)
+  backendMeta?: Record<string, unknown>; // Backend-specific data
+}
+```
+
+`backendMeta` stores backend-specific data (e.g., Drive `fileId`, `headRevisionId`). The sync engine only uses `path`, `mtime`, `size`, and `hash`; it transparently persists `backendMeta` in `SyncRecord` without interpreting its contents.
+
+### SyncRecord (`fs/types.ts`)
+
+Records the state at the time of the last successful sync. Persisted in IndexedDB.
+
+```typescript
+interface SyncRecord {
+  path: string;                        // keyPath
+  hash: string;                        // Content SHA-256 at sync time
+  localMtime: number;
+  remoteMtime: number;
+  size: number;
+  backendMeta?: Record<string, unknown>;
+  syncedAt: number;                    // Sync completion time (Unix ms)
+}
+```
+
+### MixedEntity (`fs/types.ts`)
+
+Input for 3-state comparison. Bundles the local, remote, and last sync states for a single file.
+
+```typescript
+interface MixedEntity {
+  path: string;
+  local?: FileEntity;
+  remote?: FileEntity;
+  prevSync?: SyncRecord;
+}
+```
+
+### SyncDecision (`fs/types.ts`)
+
+Output of `computeDecisions()`. The sync action for each file.
+
+```typescript
+interface SyncDecision {
+  path: string;
+  decision: DecisionType;
+  local?: FileEntity;
+  remote?: FileEntity;
+  prevSync?: SyncRecord;
+}
+```
+
+### DecisionType (`fs/types.ts`)
+
+```typescript
+type DecisionType =
+  | "local_created_push"          // Local new → upload
+  | "local_modified_push"         // Local modified → upload
+  | "remote_created_pull"         // Remote new → download
+  | "remote_modified_pull"        // Remote modified → download
+  | "local_deleted_propagate"     // Local deleted → delete remote too
+  | "remote_deleted_propagate"    // Remote deleted → delete local too
+  | "conflict_both_modified"      // Both modified → conflict resolution
+  | "conflict_both_created"       // Both new → conflict resolution
+  | "conflict_delete_vs_modify"   // Delete vs modify → conflict resolution
+  | "both_deleted_cleanup"        // Both deleted → clean up record
+  | "no_action";                  // No change
+```
+
+### ConflictStrategy (`fs/types.ts`)
+
+```typescript
+type ConflictStrategy =
+  | "keep_newer"       // Timestamp comparison
+  | "keep_local"       // Local wins
+  | "keep_remote"      // Remote wins
+  | "duplicate"        // Create .conflict file
+  | "three_way_merge"  // Auto-merge via node-diff3
+  | "ask";             // Prompt user via modal
+```
+
+---
+
+## IFileSystem interface (`fs/interface.ts`)
+
+Common interface implemented by all file system backends.
+
+```typescript
+interface IFileSystem {
+  readonly name: string;  // "local" | "googledrive" | "mock" etc.
+  list(): Promise<FileEntity[]>;
+  stat(path: string): Promise<FileEntity | null>;
+  read(path: string): Promise<ArrayBuffer>;
+  write(path: string, content: ArrayBuffer, mtime: number): Promise<FileEntity>;
+  mkdir(path: string): Promise<FileEntity>;
+  delete(path: string): Promise<void>;
+  rename(oldPath: string, newPath: string): Promise<void>;
+}
+```
+
+**Path convention**: Vault-relative paths. No leading/trailing slashes. `/` as separator.
+
+### Implementations
+
+| Implementation | name | Purpose |
+|---------------|------|---------|
+| `LocalFs` | `"local"` | Obsidian Vault API (`vault.getAllLoadedFiles()`, `vault.readBinary()`, etc.) |
+| `GoogleDriveFs` | `"googledrive"` | Google Drive REST API v3 |
+| `MockFs` | `"mock"` | In-memory Map-based (for testing) |
+
+---
+
+## IBackendProvider interface (`fs/backend.ts`)
+
+Provider interface for unified backend connection, authentication, and UI handling.
+
+```typescript
+interface IBackendProvider {
+  readonly type: string;
+  readonly displayName: string;
+  createFs(app: App, settings: SmartSyncSettings): IFileSystem | null;
+  isConnected(settings: SmartSyncSettings): boolean;
+  startConnect(app: App, settings: SmartSyncSettings): Promise<Partial<SmartSyncSettings> | void>;
+  completeConnect(code: string, settings: SmartSyncSettings): Promise<Partial<SmartSyncSettings>>;
+  disconnect(settings: SmartSyncSettings): Partial<SmartSyncSettings>;
+  renderSettings(container: HTMLElement, settings: SmartSyncSettings, onSave: () => void, actions: BackendConnectionActions): void;
+  readFsState(fs: IFileSystem): Partial<SmartSyncSettings>;
+}
+```
+
+To add a backend: implement `IBackendProvider` in `fs/<backend>/provider.ts` and register it in `fs/registry.ts`.
+
+---
+
+## Sync engine
+
+### 3-state decision table (`sync/engine.ts`)
+
+`buildMixedEntities()` combines local, remote, and last sync states. `computeDecisions()` determines sync actions based on the following table:
+
+| Local | Remote | Last sync | → Decision |
+|-------|--------|-----------|-----------|
+| Modified | Unchanged | Exists | `local_modified_push` |
+| Unchanged | Modified | Exists | `remote_modified_pull` |
+| Modified | Modified | Exists | `conflict_both_modified` |
+| Exists | Missing | Exists (local unchanged) | `remote_deleted_propagate` |
+| Exists | Missing | Exists (local modified) | `conflict_delete_vs_modify` |
+| Missing | Exists | Exists (remote unchanged) | `local_deleted_propagate` |
+| Missing | Exists | Exists (remote modified) | `conflict_delete_vs_modify` |
+| Exists | Missing | None | `local_created_push` |
+| Missing | Exists | None | `remote_created_pull` |
+| Exists | Exists | None (different content) | `conflict_both_created` |
+| Exists | Exists | None (identical hash+size) | `no_action` |
+| Missing | Missing | Exists | `both_deleted_cleanup` |
+
+**Change detection**: Compare mtime + size → if mismatch, compare hash (SHA-256 / md5Checksum) → if still mismatched, treat as "modified". Empty hash is conservatively treated as "modified".
+
+### SyncExecutor (`sync/executor.ts`)
+
+Receives a list of `SyncDecision`s and executes the corresponding IFileSystem operations.
+
+- **Push**: `localFs.read()` → `remoteFs.write()` → `write()` returns `FileEntity` (remote metadata) → `localFs.stat()` for fresh local metadata → both saved to `SyncRecord`
+- **Pull**: `remoteFs.read()` → `localFs.write()` → `write()` returns `FileEntity` (local metadata) → `remoteFs.stat()` for fresh remote metadata → both saved to `SyncRecord`
+- **Delete propagation**: With TOCTOU guard — re-checks via `stat()` before deleting; skips if the other side has changed
+- **Conflicts**: Delegates to `resolveConflict()`. Can invoke UI (ConflictModal) via `onConflict` callback
+
+**Per-file errors**: `executeOne()` is wrapped in try/catch. On error, SyncRecord is **not** updated — the file remains in its pre-sync state and will be re-evaluated on the next sync cycle.
+
+**Result tracking**: Counts for `pushed`, `pulled`, `conflicts` + `mergeConflictPaths` (files with inserted markers) + `errors` (failed paths)
+
+### SyncService (`sync/service.ts`)
+
+Orchestrates the entire sync flow.
+
+1. Acquire `syncMutex.run()` for mutual exclusion
+2. `buildMixedEntities()` + filter (exclude patterns + mobile include/size checks) + `computeDecisions()`
+3. If 5+ conflicts with `ask` strategy → show `ConflictSummaryModal`
+4. Execute `SyncExecutor.execute()`
+5. Save backend state (`changesStartPageToken`, etc.) to settings
+6. Send result notifications
+
+**Retry**: Max 3 attempts for transport-level errors (network failures, 5xx). Exponential backoff (`2^n * 1000ms`) ± 50% jitter. Immediate abort for:
+- 401/403: Auth error
+- 400/404: Data error
+- 429: Respects `Retry-After` header
+
+Per-file errors (e.g., individual read/write failures) do not trigger retry. They are reported via notification and `partial_error` status.
+
+**Sync deduplication**: If a new sync request arrives during an ongoing sync, it is coalesced into a single run (`pendingSync` flag).
+
+---
+
+## Google Drive backend
+
+### GoogleAuth (`fs/googledrive/auth.ts`)
+
+OAuth 2.0 + PKCE (S256) authentication.
+
+1. `getAuthorizationUrl()` generates a PKCE code challenge and redirects to Google's authorization endpoint
+2. After user authorization, the callback URL is pasted into the plugin
+3. `exchangeCode()` obtains access/refresh tokens via the token exchange server
+4. `getAccessToken()` retrieves tokens, auto-refreshing 60 seconds before expiry
+
+PKCE `pendingCodeVerifier` and `pendingAuthState` are persisted in settings (allowing auth flow to survive plugin reloads).
+
+### DriveClient (`fs/googledrive/client.ts`)
+
+Google Drive REST API v3 client. Uses Obsidian's `requestUrl()` to bypass CORS.
+
+| Method | Description |
+|--------|-------------|
+| `listFiles(folderId, pageToken)` | List files in a folder (with pagination) |
+| `listAllFiles(rootFolderId)` | Recursively enumerate all files via DFS from root |
+| `downloadFile(fileId)` | Download file content |
+| `uploadFile(...)` | Multipart upload (small files) |
+| `uploadFileResumable(...)` | Resumable upload (files > 5 MB) |
+| `createFolder(name, parentId)` | Create a folder |
+| `updateFileMetadata(...)` | Update metadata (PATCH) |
+| `deleteFile(fileId, permanent)` | Delete file (trash or permanent) |
+| `getChangesStartToken()` | Get initial token for `changes.list` |
+| `listChanges(startPageToken)` | Get incremental change list |
+
+### GoogleDriveFs (`fs/googledrive/index.ts`)
+
+`IFileSystem` implementation. Uses Drive's hierarchical folder structure as-is (not flat).
+
+**Caching strategy**:
+- `pathToFile: Map<string, DriveFile>` — path → Drive metadata
+- `idToPath: Map<string, string>` — ID → path reverse lookup
+- `folders: Set<string>` — set of folder paths
+- First `list()` call performs a full scan via `listAllFiles()`
+- Subsequent calls use `changes.list` API for incremental updates
+- Falls back to full scan on HTTP 410 (expired token)
+
+**Mutex-protected cache**:
+- `cacheMutex` protects cache reads and writes
+- Network I/O (downloads/uploads) executes outside the mutex (prevents deadlocks)
+- TOCTOU guard: `read()` resolves ID → releases lock → downloads → re-acquires lock for consistency check
+
+### GoogleDriveProvider (`fs/googledrive/provider.ts`)
+
+`IBackendProvider` implementation. Handles auth flow, settings UI, and FS instance creation.
+
+- `startConnect()`: Generate auth URL → open in browser → save PKCE state to settings
+- `completeConnect()`: Accept URL or code → token exchange → save to settings
+- `disconnect()`: Clear tokens, folder ID, and page token
+- `renderSettings()`: UI for folder ID / OAuth client ID / token exchange URL + connect/disconnect buttons
+- `readFsState()`: Read `changesStartPageToken` from `GoogleDriveFs` and save to settings
+
+---
+
+## Conflict resolution
+
+### resolveConflict() (`sync/conflict.ts`)
+
+Supports 6 strategies:
+
+| Strategy | Behavior |
+|----------|----------|
+| `keep_local` | Overwrite remote with local content |
+| `keep_remote` | Overwrite local with remote content |
+| `keep_newer` | Keep the version with the newer mtime. Falls back to `duplicate` if same mtime but different hash |
+| `duplicate` | Save remote as `<basename>.conflict.<ext>`. Appends a number if a `.conflict` file already exists |
+| `three_way_merge` | Run `isMergeEligible()` → `threeWayMerge()`. For `.json`/`.canvas` files: validates merged output with `JSON.parse()` — falls back to `duplicate` if invalid JSON or if conflict markers are present. For other text files: falls back to `duplicate` on failure |
+| `ask` | Show `ConflictModal` via `SyncExecutor`'s `onConflict` callback |
+
+### Delete-vs-modify conflict handling
+
+When one side deletes a file while the other modifies it (`conflict_delete_vs_modify`), each strategy handles the missing side as follows:
+
+| Strategy | Behavior |
+|----------|----------|
+| `keep_local` / `keep_remote` | The `local` and `remote` parameters are optional (`FileEntity \| undefined`). If the chosen side is the deleted one (i.e., `undefined`), the file is deleted from the other side. If the chosen side exists, it overwrites the other side |
+| `keep_newer` | When one side is `undefined` (deleted), the non-deleted side always wins — no mtime comparison is needed since the deleted side has no timestamp |
+| `duplicate` | The non-deleted side's content is written to the deleted side, restoring the file. No `.conflict` copy is created (there is only one version of the content) |
+| `three_way_merge` | Detects the missing side (`!local \|\| !remote`) and falls back to `keep_newer`, which then preserves the non-deleted side as described above |
+| `ask` | Delegates to the user via `ConflictModal`. If no callback is provided, falls back to `keep_newer` |
+
+### threeWayMerge() (`sync/merge.ts`)
+
+Uses `node-diff3` (BSD license).
+
+- **Eligibility** (`isMergeEligible`): Text extensions (`.md`, `.txt`, `.json`, `.canvas`, `.css`, `.js`, `.ts`, etc.) and ≤ 1 MB
+- **Input**: base (last sync), local, and remote content
+- **Output**: `MergeResult { content: string; conflict: boolean }`
+- **Conflict markers**: `<<<<<<< LOCAL / ======= / >>>>>>> REMOTE`
+
+---
+
+## Sync state persistence
+
+### SyncStateStore (`sync/state.ts`)
+
+IndexedDB-based. Database name is `smart-sync-{vaultId}` (independent per vault).
+
+**Object stores**:
+1. `sync-records` — `SyncRecord` persistence (keyPath: `path`)
+2. `sync-content` — File content storage for 3-way merge (keyPath: `path`). Only stores content for files passing `isMergeEligible()` — i.e., text extensions (`.md`, `.txt`, `.json`, `.canvas`, etc.) and ≤ 1 MB in size
+
+**Methods**: `open()`, `close()`, `get(path)`, `getAll()`, `put(record)`, `delete(path)`, `clear()`, `putContent(path, content)`, `getContent(path)`
+
+All public methods use `getDb()` internally, which handles automatic re-open if the connection was closed by an `onversionchange` event.
+
+DB version 2 adds the `sync-content` store (auto-migration via `onupgradeneeded`).
+
+---
+
+## Mutual exclusion
+
+### AsyncMutex (`queue/async-queue.ts`)
+
+Lightweight promise-based mutex. Replaces error-prone boolean flag exclusion with a safe queue-based approach.
+
+```typescript
+class AsyncMutex {
+  async acquire(): Promise<() => void>;  // Acquire lock, returns release function
+  async run<T>(fn: () => Promise<T>): Promise<T>;  // Hold lock during fn execution
+  get isLocked(): boolean;
+}
+```
+
+**Usage**:
+- `SyncService.syncMutex` — Prevents concurrent syncs
+- `GoogleDriveFs.cacheMutex` — Protects Drive metadata cache
+
+**Note**: Non-reentrant. Calling `run()` inside `run()` will deadlock.
+
+---
+
+## UI components
+
+### SmartSyncSettingTab (`ui/settings.ts`)
+
+Settings tab displaying:
+1. Backend selector (dropdown when multiple providers are registered)
+2. Auto-sync interval
+3. Conflict strategy
+4. 3-way merge toggle
+5. Exclude patterns (textarea, one pattern per line)
+6. Mobile sync settings (include patterns + max file size)
+7. Backend-specific settings (delegated to `provider.renderSettings()`)
+
+### ConflictModal (`ui/conflict-modal.ts`)
+
+Individual conflict resolution modal. `waitForResolution()` returns `Promise<ConflictStrategy>`.
+
+Displays:
+- Conflict description text
+- Local/remote file info (size, last modified)
+- 4 choices: keep_local / keep_remote / duplicate / three_way_merge
+
+### ConflictSummaryModal (`ui/conflict-summary-modal.ts`)
+
+Bulk resolution modal shown when **both** conditions are met: (1) 5 or more conflicts are detected, and (2) `conflictStrategy` setting is `"ask"`. When `conflictStrategy` is not `"ask"` (e.g., `"keep_newer"`, `"three_way_merge"`), conflicts are resolved automatically without any modal. When `enableThreeWayMerge` is `true` and `prevSync` exists, the executor overrides the strategy to `"three_way_merge"` for `"keep_newer"` and `"ask"` strategies only. The strategies `"keep_local"`, `"keep_remote"`, and `"duplicate"` are **never** overridden — users who explicitly choose these strategies always get the behavior they selected.
+
+Displays:
+- Conflict file count and list (first 10)
+- 3 choices: keep_all_local / keep_all_remote / resolve_individually
+
+---
+
+## Auto-sync & event-driven sync
+
+### Auto-sync timer
+
+Uses `this.registerInterval()` to run `runSync()` every N minutes. Interval is configurable (default 5 min, 0 to disable).
+
+### Event-driven sync
+
+Monitors vault events (`create`, `modify`, `delete`, `rename`). Triggers sync with a 5-second trailing-edge debounce — waits until 5 seconds of inactivity after the last change before firing.
+
+```typescript
+const debouncedSync = debounce(() => void this.runSync(), 5000, false);
+this.registerEvent(this.app.vault.on("create", onVaultChange));
+this.registerEvent(this.app.vault.on("modify", onVaultChange));
+this.registerEvent(this.app.vault.on("delete", onVaultChange));
+this.registerEvent(this.app.vault.on("rename", onVaultChange));
+```
+
+### Network reconnect sync
+
+Listens for `window "online"` events. When the browser/app comes back online, triggers a sync if connected and not already syncing. Listener is cleaned up via `this.register()` on unload.
+
+### Status bar
+
+Displays real-time sync status via `this.addStatusBarItem()`:
+
+| SyncStatus | Display |
+|------------|---------|
+| `idle` | Synced |
+| `syncing` | Syncing... |
+| `error` | Sync error |
+| `partial_error` | Synced (with errors) |
+| `not_connected` | Not connected |
+
+Shows progress text during sync (e.g., "Syncing 3/15...").
+
+---
+
+## Error handling & retry
+
+`SyncService` handles errors centrally:
+
+| HTTP Status | Response |
+|-------------|----------|
+| 401 | Auth error → abort immediately, show reconnect Notice |
+| 403 (non-rate-limit) | Auth error → abort immediately, show reconnect Notice |
+| 403 (rate limit) | `isRateLimitError()` checks the response JSON for `reason ∈ {rateLimitExceeded, userRateLimitExceeded, dailyLimitExceeded}` → treated like 429, retries with backoff |
+| 400 / 404 | Data error → abort immediately |
+| 429 | Rate limit → wait per `Retry-After` header (supports both delay-seconds and HTTP-date formats) |
+| Other | Exponential backoff (`2^n * 1000ms` ± 50% jitter), max 3 retries |
+
+---
+
+## Exclude patterns
+
+Glob matching via `matchGlob()`. Pattern syntax:
+
+| Pattern | Meaning |
+|---------|---------|
+| `*` | Any characters except slash |
+| `?` | Any single character except slash |
+| `**` | Any depth of path |
+| `**/` | Prefix chain |
+
+Default excludes: `.trash/**` is included in `DEFAULT_SETTINGS`. `.obsidian/**` (specifically `${configDir}/**`) is dynamically added in `main.ts`'s `loadSettings()` since `configDir` varies per vault.
+
+Compiled regexes are cached in `globCache` to avoid recompilation.
+
+### Mobile sync filtering
+
+On mobile devices (`Platform.isMobile`), two additional filters restrict which files are synced:
+
+1. **Include patterns** (`mobileIncludePatterns`): Only files matching at least one pattern are synced. Default: `["**/*.md", "**/*.canvas"]`. Checked in `isExcluded()` — files not matching any include pattern are excluded. Note: with the default settings, images, PDFs, and other attachments are **not** synced on mobile. This is a deliberate trade-off for bandwidth and storage savings. Users who need attachments on mobile should add the relevant patterns (e.g., `**/*.png`, `**/*.pdf`).
+2. **Max file size** (`mobileMaxFileSizeMB`): Files exceeding this size (default: 10 MB) are skipped. Checked in `executeSyncOnce()` using `Math.max(e.local?.size ?? 0, e.remote?.size ?? 0)` — when one side is missing (e.g., `local_created_push`), the missing side defaults to 0.
+
+These filters are applied **after** `excludePatterns` — a file excluded by `excludePatterns` is always excluded regardless of mobile include patterns. Both settings are configurable from the settings UI on any device (desktop or mobile).
+
+`SyncServiceDeps.isMobile` is injected as `() => Platform.isMobile` for testability.
+
+---
+
+## Design details & rationale
+
+### SyncExecutor execution model
+
+`SyncExecutor` processes decisions **sequentially** (`for` + `await`). This is intentional:
+
+- Avoids Drive API rate limits during initial sync with many files
+- Simplifies error handling and progress reporting
+- Trade-off: initial sync of large vaults is slower but more reliable
+
+### Empty hash handling
+
+When `hash` is empty (e.g., backend doesn't compute hashes, or first encounter), the engine conservatively treats the file as "modified". This is intentional — false positives (unnecessary sync) are preferred over false negatives (missed changes).
+
+### Sync deduplication
+
+`SyncService.runSync()` uses a `do-while` loop with a `syncPending` flag. If a new sync request arrives during an ongoing sync, `syncPending` is set to `true`, and after the current sync completes, it re-runs. This ensures changes made during sync are captured without spawning concurrent syncs.
+
+### TOCTOU guards
+
+Delete propagation in `SyncExecutor` re-checks via `stat()` before deleting. If the file has been re-created or modified on the other side since the decision was computed, the delete is skipped. In `GoogleDriveFs`, the `read()` method resolves file ID under mutex, releases the lock for network I/O, then re-acquires the lock and validates the ID still exists in cache — throwing `FileNotFoundError` if it was deleted during download.
+
+### Vault ID generation
+
+`vaultId` is generated via `crypto.randomUUID()` on first plugin load and persisted in settings. It serves as the IndexedDB database namespace (`smart-sync-{vaultId}`), ensuring each vault has independent sync state.
+
+### Rename handling
+
+Vault `rename` events trigger a debounced sync like any other change. The sync engine sees the result as "old path deleted + new path created" and generates two separate decisions (`local_deleted_propagate` + `local_created_push`). `IFileSystem.rename()` exists for direct filesystem operations but is **not used by SyncExecutor** — this simplifies the decision table and avoids edge cases with cross-directory renames. Trade-off: renamed files are re-uploaded rather than using Drive's `updateFileMetadata` for a lightweight rename. For vaults with frequent renames, this adds network overhead but maintains implementation simplicity.
+
+### Large file handling
+
+`IFileSystem.read()` / `write()` operate on `ArrayBuffer` (no streaming). Files exceeding available memory will cause issues. Mitigation: use exclude patterns (e.g., `*.zip`, `*.pdf`) to skip large binary files. Files > 5 MB use resumable upload on Drive.
+
+### Initial sync flow
+
+When no `SyncRecord` exists for a file:
+- Present on both sides with identical hash+size → `no_action`
+- Present on both sides with different content → `conflict_both_created`
+- Present only locally → `local_created_push`
+- Present only remotely → `remote_created_pull`
+
+**Hash resolution for initial sync**: `list()` returns empty hashes (computing hashes for every file during listing would be expensive). When both sides exist with no `prevSync`, `SyncService.resolveEmptyHashes()` reads content and computes SHA-256 for entities where sizes match (different sizes are obviously different content). This runs in `executeSyncOnce()` before `computeDecisions()`, keeping `engine.ts` as pure logic with no I/O.
+
+---
+
+## Testing
+
+### Configuration
+
+**vitest** with `vitest.config.ts`. Uses `fake-indexeddb/auto` for IndexedDB simulation. Obsidian API is mocked via `src/__mocks__/obsidian.ts`.
+
+### Test helpers (`src/__mocks__/sync-test-helpers.ts`)
+
+- `createMockFs(name)` — creates an in-memory `MockFs` instance
+- `addFile(fs, path, content, mtime)` — adds a file and returns its `FileEntity`
+- `readText(fs, path)` — reads file content as UTF-8 string
+- `createMockStateStore()` — creates a mock `SyncStateStore` with in-memory maps
+
+### Test files
+
+- `src/fs/mock/mock-fs.test.ts` — All MockFs methods
+- `src/fs/googledrive/googledrive.test.ts` — GoogleDriveFs behavior
+- `src/queue/async-queue.test.ts` — AsyncMutex exclusion
+- `src/sync/engine.test.ts` — computeDecisions decision table tests
+- `src/sync/engine-build.test.ts` — buildMixedEntities integration tests
+- `src/sync/conflict.test.ts` — All conflict resolution strategy patterns
+- `src/sync/executor.test.ts` — SyncExecutor operations
+- `src/sync/merge.test.ts` — 3-way merge (clean merge, conflicts, eligibility)
+- `src/sync/service.test.ts` — SyncService orchestration
+- `src/sync/state.test.ts` — IndexedDB store CRUD
+
+---
+
+## Risks & mitigations
+
+1. **Mobile OAuth**: Redirect handling may differ from desktop. Mitigated by manual callback URL paste. `isDesktopOnly: false` but mobile requires additional validation
+2. **Drive API rate limits**: Initial full scan on large vaults may hit limits. Subsequent syncs use `changes.list` for incremental updates only. 403 rate-limit errors (Google returns `reason: rateLimitExceeded` instead of 429 in some cases) are detected and retried with backoff
+3. **Token exchange server operation**: Can run on Cloud Functions free tier. Self-hosting instructions to be documented
+4. **Mass conflicts after extended offline**: Shows `ConflictSummaryModal` for 5+ conflicts with bulk resolution options
+5. **TOCTOU races**: Delete propagation re-checks via `stat()`. Skips if the other side has changed
+6. **Network reconnect + auto-sync overlap**: When the browser comes back online just before an auto-sync timer fires, two sequential syncs may run. The `syncMutex` prevents concurrent execution, and `syncPending` deduplicates requests during an active sync. However, if the first sync completes before the second trigger fires, both execute independently. Impact is minimal — the second sync uses `changes.list` incremental fetch with no new changes
+7. **Initial sync performance on large vaults**: `resolveEmptyHashes()` reads content and computes SHA-256 for all file pairs where both sides exist, no `prevSync` record exists, and sizes match. For a vault with N same-size pairs, this performs 2N file reads + 2N SHA-256 computations. Entities are processed **sequentially** (outer `for...of` loop); within each entity, the local and remote reads are parallelized via `Promise.all()` (max 2 concurrent reads). Size-mismatched pairs are skipped entirely (no I/O needed). This runs only on initial sync — after the first successful sync, `prevSync` records exist for all files and the function becomes a no-op. Future optimization: `GoogleDriveFs` already stores `md5Checksum` in `backendMeta` during `list()`, which could be compared against a locally computed MD5 to skip remote downloads — however, this would couple the sync engine to a backend-specific field, conflicting with the backend-agnostic design
