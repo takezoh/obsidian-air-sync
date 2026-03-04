@@ -111,6 +111,7 @@ export class SyncService {
 					} catch (err) {
 						lastError = err;
 						const { status, retryAfter } = getErrorInfo(err);
+						console.error("Smart Sync: sync error", { status, err });
 
 						// Non-retryable errors: abort immediately
 						if (status === 401) {

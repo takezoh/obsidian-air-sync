@@ -41,19 +41,9 @@ export class GoogleDriveProvider implements IBackendProvider {
 		return !!settings.refreshToken && !!settings.driveFolderId;
 	}
 
-	async startConnect(_app: App, settings: SmartSyncSettings): Promise<Partial<SmartSyncSettings>> {
-		if (!settings.oauthClientId || !settings.tokenExchangeUrl) {
-			new Notice(
-				"Please set OAuth client ID and token exchange URL first" // eslint-disable-line obsidianmd/ui/sentence-case
-			);
-			return {};
-		}
-
+	async startConnect(_app: App, _settings: SmartSyncSettings): Promise<Partial<SmartSyncSettings>> {
 		try {
-			this.auth = new GoogleAuth({
-				clientId: settings.oauthClientId,
-				tokenExchangeUrl: settings.tokenExchangeUrl,
-			});
+			this.auth = new GoogleAuth();
 
 			const url = await this.auth.getAuthorizationUrl();
 
@@ -78,15 +68,8 @@ export class GoogleDriveProvider implements IBackendProvider {
 		input: string,
 		settings: SmartSyncSettings
 	): Promise<Partial<SmartSyncSettings>> {
-		if (!settings.oauthClientId || !settings.tokenExchangeUrl) {
-			throw new Error("OAuth client ID and token exchange URL must be configured");
-		}
-
 		if (!this.auth) {
-			this.auth = new GoogleAuth({
-				clientId: settings.oauthClientId,
-				tokenExchangeUrl: settings.tokenExchangeUrl,
-			});
+			this.auth = new GoogleAuth();
 		}
 		// Always restore PKCE state if auth lacks it (survives plugin reload)
 		if (!this.auth.getAuthState() && settings.pendingCodeVerifier && settings.pendingAuthState) {
@@ -159,38 +142,6 @@ export class GoogleDriveProvider implements IBackendProvider {
 					})
 			);
 
-		new Setting(containerEl)
-			// eslint-disable-next-line obsidianmd/ui/sentence-case
-			.setName("OAuth client ID")
-			// eslint-disable-next-line obsidianmd/ui/sentence-case
-			.setDesc("Google OAuth client ID for your GCP project.")
-			.addText((text) =>
-				text
-					// eslint-disable-next-line obsidianmd/ui/sentence-case
-					.setPlaceholder("xxxx.apps.googleusercontent.com")
-					.setValue(settings.oauthClientId)
-					.onChange((value) => {
-						debouncedSave({ oauthClientId: value });
-					})
-			);
-
-		new Setting(containerEl)
-			.setName("Token exchange URL")
-			.setDesc(
-				// eslint-disable-next-line obsidianmd/ui/sentence-case
-				"URL of your token exchange server (Cloud Functions / Cloud Run endpoint)."
-			)
-			.addText((text) =>
-				text
-					.setPlaceholder(
-						"https://your-function.cloudfunctions.net/exchange"
-					)
-					.setValue(settings.tokenExchangeUrl)
-					.onChange((value) => {
-						debouncedSave({ tokenExchangeUrl: value });
-					})
-			);
-
 		// Connection status + connect/disconnect
 		const connected = this.isConnected(settings);
 		const authorized = !!settings.refreshToken;
@@ -249,14 +200,9 @@ export class GoogleDriveProvider implements IBackendProvider {
 	private getOrCreateAuth(settings: SmartSyncSettings): GoogleAuth {
 		if (
 			!this.auth ||
-			this.auth.getTokenState().refreshToken !== settings.refreshToken ||
-			this.auth.getConfig().clientId !== settings.oauthClientId ||
-			this.auth.getConfig().tokenExchangeUrl !== settings.tokenExchangeUrl
+			this.auth.getTokenState().refreshToken !== settings.refreshToken
 		) {
-			this.auth = new GoogleAuth({
-				clientId: settings.oauthClientId,
-				tokenExchangeUrl: settings.tokenExchangeUrl,
-			});
+			this.auth = new GoogleAuth();
 		}
 		return this.auth;
 	}

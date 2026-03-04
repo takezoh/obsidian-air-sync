@@ -3,21 +3,21 @@ import type { TokenResponse } from "./types";
 import { assertTokenResponse } from "./types";
 
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
+const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const SCOPES = "https://www.googleapis.com/auth/drive";
-const REDIRECT_URI = "http://127.0.0.1/callback";
+const REDIRECT_URI =
+	"https://takezoh.github.io/obsidian-smart-sync-oauth-relay/callback/";
 
-export interface GoogleAuthConfig {
-	clientId: string;
-	tokenExchangeUrl: string;
-}
+// Injected at build time via esbuild define (see esbuild.config.mjs)
+const GOOGLE_CLIENT_ID: string = process.env.GOOGLE_CLIENT_ID ?? "";
+const GOOGLE_CLIENT_SECRET: string = process.env.GOOGLE_CLIENT_SECRET ?? "";
 
 /**
  * Handles OAuth 2.0 authentication for Google Drive.
  * Uses PKCE (S256) and loopback redirect for security.
- * Token exchange is handled by a server-side endpoint to keep client_secret secure.
+ * Exchanges tokens directly with Google's token endpoint (desktop OAuth client).
  */
 export class GoogleAuth {
-	private config: GoogleAuthConfig;
 	private accessToken = "";
 	private accessTokenExpiry = 0;
 	private refreshToken = "";
@@ -27,15 +27,6 @@ export class GoogleAuth {
 	private codeVerifier: string | null = null;
 	/** Anti-CSRF state parameter for the current auth flow */
 	private authState: string | null = null;
-
-	constructor(config: GoogleAuthConfig) {
-		this.config = config;
-	}
-
-	/** Get the current auth configuration */
-	getConfig(): GoogleAuthConfig {
-		return this.config;
-	}
 
 	/** Set stored tokens (loaded from plugin settings) */
 	setTokens(refreshToken: string, accessToken: string, expiry: number): void {
@@ -59,7 +50,7 @@ export class GoogleAuth {
 		const codeChallenge = await computeS256Challenge(this.codeVerifier);
 
 		const params = new URLSearchParams({
-			client_id: this.config.clientId,
+			client_id: GOOGLE_CLIENT_ID,
 			redirect_uri: REDIRECT_URI,
 			response_type: "code",
 			scope: SCOPES,
@@ -89,8 +80,8 @@ export class GoogleAuth {
 	}
 
 	/**
-	 * Exchange an authorization code for tokens via the server-side endpoint.
-	 * Sends the PKCE code_verifier alongside the code.
+	 * Exchange an authorization code for tokens via Google's token endpoint.
+	 * Sends the PKCE code_verifier and client_secret alongside the code.
 	 */
 	async exchangeCode(code: string, state?: string): Promise<TokenResponse> {
 		// Verify CSRF state
@@ -108,19 +99,20 @@ export class GoogleAuth {
 			throw new Error("PKCE code verifier is missing. Please restart the authorization flow.");
 		}
 
-		validateUrl(this.config.tokenExchangeUrl);
+		const params = new URLSearchParams({
+			grant_type: "authorization_code",
+			code,
+			redirect_uri: REDIRECT_URI,
+			client_id: GOOGLE_CLIENT_ID,
+			client_secret: GOOGLE_CLIENT_SECRET,
+			code_verifier: this.codeVerifier,
+		});
 
 		const response = await requestUrl({
-			url: this.config.tokenExchangeUrl,
+			url: GOOGLE_TOKEN_URL,
 			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({
-				grant_type: "authorization_code",
-				code,
-				redirect_uri: REDIRECT_URI,
-				client_id: this.config.clientId,
-				code_verifier: this.codeVerifier,
-			}),
+			headers: { "Content-Type": "application/x-www-form-urlencoded" },
+			body: params.toString(),
 		});
 
 		const token = response.json;
@@ -166,17 +158,18 @@ export class GoogleAuth {
 
 	/** Perform the actual token refresh (called at most once per expiry cycle) */
 	private async _refreshToken(): Promise<string> {
-		validateUrl(this.config.tokenExchangeUrl);
+		const params = new URLSearchParams({
+			grant_type: "refresh_token",
+			refresh_token: this.refreshToken,
+			client_id: GOOGLE_CLIENT_ID,
+			client_secret: GOOGLE_CLIENT_SECRET,
+		});
 
 		const response = await requestUrl({
-			url: this.config.tokenExchangeUrl,
+			url: GOOGLE_TOKEN_URL,
 			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({
-				grant_type: "refresh_token",
-				refresh_token: this.refreshToken,
-				client_id: this.config.clientId,
-			}),
+			headers: { "Content-Type": "application/x-www-form-urlencoded" },
+			body: params.toString(),
 		});
 
 		const token = response.json;
@@ -216,34 +209,14 @@ export class GoogleAuth {
 	}
 }
 
-/** Validate that a URL is HTTPS (or HTTP for localhost only) and well-formed */
-function validateUrl(url: string): void {
-	if (!url) {
-		throw new Error("Token exchange URL is not configured");
-	}
-	let parsed: URL;
-	try {
-		parsed = new URL(url);
-	} catch {
-		throw new Error(`Invalid token exchange URL: ${url}`);
-	}
-	const isLocalhost = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
-	if (parsed.protocol === "https:") {
-		// OK
-	} else if (parsed.protocol === "http:" && isLocalhost) {
-		// OK for dev
-	} else {
-		throw new Error("Token exchange URL must use HTTPS (or HTTP for localhost)");
-	}
-}
+/** RFC 7636 unreserved characters: [A-Za-z0-9-._~] (66 chars) */
+const PKCE_CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
 
-/** Generate a cryptographically random string of the given length */
+/** Generate a cryptographically random string of the given length using RFC 7636 charset */
 function generateRandomString(length: number): string {
 	const array = new Uint8Array(length);
 	crypto.getRandomValues(array);
-	return Array.from(array, (b) => b.toString(36).padStart(2, "0"))
-		.join("")
-		.substring(0, length);
+	return Array.from(array, (b) => PKCE_CHARSET[b % PKCE_CHARSET.length]).join("");
 }
 
 /** Compute S256 PKCE code challenge: BASE64URL(SHA256(code_verifier)) */

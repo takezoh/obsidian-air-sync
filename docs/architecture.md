@@ -301,9 +301,11 @@ Per-file errors (e.g., individual read/write failures) do not trigger retry. The
 
 OAuth 2.0 + PKCE (S256) authentication.
 
-1. `getAuthorizationUrl()` generates a PKCE code challenge and redirects to Google's authorization endpoint
-2. After user authorization, the callback URL is pasted into the plugin
-3. `exchangeCode()` obtains access/refresh tokens via the token exchange server
+OAuth client ID and secret are embedded as constants (no user configuration needed).
+
+1. `getAuthorizationUrl()` generates a PKCE code challenge and redirects to Google's authorization endpoint via a GitHub Pages relay (`obsidian-smart-sync-oauth-relay`)
+2. The relay page redirects to `obsidian://smart-sync-auth?code=...&state=...`, which the plugin receives via `registerObsidianProtocolHandler`. Manual callback URL paste is available as a fallback
+3. `exchangeCode()` obtains access/refresh tokens directly from Google's token endpoint
 4. `getAccessToken()` retrieves tokens, auto-refreshing 60 seconds before expiry
 
 PKCE `pendingCodeVerifier` and `pendingAuthState` are persisted in settings (allowing auth flow to survive plugin reloads).
@@ -347,9 +349,9 @@ Google Drive REST API v3 client. Uses Obsidian's `requestUrl()` to bypass CORS.
 `IBackendProvider` implementation. Handles auth flow, settings UI, and FS instance creation.
 
 - `startConnect()`: Generate auth URL → open in browser → save PKCE state to settings
-- `completeConnect()`: Accept URL or code → token exchange → save to settings
-- `disconnect()`: Clear tokens, folder ID, and page token
-- `renderSettings()`: UI for folder ID / OAuth client ID / token exchange URL + connect/disconnect buttons
+- `completeConnect()`: Accept URL or code → exchange tokens directly with Google → save to settings
+- `disconnect()`: Clear tokens, folder ID, and page token. Returns `Promise` to support future token revocation via Google's revoke endpoint — if revocation fails, local tokens are still cleared to ensure the user can always disconnect
+- `renderSettings()`: UI for folder ID + connect/disconnect buttons
 - `readFsState()`: Read `changesStartPageToken` from `GoogleDriveFs` and save to settings
 
 ---
@@ -623,10 +625,10 @@ When no `SyncRecord` exists for a file:
 
 1. **Mobile OAuth**: Redirect handling may differ from desktop. Mitigated by manual callback URL paste. `isDesktopOnly: false` but mobile requires additional validation
 2. **Drive API rate limits**: Initial full scan on large vaults may hit limits. Subsequent syncs use `changes.list` for incremental updates only. 403 rate-limit errors (Google returns `reason: rateLimitExceeded` instead of 429 in some cases) are detected and retried with backoff
-3. **Token exchange server operation**: Can run on Cloud Functions free tier. Self-hosting instructions to be documented
-4. **Mass conflicts after extended offline**: Shows `ConflictSummaryModal` for 5+ conflicts with bulk resolution options
-5. **TOCTOU races**: Delete propagation re-checks via `stat()`. Skips if the other side has changed
-6. **Network reconnect + auto-sync overlap**: When the browser comes back online just before an auto-sync timer fires, two sequential syncs may run. The `syncMutex` prevents concurrent execution, and `syncPending` deduplicates requests during an active sync. However, if the first sync completes before the second trigger fires, both execute independently. Impact is minimal — the second sync uses `changes.list` incremental fetch with no new changes
+3. **Mass conflicts after extended offline**: Shows `ConflictSummaryModal` for 5+ conflicts with bulk resolution options
+4. **TOCTOU races**: Delete propagation re-checks via `stat()`. Skips if the other side has changed
+5. **Network reconnect + auto-sync overlap**: When the browser comes back online just before an auto-sync timer fires, two sequential syncs may run. The `syncMutex` prevents concurrent execution, and `syncPending` deduplicates requests during an active sync. However, if the first sync completes before the second trigger fires, both execute independently. Impact is minimal — the second sync uses `changes.list` incremental fetch with no new changes
+6. **OAuth client secret exposure**: The Google OAuth client secret (Web application type) is embedded in the plugin source code. Google considers Web app secrets confidential (unlike Desktop app secrets). Practical risk is low — redirect URIs are locked in GCP, PKCE prevents auth code interception, and refresh tokens are stored only on the user's device. Additionally, `exchangeCode()` verifies the `state` parameter against `pendingAuthState` before processing, preventing forged callbacks from a compromised relay or CSRF attacks. However, Google could theoretically disable the client if they detect the secret is public. Mitigation options: (a) accept the risk (common in OSS — e.g. VS Code's GitHub integration), (b) add a thin serverless backend (Cloudflare Worker / Cloud Functions) for token exchange only, or (c) revert to Desktop app type and rely on manual callback URL paste
 7. **Initial sync performance on large vaults**: `resolveEmptyHashes()` reads content and computes SHA-256 for all file pairs where both sides exist, no `prevSync` record exists, and sizes match. For a vault with N same-size pairs, this performs 2N file reads + 2N SHA-256 computations. Entities are processed **sequentially** (outer `for...of` loop); within each entity, the local and remote reads are parallelized via `Promise.all()` (max 2 concurrent reads). Size-mismatched pairs are skipped entirely (no I/O needed). This runs only on initial sync — after the first successful sync, `prevSync` records exist for all files and the function becomes a no-op. Future optimization: `GoogleDriveFs` already stores `md5Checksum` in `backendMeta` during `list()`, which could be compared against a locally computed MD5 to skip remote downloads — however, this would couple the sync engine to a backend-specific field, conflicting with the backend-agnostic design
 
 ---
@@ -649,4 +651,3 @@ When no `SyncRecord` exists for a file:
 
 3. **In-memory metadata cache only** — `changesStartPageToken` is persisted in settings, but `pathToFile` / `idToPath` / `folders` caches are rebuilt from scratch on each plugin load via full scan. Persisting to IndexedDB would eliminate the initial full scan on reload
 4. **`rewriteChildPaths()` / `removePath()` O(n) scan** — Folder rename and delete operations iterate all cache entries to find children. A trie or parent→children index would reduce this to O(k) where k = number of children
-5. **Token exchange URL allows `http://localhost`** — Accepted without restriction for local development. No explicit dev-environment check exists; production deployments should enforce HTTPS-only

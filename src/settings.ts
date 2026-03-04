@@ -31,10 +31,6 @@ export interface SmartSyncSettings {
 	accessTokenExpiry: number;
 	/** Google Drive changes.list startPageToken for incremental sync */
 	changesStartPageToken: string;
-	/** Token exchange server URL */
-	tokenExchangeUrl: string;
-	/** OAuth client ID */
-	oauthClientId: string;
 	/** Pending PKCE code verifier (survives plugin reload during auth flow) */
 	pendingCodeVerifier: string;
 	/** Pending auth state (survives plugin reload during auth flow) */
@@ -55,8 +51,6 @@ export const DEFAULT_SETTINGS: SmartSyncSettings = {
 	accessToken: "",
 	accessTokenExpiry: 0,
 	changesStartPageToken: "",
-	tokenExchangeUrl: "",
-	oauthClientId: "",
 	pendingCodeVerifier: "",
 	pendingAuthState: "",
 };

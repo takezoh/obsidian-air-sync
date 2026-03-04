@@ -106,10 +106,7 @@ describe("parseAuthInput (via provider)", () => {
 		const provider = new GoogleDriveProvider();
 
 		await expect(
-			provider.completeConnect("", {
-				oauthClientId: "test-id",
-				tokenExchangeUrl: "https://example.com/exchange",
-			} as never)
+			provider.completeConnect("", {} as never)
 		).rejects.toThrow("Authorization code is empty");
 	});
 
@@ -118,41 +115,8 @@ describe("parseAuthInput (via provider)", () => {
 		const provider = new GoogleDriveProvider();
 
 		await expect(
-			provider.completeConnect("   ", {
-				oauthClientId: "test-id",
-				tokenExchangeUrl: "https://example.com/exchange",
-			} as never)
+			provider.completeConnect("   ", {} as never)
 		).rejects.toThrow("Authorization code is empty");
-	});
-});
-
-// ---- M5: URL validation ----
-
-describe("validateUrl (via GoogleAuth)", () => {
-	it("rejects ftp:// scheme", async () => {
-		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth({
-			clientId: "test",
-			tokenExchangeUrl: "ftp://localhost/exchange",
-		});
-		auth.setTokens("refresh", "", 0);
-
-		await expect(auth.getAccessToken()).rejects.toThrow(
-			"Token exchange URL must use HTTPS (or HTTP for localhost)"
-		);
-	});
-
-	it("rejects http:// for non-localhost", async () => {
-		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth({
-			clientId: "test",
-			tokenExchangeUrl: "http://evil.com/exchange",
-		});
-		auth.setTokens("refresh", "", 0);
-
-		await expect(auth.getAccessToken()).rejects.toThrow(
-			"Token exchange URL must use HTTPS (or HTTP for localhost)"
-		);
 	});
 });
 
@@ -178,10 +142,7 @@ describe("GoogleAuth.getAccessToken concurrency", () => {
 		);
 
 		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth({
-			clientId: "test",
-			tokenExchangeUrl: "https://example.com/exchange",
-		});
+		const auth = new GoogleAuth();
 		auth.setTokens("refresh-token", "", 0);
 
 		// Fire 3 concurrent calls
@@ -279,10 +240,7 @@ describe("GoogleDriveFs.ensureFolder file collision", () => {
 describe("GoogleAuth.exchangeCode state validation", () => {
 	it("throws when authState is null", async () => {
 		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth({
-			clientId: "test",
-			tokenExchangeUrl: "https://example.com/exchange",
-		});
+		const auth = new GoogleAuth();
 		// authState is null by default (no getAuthorizationUrl called)
 		await expect(auth.exchangeCode("some-code", "some-state")).rejects.toThrow(
 			"OAuth state is missing"
@@ -291,10 +249,7 @@ describe("GoogleAuth.exchangeCode state validation", () => {
 
 	it("throws when state does not match", async () => {
 		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth({
-			clientId: "test",
-			tokenExchangeUrl: "https://example.com/exchange",
-		});
+		const auth = new GoogleAuth();
 		auth.setPkceState("verifier", "correct-state");
 		await expect(auth.exchangeCode("some-code", "wrong-state")).rejects.toThrow(
 			"State mismatch"
@@ -303,10 +258,7 @@ describe("GoogleAuth.exchangeCode state validation", () => {
 
 	it("throws when state parameter is omitted", async () => {
 		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth({
-			clientId: "test",
-			tokenExchangeUrl: "https://example.com/exchange",
-		});
+		const auth = new GoogleAuth();
 		auth.setPkceState("verifier", "expected-state");
 		await expect(auth.exchangeCode("some-code")).rejects.toThrow(
 			"State mismatch"
@@ -333,18 +285,13 @@ describe("GoogleDriveProvider.completeConnect PKCE restoration", () => {
 		const provider = new GoogleDriveProvider();
 
 		const settings = {
-			oauthClientId: "test-id",
-			tokenExchangeUrl: "https://example.com/exchange",
 			pendingCodeVerifier: "saved-verifier",
 			pendingAuthState: "saved-state",
 		} as never;
 
 		// Create a provider with an existing auth that has no PKCE state
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		(provider as any).auth = new GoogleAuth({
-			clientId: "test-id",
-			tokenExchangeUrl: "https://example.com/exchange",
-		});
+		(provider as any).auth = new GoogleAuth();
 
 		// Verify auth initially has no PKCE state
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -368,38 +315,32 @@ describe("GoogleDriveProvider.completeConnect PKCE restoration", () => {
 	});
 });
 
-// ---- Issue 2: getOrCreateAuth config comparison ----
+// ---- Issue 2: getOrCreateAuth refreshToken comparison ----
 
 describe("GoogleDriveProvider.getOrCreateAuth", () => {
-	it("recreates auth when clientId changes", async () => {
+	it("recreates auth when refreshToken changes", async () => {
 		const { GoogleDriveProvider } = await import("./provider");
 		const { GoogleAuth } = await import("./auth");
 		const provider = new GoogleDriveProvider();
 
-		// Set up existing auth
+		// Set up existing auth with old refresh token
+		const oldAuth = new GoogleAuth();
+		oldAuth.setTokens("old-refresh", "", 0);
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		(provider as any).auth = new GoogleAuth({
-			clientId: "old-client-id",
-			tokenExchangeUrl: "https://example.com/exchange",
-		});
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		(provider as any).auth.setTokens("refresh", "", 0);
+		(provider as any).auth = oldAuth;
 
 		const settings = {
-			oauthClientId: "new-client-id",
-			tokenExchangeUrl: "https://example.com/exchange",
-			refreshToken: "refresh",
+			refreshToken: "new-refresh",
 			accessToken: "",
 			accessTokenExpiry: 0,
 			driveFolderId: "folder",
 			changesStartPageToken: "",
 		} as never;
 
-		// createFs triggers getOrCreateAuth internally
-		// The clientId mismatch should create a new auth instance
+		// The refreshToken mismatch should create a new auth instance
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		const auth = (provider as any).getOrCreateAuth(settings) as InstanceType<typeof GoogleAuth>;
-		expect(auth.getConfig().clientId).toBe("new-client-id");
+		expect(auth).not.toBe(oldAuth);
 	});
 });
 
@@ -412,10 +353,7 @@ describe("GoogleAuth.revokeToken", () => {
 		const mockRequestUrl = vi.spyOn(obsidian as any, "requestUrl").mockResolvedValue({});
 
 		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth({
-			clientId: "test",
-			tokenExchangeUrl: "https://example.com/exchange",
-		});
+		const auth = new GoogleAuth();
 		auth.setTokens("my-refresh-token", "", 0);
 
 		await auth.revokeToken();
@@ -443,10 +381,7 @@ describe("GoogleAuth.revokeToken", () => {
 		);
 
 		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth({
-			clientId: "test",
-			tokenExchangeUrl: "https://example.com/exchange",
-		});
+		const auth = new GoogleAuth();
 		auth.setTokens("token", "", 0);
 
 		// Should not throw
@@ -461,10 +396,7 @@ describe("GoogleAuth.revokeToken", () => {
 		const mockRequestUrl = vi.spyOn(obsidian as any, "requestUrl");
 
 		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth({
-			clientId: "test",
-			tokenExchangeUrl: "https://example.com/exchange",
-		});
+		const auth = new GoogleAuth();
 
 		await auth.revokeToken();
 		expect(mockRequestUrl).not.toHaveBeenCalled();
@@ -485,10 +417,7 @@ describe("DriveClient error wrapping", () => {
 
 		const { GoogleAuth } = await import("./auth");
 		const { DriveClient } = await import("./client");
-		const auth = new GoogleAuth({
-			clientId: "test",
-			tokenExchangeUrl: "https://example.com/exchange",
-		});
+		const auth = new GoogleAuth();
 		auth.setTokens("refresh", "access", Date.now() + 3600_000);
 
 		const client = new DriveClient(auth);
@@ -510,10 +439,7 @@ describe("DriveClient error wrapping", () => {
 
 		const { GoogleAuth } = await import("./auth");
 		const { DriveClient } = await import("./client");
-		const auth = new GoogleAuth({
-			clientId: "test",
-			tokenExchangeUrl: "https://example.com/exchange",
-		});
+		const auth = new GoogleAuth();
 		auth.setTokens("refresh", "access", Date.now() + 3600_000);
 
 		const client = new DriveClient(auth);
@@ -545,10 +471,7 @@ describe("DriveClient.uploadFile modifiedTime default", () => {
 
 		const { GoogleAuth } = await import("./auth");
 		const { DriveClient } = await import("./client");
-		const auth = new GoogleAuth({
-			clientId: "test",
-			tokenExchangeUrl: "https://example.com/exchange",
-		});
+		const auth = new GoogleAuth();
 		auth.setTokens("refresh", "access", Date.now() + 3600_000);
 
 		const client = new DriveClient(auth);
@@ -589,10 +512,7 @@ describe("GoogleDriveFs.write md5Checksum", () => {
 		const { GoogleDriveFs } = await import("./index");
 		const { DriveClient } = await import("./client");
 		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth({
-			clientId: "test",
-			tokenExchangeUrl: "https://example.com/exchange",
-		});
+		const auth = new GoogleAuth();
 		auth.setTokens("refresh", "access", Date.now() + 3600_000);
 		const client = new DriveClient(auth);
 		const fs = new GoogleDriveFs(client, "root");
@@ -625,10 +545,7 @@ describe("GoogleDriveFs.write md5Checksum", () => {
 		const { GoogleDriveFs } = await import("./index");
 		const { DriveClient } = await import("./client");
 		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth({
-			clientId: "test",
-			tokenExchangeUrl: "https://example.com/exchange",
-		});
+		const auth = new GoogleAuth();
 		auth.setTokens("refresh", "access", Date.now() + 3600_000);
 		const client = new DriveClient(auth);
 		const fs = new GoogleDriveFs(client, "root");
@@ -834,10 +751,7 @@ describe("DriveClient chunked resumable upload", () => {
 		const { GoogleAuth } = await import("./auth");
 		const { DriveClient } = await import("./client");
 
-		const auth = new GoogleAuth({
-			clientId: "test",
-			tokenExchangeUrl: "https://example.com/exchange",
-		});
+		const auth = new GoogleAuth();
 		auth.setTokens("refresh", "access", Date.now() + 3600_000);
 
 		let callCount = 0;
@@ -916,10 +830,7 @@ describe("DriveClient chunked resumable upload", () => {
 		const { GoogleAuth } = await import("./auth");
 		const { DriveClient } = await import("./client");
 
-		const auth = new GoogleAuth({
-			clientId: "test",
-			tokenExchangeUrl: "https://example.com/exchange",
-		});
+		const auth = new GoogleAuth();
 		auth.setTokens("refresh", "access", Date.now() + 3600_000);
 
 		const uploadedRanges: string[] = [];
@@ -974,10 +885,7 @@ describe("DriveClient chunked resumable upload", () => {
 		const { GoogleAuth } = await import("./auth");
 		const { DriveClient } = await import("./client");
 
-		const auth = new GoogleAuth({
-			clientId: "test",
-			tokenExchangeUrl: "https://example.com/exchange",
-		});
+		const auth = new GoogleAuth();
 		auth.setTokens("refresh", "access", Date.now() + 3600_000);
 
 		let callCount = 0;
@@ -1012,10 +920,7 @@ describe("DriveClient chunked resumable upload", () => {
 		const { GoogleAuth } = await import("./auth");
 		const { DriveClient } = await import("./client");
 
-		const auth = new GoogleAuth({
-			clientId: "test",
-			tokenExchangeUrl: "https://example.com/exchange",
-		});
+		const auth = new GoogleAuth();
 		auth.setTokens("refresh", "access", Date.now() + 3600_000);
 
 		let callCount = 0;
