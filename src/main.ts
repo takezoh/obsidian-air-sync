@@ -118,6 +118,15 @@ export default class SmartSyncPlugin extends Plugin {
 		window.addEventListener("online", onOnline);
 		this.register(() => window.removeEventListener("online", onOnline));
 
+		// Sync when app returns to foreground (especially important on mobile)
+		const onVisibilityChange = () => {
+			if (document.visibilityState === "visible" && this.syncService.shouldSync()) {
+				debouncedSync();
+			}
+		};
+		document.addEventListener("visibilitychange", onVisibilityChange);
+		this.register(() => document.removeEventListener("visibilitychange", onVisibilityChange));
+
 		// Auto-sync timer
 		this.setupAutoSync();
 	}
