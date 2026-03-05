@@ -47,7 +47,7 @@ export const DEFAULT_SETTINGS: SmartSyncSettings = {
 	backendType: "googledrive",
 	autoSyncIntervalMinutes: 5,
 	conflictStrategy: "keep_newer",
-	excludePatterns: [".trash/**"],
+	excludePatterns: [],
 	enableThreeWayMerge: false,
 	mobileIncludePatterns: ["**/*.md", "**/*.canvas"],
 	mobileMaxFileSizeMB: 10,
@@ -62,10 +62,3 @@ export const DEFAULT_SETTINGS: SmartSyncSettings = {
 	pendingAuthState: "",
 };
 
-/**
- * Get the default exclude patterns including the vault's config directory.
- * Must be called after the vault is available to resolve configDir.
- */
-export function getDefaultExcludePatterns(configDir: string): string[] {
-	return [`${configDir}/**`, ".trash/**"];
-}

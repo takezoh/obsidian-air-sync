@@ -92,15 +92,14 @@ export class SmartSyncSettingTab extends PluginSettingTab {
 					})
 			);
 
-		const configDir = this.app.vault.configDir;
 		new Setting(containerEl)
 			.setName("Exclude patterns")
 			.setDesc(
-				`Glob patterns to exclude from sync, one per line. Default: ${configDir}/**, .trash/**`
+				`Glob patterns to exclude from sync, one per line.`
 			)
 			.addTextArea((text) =>
 				text
-					.setPlaceholder(`${configDir}/**\n.trash/**`)
+					.setPlaceholder(`secret/**\ndrafts/**`)
 					.setValue(
 						this.plugin.settings.excludePatterns.join("\n")
 					)
