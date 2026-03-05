@@ -154,7 +154,11 @@ export class LocalFs implements IFileSystem {
 				throw new Error(`Cannot create directory "${path}": "${current}" is a file`);
 			}
 			if (!entry) {
-				await this.vault.createFolder(current);
+				// Folder may exist on disk but not in vault index (e.g. dot-prefixed dirs
+				// created by other plugins). Check disk before creating.
+				if (!(await this.vault.adapter.exists(current))) {
+					await this.vault.createFolder(current);
+				}
 			}
 		}
 	}

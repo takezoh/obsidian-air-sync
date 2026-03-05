@@ -34,8 +34,100 @@ export const Platform = {
 	isMobileApp: false,
 };
 
+export class TFile {
+	path: string;
+	stat: { size: number; mtime: number };
+	constructor(path: string, size = 0, mtime = 0) {
+		this.path = path;
+		this.stat = { size, mtime };
+	}
+}
+
+export class TFolder {
+	path: string;
+	constructor(path: string) {
+		this.path = path;
+	}
+}
+
+/** In-memory Vault mock for unit tests */
+export class Vault {
+	private files = new Map<string, { type: "file" | "folder"; content?: ArrayBuffer; mtime?: number }>();
+	adapter = {
+		exists: async (path: string): Promise<boolean> => {
+			return this.files.has(path);
+		},
+		writeBinary: async (path: string, data: ArrayBuffer, options?: { mtime?: number }): Promise<void> => {
+			this.files.set(path, { type: "file", content: data, mtime: options?.mtime });
+		},
+	};
+
+	getName(): string {
+		return "test-vault";
+	}
+
+	getAbstractFileByPath(path: string): TFile | TFolder | null {
+		const entry = this.files.get(path);
+		if (!entry) return null;
+		if (entry.type === "folder") return new TFolder(path);
+		const f = new TFile(path, entry.content?.byteLength ?? 0, entry.mtime ?? 0);
+		return f;
+	}
+
+	async createFolder(path: string): Promise<TFolder> {
+		if (this.files.has(path)) {
+			throw new Error("Folder already exists.");
+		}
+		this.files.set(path, { type: "folder" });
+		return new TFolder(path);
+	}
+
+	async readBinary(file: TFile): Promise<ArrayBuffer> {
+		const entry = this.files.get(file.path);
+		if (!entry || entry.type !== "file") throw new Error(`File not found: ${file.path}`);
+		return entry.content ?? new ArrayBuffer(0);
+	}
+
+	async createBinary(path: string, content: ArrayBuffer, options?: { mtime?: number }): Promise<TFile> {
+		this.files.set(path, { type: "file", content, mtime: options?.mtime });
+		return new TFile(path, content.byteLength, options?.mtime ?? 0);
+	}
+
+	async modifyBinary(file: TFile, content: ArrayBuffer, options?: { mtime?: number }): Promise<void> {
+		const entry = this.files.get(file.path);
+		if (!entry || entry.type !== "file") throw new Error(`File not found: ${file.path}`);
+		entry.content = content;
+		if (options?.mtime !== undefined) entry.mtime = options.mtime;
+	}
+
+	getAllLoadedFiles(): (TFile | TFolder)[] {
+		const result: (TFile | TFolder)[] = [];
+		for (const [path, entry] of this.files) {
+			if (entry.type === "folder") {
+				result.push(new TFolder(path));
+			} else {
+				result.push(new TFile(path, entry.content?.byteLength ?? 0, entry.mtime ?? 0));
+			}
+		}
+		return result;
+	}
+
+	async rename(file: TFile | TFolder, newPath: string): Promise<void> {
+		const entry = this.files.get(file.path);
+		if (!entry) throw new Error(`File not found: ${file.path}`);
+		this.files.delete(file.path);
+		this.files.set(newPath, entry);
+	}
+}
+
 export class App {
-	vault = { getName: () => "test-vault" };
+	vault: Vault;
+	fileManager = {
+		trashFile: async (_file: TFile | TFolder) => {},
+	};
+	constructor() {
+		this.vault = new Vault();
+	}
 }
 
 export class PluginSettingTab {
