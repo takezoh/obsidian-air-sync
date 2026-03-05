@@ -50,6 +50,19 @@ See backend-specific setup instructions:
 |---------|-------------|
 | `Smart Sync: Sync now` | Run sync manually |
 
+## Troubleshooting
+
+### Sync errors for files created by other plugins
+
+Some plugins (e.g. Smart Connections, Make.md) create data directories like `.smart-env/` or `.space/`. These are auto-generated locally and do not need to be synced.
+
+Add them to the exclude patterns in settings:
+
+```
+.smart-env/**
+.space/**
+```
+
 ## Disclaimer
 
 This plugin is provided "as is", without warranty of any kind. The authors are not responsible for any loss or corruption of data, or any other damages arising from the use of this plugin. **Use at your own risk.** It is strongly recommended that you back up your vault before using this plugin.
