@@ -26,10 +26,18 @@ if you want to view the source, please visit the github repository of this plugi
 
 const prod = (process.argv[2] === "production");
 
+const requiredEnvVars = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"];
+for (const name of requiredEnvVars) {
+	if (!process.env[name]) {
+		console.error(`ERROR: Environment variable ${name} is not set.`);
+		process.exit(1);
+	}
+}
+
 const context = await esbuild.context({
 	define: {
-		"process.env.GOOGLE_CLIENT_ID": JSON.stringify(process.env.GOOGLE_CLIENT_ID ?? ""),
-		"process.env.GOOGLE_CLIENT_SECRET": JSON.stringify(process.env.GOOGLE_CLIENT_SECRET ?? ""),
+		"process.env.GOOGLE_CLIENT_ID": JSON.stringify(process.env.GOOGLE_CLIENT_ID),
+		"process.env.GOOGLE_CLIENT_SECRET": JSON.stringify(process.env.GOOGLE_CLIENT_SECRET),
 	},
 	banner: {
 		js: banner,
