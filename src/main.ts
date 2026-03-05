@@ -167,28 +167,13 @@ export default class SmartSyncPlugin extends Plugin {
 			needsSave = true;
 		}
 
-		if (this.ensureConfigExcluded()) {
-			needsSave = true;
-		}
-
 		if (needsSave) {
 			await this.saveData(this.settings);
 		}
 	}
 
 	async saveSettings() {
-		this.ensureConfigExcluded();
 		await this.saveData(this.settings);
-	}
-
-	/** Ensure the vault config directory is in excludePatterns. Returns true if it was added. */
-	private ensureConfigExcluded(): boolean {
-		const configPattern = `${this.app.vault.configDir}/**`;
-		if (!this.settings.excludePatterns.includes(configPattern)) {
-			this.settings.excludePatterns.unshift(configPattern);
-			return true;
-		}
-		return false;
 	}
 
 	/** Set up or restart the auto-sync interval */
