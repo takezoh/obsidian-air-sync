@@ -67,7 +67,8 @@ describe("SyncExecutor", () => {
 			hash: "",
 			localMtime: 1000,
 			remoteMtime: 1000,
-			size: 4,
+			localSize: 4,
+			remoteSize: 4,
 			syncedAt: 900,
 		});
 
@@ -96,7 +97,8 @@ describe("SyncExecutor", () => {
 			hash: "",
 			localMtime: 1000,
 			remoteMtime: 1000,
-			size: 4,
+			localSize: 4,
+			remoteSize: 4,
 			syncedAt: 900,
 		});
 
@@ -123,7 +125,8 @@ describe("SyncExecutor", () => {
 			hash: "",
 			localMtime: 1000,
 			remoteMtime: 1000,
-			size: 10,
+			localSize: 10,
+			remoteSize: 10,
 			syncedAt: 900,
 		});
 
@@ -289,7 +292,7 @@ describe("SyncExecutor", () => {
 
 		const record = stateStore.records.get("empty.md");
 		expect(record).toBeDefined();
-		expect(record!.size).toBe(0);
+		expect(record!.localSize).toBe(0);
 	});
 
 	it("enableThreeWayMerge does not override keep_local strategy", async () => {
@@ -303,7 +306,8 @@ describe("SyncExecutor", () => {
 			hash: "",
 			localMtime: 500,
 			remoteMtime: 500,
-			size: 5,
+			localSize: 5,
+			remoteSize: 5,
 			syncedAt: 400,
 		};
 		stateStore.records.set("conflict.md", prevSync);
@@ -345,7 +349,7 @@ describe("SyncExecutor", () => {
 		remoteFs.files.set("recreated.md", { content: remoteContent, entity: remoteEntity });
 
 		stateStore.records.set("recreated.md", {
-			path: "recreated.md", hash: "", localMtime: 500, remoteMtime: 500, size: 5, syncedAt: 400,
+			path: "recreated.md", hash: "", localMtime: 500, remoteMtime: 500, localSize: 5, remoteSize: 5, syncedAt: 400,
 		});
 
 		const decisions: SyncDecision[] = [
@@ -376,7 +380,7 @@ describe("SyncExecutor", () => {
 		localFs.files.set("recreated.md", { content: localContent, entity: localEntity });
 
 		stateStore.records.set("recreated.md", {
-			path: "recreated.md", hash: "", localMtime: 500, remoteMtime: 500, size: 5, syncedAt: 400,
+			path: "recreated.md", hash: "", localMtime: 500, remoteMtime: 500, localSize: 5, remoteSize: 5, syncedAt: 400,
 		});
 
 		const decisions: SyncDecision[] = [

@@ -36,8 +36,10 @@ export interface SyncRecord {
 	localMtime: number;
 	/** Remote mtime at last successful sync (Unix epoch ms) */
 	remoteMtime: number;
-	/** File size at last successful sync */
-	size: number;
+	/** Local file size at last successful sync */
+	localSize: number;
+	/** Remote file size at last successful sync */
+	remoteSize: number;
 	/** Backend-specific metadata snapshot (e.g. Drive file ID) */
 	backendMeta?: Record<string, unknown>;
 	/** Timestamp when this sync completed (Unix epoch ms) */

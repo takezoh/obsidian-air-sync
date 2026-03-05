@@ -9,7 +9,8 @@ function makeRecord(path: string, overrides: Partial<SyncRecord> = {}): SyncReco
 		hash: "abc",
 		localMtime: 1000,
 		remoteMtime: 1000,
-		size: 100,
+		localSize: 100,
+		remoteSize: 100,
 		syncedAt: 900,
 		...overrides,
 	};
@@ -60,11 +61,11 @@ describe("SyncStateStore", () => {
 	});
 
 	it("put: updates an existing record", async () => {
-		await store.put(makeRecord("a.md", { size: 100 }));
-		await store.put(makeRecord("a.md", { size: 200 }));
+		await store.put(makeRecord("a.md", { localSize: 100 }));
+		await store.put(makeRecord("a.md", { localSize: 200 }));
 
 		const result = await store.get("a.md");
-		expect(result?.size).toBe(200);
+		expect(result?.localSize).toBe(200);
 
 		const all = await store.getAll();
 		expect(all).toHaveLength(1);

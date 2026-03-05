@@ -305,12 +305,13 @@ export async function buildSyncRecord(
 		hash: localStat?.hash || remoteStat?.hash || "",
 		localMtime: localStat?.mtime ?? 0,
 		remoteMtime: remoteStat?.mtime ?? 0,
-		size: localStat?.size ?? remoteStat?.size ?? 0,
+		localSize: localStat?.size ?? 0,
+		remoteSize: remoteStat?.size ?? 0,
 		backendMeta: remoteStat?.backendMeta,
 		syncedAt: Date.now(),
 	};
 
-	if (storeContent && localStat && stateStore && isMergeEligible(path, record.size)) {
+	if (storeContent && localStat && stateStore && isMergeEligible(path, record.localSize)) {
 		try {
 			const content = await localFs.read(path);
 			await stateStore.putContent(path, content);

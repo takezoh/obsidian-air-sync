@@ -245,7 +245,7 @@ describe("resolveConflict", () => {
 			stateStore.contents.set("file.md", baseBuf);
 
 			const prevSync: SyncRecord = {
-				path: "file.md", hash: "", localMtime: 1000, remoteMtime: 1000, size: base.length, syncedAt: 900,
+				path: "file.md", hash: "", localMtime: 1000, remoteMtime: 1000, localSize: base.length, remoteSize: base.length, syncedAt: 900,
 			};
 
 			const result = await resolveConflict(
@@ -276,7 +276,7 @@ describe("resolveConflict", () => {
 			stateStore.contents.set("file.md", baseBuf);
 
 			const prevSync: SyncRecord = {
-				path: "file.md", hash: "", localMtime: 1000, remoteMtime: 1000, size: base.length, syncedAt: 900,
+				path: "file.md", hash: "", localMtime: 1000, remoteMtime: 1000, localSize: base.length, remoteSize: base.length, syncedAt: 900,
 			};
 
 			const result = await resolveConflict(
@@ -321,7 +321,7 @@ describe("resolveConflict", () => {
 			stateStore.contents.set("image.png", baseBuf);
 
 			const prevSync: SyncRecord = {
-				path: "image.png", hash: "", localMtime: 1000, remoteMtime: 1000, size: 4, syncedAt: 900,
+				path: "image.png", hash: "", localMtime: 1000, remoteMtime: 1000, localSize: 4, remoteSize: 4, syncedAt: 900,
 			};
 
 			const result = await resolveConflict(
@@ -456,7 +456,7 @@ describe("resolveConflict", () => {
 			stateStore.contents.set("data.json", baseBuf);
 
 			const prevSync: SyncRecord = {
-				path: "data.json", hash: "", localMtime: 1000, remoteMtime: 1000, size: base.length, syncedAt: 900,
+				path: "data.json", hash: "", localMtime: 1000, remoteMtime: 1000, localSize: base.length, remoteSize: base.length, syncedAt: 900,
 			};
 
 			const result = await resolveConflict(
@@ -487,7 +487,7 @@ describe("resolveConflict", () => {
 			stateStore.contents.set("note.canvas", baseBuf);
 
 			const prevSync: SyncRecord = {
-				path: "note.canvas", hash: "", localMtime: 1000, remoteMtime: 1000, size: base.length, syncedAt: 900,
+				path: "note.canvas", hash: "", localMtime: 1000, remoteMtime: 1000, localSize: base.length, remoteSize: base.length, syncedAt: 900,
 			};
 
 			const result = await resolveConflict(
@@ -518,7 +518,7 @@ describe("resolveConflict", () => {
 			stateStore.contents.set("config.json", baseBuf);
 
 			const prevSync: SyncRecord = {
-				path: "config.json", hash: "", localMtime: 1000, remoteMtime: 1000, size: base.length, syncedAt: 900,
+				path: "config.json", hash: "", localMtime: 1000, remoteMtime: 1000, localSize: base.length, remoteSize: base.length, syncedAt: 900,
 			};
 
 			const result = await resolveConflict(
@@ -562,7 +562,7 @@ describe("resolveConflict", () => {
 			stateStore.contents.set("file.md", baseBuf);
 
 			const prevSync: SyncRecord = {
-				path: "file.md", hash: "", localMtime: 1000, remoteMtime: 1000, size: base.length, syncedAt: 900,
+				path: "file.md", hash: "", localMtime: 1000, remoteMtime: 1000, localSize: base.length, remoteSize: base.length, syncedAt: 900,
 			};
 
 			await expect(resolveConflict(

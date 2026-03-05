@@ -3,7 +3,7 @@ import type { SyncRecord } from "../fs/types";
 const DB_NAME_PREFIX = "smart-sync";
 const STORE_NAME = "sync-records";
 const CONTENT_STORE_NAME = "sync-content";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 /** Persistent store for sync records using IndexedDB */
 export class SyncStateStore {
@@ -33,8 +33,17 @@ export class SyncStateStore {
 			request.onblocked = () => {
 				reject(new Error(`IndexedDB "${this.dbName}" is blocked by another connection`));
 			};
-			request.onupgradeneeded = () => {
+			request.onupgradeneeded = (event) => {
 				const db = request.result;
+				const oldVersion = event.oldVersion;
+
+				// Drop and recreate stores on schema-breaking upgrades (v2→v3: size → localSize/remoteSize)
+				if (oldVersion > 0) {
+					for (const name of Array.from(db.objectStoreNames)) {
+						db.deleteObjectStore(name);
+					}
+				}
+
 				if (!db.objectStoreNames.contains(STORE_NAME)) {
 					db.createObjectStore(STORE_NAME, { keyPath: "path" });
 				}

@@ -19,7 +19,8 @@ function makeRecord(overrides: Partial<SyncRecord> = {}): SyncRecord {
 		hash: "abc",
 		localMtime: 1000,
 		remoteMtime: 1000,
-		size: 100,
+		localSize: 100,
+		remoteSize: 100,
 		syncedAt: 900,
 		...overrides,
 	};
@@ -214,7 +215,7 @@ describe("computeDecisions — 3-state decision table", () => {
 				path: "test.md",
 				local: makeFile({ mtime: 1000, size: 200 }),
 				remote: makeFile({ mtime: 1000 }),
-				prevSync: makeRecord({ localMtime: 1000, remoteMtime: 1000, size: 100 }),
+				prevSync: makeRecord({ localMtime: 1000, remoteMtime: 1000 }),
 			},
 		];
 		const decisions = computeDecisions(entities);
@@ -352,7 +353,7 @@ describe("computeDecisions — 3-state decision table", () => {
 				path: "test.md",
 				local: makeFile({ mtime: 1000, size: 100, hash: "new-hash" }),
 				remote: makeFile({ mtime: 1000, size: 100, hash: "old-hash" }),
-				prevSync: makeRecord({ localMtime: 1000, remoteMtime: 1000, size: 100, hash: "old-hash" }),
+				prevSync: makeRecord({ localMtime: 1000, remoteMtime: 1000, hash: "old-hash" }),
 			},
 		];
 		const decisions = computeDecisions(entities);
@@ -365,7 +366,7 @@ describe("computeDecisions — 3-state decision table", () => {
 				path: "test.md",
 				local: makeFile({ mtime: 1000, size: 100, hash: "same-hash" }),
 				remote: makeFile({ mtime: 1000, size: 100, hash: "same-hash" }),
-				prevSync: makeRecord({ localMtime: 1000, remoteMtime: 1000, size: 100, hash: "same-hash" }),
+				prevSync: makeRecord({ localMtime: 1000, remoteMtime: 1000, hash: "same-hash" }),
 			},
 		];
 		const decisions = computeDecisions(entities);
@@ -378,11 +379,33 @@ describe("computeDecisions — 3-state decision table", () => {
 				path: "test.md",
 				local: makeFile({ mtime: 1000, size: 100, hash: "old-hash" }),
 				remote: makeFile({ mtime: 1000, size: 100, hash: "new-hash" }),
-				prevSync: makeRecord({ localMtime: 1000, remoteMtime: 1000, size: 100, hash: "old-hash" }),
+				prevSync: makeRecord({ localMtime: 1000, remoteMtime: 1000, hash: "old-hash" }),
 			},
 		];
 		const decisions = computeDecisions(entities);
 		expect(decisions[0]!.decision).toBe("remote_modified_pull");
+	});
+
+	it("local_modified_push: divergent localSize vs remoteSize does not false-positive conflict", () => {
+		// After a push, localSize=N+M (file grew during sync), remoteSize=N (uploaded content).
+		// Next sync: remote.size=N matches remoteSize=N → no remote change.
+		// Local mtime changed → local_modified_push (not conflict_both_modified).
+		const entities: MixedEntity[] = [
+			{
+				path: "log.md",
+				local: makeFile({ path: "log.md", mtime: 3000, size: 150 }),
+				remote: makeFile({ path: "log.md", mtime: 2000, size: 100 }),
+				prevSync: makeRecord({
+					path: "log.md",
+					localMtime: 2500,
+					remoteMtime: 2000,
+					localSize: 120,
+					remoteSize: 100,
+				}),
+			},
+		];
+		const decisions = computeDecisions(entities);
+		expect(decisions[0]!.decision).toBe("local_modified_push");
 	});
 
 	it("treats undefined md5Checksum as unavailable", () => {

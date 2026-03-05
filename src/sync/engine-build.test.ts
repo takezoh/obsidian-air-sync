@@ -55,7 +55,8 @@ describe("buildMixedEntities", () => {
 			hash: "abc",
 			localMtime: 1000,
 			remoteMtime: 1000,
-			size: 10,
+			localSize: 10,
+			remoteSize: 10,
 			syncedAt: 900,
 		});
 
@@ -78,7 +79,8 @@ describe("buildMixedEntities", () => {
 			hash: "xyz",
 			localMtime: 1000,
 			remoteMtime: 1000,
-			size: 10,
+			localSize: 10,
+			remoteSize: 10,
 			syncedAt: 900,
 		});
 

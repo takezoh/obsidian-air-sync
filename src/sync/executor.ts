@@ -270,14 +270,15 @@ export class SyncExecutor {
 			hash: localEntity.hash || remoteEntity.hash,
 			localMtime: localEntity.mtime,
 			remoteMtime: remoteEntity.mtime,
-			size: localEntity.size ?? remoteEntity.size,
+			localSize: localEntity.size,
+			remoteSize: remoteEntity.size,
 			backendMeta: remoteEntity.backendMeta,
 			syncedAt: Date.now(),
 		};
 
 		await this.stateStore.put(record);
 
-		if (this.enableThreeWayMerge && isMergeEligible(path, record.size)) {
+		if (this.enableThreeWayMerge && isMergeEligible(path, record.localSize)) {
 			// Store content separately for future 3-way merges (text files only)
 			try {
 				const content = await this.localFs.read(path);

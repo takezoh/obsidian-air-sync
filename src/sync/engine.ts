@@ -141,7 +141,7 @@ function computeDecision(entity: MixedEntity): SyncDecision {
 function hasChanged(file: FileEntity, record: SyncRecord): boolean {
 	// Prefer mtime+size comparison (avoids content read)
 	if (file.mtime > 0 && record.localMtime > 0) {
-		if (file.mtime !== record.localMtime || file.size !== record.size) {
+		if (file.mtime !== record.localMtime || file.size !== record.localSize) {
 			return true;
 		}
 		// mtime+size match — verify hash if both available (catches same-size edits)
@@ -165,7 +165,7 @@ function hasChanged(file: FileEntity, record: SyncRecord): boolean {
  */
 function hasRemoteChanged(file: FileEntity, record: SyncRecord): boolean {
 	if (file.mtime > 0 && record.remoteMtime > 0) {
-		if (file.mtime !== record.remoteMtime || file.size !== record.size) {
+		if (file.mtime !== record.remoteMtime || file.size !== record.remoteSize) {
 			return true;
 		}
 		// mtime+size match — verify hash if both available (catches same-size edits)
