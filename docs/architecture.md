@@ -363,7 +363,7 @@ Orchestrates the entire sync flow.
 2. `buildMixedEntities()` + filter (exclude patterns + mobile include/size checks) + `resolveEmptyHashes()` + `computeDecisions()`
 3. If 5+ conflicts with `ask` strategy → show `ConflictSummaryModal`
 4. Execute `SyncExecutor.execute()`
-5. Save backend state (`changesStartPageToken`, etc.) to settings
+5. Save backend state to `settings.backendData[type]` via `readBackendState()`
 6. Send result notifications
 
 **Retry**: Max 3 attempts for transport-level errors (network failures, 5xx). Exponential backoff (`2^n * 1000ms`) ± 50% jitter. Immediate abort for:
@@ -390,7 +390,7 @@ OAuth client ID and secret are embedded as constants (no user configuration need
 3. `exchangeCode()` obtains access/refresh tokens directly from Google's token endpoint
 4. `getAccessToken()` retrieves tokens, auto-refreshing 60 seconds before expiry
 
-PKCE `pendingCodeVerifier` and `pendingAuthState` are persisted in settings (allowing auth flow to survive plugin reloads).
+PKCE `pendingCodeVerifier` and `pendingAuthState` are persisted in `backendData["googledrive"]` (allowing auth flow to survive plugin reloads).
 
 **Why a relay is needed**: Google OAuth requires redirect URIs to use `http://` or `https://` — custom schemes like `obsidian://` are not allowed for Web application OAuth clients. The relay page hosted on GitHub Pages receives the authorization code via HTTPS redirect, then forwards it to `obsidian://smart-sync-auth?code=...&state=...` to hand control back to the plugin.
 
@@ -451,11 +451,13 @@ Connection state is derived from `settings.backendData["googledrive"]` (`!!refre
 
 `IAuthProvider` implementation. Owns the `GoogleAuth` instance and manages the entire OAuth lifecycle.
 
-- `startAuth()`: Generate auth URL → open in browser → save PKCE state to settings
-- `completeAuth()`: Accept URL or code → exchange tokens directly with Google → save to settings
-- `disconnect()`: Revoke token via Google's revoke endpoint (best-effort) → clear tokens and page token. If revocation fails, local tokens are still cleared to ensure the user can always disconnect
+- `startAuth()`: Generate auth URL → open in browser → return PKCE state for persistence
+- `completeAuth()`: Accept URL or code → exchange tokens directly with Google → return token updates
 - `isAuthenticated()`: Returns `true` when `refreshToken` is present (even without folder ID)
 - `getOrCreateGoogleAuth()`: Returns the existing `GoogleAuth` instance, or creates a new one if the stored `refreshToken` has changed. Called by `GoogleDriveProvider.createFs()` to obtain the auth instance for `DriveClient`
+- `revokeAuth()`: Revoke token via Google's revoke endpoint (best-effort). Called by `GoogleDriveProvider.disconnect()`. If revocation fails, local tokens are still cleared to ensure the user can always disconnect
+
+Note: `disconnect()` is on `GoogleDriveProvider` (not on `GoogleDriveAuthProvider`), since it must reset both auth tokens and FS state (e.g., `changesStartPageToken`).
 
 ---
 
@@ -773,5 +775,5 @@ When no `SyncRecord` exists for a file:
 
 ### Medium — Recognized limitations
 
-3. **In-memory metadata cache only** — `changesStartPageToken` is persisted in settings, but `pathToFile` / `idToPath` / `folders` caches are rebuilt from scratch on each plugin load via full scan. Persisting to IndexedDB would eliminate the initial full scan on reload
+3. **In-memory metadata cache only** — `changesStartPageToken` is persisted in `backendData["googledrive"]`, but `pathToFile` / `idToPath` / `folders` caches are rebuilt from scratch on each plugin load via full scan. Persisting to IndexedDB would eliminate the initial full scan on reload
 4. **`rewriteChildPaths()` / `removePath()` O(n) scan** — Folder rename and delete operations iterate all cache entries to find children. A trie or parent→children index would reduce this to O(k) where k = number of children
