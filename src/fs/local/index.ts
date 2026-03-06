@@ -131,6 +131,8 @@ export class LocalFs implements IFileSystem {
 
 	async listDir(path: string): Promise<FileEntity[]> {
 		path = normalizeSyncPath(path);
+		// .smartsync/ is dot-prefixed so Vault index excludes it; listDir is not
+		// currently called for .smartsync paths, so no adapter fallback is needed.
 		const folder = this.vault.getAbstractFileByPath(path);
 		if (!(folder instanceof TFolder)) return [];
 		return folder.children.map((child) => {
@@ -151,7 +153,12 @@ export class LocalFs implements IFileSystem {
 		path = normalizeSyncPath(path);
 		if (this.isDotSyncPath(path)) {
 			if (await this.vault.adapter.exists(path)) {
-				await this.vault.adapter.remove(path);
+				const s = await this.vault.adapter.stat(path);
+				if (s?.type === "folder") {
+					await this.vault.adapter.rmdir(path, true);
+				} else {
+					await this.vault.adapter.remove(path);
+				}
 			}
 			return;
 		}
@@ -165,6 +172,7 @@ export class LocalFs implements IFileSystem {
 		oldPath = normalizeSyncPath(oldPath);
 		newPath = normalizeSyncPath(newPath);
 		validateRename(oldPath, newPath);
+		// .smartsync/ paths are not renamed by sync logic; no adapter fallback needed.
 		const file = this.vault.getAbstractFileByPath(oldPath);
 		if (!file) {
 			throw new Error(`File not found: ${oldPath}`);

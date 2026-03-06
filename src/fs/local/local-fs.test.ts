@@ -61,4 +61,97 @@ describe("LocalFs", () => {
 		});
 	});
 
+	describe("delete (.smartsync paths)", () => {
+		it("deletes a .smartsync file via adapter.remove", async () => {
+			const { vault, fs } = createLocalFs();
+			await vault.adapter.writeBinary(".smartsync/logs/test.log", new ArrayBuffer(8));
+			const removeSpy = vi.spyOn(vault.adapter, "remove");
+
+			await fs.delete(".smartsync/logs/test.log");
+
+			expect(removeSpy).toHaveBeenCalledWith(".smartsync/logs/test.log");
+		});
+
+		it("deletes a .smartsync directory via adapter.rmdir", async () => {
+			const { vault, fs } = createLocalFs();
+			// Create a folder with children on the adapter
+			const vaultInternal = vault as unknown as { files: Map<string, unknown> };
+			vaultInternal.files.set(".smartsync", { type: "folder" });
+			vaultInternal.files.set(".smartsync/logs", { type: "folder" });
+			vaultInternal.files.set(".smartsync/logs/test.log", { type: "file", content: new ArrayBuffer(0), mtime: 0 });
+			const rmdirSpy = vi.spyOn(vault.adapter, "rmdir");
+
+			await fs.delete(".smartsync");
+
+			expect(rmdirSpy).toHaveBeenCalledWith(".smartsync", true);
+		});
+
+		it("is idempotent for non-existent .smartsync path", async () => {
+			const { fs } = createLocalFs();
+			await expect(fs.delete(".smartsync/missing")).resolves.not.toThrow();
+		});
+	});
+
+	describe("stat (.smartsync paths)", () => {
+		it("returns FileEntity with hash for a .smartsync file", async () => {
+			const { vault, fs } = createLocalFs();
+			const content = new TextEncoder().encode("log data").buffer;
+			await vault.adapter.writeBinary(".smartsync/logs/test.log", content);
+
+			const entity = await fs.stat(".smartsync/logs/test.log");
+
+			expect(entity).not.toBeNull();
+			expect(entity!.isDirectory).toBe(false);
+			expect(entity!.hash).not.toBe("");
+			expect(entity!.path).toBe(".smartsync/logs/test.log");
+		});
+
+		it("returns FileEntity for a .smartsync directory", async () => {
+			const { vault, fs } = createLocalFs();
+			const vaultInternal = vault as unknown as { files: Map<string, unknown> };
+			vaultInternal.files.set(".smartsync", { type: "folder" });
+
+			const entity = await fs.stat(".smartsync");
+
+			expect(entity).not.toBeNull();
+			expect(entity!.isDirectory).toBe(true);
+		});
+
+		it("returns null for non-existent .smartsync path", async () => {
+			const { fs } = createLocalFs();
+			const entity = await fs.stat(".smartsync/missing");
+			expect(entity).toBeNull();
+		});
+	});
+
+	describe("read (.smartsync paths)", () => {
+		it("reads a .smartsync file via adapter", async () => {
+			const { vault, fs } = createLocalFs();
+			const content = new TextEncoder().encode("log data").buffer;
+			await vault.adapter.writeBinary(".smartsync/test.log", content);
+
+			const result = await fs.read(".smartsync/test.log");
+			expect(new TextDecoder().decode(result)).toBe("log data");
+		});
+
+		it("throws for non-existent .smartsync file", async () => {
+			const { fs } = createLocalFs();
+			await expect(fs.read(".smartsync/missing")).rejects.toThrow("File not found: .smartsync/missing");
+		});
+	});
+
+	describe("write (.smartsync paths)", () => {
+		it("writes a .smartsync file via adapter", async () => {
+			const { vault, fs } = createLocalFs();
+			const content = new TextEncoder().encode("data").buffer;
+
+			const entity = await fs.write(".smartsync/test.log", content, 12345);
+
+			expect(entity.isDirectory).toBe(false);
+			expect(entity.path).toBe(".smartsync/test.log");
+			expect(entity.hash).not.toBe("");
+			expect(await vault.adapter.exists(".smartsync/test.log")).toBe(true);
+		});
+	});
+
 });

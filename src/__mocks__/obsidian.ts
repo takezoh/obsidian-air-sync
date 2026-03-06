@@ -57,8 +57,49 @@ export class Vault {
 		exists: async (path: string): Promise<boolean> => {
 			return this.files.has(path);
 		},
+		stat: async (path: string): Promise<{ type: "file" | "folder"; size: number; mtime: number } | null> => {
+			const entry = this.files.get(path);
+			if (!entry) return null;
+			return {
+				type: entry.type,
+				size: entry.content?.byteLength ?? 0,
+				mtime: entry.mtime ?? 0,
+			};
+		},
+		readBinary: async (path: string): Promise<ArrayBuffer> => {
+			const entry = this.files.get(path);
+			if (!entry || entry.type !== "file") throw new Error(`File not found: ${path}`);
+			return entry.content ?? new ArrayBuffer(0);
+		},
+		list: async (dir: string): Promise<{ files: string[]; folders: string[] }> => {
+			const files: string[] = [];
+			const folders: string[] = [];
+			const prefix = dir + "/";
+			for (const [p, entry] of this.files) {
+				if (p.startsWith(prefix) && !p.substring(prefix.length).includes("/")) {
+					if (entry.type === "folder") folders.push(p);
+					else files.push(p);
+				}
+			}
+			return { files, folders };
+		},
 		writeBinary: async (path: string, data: ArrayBuffer, options?: { mtime?: number }): Promise<void> => {
 			this.files.set(path, { type: "file", content: data, mtime: options?.mtime });
+		},
+		remove: async (path: string): Promise<void> => {
+			this.files.delete(path);
+		},
+		rmdir: async (path: string, _recursive?: boolean): Promise<void> => {
+			const prefix = path + "/";
+			const toDelete: string[] = [];
+			for (const key of this.files.keys()) {
+				if (key === path || key.startsWith(prefix)) {
+					toDelete.push(key);
+				}
+			}
+			for (const key of toDelete) {
+				this.files.delete(key);
+			}
 		},
 	};
 

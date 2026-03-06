@@ -175,7 +175,6 @@ export class MockFs implements IFileSystem {
 
 	/** Test helper: seed a file directly */
 	seed(path: string, content: string, mtime = Date.now()): void {
-		const encoder = new TextEncoder();
 		const parentPath = path.substring(0, path.lastIndexOf("/"));
 		if (parentPath) {
 			const parts = parentPath.split("/");
@@ -191,8 +190,9 @@ export class MockFs implements IFileSystem {
 				}
 			}
 		}
+		const encoded = new TextEncoder().encode(content);
 		this.files.set(path, {
-			content: encoder.encode(content).buffer.slice(0),
+			content: encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength),
 			mtime,
 			isDirectory: false,
 		});
