@@ -24,6 +24,7 @@ src/
 ├── fs/
 │   ├── types.ts         # FileEntity, SyncRecord, MixedEntity, SyncDecision, DecisionType, ConflictStrategy
 │   ├── interface.ts     # IFileSystem (name, list, stat, read, write, mkdir, delete, rename)
+│   ├── auth.ts          # IAuthProvider
 │   ├── backend.ts       # IBackendProvider
 │   ├── registry.ts      # Backend registry
 │   ├── local/           # LocalFs — Obsidian Vault API wrapper
