@@ -332,20 +332,20 @@ hasRemoteChanged(file, record):
       if hash available → compare hash
       else → false
     if mtime/size differ:
-      if md5Checksum available → compare md5 (catches mtime jitter)
+      if contentChecksum available → compare checksum (catches mtime jitter)
       else → true (conservative)
-  if md5Checksum available → compare md5
+  if contentChecksum available → compare checksum
   if hash available → compare hash
   else → true (conservative)
 ```
 
-**Why md5Checksum is checked on mtime/size mismatch (remote only)**:
+**Why contentChecksum is checked on mtime/size mismatch (remote only)**:
 
-Google Drive's `modifiedTime` can drift between the upload response and subsequent `changes.list` responses. A 1ms difference causes a false positive in mtime comparison. Without the md5 check, this triggers `conflict_delete_vs_modify` instead of `local_deleted_propagate` when a locally deleted file has an unchanged remote with drifted mtime — the `keepNewer` strategy then restores the deleted file.
+Google Drive's `modifiedTime` can drift between the upload response and subsequent `changes.list` responses. A 1ms difference causes a false positive in mtime comparison. Without the checksum check, this triggers `conflict_delete_vs_modify` instead of `local_deleted_propagate` when a locally deleted file has an unchanged remote with drifted mtime — the `keepNewer` strategy then restores the deleted file.
 
-`hasRemoteChanged()` checks `backendMeta.md5Checksum` (provided by Google Drive in `list()` / `changes.list()`) before concluding the remote file changed. `hasChanged()` uses content `hash` (SHA-256) for the same purpose on the local side, where mtime is generally reliable but size changes without content changes are possible (e.g., filesystem metadata updates).
+`hasRemoteChanged()` checks `backendMeta.contentChecksum` (a backend-agnostic key mapped from e.g. Drive's `md5Checksum`, Dropbox's `content_hash`, or S3's `ETag`) before concluding the remote file changed. `hasChanged()` uses content `hash` (SHA-256) for the same purpose on the local side, where mtime is generally reliable but size changes without content changes are possible (e.g., filesystem metadata updates).
 
-**Asymmetry**: `hasChanged()` uses SHA-256 `hash` for the mtime/size mismatch check, while `hasRemoteChanged()` uses `md5Checksum` from `backendMeta`. This is because the SHA-256 hash requires reading file content (expensive for remote), whereas `md5Checksum` is returned by the Drive API at no extra cost. The `hash` fallback in `hasRemoteChanged()` is only reached when mtime is 0 and md5 is unavailable.
+**Asymmetry**: `hasChanged()` uses SHA-256 `hash` for the mtime/size mismatch check, while `hasRemoteChanged()` uses `contentChecksum` from `backendMeta`. This is because the SHA-256 hash requires reading file content (expensive for remote), whereas backend checksums (e.g. Drive's md5) are returned by the API at no extra cost. The `hash` fallback in `hasRemoteChanged()` is only reached when mtime is 0 and contentChecksum is unavailable.
 
 ### SyncExecutor (`sync/executor.ts`)
 
@@ -781,5 +781,5 @@ When no `SyncRecord` exists for a file:
 4. **TOCTOU races**: Delete propagation re-checks via `stat()`. Skips if the other side has changed
 5. **Network reconnect + auto-sync overlap**: When the browser comes back online just before an auto-sync timer fires, two sequential syncs may run. The `syncMutex` prevents concurrent execution, and `syncPending` deduplicates requests during an active sync. However, if the first sync completes before the second trigger fires, both execute independently. Impact is minimal — the second sync uses `changes.list` incremental fetch with no new changes
 6. **OAuth client secret exposure**: The Google OAuth client secret (Web application type) is embedded in the plugin source code. Google considers Web app secrets confidential (unlike Desktop app secrets). Practical risk is low — redirect URIs are locked in GCP, PKCE prevents auth code interception, and refresh tokens are stored only on the user's device. Additionally, `exchangeCode()` verifies the `state` parameter against `pendingAuthState` before processing, preventing forged callbacks from a compromised relay or CSRF attacks. However, Google could theoretically disable the client if they detect the secret is public. Mitigation options: (a) accept the risk (common in OSS — e.g. VS Code's GitHub integration), (b) add a thin serverless backend (Cloudflare Worker / Cloud Functions) for token exchange only, or (c) revert to Desktop app type and rely on manual callback URL paste
-7. **Initial sync performance on large vaults**: `resolveEmptyHashes()` reads content and computes SHA-256 for all file pairs where both sides exist, no `prevSync` record exists, and sizes match. For a vault with N same-size pairs, this performs 2N file reads + 2N SHA-256 computations. Entities are processed **sequentially** (outer `for...of` loop); within each entity, the local and remote reads are parallelized via `Promise.all()` (max 2 concurrent reads). Size-mismatched pairs are skipped entirely (no I/O needed). This runs only on initial sync — after the first successful sync, `prevSync` records exist for all files and the function becomes a no-op. Future optimization: `GoogleDriveFs` already stores `md5Checksum` in `backendMeta` during `list()`, which could be compared against a locally computed MD5 to skip remote downloads — however, this would couple the sync engine to a backend-specific field, conflicting with the backend-agnostic design
+7. **Initial sync performance on large vaults**: `resolveEmptyHashes()` reads content and computes SHA-256 for all file pairs where both sides exist, no `prevSync` record exists, and sizes match. For a vault with N same-size pairs, this performs 2N file reads + 2N SHA-256 computations. Entities are processed **sequentially** (outer `for...of` loop); within each entity, the local and remote reads are parallelized via `Promise.all()` (max 2 concurrent reads). Size-mismatched pairs are skipped entirely (no I/O needed). This runs only on initial sync — after the first successful sync, `prevSync` records exist for all files and the function becomes a no-op. Future optimization: `GoogleDriveFs` already stores the Drive MD5 as `contentChecksum` in `backendMeta` during `list()`, which could be compared against a locally computed MD5 to skip remote downloads. The `contentChecksum` key is backend-agnostic (each backend maps its native checksum: Drive's `md5Checksum`, Dropbox's `content_hash`, S3's `ETag`)
 

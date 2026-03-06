@@ -267,7 +267,7 @@ describe("computeDecisions — 3-state decision table", () => {
 		expect(decisions[0]!.decision).toBe("local_modified_push");
 	});
 
-	it("no_action: remote unchanged via md5Checksum when mtime is 0", () => {
+	it("no_action: remote unchanged via contentChecksum when mtime is 0", () => {
 		const entities: MixedEntity[] = [
 			{
 				path: "test.md",
@@ -275,13 +275,13 @@ describe("computeDecisions — 3-state decision table", () => {
 				remote: makeFile({
 					mtime: 0,
 					hash: "",
-					backendMeta: { md5Checksum: "aaa111" },
+					backendMeta: { contentChecksum: "aaa111" },
 				}),
 				prevSync: makeRecord({
 					localMtime: 1000,
 					remoteMtime: 0,
 					hash: "",
-					backendMeta: { md5Checksum: "aaa111" },
+					backendMeta: { contentChecksum: "aaa111" },
 				}),
 			},
 		];
@@ -289,7 +289,7 @@ describe("computeDecisions — 3-state decision table", () => {
 		expect(decisions[0]!.decision).toBe("no_action");
 	});
 
-	it("remote_modified_pull: remote changed via md5Checksum when mtime is 0", () => {
+	it("remote_modified_pull: remote changed via contentChecksum when mtime is 0", () => {
 		const entities: MixedEntity[] = [
 			{
 				path: "test.md",
@@ -297,13 +297,13 @@ describe("computeDecisions — 3-state decision table", () => {
 				remote: makeFile({
 					mtime: 0,
 					hash: "",
-					backendMeta: { md5Checksum: "bbb222" },
+					backendMeta: { contentChecksum: "bbb222" },
 				}),
 				prevSync: makeRecord({
 					localMtime: 1000,
 					remoteMtime: 0,
 					hash: "",
-					backendMeta: { md5Checksum: "aaa111" },
+					backendMeta: { contentChecksum: "aaa111" },
 				}),
 			},
 		];
@@ -325,7 +325,7 @@ describe("computeDecisions — 3-state decision table", () => {
 		expect(decisions[0]!.decision).toBe("conflict_both_modified");
 	});
 
-	it("treats non-string md5Checksum as unavailable (falls through to hash)", () => {
+	it("treats non-string contentChecksum as unavailable (falls through to hash)", () => {
 		const entities: MixedEntity[] = [
 			{
 				path: "test.md",
@@ -333,13 +333,13 @@ describe("computeDecisions — 3-state decision table", () => {
 				remote: makeFile({
 					mtime: 0,
 					hash: "abc",
-					backendMeta: { md5Checksum: 12345 }, // non-string
+					backendMeta: { contentChecksum: 12345 }, // non-string
 				}),
 				prevSync: makeRecord({
 					localMtime: 1000,
 					remoteMtime: 0,
 					hash: "abc",
-					backendMeta: { md5Checksum: null }, // non-string
+					backendMeta: { contentChecksum: null }, // non-string
 				}),
 			},
 		];
@@ -416,12 +416,12 @@ describe("computeDecisions — 3-state decision table", () => {
 				local: makeFile({ mtime: 1000 }),
 				remote: makeFile({
 					mtime: 1001, // Drive mtime jitter
-					backendMeta: { md5Checksum: "aaa111" },
+					backendMeta: { contentChecksum: "aaa111" },
 				}),
 				prevSync: makeRecord({
 					localMtime: 1000,
 					remoteMtime: 1000,
-					backendMeta: { md5Checksum: "aaa111" },
+					backendMeta: { contentChecksum: "aaa111" },
 				}),
 			},
 		];
@@ -436,12 +436,12 @@ describe("computeDecisions — 3-state decision table", () => {
 				local: makeFile({ mtime: 1000 }),
 				remote: makeFile({
 					mtime: 2000,
-					backendMeta: { md5Checksum: "bbb222" },
+					backendMeta: { contentChecksum: "bbb222" },
 				}),
 				prevSync: makeRecord({
 					localMtime: 1000,
 					remoteMtime: 1000,
-					backendMeta: { md5Checksum: "aaa111" },
+					backendMeta: { contentChecksum: "aaa111" },
 				}),
 			},
 		];
@@ -470,12 +470,12 @@ describe("computeDecisions — 3-state decision table", () => {
 				// local is absent (deleted)
 				remote: makeFile({
 					mtime: 1001, // slight mtime drift from Drive
-					backendMeta: { md5Checksum: "aaa111" },
+					backendMeta: { contentChecksum: "aaa111" },
 				}),
 				prevSync: makeRecord({
 					localMtime: 1000,
 					remoteMtime: 1000,
-					backendMeta: { md5Checksum: "aaa111" },
+					backendMeta: { contentChecksum: "aaa111" },
 				}),
 			},
 		];
@@ -500,7 +500,7 @@ describe("computeDecisions — 3-state decision table", () => {
 		expect(decisions[0]!.decision).toBe("no_action");
 	});
 
-	it("treats undefined md5Checksum as unavailable", () => {
+	it("treats undefined contentChecksum as unavailable", () => {
 		const entities: MixedEntity[] = [
 			{
 				path: "test.md",
@@ -508,13 +508,13 @@ describe("computeDecisions — 3-state decision table", () => {
 				remote: makeFile({
 					mtime: 0,
 					hash: "different",
-					backendMeta: { md5Checksum: undefined },
+					backendMeta: { contentChecksum: undefined },
 				}),
 				prevSync: makeRecord({
 					localMtime: 1000,
 					remoteMtime: 0,
 					hash: "abc",
-					backendMeta: { md5Checksum: undefined },
+					backendMeta: { contentChecksum: undefined },
 				}),
 			},
 		];

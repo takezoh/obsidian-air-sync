@@ -1,5 +1,8 @@
 import type { FileRecord } from "../../store/metadata-store";
 
+/** Google Drive folder MIME type */
+export const FOLDER_MIME = "application/vnd.google-apps.folder";
+
 /** Drive-specific file record type alias */
 export type DriveFileRecord = FileRecord<DriveFile>;
 
@@ -34,6 +37,21 @@ export interface DriveChangeList {
 	changes: DriveChange[];
 	nextPageToken?: string;
 	newStartPageToken?: string;
+}
+
+/** Build the metadata object for file upload requests */
+export function buildUploadMetadata(
+	name: string,
+	parentId: string | undefined,
+	modifiedTime: number,
+	existingFileId: string | undefined,
+): Record<string, unknown> {
+	const metadata: Record<string, unknown> = { name };
+	if (!existingFileId) {
+		metadata.parents = [parentId];
+	}
+	metadata.modifiedTime = new Date(modifiedTime).toISOString();
+	return metadata;
 }
 
 /** OAuth token response */

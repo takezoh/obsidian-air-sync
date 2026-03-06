@@ -22,6 +22,6 @@ export interface FileEntity {
 	 * accurate hash is needed. Always `""` for directories.
 	 */
 	hash: string;
-	/** Backend-specific metadata (e.g. Drive file ID, md5Checksum) */
+	/** Backend-specific metadata (e.g. Drive file ID, contentChecksum) */
 	backendMeta?: Record<string, unknown>;
 }
