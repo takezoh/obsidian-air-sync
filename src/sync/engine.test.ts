@@ -45,7 +45,7 @@ describe("computeDecisions — 3-state decision table", () => {
 		const entities: MixedEntity[] = [
 			{
 				path: "test.md",
-				local: makeFile({ mtime: 2000 }),
+				local: makeFile({ mtime: 2000, hash: "new-local" }),
 				remote: makeFile({ mtime: 1000 }),
 				prevSync: makeRecord({ localMtime: 1000, remoteMtime: 1000 }),
 			},
@@ -71,8 +71,8 @@ describe("computeDecisions — 3-state decision table", () => {
 		const entities: MixedEntity[] = [
 			{
 				path: "test.md",
-				local: makeFile({ mtime: 2000 }),
-				remote: makeFile({ mtime: 3000 }),
+				local: makeFile({ mtime: 2000, hash: "new-local" }),
+				remote: makeFile({ mtime: 3000, hash: "new-remote" }),
 				prevSync: makeRecord({ localMtime: 1000, remoteMtime: 1000 }),
 			},
 		];
@@ -178,7 +178,7 @@ describe("computeDecisions — 3-state decision table", () => {
 		const entities: MixedEntity[] = [
 			{
 				path: "test.md",
-				local: makeFile({ mtime: 2000 }),
+				local: makeFile({ mtime: 2000, hash: "new-local" }),
 				prevSync: makeRecord({ localMtime: 1000, remoteMtime: 1000 }),
 			},
 		];
@@ -213,7 +213,7 @@ describe("computeDecisions — 3-state decision table", () => {
 		const entities: MixedEntity[] = [
 			{
 				path: "test.md",
-				local: makeFile({ mtime: 1000, size: 200 }),
+				local: makeFile({ mtime: 1000, size: 200, hash: "new-local" }),
 				remote: makeFile({ mtime: 1000 }),
 				prevSync: makeRecord({ localMtime: 1000, remoteMtime: 1000 }),
 			},
@@ -393,7 +393,7 @@ describe("computeDecisions — 3-state decision table", () => {
 		const entities: MixedEntity[] = [
 			{
 				path: "log.md",
-				local: makeFile({ path: "log.md", mtime: 3000, size: 150 }),
+				local: makeFile({ path: "log.md", mtime: 3000, size: 150, hash: "new-local" }),
 				remote: makeFile({ path: "log.md", mtime: 2000, size: 100 }),
 				prevSync: makeRecord({
 					path: "log.md",
@@ -406,6 +406,97 @@ describe("computeDecisions — 3-state decision table", () => {
 		];
 		const decisions = computeDecisions(entities);
 		expect(decisions[0]!.decision).toBe("local_modified_push");
+	});
+
+	it("remote mtime differs but md5 matches → no remote change", () => {
+		const entities: MixedEntity[] = [
+			{
+				path: "test.md",
+				local: makeFile({ mtime: 1000 }),
+				remote: makeFile({
+					mtime: 1001, // Drive mtime jitter
+					backendMeta: { md5Checksum: "aaa111" },
+				}),
+				prevSync: makeRecord({
+					localMtime: 1000,
+					remoteMtime: 1000,
+					backendMeta: { md5Checksum: "aaa111" },
+				}),
+			},
+		];
+		const decisions = computeDecisions(entities);
+		expect(decisions[0]!.decision).toBe("no_action");
+	});
+
+	it("remote mtime differs and md5 differs → remote changed", () => {
+		const entities: MixedEntity[] = [
+			{
+				path: "test.md",
+				local: makeFile({ mtime: 1000 }),
+				remote: makeFile({
+					mtime: 2000,
+					backendMeta: { md5Checksum: "bbb222" },
+				}),
+				prevSync: makeRecord({
+					localMtime: 1000,
+					remoteMtime: 1000,
+					backendMeta: { md5Checksum: "aaa111" },
+				}),
+			},
+		];
+		const decisions = computeDecisions(entities);
+		expect(decisions[0]!.decision).toBe("remote_modified_pull");
+	});
+
+	it("remote mtime differs and no md5 available → conservative changed", () => {
+		const entities: MixedEntity[] = [
+			{
+				path: "test.md",
+				local: makeFile({ mtime: 1000 }),
+				remote: makeFile({ mtime: 1001 }), // no backendMeta
+				prevSync: makeRecord({ localMtime: 1000, remoteMtime: 1000 }),
+			},
+		];
+		const decisions = computeDecisions(entities);
+		// Without md5, mtime diff is treated conservatively as remote changed; local unchanged (hash match)
+		expect(decisions[0]!.decision).toBe("remote_modified_pull");
+	});
+
+	it("local deleted + remote mtime jitter + md5 match → local_deleted_propagate", () => {
+		const entities: MixedEntity[] = [
+			{
+				path: "test.md",
+				// local is absent (deleted)
+				remote: makeFile({
+					mtime: 1001, // slight mtime drift from Drive
+					backendMeta: { md5Checksum: "aaa111" },
+				}),
+				prevSync: makeRecord({
+					localMtime: 1000,
+					remoteMtime: 1000,
+					backendMeta: { md5Checksum: "aaa111" },
+				}),
+			},
+		];
+		const decisions = computeDecisions(entities);
+		expect(decisions[0]!.decision).toBe("local_deleted_propagate");
+	});
+
+	it("local mtime differs but hash matches → no local change", () => {
+		const entities: MixedEntity[] = [
+			{
+				path: "test.md",
+				local: makeFile({ mtime: 1001, hash: "same-hash" }),
+				remote: makeFile({ mtime: 1000, hash: "same-hash" }),
+				prevSync: makeRecord({
+					localMtime: 1000,
+					remoteMtime: 1000,
+					hash: "same-hash",
+				}),
+			},
+		];
+		const decisions = computeDecisions(entities);
+		expect(decisions[0]!.decision).toBe("no_action");
 	});
 
 	it("treats undefined md5Checksum as unavailable", () => {

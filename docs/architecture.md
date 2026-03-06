@@ -289,7 +289,48 @@ To add a backend: implement `IAuthProvider` + `IBackendProvider` in `fs/<backend
 | Exists | Exists | None (identical hash+size) | `no_action` |
 | Missing | Missing | Exists | `both_deleted_cleanup` |
 
-**Change detection**: Compare mtime + size → if mismatch, compare hash (SHA-256 / md5Checksum) → if still mismatched, treat as "modified". Empty hash is conservatively treated as "modified".
+### Change detection strategy (`sync/engine.ts`)
+
+`hasChanged()` (local) and `hasRemoteChanged()` (remote) determine whether a file has been modified since the last sync. The goal is to minimize false positives (unnecessary syncs) while avoiding false negatives (missed changes).
+
+**Priority chain**:
+
+1. **mtime + size** (fast, no I/O) — if both match the `SyncRecord`, the file is likely unchanged
+2. **Content hash** — if mtime/size match but hashes differ, the file was edited without changing size (e.g., replacing characters). If mtime/size differ but hashes match, the file was not actually modified (metadata-only change)
+3. **Conservative fallback** — if neither hash nor mtime/size is available, treat as "modified"
+
+```
+hasChanged(file, record):
+  if mtime+size available:
+    if mtime/size differ:
+      if hash available → compare hash (catches metadata-only changes)
+      else → true (conservative)
+    if mtime/size match:
+      if hash available → compare hash (catches same-size edits)
+      else → false (trust mtime+size)
+  if hash available → compare hash
+  else → true (conservative)
+
+hasRemoteChanged(file, record):
+  if mtime+size available:
+    if mtime/size match:
+      if hash available → compare hash
+      else → false
+    if mtime/size differ:
+      if md5Checksum available → compare md5 (catches mtime jitter)
+      else → true (conservative)
+  if md5Checksum available → compare md5
+  if hash available → compare hash
+  else → true (conservative)
+```
+
+**Why md5Checksum is checked on mtime/size mismatch (remote only)**:
+
+Google Drive's `modifiedTime` can drift between the upload response and subsequent `changes.list` responses. A 1ms difference causes a false positive in mtime comparison. Without the md5 check, this triggers `conflict_delete_vs_modify` instead of `local_deleted_propagate` when a locally deleted file has an unchanged remote with drifted mtime — the `keepNewer` strategy then restores the deleted file.
+
+`hasRemoteChanged()` checks `backendMeta.md5Checksum` (provided by Google Drive in `list()` / `changes.list()`) before concluding the remote file changed. `hasChanged()` uses content `hash` (SHA-256) for the same purpose on the local side, where mtime is generally reliable but size changes without content changes are possible (e.g., filesystem metadata updates).
+
+**Asymmetry**: `hasChanged()` uses SHA-256 `hash` for the mtime/size mismatch check, while `hasRemoteChanged()` uses `md5Checksum` from `backendMeta`. This is because the SHA-256 hash requires reading file content (expensive for remote), whereas `md5Checksum` is returned by the Drive API at no extra cost. The `hash` fallback in `hasRemoteChanged()` is only reached when mtime is 0 and md5 is unavailable.
 
 ### SyncExecutor (`sync/executor.ts`)
 

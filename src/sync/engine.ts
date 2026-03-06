@@ -142,6 +142,10 @@ function hasChanged(file: FileEntity, record: SyncRecord): boolean {
 	// Prefer mtime+size comparison (avoids content read)
 	if (file.mtime > 0 && record.localMtime > 0) {
 		if (file.mtime !== record.localMtime || file.size !== record.localSize) {
+			// mtime/size differ — verify hash before concluding changed
+			if (file.hash && record.hash) {
+				return file.hash !== record.hash;
+			}
 			return true;
 		}
 		// mtime+size match — verify hash if both available (catches same-size edits)
@@ -164,21 +168,26 @@ function hasChanged(file: FileEntity, record: SyncRecord): boolean {
  * reliable when mtime is missing or unreliable) → content hash → conservative.
  */
 function hasRemoteChanged(file: FileEntity, record: SyncRecord): boolean {
-	if (file.mtime > 0 && record.remoteMtime > 0) {
-		if (file.mtime !== record.remoteMtime || file.size !== record.remoteSize) {
-			return true;
-		}
-		// mtime+size match — verify hash if both available (catches same-size edits)
-		if (file.hash && record.hash) {
-			return file.hash !== record.hash;
-		}
-		return false;
-	}
-	// Use backend-specific md5Checksum when available (e.g. Google Drive)
 	const rawFileMd5 = file.backendMeta?.md5Checksum;
 	const rawRecordMd5 = record.backendMeta?.md5Checksum;
 	const fileMd5 = typeof rawFileMd5 === "string" ? rawFileMd5 : undefined;
 	const recordMd5 = typeof rawRecordMd5 === "string" ? rawRecordMd5 : undefined;
+
+	if (file.mtime > 0 && record.remoteMtime > 0) {
+		if (file.mtime === record.remoteMtime && file.size === record.remoteSize) {
+			// mtime+size match — verify hash if both available (catches same-size edits)
+			if (file.hash && record.hash) {
+				return file.hash !== record.hash;
+			}
+			return false;
+		}
+		// mtime/size differ — check md5 before concluding changed
+		if (fileMd5 && recordMd5) {
+			return fileMd5 !== recordMd5;
+		}
+		return true;
+	}
+	// Use backend-specific md5Checksum when available (e.g. Google Drive)
 	if (fileMd5 && recordMd5) {
 		return fileMd5 !== recordMd5;
 	}
