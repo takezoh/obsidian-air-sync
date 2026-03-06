@@ -221,9 +221,19 @@ const PKCE_CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012345
 
 /** Generate a cryptographically random string of the given length using RFC 7636 charset */
 function generateRandomString(length: number): string {
-	const array = new Uint8Array(length);
-	crypto.getRandomValues(array);
-	return Array.from(array, (b) => PKCE_CHARSET[b % PKCE_CHARSET.length]).join("");
+	// Rejection sampling to avoid modulo bias (256 % 66 = 58)
+	const limit = 256 - (256 % PKCE_CHARSET.length);
+	const result: string[] = [];
+	while (result.length < length) {
+		const array = new Uint8Array(length - result.length);
+		crypto.getRandomValues(array);
+		for (const b of array) {
+			if (b < limit && result.length < length) {
+				result.push(PKCE_CHARSET[b % PKCE_CHARSET.length]!);
+			}
+		}
+	}
+	return result.join("");
 }
 
 /** Compute S256 PKCE code challenge: BASE64URL(SHA256(code_verifier)) */
