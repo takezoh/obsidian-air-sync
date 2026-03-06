@@ -39,7 +39,9 @@ export class BackendManager {
 		this.backendProvider = provider;
 
 		try {
-			void this.remoteFs?.close?.();
+			this.remoteFs?.close?.()?.catch((e: unknown) => {
+				console.warn("Smart Sync: failed to close previous backend", e);
+			});
 			if (provider.isConnected(settings)) {
 				this.remoteFs = provider.createFs(this.deps.getApp(), settings, this.deps.getLogger());
 				if (this.remoteFs) {
@@ -135,6 +137,8 @@ export class BackendManager {
 
 	/** Release resources */
 	close(): void {
-		void this.remoteFs?.close?.();
+		this.remoteFs?.close?.()?.catch((e: unknown) => {
+			console.warn("Smart Sync: failed to close backend on unload", e);
+		});
 	}
 }
