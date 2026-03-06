@@ -1,10 +1,8 @@
 import { debounce, Notice, Platform, Plugin, TAbstractFile } from "obsidian";
 import { DEFAULT_SETTINGS, SmartSyncSettings } from "./settings";
 import { SmartSyncSettingTab } from "./ui/settings";
-import type { IFileSystem } from "./fs/interface";
-import type { IBackendProvider } from "./fs/backend";
 import { LocalFs } from "./fs/local/index";
-import { getBackendProvider } from "./fs/registry";
+import { BackendManager } from "./fs/backend-manager";
 import { SyncService, SyncStatus } from "./sync/service";
 import { ConflictModal } from "./ui/conflict-modal";
 import { ConflictSummaryModal, summaryChoiceToStrategy } from "./ui/conflict-summary-modal";
@@ -15,9 +13,8 @@ const DEBOUNCE_MS = 5000;
 
 export default class SmartSyncPlugin extends Plugin {
 	settings!: SmartSyncSettings;
-	private localFs: IFileSystem | null = null;
-	private remoteFs: IFileSystem | null = null;
-	private backendProvider: IBackendProvider | null = null;
+	private localFs: LocalFs | null = null;
+	backendManager!: BackendManager;
 	private statusBarEl: HTMLElement | null = null;
 	private syncStatus: SyncStatus = "not_connected";
 	private autoSyncIntervalId: number | null = null;
@@ -38,12 +35,33 @@ export default class SmartSyncPlugin extends Plugin {
 		);
 		this.logger.info("Plugin loaded", { deviceName, vaultId: this.settings.vaultId });
 
+		this.backendManager = new BackendManager({
+			getSettings: () => this.settings,
+			saveSettings: () => this.saveSettings(),
+			getApp: () => this.app,
+			getLogger: () => this.logger,
+			onConnected: () => {
+				this.syncStatus = "idle";
+				this.updateStatusBar();
+			},
+			onDisconnected: () => {
+				this.syncStatus = "not_connected";
+				this.updateStatusBar();
+			},
+			notify: (message) => {
+				new Notice(message);
+			},
+			refreshSettingsDisplay: () => {
+				this.settingTab?.display();
+			},
+		});
+
 		this.syncService = new SyncService({
 			getSettings: () => this.settings,
 			saveSettings: () => this.saveSettings(),
 			localFs: () => this.localFs,
-			remoteFs: () => this.remoteFs,
-			backendProvider: () => this.backendProvider,
+			remoteFs: () => this.backendManager.getRemoteFs(),
+			backendProvider: () => this.backendManager.getBackendProvider(),
 			isMobile: () => Platform.isMobile,
 			onStatusChange: (status) => {
 				this.syncStatus = status;
@@ -78,11 +96,11 @@ export default class SmartSyncPlugin extends Plugin {
 			}
 			// Synthetic URL to pass code/state to completeAuth(), which expects a callback URL string
 			const url = `https://callback?code=${encodeURIComponent(params.code)}${params.state ? `&state=${encodeURIComponent(params.state)}` : ""}`;
-			void this.completeBackendConnect(url);
+			void this.backendManager.completeBackendConnect(url);
 		});
 
 		// Initialize backend if configured
-		this.initBackend();
+		this.backendManager.initBackend();
 
 		// Commands
 		this.addCommand({
@@ -146,7 +164,7 @@ export default class SmartSyncPlugin extends Plugin {
 	onunload() {
 		void this.logger.flush();
 		this.logger.dispose();
-		void this.remoteFs?.close?.();
+		this.backendManager.close();
 		this.syncService.close().catch((e) => {
 			console.error("Smart Sync: failed to close sync service", e);
 			this.logger.error("Failed to close sync service", { message: e instanceof Error ? e.message : String(e) });
@@ -196,114 +214,10 @@ export default class SmartSyncPlugin extends Plugin {
 		}
 	}
 
-	/** Resolve the backend provider and create the remote IFileSystem */
-	initBackend(): void {
-		const provider = getBackendProvider(this.settings.backendType);
-		if (!provider) return;
-
-		this.backendProvider = provider;
-
-		try {
-			// Close old remoteFs before replacing
-			void this.remoteFs?.close?.();
-			if (provider.isConnected(this.settings)) {
-				this.remoteFs = provider.createFs(this.app, this.settings, this.logger);
-				if (this.remoteFs) {
-					this.syncStatus = "idle";
-					this.updateStatusBar();
-					this.logger.info("Backend initialized", { backend: this.settings.backendType });
-				}
-			} else {
-				this.remoteFs = null;
-				this.syncStatus = "not_connected";
-				this.updateStatusBar();
-			}
-		} catch (e) {
-			console.error("Smart Sync: failed to initialize backend", e);
-			this.logger.error("Failed to initialize backend", { message: e instanceof Error ? e.message : String(e) });
-		}
-	}
-
-	/** Start the backend's auth/connection flow */
-	async startBackendConnect(): Promise<void> {
-		if (!this.backendProvider) {
-			this.backendProvider =
-				getBackendProvider(this.settings.backendType) ?? null;
-		}
-		if (!this.backendProvider) {
-			new Notice("No backend configured");
-			return;
-		}
-		try {
-			const type = this.backendProvider.type;
-			const updates = await this.backendProvider.auth.startAuth();
-			const current = this.settings.backendData[type] ?? {};
-			this.settings.backendData[type] = { ...current, ...updates };
-			await this.saveSettings();
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			new Notice(`Connection failed: ${msg}`);
-		}
-	}
-
-	/** Complete the auth flow with a code/token from the user */
-	async completeBackendConnect(code: string): Promise<void> {
-		if (!this.backendProvider) {
-			new Notice("Start the connection flow first");
-			return;
-		}
-
-		try {
-			const type = this.backendProvider.type;
-			const backendData = this.settings.backendData[type] ?? {};
-			const updates = await this.backendProvider.auth.completeAuth(
-				code,
-				backendData
-			);
-			this.settings.backendData[type] = { ...backendData, ...updates };
-			await this.saveSettings();
-
-			this.remoteFs = this.backendProvider.createFs(
-				this.app,
-				this.settings,
-				this.logger
-			);
-			if (this.remoteFs) {
-				this.syncStatus = "idle";
-				this.updateStatusBar();
-			}
-
-			new Notice(
-				`Connected to ${this.backendProvider.displayName}`
-			);
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			new Notice(`Authorization failed: ${msg}`);
-		}
-
-		this.settingTab?.display();
-	}
-
-	/** Disconnect the current backend */
-	async disconnectBackend(): Promise<void> {
-		if (!this.backendProvider) return;
-
-		const type = this.backendProvider.type;
-		const resetData = await this.backendProvider.disconnect(this.settings);
-		this.settings.backendData[type] = resetData;
-		await this.saveSettings();
-
-		this.remoteFs = null;
-		this.syncStatus = "not_connected";
-		this.updateStatusBar();
-
-		this.settingTab?.display();
-	}
-
 	async runSync(): Promise<void> {
-		if (!this.localFs || !this.remoteFs) {
-			this.initBackend();
-			if (!this.localFs || !this.remoteFs) {
+		if (!this.localFs || !this.backendManager.getRemoteFs()) {
+			this.backendManager.initBackend();
+			if (!this.localFs || !this.backendManager.getRemoteFs()) {
 				this.syncStatus = "not_connected";
 				this.updateStatusBar();
 				new Notice("Not connected to a remote backend");

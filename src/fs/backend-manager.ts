@@ -1,0 +1,140 @@
+import type { App } from "obsidian";
+import type { SmartSyncSettings } from "../settings";
+import type { IFileSystem } from "./interface";
+import type { IBackendProvider } from "./backend";
+import type { Logger } from "../logging/logger";
+import { getBackendProvider } from "./registry";
+
+export interface BackendManagerDeps {
+	getSettings: () => SmartSyncSettings;
+	saveSettings: () => Promise<void>;
+	getApp: () => App;
+	getLogger: () => Logger;
+	onConnected: (remoteFs: IFileSystem) => void;
+	onDisconnected: () => void;
+	notify: (message: string) => void;
+	refreshSettingsDisplay: () => void;
+}
+
+export class BackendManager {
+	private remoteFs: IFileSystem | null = null;
+	private backendProvider: IBackendProvider | null = null;
+
+	constructor(private deps: BackendManagerDeps) {}
+
+	getRemoteFs(): IFileSystem | null {
+		return this.remoteFs;
+	}
+
+	getBackendProvider(): IBackendProvider | null {
+		return this.backendProvider;
+	}
+
+	/** Resolve the backend provider and create the remote IFileSystem */
+	initBackend(): void {
+		const settings = this.deps.getSettings();
+		const provider = getBackendProvider(settings.backendType);
+		if (!provider) return;
+
+		this.backendProvider = provider;
+
+		try {
+			void this.remoteFs?.close?.();
+			if (provider.isConnected(settings)) {
+				this.remoteFs = provider.createFs(this.deps.getApp(), settings, this.deps.getLogger());
+				if (this.remoteFs) {
+					this.deps.onConnected(this.remoteFs);
+					this.deps.getLogger().info("Backend initialized", { backend: settings.backendType });
+				}
+			} else {
+				this.remoteFs = null;
+				this.deps.onDisconnected();
+			}
+		} catch (e) {
+			console.error("Smart Sync: failed to initialize backend", e);
+			this.deps.getLogger().error("Failed to initialize backend", { message: e instanceof Error ? e.message : String(e) });
+		}
+	}
+
+	/** Start the backend's auth/connection flow */
+	async startBackendConnect(): Promise<void> {
+		const settings = this.deps.getSettings();
+		if (!this.backendProvider) {
+			this.backendProvider =
+				getBackendProvider(settings.backendType) ?? null;
+		}
+		if (!this.backendProvider) {
+			this.deps.notify("No backend configured");
+			return;
+		}
+		try {
+			const type = this.backendProvider.type;
+			const updates = await this.backendProvider.auth.startAuth();
+			const current = settings.backendData[type] ?? {};
+			settings.backendData[type] = { ...current, ...updates };
+			await this.deps.saveSettings();
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			this.deps.notify(`Connection failed: ${msg}`);
+		}
+	}
+
+	/** Complete the auth flow with a code/token from the user */
+	async completeBackendConnect(code: string): Promise<void> {
+		if (!this.backendProvider) {
+			this.deps.notify("Start the connection flow first");
+			return;
+		}
+
+		const settings = this.deps.getSettings();
+		try {
+			const type = this.backendProvider.type;
+			const backendData = settings.backendData[type] ?? {};
+			const updates = await this.backendProvider.auth.completeAuth(
+				code,
+				backendData
+			);
+			settings.backendData[type] = { ...backendData, ...updates };
+			await this.deps.saveSettings();
+
+			this.remoteFs = this.backendProvider.createFs(
+				this.deps.getApp(),
+				settings,
+				this.deps.getLogger()
+			);
+			if (this.remoteFs) {
+				this.deps.onConnected(this.remoteFs);
+			}
+
+			this.deps.notify(
+				`Connected to ${this.backendProvider.displayName}`
+			);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			this.deps.notify(`Authorization failed: ${msg}`);
+		}
+
+		this.deps.refreshSettingsDisplay();
+	}
+
+	/** Disconnect the current backend */
+	async disconnectBackend(): Promise<void> {
+		if (!this.backendProvider) return;
+
+		const settings = this.deps.getSettings();
+		const type = this.backendProvider.type;
+		const resetData = await this.backendProvider.disconnect(settings);
+		settings.backendData[type] = resetData;
+		await this.deps.saveSettings();
+
+		this.remoteFs = null;
+		this.deps.onDisconnected();
+
+		this.deps.refreshSettingsDisplay();
+	}
+
+	/** Release resources */
+	close(): void {
+		void this.remoteFs?.close?.();
+	}
+}

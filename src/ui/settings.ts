@@ -33,7 +33,7 @@ export class SmartSyncSettingTab extends PluginSettingTab {
 						.onChange(async (value) => {
 							this.plugin.settings.backendType = value;
 							await this.plugin.saveSettings();
-							this.plugin.initBackend();
+							this.plugin.backendManager.initBackend();
 							this.display();
 						});
 				});
@@ -213,13 +213,13 @@ export class SmartSyncSettingTab extends PluginSettingTab {
 				const current = this.plugin.settings.backendData[backendType] ?? {};
 				this.plugin.settings.backendData[backendType] = { ...current, ...updates };
 				await this.plugin.saveSettings();
-				this.plugin.initBackend();
+				this.plugin.backendManager.initBackend();
 			},
 			{
-				startAuth: () => this.plugin.startBackendConnect(),
+				startAuth: () => this.plugin.backendManager.startBackendConnect(),
 				completeAuth: (code: string) =>
-					this.plugin.completeBackendConnect(code),
-				disconnect: () => this.plugin.disconnectBackend(),
+					this.plugin.backendManager.completeBackendConnect(code),
+				disconnect: () => this.plugin.backendManager.disconnectBackend(),
 				refreshDisplay: () => this.display(),
 			}
 		);
