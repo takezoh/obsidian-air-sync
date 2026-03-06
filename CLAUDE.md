@@ -22,15 +22,16 @@ src/
 ├── main.ts              # Entry point (lifecycle only, delegates logic)
 ├── settings.ts          # SmartSyncSettings type & defaults
 ├── fs/
-│   ├── types.ts         # FileEntity, SyncRecord, MixedEntity, SyncDecision, DecisionType, ConflictStrategy
+│   ├── types.ts         # FileEntity
 │   ├── interface.ts     # IFileSystem (name, list, stat, read, write, mkdir, delete, rename)
 │   ├── auth.ts          # IAuthProvider
 │   ├── backend.ts       # IBackendProvider
 │   ├── registry.ts      # Backend registry
-│   ├── local/           # LocalFs — Obsidian Vault API wrapper
+│   ├── local/           # LocalFs — Obsidian Vault API wrapper; DotPathAdapter — .smartsync/ adapter
 │   ├── googledrive/     # GoogleDriveFs — Drive REST API v3 + OAuth PKCE
 │   └── mock/            # MockFs — in-memory for testing
 ├── sync/
+│   ├── types.ts         # SyncRecord, MixedEntity, DecisionType, ConflictStrategy, SyncDecision
 │   ├── engine.ts        # buildMixedEntities() + computeDecisions() — 3-state decision
 │   ├── executor.ts      # SyncExecutor — Decision → IFileSystem operations
 │   ├── service.ts       # SyncService — orchestration, retry, mutual exclusion

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { resolveConflict, buildSyncRecord, generateConflictPath } from "./conflict";
-import type { SyncRecord } from "../fs/types";
+import type { SyncRecord } from "./types";
 import { createMockFs, createMockStateStore, addFile, readText } from "../__mocks__/sync-test-helpers";
 
 describe("resolveConflict", () => {

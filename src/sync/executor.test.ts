@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { SyncExecutor } from "./executor";
-import type { FileEntity, SyncDecision, SyncRecord } from "../fs/types";
+import type { FileEntity } from "../fs/types";
+import type { SyncDecision, SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
 import { createMockFs, createMockStateStore, makeFile } from "../__mocks__/sync-test-helpers";
 

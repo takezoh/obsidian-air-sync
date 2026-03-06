@@ -15,13 +15,14 @@ src/
 ├── main.ts                         # Plugin entry point (lifecycle management)
 ├── settings.ts                     # SmartSyncSettings type & defaults
 ├── fs/
-│   ├── types.ts                    # FileEntity, SyncRecord, MixedEntity, SyncDecision, DecisionType, ConflictStrategy
+│   ├── types.ts                    # FileEntity
 │   ├── interface.ts                # IFileSystem interface
 │   ├── auth.ts                     # IAuthProvider interface
 │   ├── backend.ts                  # IBackendProvider interface
 │   ├── registry.ts                 # Backend registry (getBackendProvider, getAllBackendProviders)
 │   ├── local/
-│   │   └── index.ts                # LocalFs — Obsidian Vault API wrapper
+│   │   ├── index.ts                # LocalFs — Obsidian Vault API wrapper
+│   │   └── dot-path-adapter.ts     # DotPathAdapter — .smartsync/ adapter (raw Vault adapter API)
 │   ├── googledrive/
 │   │   ├── index.ts                # GoogleDriveFs — IFileSystem implementation (cache + incremental fetch)
 │   │   ├── client.ts               # DriveClient — Drive REST API v3 client
@@ -31,6 +32,7 @@ src/
 │   └── mock/
 │       └── index.ts                # MockFs — in-memory IFileSystem for testing
 ├── sync/
+│   ├── types.ts                   # SyncRecord, MixedEntity, DecisionType, ConflictStrategy, SyncDecision
 │   ├── engine.ts                   # buildMixedEntities() + computeDecisions() — 3-state decision table
 │   ├── executor.ts                 # SyncExecutor — executes IFileSystem operations based on decisions
 │   ├── service.ts                  # SyncService — sync orchestration (retry, exclusion, UI integration)

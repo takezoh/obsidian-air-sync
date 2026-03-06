@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import "fake-indexeddb/auto";
 import { SyncStateStore } from "./state";
-import type { SyncRecord } from "../fs/types";
+import type { SyncRecord } from "./types";
 
 function makeRecord(path: string, overrides: Partial<SyncRecord> = {}): SyncRecord {
 	return {

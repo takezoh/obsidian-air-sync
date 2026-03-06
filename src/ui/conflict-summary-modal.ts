@@ -1,5 +1,5 @@
 import { App, Modal, Setting } from "obsidian";
-import type { ConflictStrategy, SyncDecision } from "../fs/types";
+import type { ConflictStrategy, SyncDecision } from "../sync/types";
 
 export type SummaryChoice = "keep_all_local" | "keep_all_remote" | "resolve_individually";
 

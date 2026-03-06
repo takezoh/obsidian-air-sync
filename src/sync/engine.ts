@@ -1,10 +1,6 @@
 import type { IFileSystem } from "../fs/interface";
-import type {
-	FileEntity,
-	MixedEntity,
-	SyncDecision,
-	SyncRecord,
-} from "../fs/types";
+import type { FileEntity } from "../fs/types";
+import type { MixedEntity, SyncDecision, SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
 
 /**

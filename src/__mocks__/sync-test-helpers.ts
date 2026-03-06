@@ -1,5 +1,6 @@
 import type { IFileSystem } from "../fs/interface";
-import type { FileEntity, SyncRecord } from "../fs/types";
+import type { FileEntity } from "../fs/types";
+import type { SyncRecord } from "../sync/types";
 import type { SyncStateStore } from "../sync/state";
 
 /** In-memory mock IFileSystem for unit tests (no hash computation) */

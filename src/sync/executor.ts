@@ -1,4 +1,4 @@
-import type { ConflictStrategy, SyncDecision, SyncRecord } from "../fs/types";
+import type { ConflictStrategy, SyncDecision, SyncRecord } from "./types";
 import type { IFileSystem } from "../fs/interface";
 import type { SyncStateStore } from "./state";
 import type { Logger } from "../logging/logger";

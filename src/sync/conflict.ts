@@ -1,5 +1,6 @@
 import type { IFileSystem } from "../fs/interface";
-import type { FileEntity, ConflictStrategy, SyncRecord } from "../fs/types";
+import type { FileEntity } from "../fs/types";
+import type { ConflictStrategy, SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
 import type { Logger } from "../logging/logger";
 import { getFileExtension } from "../utils/path";

@@ -1,5 +1,6 @@
 import type { IFileSystem } from "../fs/interface";
-import type { ConflictStrategy, FileEntity, SyncDecision, SyncRecord } from "../fs/types";
+import type { FileEntity } from "../fs/types";
+import type { ConflictStrategy, SyncDecision, SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
 import type { Logger } from "../logging/logger";
 import type { OnConflict, SyncResult } from "./executor";

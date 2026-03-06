@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { computeDecisions } from "./engine";
-import type { FileEntity, MixedEntity, SyncRecord } from "../fs/types";
+import type { FileEntity } from "../fs/types";
+import type { MixedEntity, SyncRecord } from "./types";
 
 function makeFile(overrides: Partial<FileEntity> = {}): FileEntity {
 	return {

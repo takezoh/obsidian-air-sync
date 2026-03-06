@@ -1,7 +1,7 @@
 import type { SmartSyncSettings } from "../settings";
 import type { IFileSystem } from "../fs/interface";
 import type { IBackendProvider } from "../fs/backend";
-import type { ConflictStrategy, MixedEntity, SyncDecision } from "../fs/types";
+import type { ConflictStrategy, MixedEntity, SyncDecision } from "./types";
 import { AsyncMutex } from "../queue/async-queue";
 import { matchGlob } from "../utils/glob";
 import { sha256 } from "../utils/hash";

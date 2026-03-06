@@ -1,4 +1,4 @@
-import type { ConflictStrategy } from "./fs/types";
+import type { ConflictStrategy } from "./sync/types";
 
 export interface SmartSyncSettings {
 	/** Unique identifier for this vault (used as IndexedDB key) */

@@ -1,4 +1,4 @@
-import type { SyncRecord } from "../fs/types";
+import type { SyncRecord } from "./types";
 import { IDBHelper, sanitizeDbName } from "../store/idb-helper";
 
 const DB_NAME_PREFIX = "smart-sync";

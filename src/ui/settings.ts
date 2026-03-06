@@ -1,6 +1,6 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 import type SmartSyncPlugin from "../main";
-import type { ConflictStrategy } from "../fs/types";
+import type { ConflictStrategy } from "../sync/types";
 import { getAllBackendProviders, getBackendProvider } from "../fs/registry";
 import { getBackendSettingsRenderer } from "./backend-settings";
 
