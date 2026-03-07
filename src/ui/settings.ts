@@ -137,27 +137,6 @@ export class SmartSyncSettingTab extends PluginSettingTab {
 					})
 			);
 
-		// --- Mobile sync settings ---
-		new Setting(containerEl).setName("Mobile sync").setHeading();
-
-		new Setting(containerEl)
-			.setName("Mobile ignore patterns")
-			.setDesc(
-				"Gitignore-style patterns applied on mobile instead of the desktop ignore patterns. By default, only .md and .canvas files are synced."
-			)
-			.addTextArea((text) =>
-				text
-					.setPlaceholder("*\n!**/*.md\n!**/*.canvas")
-					.setValue(
-						this.plugin.settings.mobileIgnorePatterns.join("\n")
-					)
-					.onChange(async (value) => {
-						this.plugin.settings.mobileIgnorePatterns =
-							value.split("\n");
-						await this.plugin.saveSettings();
-					})
-			);
-
 		new Setting(containerEl)
 			// eslint-disable-next-line obsidianmd/ui/sentence-case
 			.setName("Mobile max file size (MB)")

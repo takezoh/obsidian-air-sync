@@ -13,13 +13,6 @@ function mockSettings(overrides: Partial<SmartSyncSettings> = {}): SmartSyncSett
 		conflictStrategy: "keep_newer",
 		enableThreeWayMerge: false,
 		autoSyncIntervalMinutes: 0,
-		mobileIgnorePatterns: [
-			"*",
-			"!*/",
-			"!**/*.md",
-			"!**/*.canvas",
-			"!**/*.base",
-		],
 		mobileMaxFileSizeMB: 10,
 		enableLogging: false,
 		logLevel: "info",
@@ -140,10 +133,11 @@ describe("SyncService — per-file errors do not trigger retry", () => {
 });
 
 describe("SyncService — mobile filtering", () => {
-	it("isExcluded allows .md files on mobile", () => {
+	const mobilePatterns = ["*", "!*/", "!**/*.md", "!**/*.canvas", "!**/*.base"];
+
+	it("isExcluded allows .md files with mobile patterns", () => {
 		const deps = createMockDeps({
-			isMobile: () => true,
-			getSettings: () => mockSettings(),
+			getSettings: () => mockSettings({ ignorePatterns: mobilePatterns }),
 		});
 		const service = new SyncService(deps);
 
@@ -152,10 +146,9 @@ describe("SyncService — mobile filtering", () => {
 		expect(service.isExcluded("folder/view.base")).toBe(false);
 	});
 
-	it("isExcluded blocks non-matching files on mobile", () => {
+	it("isExcluded blocks non-matching files with mobile patterns", () => {
 		const deps = createMockDeps({
-			isMobile: () => true,
-			getSettings: () => mockSettings(),
+			getSettings: () => mockSettings({ ignorePatterns: mobilePatterns }),
 		});
 		const service = new SyncService(deps);
 
@@ -163,30 +156,14 @@ describe("SyncService — mobile filtering", () => {
 		expect(service.isExcluded("data/file.pdf")).toBe(true);
 	});
 
-	it("isExcluded allows all files on desktop", () => {
+	it("isExcluded allows all files with empty patterns", () => {
 		const deps = createMockDeps({
-			isMobile: () => false,
-			getSettings: () => mockSettings(),
+			getSettings: () => mockSettings({ ignorePatterns: [] }),
 		});
 		const service = new SyncService(deps);
 
 		expect(service.isExcluded("assets/image.png")).toBe(false);
 		expect(service.isExcluded("data/file.pdf")).toBe(false);
-	});
-
-	it("mobile uses mobileIgnorePatterns instead of ignorePatterns", () => {
-		const deps = createMockDeps({
-			isMobile: () => true,
-			getSettings: () => mockSettings({
-				ignorePatterns: ["*.tmp"],
-				mobileIgnorePatterns: [".trash/**"],
-			}),
-		});
-		const service = new SyncService(deps);
-
-		// mobileIgnorePatterns applied, not ignorePatterns
-		expect(service.isExcluded(".trash/note.md")).toBe(true);
-		expect(service.isExcluded("file.tmp")).toBe(false);
 	});
 
 	it("skips large files on mobile during sync", async () => {

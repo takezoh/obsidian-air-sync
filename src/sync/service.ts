@@ -77,11 +77,7 @@ export class SyncService {
 	}
 
 	isExcluded(path: string): boolean {
-		const settings = this.deps.getSettings();
-		const patterns = this.deps.isMobile()
-			? settings.mobileIgnorePatterns
-			: settings.ignorePatterns;
-		return isIgnored(path, patterns);
+		return isIgnored(path, this.deps.getSettings().ignorePatterns);
 	}
 
 	async runSync(): Promise<void> {

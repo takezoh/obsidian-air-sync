@@ -15,8 +15,6 @@ export interface SmartSyncSettings {
 	enableThreeWayMerge: boolean;
 	/** Dot-prefixed paths to include in sync (e.g. [".templates", ".stversions"]) */
 	syncDotPaths: string[];
-	/** Gitignore-style patterns to exclude on mobile (overrides ignorePatterns) */
-	mobileIgnorePatterns: string[];
 	/** Maximum file size in MB to sync on mobile */
 	mobileMaxFileSizeMB: number;
 
@@ -37,17 +35,22 @@ export const DEFAULT_SETTINGS: SmartSyncSettings = {
 	ignorePatterns: [],
 	syncDotPaths: [],
 	enableThreeWayMerge: true,
-	mobileIgnorePatterns: [
-		"# Sync only markdown, canvas, and bases on mobile",
-		"*",
-		"!*/",
-		"!**/*.md",
-		"!**/*.canvas",
-		"!**/*.base",
-	],
 	mobileMaxFileSizeMB: 10,
 	enableLogging: false,
 	logLevel: "info",
 	backendData: {},
 };
+
+/** Default ignore patterns applied on desktop for fresh installs */
+export const DEFAULT_DESKTOP_IGNORE_PATTERNS: string[] = [];
+
+/** Default ignore patterns applied on mobile for fresh installs */
+export const DEFAULT_MOBILE_IGNORE_PATTERNS: string[] = [
+	"# Sync only markdown, canvas, and bases on mobile",
+	"*",
+	"!*/",
+	"!**/*.md",
+	"!**/*.canvas",
+	"!**/*.base",
+];
 
