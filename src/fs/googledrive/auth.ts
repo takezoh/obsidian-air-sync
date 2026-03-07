@@ -5,7 +5,7 @@ import { assertTokenResponse } from "./types";
 
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
-const SCOPES = "https://www.googleapis.com/auth/drive";
+const SCOPES = "https://www.googleapis.com/auth/drive.file";
 const REDIRECT_URI = "https://smartsync.takezo.dev/callback/";
 
 // Injected at build time via esbuild define (see esbuild.config.mjs)
