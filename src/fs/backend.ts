@@ -26,6 +26,16 @@ export interface IBackendProvider {
 	/** Whether credentials are present and the backend is ready to sync */
 	isConnected(settings: SmartSyncSettings): boolean;
 
+	/** Return a string uniquely identifying the current remote target (e.g. folder ID) */
+	getIdentity(settings: SmartSyncSettings): string | null;
+
+	/**
+	 * Called when the backend identity changes (e.g. user switches to a different folder).
+	 * The provider should reset any stale cursors/tokens in backendData that are
+	 * scoped to the previous remote target.
+	 */
+	resetTargetState?(settings: SmartSyncSettings): void;
+
 	/**
 	 * Read updated internal state from the FS to persist in settings.backendData.
 	 * Called after each sync cycle so backends can save tokens, cursors, etc.

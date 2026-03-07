@@ -48,6 +48,9 @@ export default class SmartSyncPlugin extends Plugin {
 				this.syncStatus = "not_connected";
 				this.updateStatusBar();
 			},
+			onIdentityChanged: async () => {
+				await this.syncService?.clearSyncState();
+			},
 			notify: (message) => {
 				new Notice(message);
 			},
@@ -100,7 +103,7 @@ export default class SmartSyncPlugin extends Plugin {
 		});
 
 		// Initialize backend if configured
-		this.backendManager.initBackend();
+		await this.backendManager.initBackend();
 
 		// Commands
 		this.addCommand({
@@ -216,7 +219,7 @@ export default class SmartSyncPlugin extends Plugin {
 
 	async runSync(): Promise<void> {
 		if (!this.localFs || !this.backendManager.getRemoteFs()) {
-			this.backendManager.initBackend();
+			await this.backendManager.initBackend();
 			if (!this.localFs || !this.backendManager.getRemoteFs()) {
 				this.syncStatus = "not_connected";
 				this.updateStatusBar();

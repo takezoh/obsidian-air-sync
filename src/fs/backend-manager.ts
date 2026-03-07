@@ -12,6 +12,7 @@ export interface BackendManagerDeps {
 	getLogger: () => Logger;
 	onConnected: (remoteFs: IFileSystem) => void;
 	onDisconnected: () => void;
+	onIdentityChanged: () => Promise<void>;
 	notify: (message: string) => void;
 	refreshSettingsDisplay: () => void;
 }
@@ -19,6 +20,7 @@ export interface BackendManagerDeps {
 export class BackendManager {
 	private remoteFs: IFileSystem | null = null;
 	private backendProvider: IBackendProvider | null = null;
+	private lastBackendIdentity: string | null = null;
 
 	constructor(private deps: BackendManagerDeps) {}
 
@@ -31,7 +33,7 @@ export class BackendManager {
 	}
 
 	/** Resolve the backend provider and create the remote IFileSystem */
-	initBackend(): void {
+	async initBackend(): Promise<void> {
 		const settings = this.deps.getSettings();
 		const provider = getBackendProvider(settings.backendType);
 		if (!provider) return;
@@ -39,6 +41,17 @@ export class BackendManager {
 		this.backendProvider = provider;
 
 		try {
+			const newIdentity = provider.getIdentity(settings);
+			if (this.lastBackendIdentity !== null && newIdentity !== this.lastBackendIdentity) {
+				this.deps.getLogger().info("Backend identity changed", {
+					from: this.lastBackendIdentity,
+					to: newIdentity,
+				});
+				provider.resetTargetState?.(settings);
+				await this.deps.onIdentityChanged();
+			}
+			this.lastBackendIdentity = newIdentity;
+
 			this.remoteFs?.close?.()?.catch((e: unknown) => {
 				console.warn("Smart Sync: failed to close previous backend", e);
 			});
@@ -128,6 +141,9 @@ export class BackendManager {
 		const resetData = await this.backendProvider.disconnect(settings);
 		settings.backendData[type] = resetData;
 		await this.deps.saveSettings();
+
+		await this.deps.onIdentityChanged();
+		this.lastBackendIdentity = null;
 
 		this.remoteFs = null;
 		this.deps.onDisconnected();

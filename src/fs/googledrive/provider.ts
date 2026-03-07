@@ -180,6 +180,19 @@ export class GoogleDriveProvider implements IBackendProvider {
 		return !!data.refreshToken && !!data.driveFolderId;
 	}
 
+	getIdentity(settings: SmartSyncSettings): string | null {
+		const data = getGDriveData(settings);
+		if (!data.driveFolderId) return null;
+		return `googledrive:${data.driveFolderId}`;
+	}
+
+	resetTargetState(settings: SmartSyncSettings): void {
+		const data = settings.backendData[this.type];
+		if (data) {
+			delete data.changesStartPageToken;
+		}
+	}
+
 	readBackendState(fs: IFileSystem): Record<string, unknown> {
 		if (!(fs instanceof GoogleDriveFs)) return {};
 		const result: Record<string, unknown> = {};
