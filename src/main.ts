@@ -40,6 +40,7 @@ export default class SmartSyncPlugin extends Plugin {
 			saveSettings: () => this.saveSettings(),
 			getApp: () => this.app,
 			getLogger: () => this.logger,
+			getVaultName: () => this.app.vault.getName(),
 			onConnected: () => {
 				this.syncStatus = "idle";
 				this.updateStatusBar();
@@ -47,6 +48,9 @@ export default class SmartSyncPlugin extends Plugin {
 			onDisconnected: () => {
 				this.syncStatus = "not_connected";
 				this.updateStatusBar();
+			},
+			onIdentityChanged: async () => {
+				await this.syncService?.clearSyncState();
 			},
 			notify: (message) => {
 				new Notice(message);
@@ -100,7 +104,7 @@ export default class SmartSyncPlugin extends Plugin {
 		});
 
 		// Initialize backend if configured
-		this.backendManager.initBackend();
+		await this.backendManager.initBackend();
 
 		// Commands
 		this.addCommand({
@@ -216,7 +220,7 @@ export default class SmartSyncPlugin extends Plugin {
 
 	async runSync(): Promise<void> {
 		if (!this.localFs || !this.backendManager.getRemoteFs()) {
-			this.backendManager.initBackend();
+			await this.backendManager.initBackend();
 			if (!this.localFs || !this.backendManager.getRemoteFs()) {
 				this.syncStatus = "not_connected";
 				this.updateStatusBar();

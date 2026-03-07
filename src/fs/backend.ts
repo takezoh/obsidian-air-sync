@@ -3,6 +3,7 @@ import type { IFileSystem } from "./interface";
 import type { IAuthProvider } from "./auth";
 import type { SmartSyncSettings } from "../settings";
 import type { Logger } from "../logging/logger";
+import type { RemoteVaultResolution } from "../sync/remote-vault";
 
 /**
  * Abstraction for a remote storage backend.
@@ -26,12 +27,34 @@ export interface IBackendProvider {
 	/** Whether credentials are present and the backend is ready to sync */
 	isConnected(settings: SmartSyncSettings): boolean;
 
+	/** Return a string uniquely identifying the current remote target (e.g. folder ID) */
+	getIdentity(settings: SmartSyncSettings): string | null;
+
+	/**
+	 * Called when the backend identity changes (e.g. user switches to a different folder).
+	 * The provider should reset any stale cursors/tokens in backendData that are
+	 * scoped to the previous remote target.
+	 */
+	resetTargetState?(settings: SmartSyncSettings): void;
+
 	/**
 	 * Read updated internal state from the FS to persist in settings.backendData.
 	 * Called after each sync cycle so backends can save tokens, cursors, etc.
 	 * Returns an opaque record — the sync layer does not inspect its contents.
 	 */
 	readBackendState?(fs: IFileSystem): Record<string, unknown>;
+
+	/**
+	 * Discover or create the remote vault for the given vault name.
+	 * Called by BackendManager after auth, before createFs().
+	 * Returns backend-specific data to persist in settings.backendData.
+	 */
+	resolveRemoteVault?(
+		app: App,
+		settings: SmartSyncSettings,
+		vaultName: string,
+		logger?: Logger,
+	): Promise<RemoteVaultResolution>;
 
 	/**
 	 * Disconnect the backend: revoke auth and reset all backend state.
