@@ -33,7 +33,8 @@ src/
 │   │   ├── metadata-cache.ts       # DriveMetadataCache — in-memory path↔ID, folder, children index
 │   │   ├── incremental-sync.ts     # applyIncrementalChanges() — changes.list delta sync
 │   │   ├── remote-vault.ts         # resolveGDriveRemoteVault() — Drive-specific remote vault resolution
-│   │   └── resumable-upload.ts     # ResumableUploader — resumable upload (>5 MB) with resume-on-retry
+│   │   ├── resumable-upload.ts     # ResumableUploader — resumable upload (>5 MB) with resume-on-retry
+│   │   └── test-helpers.ts         # Drive test utilities (spyRequestUrl, mockSettings, etc.)
 │   └── mock/
 │       └── index.ts                # MockFs — in-memory IFileSystem for testing
 ├── sync/
@@ -56,7 +57,7 @@ src/
 │   └── async-queue.ts              # AsyncMutex + AsyncPool — concurrency primitives
 ├── utils/
 │   ├── hash.ts                     # sha256() — Web Crypto API
-│   ├── ignore.ts                    # isIgnored() — gitignore-style pattern matching (via `ignore` package)
+│   ├── ignore.ts                   # isIgnored() — gitignore-style pattern matching (via `ignore` package)
 │   └── path.ts                     # Path utilities
 ├── ui/
 │   ├── settings.ts                 # SmartSyncSettingTab — settings tab UI
@@ -287,7 +288,7 @@ interface IBackendProvider {
 
 `readBackendState` is optional because not all backends need to persist internal state (e.g., cursors, page tokens). `SyncService` checks existence before calling (`provider?.readBackendState && ...`). The returned opaque record is stored in `settings.backendData[provider.type]` — the sync layer never inspects its contents.
 
-`resolveRemoteVault` is optional. When implemented, `BackendManager` calls it after auth and before `createFs()` to discover or create a remote vault folder. The result provides `backendUpdates` (merged into `settings.backendData`, including `remoteVaultFolderId` and `lastKnownVaultName`). Resolution is skipped when the cached folder ID exists and vault name hasn't changed.
+`resolveRemoteVault` is optional. When implemented, `BackendManager` calls it after auth and before `createFs()` to discover or create a remote vault folder. The result provides `backendUpdates` (merged into `settings.backendData[type]`, including `remoteVaultFolderId` and `lastKnownVaultName`). `lastKnownVaultName` is a device-local cache used to detect vault renames — when the local vault name changes, resolution is triggered to update the remote `metadata.json`, so that new devices can discover the remote vault by the current name. When the cached folder ID exists and vault name is unchanged, resolution is skipped.
 
 `disconnect()` revokes auth and resets all backend state, returning the reset data to persist.
 
@@ -568,14 +569,14 @@ DB version 3. The v2→v3 upgrade (`size` → `localSize`/`remoteSize` in `SyncR
 
 ## Remote vault (`sync/remote-vault.ts`)
 
-Each Obsidian vault maps to a dedicated folder in the backend storage, organized under a common root: `obsidian-smart-sync/{uuid}/`. The folder's Drive ID (`remoteVaultFolderId`) and `lastKnownVaultName` are persisted in `settings.backendData`.
+Each Obsidian vault maps to a dedicated folder in the backend storage, organized under a common root: `obsidian-smart-sync/{uuid}/`. The folder's Drive ID (`remoteVaultFolderId`) is persisted in `settings.backendData[type]`. `lastKnownVaultName` is also stored there as a device-local cache to detect vault renames and propagate them to the remote `metadata.json`, ensuring new devices can discover the remote vault by the current name.
 
 ### Resolution flow (BackendManager.initBackend)
 
 1. If `resolveRemoteVault` is not implemented by the provider, skip (backwards compatible)
 2. Read `remoteVaultFolderId` and `lastKnownVaultName` from `settings.backendData[type]`
-3. If folder ID exists and vault name hasn't changed → skip (no network call)
-4. Otherwise call `provider.resolveRemoteVault()` → merge `backendUpdates` into `settings.backendData`
+3. If folder ID exists and vault name hasn't changed → skip (nothing to update)
+4. Otherwise call `provider.resolveRemoteVault()` to update remote `metadata.json` (or discover/create vault) → merge `backendUpdates` into `settings.backendData[type]`
 
 ### Metadata
 
@@ -585,7 +586,7 @@ Each remote vault contains `.smartsync/metadata.json` with `{ vaultName }`. This
 
 `resolveGDriveRemoteVault()` handles Drive-specific resolution:
 
-- **Cached path** (linked device): Verify cached `remoteVaultFolderId` exists via `getFile()` → update `metadata.json` if vault name changed
+- **Cached path** (linked device): Verify cached `remoteVaultFolderId` exists via `getFile()` → throws error if deleted (prompts reconnect) → update `metadata.json` if vault name changed
 - **Uncached path** (new device): List all folders under `obsidian-smart-sync/` → read each `metadata.json` → match by `vaultName` → link if found, otherwise create new UUID folder with `.smartsync/metadata.json`
 
 Uses `DriveClient.findChildByName()` for efficient single-folder lookups instead of full recursive scans.
@@ -815,6 +816,7 @@ When no `SyncRecord` exists for a file:
 - `src/fs/googledrive/auth.test.ts` — GoogleAuth OAuth + PKCE
 - `src/fs/googledrive/client.test.ts` — DriveClient API calls
 - `src/fs/googledrive/types.test.ts` — Drive type validators
+- `src/fs/googledrive/remote-vault.test.ts` — Drive remote vault resolution
 - `src/fs/backend-manager.test.ts` — BackendManager identity tracking, sync state clearing
 - `src/store/idb-helper.test.ts` — IDBHelper lifecycle & transactions
 - `src/store/metadata-store.test.ts` — MetadataStore CRUD
@@ -826,8 +828,10 @@ When no `SyncRecord` exists for a file:
 - `src/sync/merge.test.ts` — 3-way merge (clean merge, conflicts, eligibility)
 - `src/sync/service.test.ts` — SyncService orchestration
 - `src/sync/state.test.ts` — IndexedDB store CRUD
+- `src/sync/remote-vault.test.ts` — Remote vault types & constants
 - `src/logging/logger.test.ts` — Logger behavior
 - `src/utils/path.test.ts` — Path utilities
+- `src/utils/ignore.test.ts` — Gitignore-style pattern matching
 
 ---
 

@@ -42,7 +42,7 @@ src/
 │   ├── idb-helper.ts    # IDBHelper — shared IndexedDB lifecycle & transaction helper
 │   └── metadata-store.ts # MetadataStore<T> — generic IndexedDB metadata cache
 ├── queue/async-queue.ts # AsyncMutex
-├── utils/               # sha256(), matchGlob()
+├── utils/               # sha256(), isIgnored()
 ├── ui/                  # SettingTab, IBackendSettingsRenderer, ConflictModal, ConflictSummaryModal
 └── __mocks__/           # obsidian.ts, sync-test-helpers.ts
 ```
