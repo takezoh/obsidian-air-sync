@@ -1,4 +1,4 @@
-import { Notice, Setting, TextComponent } from "obsidian";
+import { Setting } from "obsidian";
 import type { SmartSyncSettings } from "../settings";
 import type {
 	BackendConnectionActions,
@@ -64,32 +64,5 @@ export class GoogleDriveSettingsRenderer implements IBackendSettingsRenderer {
 				);
 		}
 
-		// Auth code input (only when not yet authorized)
-		if (!isConnected) {
-			let authCodeInput: TextComponent;
-			new Setting(containerEl)
-				.setName("Authorization code")
-				.setDesc(
-					"After authorizing in your browser, paste the callback URL or authorization code here. " +
-					"On mobile, copy the URL from the browser after granting access and paste it here."
-				)
-				.addText((text) => {
-					authCodeInput = text.setPlaceholder("Paste callback URL or code here");
-				})
-				.addButton((button) =>
-					button.setButtonText("Submit").onClick(async () => {
-						const value = authCodeInput.getValue().trim();
-						if (value) {
-							try {
-								await actions.completeAuth(value);
-							} catch (err) {
-								const msg = err instanceof Error ? err.message : String(err);
-								new Notice(`Authorization failed: ${msg}`);
-							}
-							actions.refreshDisplay();
-						}
-					})
-				);
-		}
 	}
 }
