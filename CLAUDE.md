@@ -27,7 +27,7 @@ src/
 │   ├── auth.ts          # IAuthProvider
 │   ├── backend.ts       # IBackendProvider
 │   ├── registry.ts      # Backend registry
-│   ├── local/           # LocalFs — Obsidian Vault API wrapper; DotPathAdapter — .smartsync/ adapter
+│   ├── local/           # LocalFs — Obsidian Vault API wrapper; DotPathAdapter — dot-prefixed path adapter
 │   ├── googledrive/     # GoogleDriveFs — Drive REST API v3 + OAuth PKCE
 │   └── mock/            # MockFs — in-memory for testing
 ├── sync/
