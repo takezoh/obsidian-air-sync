@@ -33,7 +33,7 @@ export const DEFAULT_SETTINGS: SmartSyncSettings = {
 	autoSyncIntervalMinutes: 5,
 	conflictStrategy: "keep_newer",
 	ignorePatterns: [],
-	enableThreeWayMerge: false,
+	enableThreeWayMerge: true,
 	mobileIgnorePatterns: [
 		"# Sync only markdown, canvas, and bases on mobile",
 		"*",
