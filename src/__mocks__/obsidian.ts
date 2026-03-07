@@ -108,6 +108,8 @@ export class Vault {
 	}
 
 	getAbstractFileByPath(path: string): TFile | TFolder | null {
+		// Real Obsidian excludes dot-prefixed paths from the vault index
+		if (path.startsWith(".")) return null;
 		const entry = this.files.get(path);
 		if (!entry) return null;
 		if (entry.type === "folder") return new TFolder(path);
@@ -144,6 +146,8 @@ export class Vault {
 	getAllLoadedFiles(): (TFile | TFolder)[] {
 		const result: (TFile | TFolder)[] = [];
 		for (const [path, entry] of this.files) {
+			// Real Obsidian excludes dot-prefixed paths from the vault index
+			if (path.startsWith(".")) continue;
 			if (entry.type === "folder") {
 				result.push(new TFolder(path));
 			} else {

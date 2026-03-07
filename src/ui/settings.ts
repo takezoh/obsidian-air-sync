@@ -93,6 +93,33 @@ export class SmartSyncSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
+			.setName("Dot-prefixed paths to sync")
+			.setDesc(
+				"Dot-prefixed folders to include in sync, one per line (e.g. .templates). The .smartsync folder is always included."
+			)
+			.addTextArea((text) =>
+				text
+					.setPlaceholder(".templates\n.stversions")
+					.setValue(
+						this.plugin.settings.syncDotPaths.join("\n")
+					)
+					.onChange(async (value) => {
+						const configDir = this.app.vault.configDir;
+						const paths = value
+							.split("\n")
+							.map((line) => line.trim())
+							.filter((line) => line.length > 0)
+							.filter((line) => line.startsWith("."))
+							.filter((line) => {
+								const normalized = line.replace(/\/+$/, "");
+								return normalized !== configDir && normalized !== ".smartsync";
+							});
+						this.plugin.settings.syncDotPaths = [...new Set(paths)];
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
 			.setName("Ignore patterns")
 			.setDesc( // eslint-disable-next-line obsidianmd/ui/sentence-case
 				"Gitignore-style patterns, one per line. Use ! to negate, # for comments. Last matching rule wins."

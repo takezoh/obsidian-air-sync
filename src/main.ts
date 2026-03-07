@@ -25,7 +25,7 @@ export default class SmartSyncPlugin extends Plugin {
 	async onload() {
 		await this.loadSettings();
 
-		this.localFs = new LocalFs(this.app);
+		this.localFs = new LocalFs(this.app, () => this.settings.syncDotPaths);
 
 		const deviceName = getDeviceName(Platform.isMobile, this.settings.vaultId);
 		this.logger = new Logger(

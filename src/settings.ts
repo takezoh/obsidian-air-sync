@@ -13,6 +13,8 @@ export interface SmartSyncSettings {
 	ignorePatterns: string[];
 	/** Enable 3-way merge for text files */
 	enableThreeWayMerge: boolean;
+	/** Dot-prefixed paths to include in sync (e.g. [".templates", ".stversions"]) */
+	syncDotPaths: string[];
 	/** Gitignore-style patterns to exclude on mobile (overrides ignorePatterns) */
 	mobileIgnorePatterns: string[];
 	/** Maximum file size in MB to sync on mobile */
@@ -33,6 +35,7 @@ export const DEFAULT_SETTINGS: SmartSyncSettings = {
 	autoSyncIntervalMinutes: 5,
 	conflictStrategy: "keep_newer",
 	ignorePatterns: [],
+	syncDotPaths: [],
 	enableThreeWayMerge: true,
 	mobileIgnorePatterns: [
 		"# Sync only markdown, canvas, and bases on mobile",

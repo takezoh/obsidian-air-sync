@@ -9,6 +9,7 @@ function mockSettings(overrides: Partial<SmartSyncSettings> = {}): SmartSyncSett
 		vaultId: `test-${Math.random()}`,
 		backendType: "none",
 		ignorePatterns: [],
+		syncDotPaths: [],
 		conflictStrategy: "keep_newer",
 		enableThreeWayMerge: false,
 		autoSyncIntervalMinutes: 0,

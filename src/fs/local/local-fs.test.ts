@@ -3,9 +3,9 @@ import { App, TFile, TFolder } from "obsidian";
 import { LocalFs } from "./index";
 
 describe("LocalFs", () => {
-	function createLocalFs(): { app: App; vault: App["vault"]; fs: LocalFs } {
+	function createLocalFs(dotPaths: string[] = []): { app: App; vault: App["vault"]; fs: LocalFs } {
 		const app = new App();
-		const fs = new LocalFs(app);
+		const fs = new LocalFs(app, () => dotPaths);
 		return { app, vault: app.vault, fs };
 	}
 
@@ -152,4 +152,100 @@ describe("LocalFs", () => {
 		});
 	});
 
+	describe("syncDotPaths", () => {
+		it("includes custom dot paths in list()", async () => {
+			const { vault, fs } = createLocalFs([".templates"]);
+			const vaultInternal = vault as unknown as { files: Map<string, unknown> };
+			vaultInternal.files.set(".templates", { type: "folder" });
+			vaultInternal.files.set(".templates/daily.md", {
+				type: "file",
+				content: new TextEncoder().encode("template").buffer,
+				mtime: 100,
+			});
+
+			const entities = await fs.list();
+			const paths = entities.map((e) => e.path);
+			expect(paths).toContain(".templates/daily.md");
+		});
+
+		it("stat works for custom dot path files", async () => {
+			const { vault, fs } = createLocalFs([".templates"]);
+			const content = new TextEncoder().encode("data").buffer;
+			await vault.adapter.writeBinary(".templates/note.md", content);
+
+			const entity = await fs.stat(".templates/note.md");
+			expect(entity).not.toBeNull();
+			expect(entity!.isDirectory).toBe(false);
+			expect(entity!.hash).not.toBe("");
+		});
+
+		it("read works for custom dot path files", async () => {
+			const { vault, fs } = createLocalFs([".templates"]);
+			const content = new TextEncoder().encode("hello").buffer;
+			await vault.adapter.writeBinary(".templates/note.md", content);
+
+			const result = await fs.read(".templates/note.md");
+			expect(new TextDecoder().decode(result)).toBe("hello");
+		});
+
+		it("write works for custom dot path files", async () => {
+			const { vault, fs } = createLocalFs([".templates"]);
+			const content = new TextEncoder().encode("data").buffer;
+
+			const entity = await fs.write(".templates/note.md", content, 12345);
+			expect(entity.path).toBe(".templates/note.md");
+			expect(await vault.adapter.exists(".templates/note.md")).toBe(true);
+		});
+
+		it("delete works for custom dot path files", async () => {
+			const { vault, fs } = createLocalFs([".templates"]);
+			await vault.adapter.writeBinary(".templates/note.md", new ArrayBuffer(0));
+
+			await fs.delete(".templates/note.md");
+			expect(await vault.adapter.exists(".templates/note.md")).toBe(false);
+		});
+
+		it("listDir works for custom dot path", async () => {
+			const { vault, fs } = createLocalFs([".templates"]);
+			const vaultInternal = vault as unknown as { files: Map<string, unknown> };
+			vaultInternal.files.set(".templates", { type: "folder" });
+			vaultInternal.files.set(".templates/daily.md", {
+				type: "file",
+				content: new ArrayBuffer(5),
+				mtime: 100,
+			});
+
+			const entities = await fs.listDir(".templates");
+			expect(entities.map((e) => e.path)).toContain(".templates/daily.md");
+		});
+
+		it("rename works for custom dot path files", async () => {
+			const { vault, fs } = createLocalFs([".templates"]);
+			const vaultInternal = vault as unknown as { files: Map<string, unknown> };
+			vaultInternal.files.set(".templates", { type: "folder" });
+			const content = new TextEncoder().encode("data").buffer;
+			await vault.adapter.writeBinary(".templates/old.md", content);
+
+			await fs.rename(".templates/old.md", ".templates/new.md");
+
+			expect(await vault.adapter.exists(".templates/new.md")).toBe(true);
+			expect(await vault.adapter.exists(".templates/old.md")).toBe(false);
+		});
+
+		it("does not include dot paths when syncDotPaths is empty", async () => {
+			const { vault, fs } = createLocalFs();
+			const vaultInternal = vault as unknown as { files: Map<string, unknown> };
+			vaultInternal.files.set(".templates", { type: "folder" });
+			vaultInternal.files.set(".templates/daily.md", {
+				type: "file",
+				content: new ArrayBuffer(5),
+				mtime: 100,
+			});
+
+			const entities = await fs.list();
+			const paths = entities.map((e) => e.path);
+			expect(paths).not.toContain(".templates");
+			expect(paths).not.toContain(".templates/daily.md");
+		});
+	});
 });

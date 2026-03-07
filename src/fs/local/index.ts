@@ -12,10 +12,14 @@ export class LocalFs implements IFileSystem {
 	private app: App;
 	private dotPath: DotPathAdapter;
 
-	constructor(app: App) {
+	constructor(app: App, getDotPaths: () => string[] = () => []) {
 		this.app = app;
 		this.vault = app.vault;
-		this.dotPath = new DotPathAdapter(this.vault, (p) => this.mkdirRecursive(p));
+		this.dotPath = new DotPathAdapter(
+			this.vault,
+			(p) => this.mkdirRecursive(p),
+			() => [".smartsync", ...getDotPaths()],
+		);
 	}
 
 	async list(): Promise<FileEntity[]> {
@@ -45,8 +49,8 @@ export class LocalFs implements IFileSystem {
 			}
 		}
 
-		// .smartsync/ is dot-prefixed so Vault index excludes it; scan via adapter
-		await this.dotPath.list(".smartsync", entities);
+		// Dot-prefixed paths are excluded from Vault index; scan via adapter
+		await this.dotPath.listAll(entities);
 
 		return entities;
 	}
@@ -132,8 +136,9 @@ export class LocalFs implements IFileSystem {
 
 	async listDir(path: string): Promise<FileEntity[]> {
 		path = normalizeSyncPath(path);
-		// .smartsync/ is dot-prefixed so Vault index excludes it; listDir is not
-		// currently called for .smartsync paths, so no adapter fallback is needed.
+		if (this.dotPath.isDotPath(path)) {
+			return this.dotPath.listDir(path);
+		}
 		const folder = this.vault.getAbstractFileByPath(path);
 		if (!(folder instanceof TFolder)) return [];
 		return folder.children.map((child) => {
@@ -165,7 +170,9 @@ export class LocalFs implements IFileSystem {
 		oldPath = normalizeSyncPath(oldPath);
 		newPath = normalizeSyncPath(newPath);
 		validateRename(oldPath, newPath);
-		// .smartsync/ paths are not renamed by sync logic; no adapter fallback needed.
+		if (this.dotPath.isDotPath(oldPath) || this.dotPath.isDotPath(newPath)) {
+			return this.dotPath.rename(oldPath, newPath);
+		}
 		const file = this.vault.getAbstractFileByPath(oldPath);
 		if (!file) {
 			throw new Error(`File not found: ${oldPath}`);
