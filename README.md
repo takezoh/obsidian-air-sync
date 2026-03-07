@@ -30,8 +30,10 @@ See backend-specific setup instructions:
 | Backend | Storage backend for sync | Google Drive |
 | Auto-sync interval | Sync interval in minutes (0 to disable) | 5 |
 | Conflict strategy | Resolution strategy for conflicts | keep_newer |
-| Enable 3-way merge | Enable 3-way merge for text files | Off |
-| Exclude patterns | Glob patterns to exclude (one per line) | (none) |
+| Enable 3-way merge | Enable 3-way merge for text files | On |
+| Dot-prefixed paths to sync | Dot-prefixed folders to include in sync (e.g. `.templates`) | (none) |
+| Ignore patterns | Glob patterns to exclude (one per line) | Desktop: (none), Mobile: `.md`/`.canvas`/`.base` only |
+| Mobile max file size | Skip files larger than this on mobile | 10 MB |
 
 ### Conflict resolution strategies
 
