@@ -3,7 +3,7 @@
 	"name": "Smart Sync",
 	"version": "0.1.0",
 	"minAppVersion": "1.5.7",
-	"description": "Sync your Obsidian vault bidirectionally with cloud storage backends.",
+	"description": "Sync your Obsidian vault bidirectionally with Google Drive.",
 	"author": "Takehito Gondo",
 	"authorUrl": "https://github.com/takezoh",
 	"isDesktopOnly": false
