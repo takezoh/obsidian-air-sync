@@ -92,10 +92,13 @@ export class SmartSyncSettingTab extends PluginSettingTab {
 					})
 			);
 
+		// --- Advanced settings ---
+		new Setting(containerEl).setName("Advanced").setHeading();
+
 		new Setting(containerEl)
 			.setName("Dot-prefixed paths to sync")
 			.setDesc(
-				"Dot-prefixed folders to include in sync, one per line (e.g. .templates). The .smartsync folder is always included."
+				"Dot-prefixed folders to include in sync, one per line (e.g. .templates)."
 			)
 			.addTextArea((text) =>
 				text
@@ -104,16 +107,12 @@ export class SmartSyncSettingTab extends PluginSettingTab {
 						this.plugin.settings.syncDotPaths.join("\n")
 					)
 					.onChange(async (value) => {
-						const configDir = this.app.vault.configDir;
 						const paths = value
 							.split("\n")
 							.map((line) => line.trim())
 							.filter((line) => line.length > 0)
 							.filter((line) => line.startsWith("."))
-							.filter((line) => {
-								const normalized = line.replace(/\/+$/, "");
-								return normalized !== configDir && normalized !== ".smartsync";
-							});
+							.filter((line) => line.replace(/\/+$/, "") !== ".smartsync");
 						this.plugin.settings.syncDotPaths = [...new Set(paths)];
 						await this.plugin.saveSettings();
 					})
@@ -157,9 +156,6 @@ export class SmartSyncSettingTab extends PluginSettingTab {
 						}
 					})
 			);
-
-		// --- Logging settings ---
-		new Setting(containerEl).setName("Logging").setHeading();
 
 		new Setting(containerEl)
 			.setName("Enable logging")
