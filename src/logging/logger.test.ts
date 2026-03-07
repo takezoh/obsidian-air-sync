@@ -141,18 +141,18 @@ describe("Logger", () => {
 		expect(adapter.dirs.has(".smartsync/logs/desktop")).toBe(true);
 	});
 
-	it("getDeviceName returns 'mobile-{vaultId}' on mobile with vaultId", () => {
+	it("getDeviceName returns '{device}-{vaultId}' when vaultId is provided", () => {
 		expect(getDeviceName(true, "abc123")).toBe("mobile-abc123");
+		const desktopName = getDeviceName(false, "xyz789");
+		expect(desktopName).toMatch(/-xyz789$/);
+		expect(desktopName).not.toBe("-xyz789"); // has a device prefix
 	});
 
-	it("getDeviceName returns 'mobile' on mobile without vaultId", () => {
+	it("getDeviceName returns device only when no vaultId", () => {
 		expect(getDeviceName(true)).toBe("mobile");
-	});
-
-	it("getDeviceName returns hostname on desktop", () => {
-		const name = getDeviceName(false);
-		expect(name).toBeTruthy();
-		expect(name).not.toBe("mobile");
+		const desktopName = getDeviceName(false);
+		expect(desktopName).toBeTruthy();
+		expect(desktopName).not.toBe("mobile");
 	});
 
 	it("formats timestamp in ISO format", async () => {

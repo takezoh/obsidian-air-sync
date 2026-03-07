@@ -32,18 +32,23 @@ function sanitizeDeviceName(name: string): string {
 
 /**
  * Detect a device name for the current platform.
- * On desktop (Electron) this returns the OS hostname.
- * On mobile it returns "mobile-{vaultId}".
+ * Returns "{device}-{vaultId}" when a vaultId is provided so that
+ * logs and conflict history are scoped per device AND per vault.
  */
 export function getDeviceName(isMobile: boolean, vaultId?: string): string {
-	if (isMobile) return vaultId ? `mobile-${vaultId}` : "mobile";
-	try {
-		// eslint-disable-next-line @typescript-eslint/no-require-imports, import/no-nodejs-modules, no-undef
-		const os = require("os") as { hostname: () => string };
-		return os.hostname();
-	} catch {
-		return "desktop";
+	let device: string;
+	if (isMobile) {
+		device = "mobile";
+	} else {
+		try {
+			// eslint-disable-next-line @typescript-eslint/no-require-imports, import/no-nodejs-modules, no-undef
+			const os = require("os") as { hostname: () => string };
+			device = os.hostname();
+		} catch {
+			device = "desktop";
+		}
 	}
+	return vaultId ? `${device}-${vaultId}` : device;
 }
 
 export class Logger {
