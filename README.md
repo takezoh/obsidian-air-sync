@@ -50,7 +50,7 @@ See backend-specific setup instructions:
 
 To sync Obsidian's config directory (`.obsidian/`), add it to **Dot-prefixed paths to sync** and use **Ignore patterns** to select what to include.
 
-> **⚠️ Warning**: The config directory contains Obsidian's internal metadata. Syncing it across devices may cause settings loss, layout corruption, or plugin malfunction. Use narrow ignore patterns and test on a backup vault first.
+> **⚠️ Warning**: The config directory contains Obsidian's internal metadata. Syncing it across devices may cause settings loss, layout corruption, or plugin malfunction.
 
 Example — sync only JSON config files and plugins:
 
