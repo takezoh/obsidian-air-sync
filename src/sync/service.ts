@@ -8,7 +8,7 @@ import { sha256 } from "../utils/hash";
 import { SyncStateStore } from "./state";
 import { buildMixedEntities, computeDecisions } from "./engine";
 import { SyncExecutor, SyncProgress, SyncResult } from "./executor";
-import type { Logger, LoggerAdapter } from "../logging/logger";
+import type { Logger } from "../logging/logger";
 import { getErrorInfo, isRateLimitError, sleep } from "./error";
 import { ConflictHistory } from "./conflict-history";
 
@@ -33,7 +33,6 @@ export interface SyncServiceDeps {
 	/** Returns true when running on mobile (used for mobile sync restrictions) */
 	isMobile: () => boolean;
 	logger?: Logger;
-	loggerAdapter?: LoggerAdapter;
 }
 
 /**
@@ -290,16 +289,19 @@ export class SyncService {
 		const result = await executor.execute(decisions);
 
 		// Write conflict history
-		if (result.conflictRecords.length > 0 && this.deps.loggerAdapter) {
+		if (result.conflictRecords.length > 0 && this.deps.logger) {
 			const sessionId = crypto.randomUUID();
 			for (const rec of result.conflictRecords) {
 				rec.sessionId = sessionId;
 			}
 			try {
-				const history = new ConflictHistory(this.deps.loggerAdapter);
+				const history = new ConflictHistory(
+					this.deps.logger.adapter,
+					this.deps.logger.sanitizedDeviceName,
+				);
 				await history.append(result.conflictRecords);
 			} catch (err) {
-				this.deps.logger?.warn("Failed to write conflict history", {
+				this.deps.logger.warn("Failed to write conflict history", {
 					error: err instanceof Error ? err.message : String(err),
 				});
 			}

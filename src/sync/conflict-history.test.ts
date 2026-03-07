@@ -36,13 +36,16 @@ function makeRecord(overrides: Partial<ConflictRecord> = {}): ConflictRecord {
 	};
 }
 
+const DEVICE = "test-desktop";
+const FILE_PATH = `.smartsync/conflicts/${DEVICE}.json`;
+
 describe("ConflictHistory", () => {
 	let adapter: ReturnType<typeof createMockAdapter>;
 	let history: ConflictHistory;
 
 	beforeEach(() => {
 		adapter = createMockAdapter();
-		history = new ConflictHistory(adapter);
+		history = new ConflictHistory(adapter, DEVICE);
 	});
 
 	it("load() returns empty array when file does not exist", async () => {
@@ -70,7 +73,7 @@ describe("ConflictHistory", () => {
 	});
 
 	it("gracefully handles corrupted JSON", async () => {
-		adapter.files.set(".smartsync/conflicts.json", "not valid json{{{");
+		adapter.files.set(FILE_PATH, "not valid json{{{");
 
 		const records = await history.load();
 		expect(records).toEqual([]);
@@ -87,7 +90,8 @@ describe("ConflictHistory", () => {
 			existing.push(makeRecord({ path: `old-${i}.md` }));
 		}
 		adapter.dirs.add(".smartsync");
-		adapter.files.set(".smartsync/conflicts.json", JSON.stringify(existing));
+		adapter.dirs.add(".smartsync/conflicts");
+		adapter.files.set(FILE_PATH, JSON.stringify(existing));
 
 		await history.append([
 			makeRecord({ path: "new-1.md" }),
@@ -104,13 +108,33 @@ describe("ConflictHistory", () => {
 	it("append() with empty array is a no-op", async () => {
 		await history.append([]);
 
-		expect(adapter.files.has(".smartsync/conflicts.json")).toBe(false);
+		expect(adapter.files.has(FILE_PATH)).toBe(false);
 	});
 
-	it("creates .smartsync directory if missing", async () => {
+	it("creates .smartsync and conflicts directories if missing", async () => {
 		await history.append([makeRecord()]);
 
 		expect(adapter.dirs.has(".smartsync")).toBe(true);
-		expect(adapter.files.has(".smartsync/conflicts.json")).toBe(true);
+		expect(adapter.dirs.has(".smartsync/conflicts")).toBe(true);
+		expect(adapter.files.has(FILE_PATH)).toBe(true);
+	});
+
+	it("uses separate files per device", async () => {
+		const mobileHistory = new ConflictHistory(adapter, "mobile-phone");
+
+		await history.append([makeRecord({ path: "desktop.md" })]);
+		await mobileHistory.append([makeRecord({ path: "mobile.md" })]);
+
+		const desktopRecords = await history.load();
+		const mobileRecords = await mobileHistory.load();
+
+		expect(desktopRecords).toHaveLength(1);
+		expect(desktopRecords[0]!.path).toBe("desktop.md");
+		expect(mobileRecords).toHaveLength(1);
+		expect(mobileRecords[0]!.path).toBe("mobile.md");
+
+		// Verify sanitized file names
+		expect(adapter.files.has(FILE_PATH)).toBe(true);
+		expect(adapter.files.has(".smartsync/conflicts/mobile-phone.json")).toBe(true);
 	});
 });

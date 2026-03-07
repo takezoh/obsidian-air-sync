@@ -48,8 +48,8 @@ export function getDeviceName(isMobile: boolean, vaultId?: string): string {
 
 export class Logger {
 	private buffer: string[] = [];
-	private deviceName: string;
-	private adapter: LoggerAdapter;
+	private _deviceName: string;
+	private _adapter: LoggerAdapter;
 	private getSettings: () => SmartSyncSettings;
 	private flushTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -58,13 +58,16 @@ export class Logger {
 		getSettings: () => SmartSyncSettings,
 		deviceName: string,
 	) {
-		this.adapter = adapter;
+		this._adapter = adapter;
 		this.getSettings = getSettings;
-		this.deviceName = sanitizeDeviceName(deviceName);
+		this._deviceName = sanitizeDeviceName(deviceName);
 		this.flushTimer = setInterval(() => {
 			void this.flush();
 		}, 30_000);
 	}
+
+	get adapter(): LoggerAdapter { return this._adapter; }
+	get sanitizedDeviceName(): string { return this._deviceName; }
 
 	debug(message: string, context?: Record<string, unknown>): void {
 		this.log("debug", message, context);
@@ -104,28 +107,28 @@ export class Logger {
 
 		const date = new Date().toISOString().slice(0, 10);
 		const logsDir = ".smartsync/logs";
-		const dir = `${logsDir}/${this.deviceName}`;
+		const dir = `${logsDir}/${this._deviceName}`;
 		const filePath = `${dir}/${date}.log`;
 
 		try {
 			// Ensure directories exist
-			if (!(await this.adapter.exists(".smartsync"))) {
-				await this.adapter.mkdir(".smartsync");
+			if (!(await this._adapter.exists(".smartsync"))) {
+				await this._adapter.mkdir(".smartsync");
 			}
-			if (!(await this.adapter.exists(logsDir))) {
-				await this.adapter.mkdir(logsDir);
+			if (!(await this._adapter.exists(logsDir))) {
+				await this._adapter.mkdir(logsDir);
 			}
-			if (!(await this.adapter.exists(dir))) {
-				await this.adapter.mkdir(dir);
+			if (!(await this._adapter.exists(dir))) {
+				await this._adapter.mkdir(dir);
 			}
 
 			let existing = "";
-			if (await this.adapter.exists(filePath)) {
-				existing = await this.adapter.read(filePath);
+			if (await this._adapter.exists(filePath)) {
+				existing = await this._adapter.read(filePath);
 			}
 
 			const content = existing + lines.join("\n") + "\n";
-			await this.adapter.write(filePath, content);
+			await this._adapter.write(filePath, content);
 		} catch {
 			// Logging should never break the app — silently drop on failure
 		}

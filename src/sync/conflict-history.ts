@@ -1,22 +1,25 @@
 import type { LoggerAdapter } from "../logging/logger";
 import type { ConflictRecord } from "./types";
 
-const CONFLICT_FILE = ".smartsync/conflicts.json";
+const CONFLICTS_DIR = ".smartsync/conflicts";
 const MAX_RECORDS = 500;
 
 export class ConflictHistory {
 	private adapter: LoggerAdapter;
+	private filePath: string;
 
-	constructor(adapter: LoggerAdapter) {
+	/** @param deviceName must be pre-sanitized (e.g. via Logger.sanitizedDeviceName) */
+	constructor(adapter: LoggerAdapter, deviceName: string) {
 		this.adapter = adapter;
+		this.filePath = `${CONFLICTS_DIR}/${deviceName}.json`;
 	}
 
 	async load(): Promise<ConflictRecord[]> {
 		try {
-			if (!(await this.adapter.exists(CONFLICT_FILE))) {
+			if (!(await this.adapter.exists(this.filePath))) {
 				return [];
 			}
-			const raw = await this.adapter.read(CONFLICT_FILE);
+			const raw = await this.adapter.read(this.filePath);
 			return JSON.parse(raw) as ConflictRecord[];
 		} catch {
 			return [];
@@ -35,7 +38,10 @@ export class ConflictHistory {
 		if (!(await this.adapter.exists(".smartsync"))) {
 			await this.adapter.mkdir(".smartsync");
 		}
+		if (!(await this.adapter.exists(CONFLICTS_DIR))) {
+			await this.adapter.mkdir(CONFLICTS_DIR);
+		}
 
-		await this.adapter.write(CONFLICT_FILE, JSON.stringify(capped, null, 2));
+		await this.adapter.write(this.filePath, JSON.stringify(capped, null, 2));
 	}
 }

@@ -87,7 +87,6 @@ export default class SmartSyncPlugin extends Plugin {
 				return summaryChoiceToStrategy(choice);
 			},
 			logger: this.logger,
-			loggerAdapter: this.app.vault.adapter as unknown as LoggerAdapter,
 		});
 
 		this.settingTab = new SmartSyncSettingTab(this.app, this);
