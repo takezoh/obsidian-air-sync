@@ -46,7 +46,7 @@ export class GoogleAuth {
 	 * Uses a random state parameter for CSRF protection.
 	 */
 	getAuthorizationUrl(): string {
-		this.authState = generateRandomString(32);
+		this.authState = btoa(JSON.stringify({ app: "obsidian-plugin", nonce: generateRandomString(32) }));
 
 		const params = new URLSearchParams({
 			client_id: GOOGLE_CLIENT_ID,
