@@ -20,11 +20,11 @@ function mockSettings(overrides: Partial<SmartSyncSettings> = {}): SmartSyncSett
 	return {
 		vaultId: "test-vault",
 		backendType: "test",
-		excludePatterns: [],
+		ignorePatterns: [],
 		conflictStrategy: "keep_newer",
 		enableThreeWayMerge: false,
 		autoSyncIntervalMinutes: 0,
-		mobileIncludePatterns: [],
+		mobileIgnorePatterns: [],
 		mobileMaxFileSizeMB: 10,
 		enableLogging: false,
 		logLevel: "info",
