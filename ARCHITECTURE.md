@@ -431,7 +431,7 @@ OAuth 2.0 authentication with server-side token exchange via `auth-smartsync.tak
 
 OAuth client ID is embedded as a constant (public, no user configuration needed).
 
-1. `getAuthorizationUrl()` builds a Google OAuth URL with a random `state` parameter (CSRF protection) and `redirect_uri=https://auth-smartsync.takezo.dev/callback`
+1. `getAuthorizationUrl()` builds a Google OAuth URL with a random `state` parameter (CSRF protection) and `redirect_uri=https://auth-smartsync.takezo.dev/google/callback`
 2. The auth server callback exchanges the authorization code for tokens using `client_secret`, then redirects to `obsidian://smart-sync-auth?access_token=...&refresh_token=...&expires_in=...&state=...`
 3. `handleAuthCallback()` verifies the `state` parameter against the locally stored value and stores the tokens
 4. `getAccessToken()` returns cached tokens, auto-refreshing 60 seconds before expiry via the auth server (`/token/refresh`)

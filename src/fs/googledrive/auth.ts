@@ -5,7 +5,7 @@ import { assertTokenResponse } from "./types";
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const AUTH_SERVER_URL = "https://auth-smartsync.takezo.dev";
 const SCOPES = "https://www.googleapis.com/auth/drive.file";
-const REDIRECT_URI = `${AUTH_SERVER_URL}/callback`;
+const REDIRECT_URI = `${AUTH_SERVER_URL}/google/callback`;
 
 const GOOGLE_CLIENT_ID = "135801498656-lfjor2ml3v26t9l63mkoka0bndgl9eue.apps.googleusercontent.com";
 
@@ -138,7 +138,7 @@ export class GoogleAuth {
 		this.logger?.info("Refreshing access token");
 
 		const response = await requestUrl({
-			url: `${AUTH_SERVER_URL}/token/refresh`,
+			url: `${AUTH_SERVER_URL}/google/token/refresh`,
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ refresh_token: this.refreshToken }),
