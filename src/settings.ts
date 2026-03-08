@@ -41,16 +41,5 @@ export const DEFAULT_SETTINGS: SmartSyncSettings = {
 	backendData: {},
 };
 
-/** Default ignore patterns applied on desktop for fresh installs */
-export const DEFAULT_DESKTOP_IGNORE_PATTERNS: string[] = [];
 
-/** Default ignore patterns applied on mobile for fresh installs */
-export const DEFAULT_MOBILE_IGNORE_PATTERNS: string[] = [
-	"# Sync only markdown, canvas, and bases on mobile",
-	"*",
-	"!*/",
-	"!**/*.md",
-	"!**/*.canvas",
-	"!**/*.base",
-];
 

@@ -1,5 +1,5 @@
 import { debounce, Notice, Platform, Plugin, TAbstractFile } from "obsidian";
-import { DEFAULT_DESKTOP_IGNORE_PATTERNS, DEFAULT_MOBILE_IGNORE_PATTERNS, DEFAULT_SETTINGS, SmartSyncSettings } from "./settings";
+import { DEFAULT_SETTINGS, SmartSyncSettings } from "./settings";
 import { SmartSyncSettingTab } from "./ui/settings";
 import { LocalFs } from "./fs/local/index";
 import { BackendManager } from "./fs/backend-manager";
@@ -190,16 +190,6 @@ export default class SmartSyncPlugin extends Plugin {
 		if (!this.settings.vaultId) {
 			this.settings.vaultId = crypto.randomUUID();
 			needsSave = true;
-		}
-
-		// Apply platform-specific defaults for fresh installs
-		if (this.settings.ignorePatterns.length === 0) {
-			this.settings.ignorePatterns = Platform.isMobile
-				? [...DEFAULT_MOBILE_IGNORE_PATTERNS]
-				: [...DEFAULT_DESKTOP_IGNORE_PATTERNS];
-			if (this.settings.ignorePatterns.length > 0) {
-				needsSave = true;
-			}
 		}
 
 		if (needsSave) {
