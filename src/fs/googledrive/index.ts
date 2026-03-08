@@ -6,9 +6,17 @@ import type { DriveClient } from "./client";
 import type { MetadataStore } from "../../store/metadata-store";
 import type { Logger } from "../../logging/logger";
 import { DriveMetadataCache } from "./metadata-cache";
-import { applyIncrementalChanges } from "./incremental-sync";
+import { applyIncrementalChanges, applyIncrementalChangesLightweight } from "./incremental-sync";
 import { sha256 } from "../../utils/hash";
 import { AsyncMutex } from "../../queue/async-queue";
+import {
+	buildFolderHierarchy,
+	deserializeFolderHierarchy,
+	serializeFolderHierarchy,
+} from "./folder-hierarchy";
+import type { FolderHierarchy } from "./folder-hierarchy";
+
+const FOLDER_HIERARCHY_META_KEY = "folderHierarchy";
 
 /**
  * IFileSystem implementation backed by Google Drive.
@@ -61,6 +69,9 @@ export class GoogleDriveFs implements IFileSystem {
 		this.initialized = true;
 		this.logger?.info("Full scan completed", { fileCount: this.cache.size });
 		void this.persistCache();
+
+		// Save folder hierarchy for lightweight incremental sync
+		void this.saveFolderHierarchy(buildFolderHierarchy(allFiles, this.rootFolderId));
 	}
 
 	/** Ensure the metadata cache is initialized (load from IDB or full scan) */
@@ -88,7 +99,10 @@ export class GoogleDriveFs implements IFileSystem {
 			this.cache.clear();
 			this.cache.bulkLoad(files.map((r) => [r.path, r.file]));
 
-			this._changesPageToken = storedToken;
+			// Don't overwrite _changesPageToken if already set (e.g. by getRemoteChangedPaths)
+			if (!this._changesPageToken) {
+				this._changesPageToken = storedToken;
+			}
 			this.initialized = true;
 			this.logger?.info("Cache loaded from IndexedDB", { fileCount: files.length });
 			return true;
@@ -119,20 +133,54 @@ export class GoogleDriveFs implements IFileSystem {
 		}
 	}
 
+	/** Save folder hierarchy to IndexedDB meta store */
+	private async saveFolderHierarchy(hierarchy: FolderHierarchy): Promise<void> {
+		if (!this.metadataStore) return;
+		try {
+			await this.metadataStore.open();
+			await this.metadataStore.putMeta(FOLDER_HIERARCHY_META_KEY, serializeFolderHierarchy(hierarchy));
+		} catch (err) {
+			this.logger?.warn("Failed to save folder hierarchy", {
+				message: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+
+	/** Load folder hierarchy from IndexedDB meta store */
+	private async loadFolderHierarchy(): Promise<FolderHierarchy | null> {
+		if (!this.metadataStore) return null;
+		try {
+			await this.metadataStore.open();
+			const { meta } = await this.metadataStore.loadAll();
+			const storedRootId = meta.get("rootFolderId");
+			if (storedRootId !== this.rootFolderId) return null;
+
+			const json = meta.get(FOLDER_HIERARCHY_META_KEY);
+			if (!json) return null;
+
+			return deserializeFolderHierarchy(json);
+		} catch (err) {
+			this.logger?.warn("Failed to load folder hierarchy", {
+				message: err instanceof Error ? err.message : String(err),
+			});
+			return null;
+		}
+	}
+
 	/**
 	 * Apply incremental changes from the Drive changes.list API.
 	 * Updates the internal metadata cache and returns the new page token.
 	 * Falls back to a full re-scan if the cache has been invalidated.
 	 */
 	async applyIncrementalChanges(): Promise<void> {
-		return this.cacheMutex.run(() => this._applyIncrementalChanges());
+		await this.cacheMutex.run(() => this._applyIncrementalChanges());
 	}
 
 	/** Internal implementation of applyIncrementalChanges (caller must hold mutex) */
-	private async _applyIncrementalChanges(): Promise<void> {
+	private async _applyIncrementalChanges(): Promise<{ changedPaths: Set<string> } | null> {
 		if (!this.initialized || !this._changesPageToken) {
 			await this.fullScan();
-			return;
+			return null; // Full scan — all paths potentially changed
 		}
 
 		const result = await applyIncrementalChanges(
@@ -148,8 +196,10 @@ export class GoogleDriveFs implements IFileSystem {
 		if (result.needsFullScan) {
 			this.initialized = false;
 			await this.fullScan();
+			return null;
 		} else {
 			this._changesPageToken = result.newToken;
+			return { changedPaths: result.changedPaths };
 		}
 	}
 
@@ -157,7 +207,12 @@ export class GoogleDriveFs implements IFileSystem {
 		return this.cacheMutex.run(async () => {
 			if (!this.initialized) {
 				const loaded = await this.loadFromCache();
-				if (!loaded) await this.fullScan();
+				if (!loaded) {
+					await this.fullScan();
+				} else if (this._changesPageToken) {
+					// Apply incremental changes even on first load (startup)
+					await this._applyIncrementalChanges();
+				}
 			} else if (this._changesPageToken) {
 				await this._applyIncrementalChanges();
 			}
@@ -391,6 +446,53 @@ export class GoogleDriveFs implements IFileSystem {
 			if (wasFolder) {
 				this.cache.rewriteChildPaths(oldPath, newPath);
 			}
+		});
+	}
+
+	/**
+	 * Detect remote changes without loading the full metadata cache.
+	 * Uses only the folder hierarchy (stored separately as a compact blob).
+	 *
+	 * Returns null if:
+	 * - No folder hierarchy in IDB (full scan needed)
+	 * - No changes page token
+	 * - Remote deletions detected (can't resolve path without full cache)
+	 * - Token expired (410) or invalid (401)
+	 */
+	async getRemoteChangedPaths(): Promise<{
+		changedPaths: Set<string>;
+		changedFiles: Map<string, FileEntity>;
+	} | null> {
+		return this.cacheMutex.run(async () => {
+			if (!this._changesPageToken) return null;
+
+			const hierarchy = await this.loadFolderHierarchy();
+			if (!hierarchy) return null;
+
+			const result = await applyIncrementalChangesLightweight(
+				this.client,
+				hierarchy,
+				this._changesPageToken,
+				this.logger,
+			);
+
+			if (result.needsFullScan) return null;
+
+			this._changesPageToken = result.newToken;
+
+			// Persist updated folder hierarchy and token
+			if (result.hierarchyChanged) {
+				void this.saveFolderHierarchy(hierarchy);
+			}
+			// Persist new token to IDB so loadFromCache() gets the updated token
+			if (this.metadataStore) {
+				void this.metadataStore.putMeta("changesStartPageToken", result.newToken);
+			}
+
+			return {
+				changedPaths: result.changedPaths,
+				changedFiles: result.changedFiles,
+			};
 		});
 	}
 

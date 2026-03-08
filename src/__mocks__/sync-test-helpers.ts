@@ -2,6 +2,7 @@ import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
 import type { SyncRecord } from "../sync/types";
 import type { SyncStateStore } from "../sync/state";
+import type { LocalFileSnapshot } from "../sync/state";
 
 /** In-memory mock IFileSystem for unit tests (no hash computation) */
 export function createMockFs(name: string): IFileSystem & {
@@ -101,11 +102,14 @@ export function createMockStateStore(): {
 		async close() {},
 		async get(path: string) { return records.get(path); },
 		async getAll() { return Array.from(records.values()); },
+		async getMany(paths: string[]) { return paths.map(p => records.get(p)).filter((r): r is SyncRecord => r !== undefined); },
 		async put(record: SyncRecord) { records.set(record.path, record); },
 		async delete(path: string) { records.delete(path); contents.delete(path); },
 		async clear() { records.clear(); contents.clear(); },
 		async putContent(path: string, content: ArrayBuffer) { contents.set(path, content); },
 		async getContent(path: string) { return contents.get(path); },
+		async saveLocalSnapshot(_snapshot: LocalFileSnapshot) {},
+		async loadLocalSnapshot() { return null; },
 	} as unknown as { records: Map<string, SyncRecord>; contents: Map<string, ArrayBuffer> } & SyncStateStore;
 }
 

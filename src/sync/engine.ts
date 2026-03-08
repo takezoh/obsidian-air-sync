@@ -192,3 +192,53 @@ function hasRemoteChanged(file: FileEntity, record: SyncRecord): boolean {
 	}
 	return true;
 }
+
+/**
+ * Build a MixedEntity list for only the changed paths (O(delta)).
+ * Avoids calling remoteFs.list() — uses remoteChangedFiles metadata or SyncRecord for remote state.
+ *
+ * For paths changed remotely: use metadata from changes.list (in remoteChangedFiles).
+ * For paths changed locally only: synthesize remote entity from SyncRecord (hasRemoteChanged → false).
+ */
+export async function buildChangedEntities(
+	changedPaths: Set<string>,
+	localFs: IFileSystem,
+	remoteChangedFiles: Map<string, FileEntity>,
+	stateStore: SyncStateStore,
+): Promise<MixedEntity[]> {
+	const paths = Array.from(changedPaths);
+	const syncRecords = await stateStore.getMany(paths);
+	const recordMap = new Map(syncRecords.map((r) => [r.path, r]));
+
+	const entities: MixedEntity[] = [];
+	for (const path of paths) {
+		const local = await localFs.stat(path);
+		const prevSync = recordMap.get(path);
+		const entity: MixedEntity = { path };
+
+		if (local && !local.isDirectory) entity.local = local;
+
+		const remoteFromDelta = remoteChangedFiles.get(path);
+		if (remoteFromDelta) {
+			// File changed remotely — use the delta metadata
+			entity.remote = remoteFromDelta;
+		} else if (prevSync) {
+			// File NOT changed remotely — reconstruct "unchanged" remote from SyncRecord.
+			// hasRemoteChanged() will return false for this entity.
+			entity.remote = {
+				path,
+				isDirectory: false,
+				size: prevSync.remoteSize,
+				mtime: prevSync.remoteMtime,
+				hash: prevSync.hash,
+				backendMeta: prevSync.backendMeta,
+			};
+		}
+		// remote=undefined means: remote does not exist (deleted or never created)
+
+		entity.prevSync = prevSync;
+		entities.push(entity);
+	}
+
+	return entities;
+}

@@ -2,22 +2,37 @@ import type { SmartSyncSettings } from "../settings";
 import type { IFileSystem } from "../fs/interface";
 import type { IBackendProvider } from "../fs/backend";
 import type { ConflictStrategy, MixedEntity, SyncDecision } from "./types";
+import type { FileEntity } from "../fs/types";
 import { AsyncMutex } from "../queue/async-queue";
 import { isIgnored } from "../utils/ignore";
 import { sha256 } from "../utils/hash";
 import { SyncStateStore } from "./state";
-import { buildMixedEntities, computeDecisions } from "./engine";
+import { buildMixedEntities, buildChangedEntities, computeDecisions } from "./engine";
+import { LocalChangeDetector } from "./local-change-detector";
 import { SyncExecutor, SyncProgress, SyncResult } from "./executor";
 import type { Logger } from "../logging/logger";
 import { getErrorInfo, isRateLimitError, sleep } from "./error";
 import { ConflictHistory } from "./conflict-history";
+import type { Vault } from "obsidian";
 
 export type { ErrorInfo } from "./error";
 export { getErrorInfo, isRateLimitError } from "./error";
 
 export type SyncStatus = "idle" | "syncing" | "error" | "partial_error" | "not_connected";
 const MAX_RETRIES = 3;
+const DELTA_THRESHOLD = 500;
 
+/** Type guard for filesystem implementations that support lightweight remote delta */
+interface RemoteFsWithDelta extends IFileSystem {
+	getRemoteChangedPaths(): Promise<{
+		changedPaths: Set<string>;
+		changedFiles: Map<string, FileEntity>;
+	} | null>;
+}
+
+function hasGetRemoteChangedPaths(fs: IFileSystem): fs is RemoteFsWithDelta {
+	return typeof (fs as RemoteFsWithDelta).getRemoteChangedPaths === "function";
+}
 
 export interface SyncServiceDeps {
 	getSettings: () => SmartSyncSettings;
@@ -32,6 +47,8 @@ export interface SyncServiceDeps {
 	resolveConflictBatch: (conflicts: SyncDecision[]) => Promise<ConflictStrategy | null>;
 	/** Returns true when running on mobile (used for mobile sync restrictions) */
 	isMobile: () => boolean;
+	/** Returns the Vault instance (used by LocalChangeDetector) */
+	getVault?: () => Vault;
 	logger?: Logger;
 }
 
@@ -44,11 +61,18 @@ export class SyncService {
 	private stateStore: SyncStateStore;
 	private syncPending = false;
 	private deps: SyncServiceDeps;
+	private _changeDetector: LocalChangeDetector | null = null;
+	private detectorInitialized = false;
 
 	constructor(deps: SyncServiceDeps) {
 		this.deps = deps;
 		const vaultId = deps.getSettings().vaultId;
 		this.stateStore = new SyncStateStore(vaultId);
+
+		// Create change detector only if vault is available
+		if (deps.getVault) {
+			this._changeDetector = new LocalChangeDetector(deps.getVault(), this.stateStore);
+		}
 	}
 
 	get state(): SyncStateStore {
@@ -57,6 +81,14 @@ export class SyncService {
 
 	get isLocked(): boolean {
 		return this.syncMutex.isLocked;
+	}
+
+	/** The local change detector (for tracking vault events externally) */
+	get changeDetector(): LocalChangeDetector {
+		if (!this._changeDetector) {
+			throw new Error("LocalChangeDetector is not available: getVault was not provided");
+		}
+		return this._changeDetector;
 	}
 
 	async close(): Promise<void> {
@@ -192,11 +224,70 @@ export class SyncService {
 		}
 		const settings = this.deps.getSettings();
 
-		const entities = await buildMixedEntities(
-			localFs,
-			remoteFs,
-			this.stateStore
-		);
+		// Initialize change detector on first sync (only if available)
+		if (this._changeDetector && !this.detectorInitialized) {
+			this.detectorInitialized = true;
+			await this._changeDetector.initialize();
+		}
+
+		// Attempt delta sync if both local and remote deltas are available
+		let entities: MixedEntity[];
+		const localDelta = this._changeDetector?.consume() ?? null;
+
+		let remoteDelta: { changedPaths: Set<string>; changedFiles: Map<string, FileEntity> } | null = null;
+		if (localDelta !== null && hasGetRemoteChangedPaths(remoteFs)) {
+			remoteDelta = await remoteFs.getRemoteChangedPaths();
+		}
+
+		const useDeltaSync =
+			localDelta !== null &&
+			remoteDelta !== null &&
+			(localDelta.size + remoteDelta.changedPaths.size) <= DELTA_THRESHOLD;
+
+		if (useDeltaSync && localDelta !== null && remoteDelta !== null) {
+			// Merge local + remote changed paths
+			const allChangedPaths = new Set<string>([
+				...localDelta,
+				...remoteDelta.changedPaths,
+			]);
+
+			if (allChangedPaths.size === 0) {
+				// No changes detected — skip sync
+				this.deps.logger?.info("Delta sync: no changes detected, skipping");
+				// Save snapshot for next time
+				if (this._changeDetector) {
+					await this._changeDetector.saveSnapshot();
+				}
+				this.deps.notify("Everything up to date");
+				return { pushed: 0, pulled: 0, conflicts: 0, errors: [], mergeConflictPaths: [], conflictRecords: [] };
+			}
+
+			this.deps.logger?.info("Delta sync", {
+				localChanges: localDelta.size,
+				remoteChanges: remoteDelta.changedPaths.size,
+				total: allChangedPaths.size,
+			});
+
+			entities = await buildChangedEntities(
+				allChangedPaths,
+				localFs,
+				remoteDelta.changedFiles,
+				this.stateStore,
+			);
+		} else {
+			// Fall back to full sync
+			if (localDelta !== null || remoteDelta !== null) {
+				this.deps.logger?.info("Delta sync: falling back to full sync", {
+					localDeltaSize: localDelta?.size ?? null,
+					remoteDeltaSize: remoteDelta?.changedPaths.size ?? null,
+				});
+			}
+			entities = await buildMixedEntities(
+				localFs,
+				remoteFs,
+				this.stateStore
+			);
+		}
 
 		const isMobile = this.deps.isMobile();
 		const maxBytes = settings.mobileMaxFileSizeMB * 1024 * 1024;
@@ -282,6 +373,11 @@ export class SyncService {
 		});
 
 		const result = await executor.execute(decisions);
+
+		// Save local snapshot after successful sync
+		if (this._changeDetector) {
+			await this._changeDetector.saveSnapshot();
+		}
 
 		// Write conflict history
 		if (result.conflictRecords.length > 0 && this.deps.logger) {

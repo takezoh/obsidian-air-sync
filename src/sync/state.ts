@@ -5,6 +5,13 @@ const DB_NAME_PREFIX = "smart-sync";
 const STORE_NAME = "sync-records";
 const CONTENT_STORE_NAME = "sync-content";
 const DB_VERSION = 3;
+const LOCAL_SNAPSHOT_KEY = "__localSnapshot";
+
+/** Snapshot of local vault state for startup delta detection */
+export interface LocalFileSnapshot {
+	/** path → { mtime, size } */
+	files: Record<string, { m: number; s: number }>;
+}
 
 /** Persistent store for sync records using IndexedDB */
 export class SyncStateStore {
@@ -55,6 +62,19 @@ export class SyncStateStore {
 		});
 	}
 
+	/** Get multiple sync records by paths in a single transaction (O(delta)) */
+	async getMany(paths: string[]): Promise<SyncRecord[]> {
+		if (paths.length === 0) return [];
+		return this.helper.runTransaction(STORE_NAME, "readonly", (tx) => {
+			const store = tx.objectStore(STORE_NAME);
+			const requests = paths.map((p) => store.get(p));
+			return () =>
+				requests
+					.map((r) => r.result as SyncRecord | undefined)
+					.filter((r): r is SyncRecord => r !== undefined);
+		});
+	}
+
 	/** Save or update a sync record */
 	async put(record: SyncRecord): Promise<void> {
 		await this.helper.runTransaction(STORE_NAME, "readwrite", (tx) => {
@@ -98,5 +118,26 @@ export class SyncStateStore {
 				return result?.content;
 			};
 		});
+	}
+
+	/** Save the local vault snapshot for future startup delta detection */
+	async saveLocalSnapshot(snapshot: LocalFileSnapshot): Promise<void> {
+		const json = JSON.stringify(snapshot);
+		const content = new TextEncoder().encode(json).buffer as ArrayBuffer;
+		await this.putContent(LOCAL_SNAPSHOT_KEY, content);
+	}
+
+	/** Load the saved local vault snapshot, or null if not found */
+	async loadLocalSnapshot(): Promise<LocalFileSnapshot | null> {
+		const content = await this.getContent(LOCAL_SNAPSHOT_KEY);
+		if (!content) return null;
+		try {
+			const json = new TextDecoder().decode(content);
+			const parsed = JSON.parse(json) as LocalFileSnapshot;
+			if (!parsed.files || typeof parsed.files !== "object") return null;
+			return parsed;
+		} catch {
+			return null;
+		}
 	}
 }

@@ -69,6 +69,8 @@ describe("applyIncrementalChanges", () => {
 		expect(result).toEqual({
 			newToken: "new-token-123",
 			needsFullScan: false,
+			// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+			changedPaths: expect.any(Set),
 		});
 		expect(loggerInfo).toHaveBeenCalledWith("Incremental changes applied", {
 			changeCount: 1,

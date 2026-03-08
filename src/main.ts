@@ -75,6 +75,7 @@ export default class SmartSyncPlugin extends Plugin {
 			remoteFs: () => this.backendManager.getRemoteFs(),
 			backendProvider: () => this.backendManager.getBackendProvider(),
 			isMobile: () => Platform.isMobile,
+			getVault: () => this.app.vault,
 			onStatusChange: (status) => {
 				this.syncStatus = status;
 				this.updateStatusBar();
@@ -146,13 +147,36 @@ export default class SmartSyncPlugin extends Plugin {
 
 		const onVaultChange = (file: TAbstractFile) => {
 			if (this.syncService.shouldSync() && !this.syncService.isExcluded(file.path)) {
+				// Track the change for delta sync
+				try {
+					this.syncService.changeDetector.trackChange(file.path);
+				} catch {
+					// changeDetector not available — no-op
+				}
 				debouncedSync();
 			}
 		};
+
+		const onVaultRename = (file: TAbstractFile, oldPath: string) => {
+			if (this.syncService.shouldSync()) {
+				// Track both old and new paths for delta sync
+				try {
+					this.syncService.changeDetector.trackRename(oldPath, file.path);
+				} catch {
+					// changeDetector not available — no-op
+				}
+				if (!this.syncService.isExcluded(file.path) || !this.syncService.isExcluded(oldPath)) {
+					debouncedSync();
+				}
+			}
+		};
+
 		this.registerEvent(this.app.vault.on("create", onVaultChange));
 		this.registerEvent(this.app.vault.on("modify", onVaultChange));
 		this.registerEvent(this.app.vault.on("delete", onVaultChange));
-		this.registerEvent(this.app.vault.on("rename", onVaultChange));
+		this.registerEvent(this.app.vault.on("rename", (file: TAbstractFile, oldPath: string) => {
+			onVaultRename(file, oldPath);
+		}));
 
 		// Sync on network reconnect
 		const onOnline = () => {

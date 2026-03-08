@@ -26,6 +26,7 @@ export default tseslint.config(
 	...obsidianmd.configs.recommended,
 	globalIgnores([
 		"node_modules",
+		".claude",
 		"dist",
 		"esbuild.config.mjs",
 		"eslint.config.js",
