@@ -76,7 +76,7 @@ The default redirect page (`https://smartsync.takezo.dev/callback`) is a [single
 
 ### Syncing the config directory
 
-To sync Obsidian's config directory (`.obsidian/`), add it to **Dot-prefixed paths to sync** and use **Ignore patterns** to select what to include.
+If you want to try syncing Obsidian's config directory (`.obsidian/`), add it to **Dot-prefixed paths to sync** and use **Ignore patterns** to select what to include.
 
 > **⚠️ Warning**: The config directory contains Obsidian's internal metadata. Syncing it across devices may cause settings loss, layout corruption, or plugin malfunction.
 
