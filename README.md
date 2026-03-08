@@ -80,7 +80,7 @@ To sync Obsidian's config directory (`.obsidian/`), add it to **Dot-prefixed pat
 
 > **⚠️ Warning**: The config directory contains Obsidian's internal metadata. Syncing it across devices may cause settings loss, layout corruption, or plugin malfunction.
 
-Example — sync only JSON config files and plugins:
+Example:
 
 ```
 .obsidian/**
