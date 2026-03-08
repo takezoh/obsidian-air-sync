@@ -6,7 +6,7 @@ Detects file creation, modification, deletion, and renames on both local and rem
 
 Currently supports Google Drive as a storage backend.
 
-> **Requires a Google account.** This plugin communicates with Google Drive API (`googleapis.com`) for file sync and with an auth server (`auth-smartsync.takezo.dev`) for OAuth token exchange. No vault data is sent to the auth server — it only handles authentication tokens.
+> **Requires a Google account.** This plugin communicates with Google Drive API (`googleapis.com`) for file sync and with an auth server (`auth-smartsync.takezo.dev`) for OAuth token exchange. No vault data is sent to the auth server — it only handles authentication tokens. Custom OAuth allows you to own the authorization, configure broader access scopes, and exchange tokens directly with Google.
 
 ## Features
 
@@ -31,6 +31,20 @@ If the automatic callback fails, try disconnecting and reconnecting from the plu
 
 The first sync after connecting performs a full scan of the Drive folder. This may take some time depending on vault size. Subsequent syncs fetch only changes and are much faster.
 
+### Custom OAuth (advanced)
+
+The built-in OAuth uses the `drive.file` scope, which only allows access to files created by the plugin. With custom OAuth, you own the authorization and can grant broader access — for example, the `drive` scope allows the plugin to access files created outside the plugin as well.
+
+1. Create an OAuth 2.0 client in the [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+2. Enable the Google Drive API
+3. Set the authorized redirect URI (default: `https://smartsync.takezo.dev/callback`)
+4. In plugin settings, select **Google Drive (custom OAuth)** as the backend
+5. Enter your client ID and client secret
+6. Configure the scope as needed (default: `drive.file`, set to `https://www.googleapis.com/auth/drive` for full access)
+7. Click **Connect to Google Drive**
+
+With custom OAuth, token exchange happens directly between the plugin and Google using PKCE (S256) — no tokens pass through the auth server.
+
 ### Troubleshooting
 
 - **Authentication completes but sync doesn't start**: Restart the plugin (disable → enable in Community plugins settings), then try syncing manually
@@ -41,7 +55,7 @@ The first sync after connecting performs a full scan of the Drive folder. This m
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| Backend | Storage backend for sync | Google Drive |
+| Backend | Storage backend for sync | Google Drive (or Google Drive custom OAuth) |
 | Auto-sync interval | Sync interval in minutes (0 to disable) | 5 |
 | Conflict strategy | Resolution strategy for conflicts | keep_newer |
 | Enable 3-way merge | Enable 3-way merge for text files | On |

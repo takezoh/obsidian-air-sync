@@ -1,5 +1,5 @@
 import type { SmartSyncSettings } from "../settings";
-import { GoogleDriveSettingsRenderer } from "./googledrive-settings";
+import { GoogleDriveSettingsRenderer, GoogleDriveCustomSettingsRenderer } from "./googledrive-settings";
 
 /** Actions that settings renderers can invoke for connection flow UI */
 export interface BackendConnectionActions {
@@ -30,6 +30,7 @@ export interface IBackendSettingsRenderer {
 
 const renderers: IBackendSettingsRenderer[] = [
 	new GoogleDriveSettingsRenderer(),
+	new GoogleDriveCustomSettingsRenderer(),
 ];
 
 const rendererMap = new Map<string, IBackendSettingsRenderer>();

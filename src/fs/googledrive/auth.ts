@@ -3,129 +3,85 @@ import type { Logger } from "../../logging/logger";
 import { assertTokenResponse } from "./types";
 
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
+const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const AUTH_SERVER_URL = "https://auth-smartsync.takezo.dev";
 const SCOPES = "https://www.googleapis.com/auth/drive.file";
+export const DEFAULT_CUSTOM_SCOPE = SCOPES;
+export const DEFAULT_CUSTOM_REDIRECT_URI = "https://smartsync.takezo.dev/callback";
 const REDIRECT_URI = `${AUTH_SERVER_URL}/google/callback`;
 
 const GOOGLE_CLIENT_ID = "135801498656-lfjor2ml3v26t9l63mkoka0bndgl9eue.apps.googleusercontent.com";
 
+/** Shared interface for GoogleAuth and GoogleAuthDirect */
+export interface IGoogleAuth {
+	setTokens(refreshToken: string, accessToken: string, expiry: number): void;
+	readonly isAuthenticated: boolean;
+	getAuthorizationUrl(): Promise<string>;
+	getAuthState(): string | null;
+	setAuthState(authState: string): void;
+	getCodeVerifier(): string | null;
+	setCodeVerifier(verifier: string): void;
+	handleAuthCallback(params: Record<string, string | undefined>): Promise<void>;
+	getAccessToken(): Promise<string>;
+	getTokenState(): { refreshToken: string; accessToken: string; accessTokenExpiry: number };
+	revokeToken(): Promise<void>;
+}
+
 /**
- * Handles OAuth 2.0 authentication for Google Drive.
- * Token exchange is handled server-side by auth-smartsync.takezo.dev
- * (confidential client with client_secret). The plugin only manages
- * CSRF state verification and token storage.
+ * Base class for Google OAuth implementations.
+ * Manages token storage, refresh deduplication, CSRF state, and revocation.
+ * Subclasses provide the auth URL, callback handling, and refresh strategy.
  */
-export class GoogleAuth {
-	private accessToken = "";
-	private accessTokenExpiry = 0;
-	private refreshToken = "";
+abstract class GoogleAuthBase implements IGoogleAuth {
+	protected accessToken = "";
+	protected accessTokenExpiry = 0;
+	protected refreshToken = "";
 	private refreshPromise: Promise<string> | null = null;
-	private logger?: Logger;
-
-	/** Anti-CSRF state parameter for the current auth flow */
+	protected logger?: Logger;
 	private authState: string | null = null;
+	private codeVerifier: string | null = null;
 
-	constructor(logger?: Logger) {
-		this.logger = logger;
-	}
-
-	/** Set stored tokens (loaded from plugin settings) */
 	setTokens(refreshToken: string, accessToken: string, expiry: number): void {
 		this.refreshToken = refreshToken;
 		this.accessToken = accessToken;
 		this.accessTokenExpiry = expiry;
 	}
 
-	/** Check if we have a valid refresh token */
 	get isAuthenticated(): boolean {
 		return this.refreshToken.length > 0;
 	}
 
-	/**
-	 * Generate the OAuth authorization URL for the user to visit.
-	 * Uses a random state parameter for CSRF protection.
-	 */
-	getAuthorizationUrl(): string {
-		this.authState = btoa(JSON.stringify({ app: "obsidian-plugin", nonce: generateRandomString(32) }));
+	abstract getAuthorizationUrl(): Promise<string>;
 
-		const params = new URLSearchParams({
-			client_id: GOOGLE_CLIENT_ID,
-			redirect_uri: REDIRECT_URI,
-			response_type: "code",
-			scope: SCOPES,
-			access_type: "offline",
-			prompt: "consent",
-			state: this.authState,
-		});
-		return `${GOOGLE_AUTH_URL}?${params.toString()}`;
-	}
-
-	/** Get the current auth state for CSRF verification */
 	getAuthState(): string | null {
 		return this.authState;
 	}
 
-	/** Restore auth state (e.g. after plugin reload during auth flow) */
 	setAuthState(authState: string): void {
 		this.authState = authState;
 	}
 
-	/**
-	 * Accept tokens returned by the auth server callback.
-	 * The auth server already exchanged the authorization code for tokens;
-	 * we just verify the CSRF state and store the tokens.
-	 */
-	handleAuthCallback(params: {
-		access_token: string;
-		refresh_token?: string;
-		expires_in: string;
-		state?: string;
-	}): void {
-		// Verify CSRF state
-		if (!this.authState) {
-			throw new Error("OAuth state is missing. Please restart the authorization flow.");
-		}
-		if (!params.state || params.state !== this.authState) {
-			throw new Error("State mismatch - possible CSRF attack");
-		}
-		if (!params.access_token) {
-			throw new Error("Access token is missing from auth callback");
-		}
-
-		const expiresIn = parseInt(params.expires_in, 10);
-		if (isNaN(expiresIn) || expiresIn <= 0) {
-			throw new Error("Invalid expires_in from auth callback");
-		}
-
-		this.accessToken = params.access_token;
-		this.accessTokenExpiry = Date.now() + expiresIn * 1000;
-		if (params.refresh_token) {
-			this.refreshToken = params.refresh_token;
-		}
-
-		// Clear auth state after use
-		this.authState = null;
+	getCodeVerifier(): string | null {
+		return this.codeVerifier;
 	}
 
-	/**
-	 * Get a valid access token, refreshing if necessary.
-	 * Concurrent calls share the same refresh request.
-	 */
+	setCodeVerifier(verifier: string): void {
+		this.codeVerifier = verifier;
+	}
+
+	abstract handleAuthCallback(params: Record<string, string | undefined>): Promise<void>;
+
 	async getAccessToken(): Promise<string> {
 		if (!this.refreshToken) {
 			throw new Error("Not authenticated. Please connect to Google Drive first.");
 		}
-
-		// Return cached token if still valid (with 60s buffer)
 		if (this.accessToken && Date.now() < this.accessTokenExpiry - 60_000) {
 			return this.accessToken;
 		}
-
-		// Deduplicate concurrent refresh requests
 		if (this.refreshPromise) {
 			return this.refreshPromise;
 		}
-		this.refreshPromise = this._refreshToken();
+		this.refreshPromise = this.performRefresh();
 		try {
 			return await this.refreshPromise;
 		} finally {
@@ -133,28 +89,8 @@ export class GoogleAuth {
 		}
 	}
 
-	/** Perform the actual token refresh via the auth server */
-	private async _refreshToken(): Promise<string> {
-		this.logger?.info("Refreshing access token");
+	protected abstract performRefresh(): Promise<string>;
 
-		const response = await requestUrl({
-			url: `${AUTH_SERVER_URL}/google/token/refresh`,
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ refresh_token: this.refreshToken }),
-		});
-
-		const token: unknown = response.json;
-		assertTokenResponse(token);
-		this.accessToken = token.access_token;
-		this.accessTokenExpiry = Date.now() + token.expires_in * 1000;
-		if (token.refresh_token) {
-			this.refreshToken = token.refresh_token;
-		}
-		return this.accessToken;
-	}
-
-	/** Get current tokens for persistence */
 	getTokenState(): { refreshToken: string; accessToken: string; accessTokenExpiry: number } {
 		return {
 			refreshToken: this.refreshToken,
@@ -163,7 +99,6 @@ export class GoogleAuth {
 		};
 	}
 
-	/** Revoke the current token at Google's endpoint (best-effort, never throws) */
 	async revokeToken(): Promise<void> {
 		const token = this.refreshToken || this.accessToken;
 		if (!token) return;
@@ -175,10 +110,221 @@ export class GoogleAuth {
 				headers: { "Content-Type": "application/x-www-form-urlencoded" },
 			});
 		} catch {
-			// Best-effort: log but don't throw — local cleanup still proceeds
 			this.logger?.warn("Failed to revoke Google token (non-fatal)");
 		}
 	}
+
+	/** Verify CSRF state and clear it. Returns the validated state. */
+	protected verifyAndClearState(state: string | undefined): void {
+		if (!this.authState) {
+			throw new Error("OAuth state is missing. Please restart the authorization flow.");
+		}
+		if (!state || state !== this.authState) {
+			throw new Error("State mismatch - possible CSRF attack");
+		}
+	}
+
+	protected clearAuthState(): void {
+		this.authState = null;
+	}
+
+	/** Store tokens from a validated TokenResponse */
+	protected storeTokenResponse(token: { access_token: string; refresh_token?: string; expires_in: number }): void {
+		this.accessToken = token.access_token;
+		this.accessTokenExpiry = Date.now() + token.expires_in * 1000;
+		if (token.refresh_token) {
+			this.refreshToken = token.refresh_token;
+		}
+	}
+
+	/** Generate a state parameter with the given extra fields */
+	protected generateState(extra: Record<string, unknown> = {}): string {
+		this.authState = btoa(JSON.stringify({
+			app: "obsidian-plugin",
+			...extra,
+			nonce: generateRandomString(32),
+		}));
+		return this.authState;
+	}
+}
+
+/**
+ * Handles OAuth 2.0 authentication for Google Drive.
+ * Token exchange is handled server-side by auth-smartsync.takezo.dev
+ * (confidential client with client_secret). The plugin only manages
+ * CSRF state verification and token storage.
+ */
+export class GoogleAuth extends GoogleAuthBase {
+	constructor(logger?: Logger) {
+		super();
+		this.logger = logger;
+	}
+
+	async getAuthorizationUrl(): Promise<string> {
+		const state = this.generateState();
+
+		const params = new URLSearchParams({
+			client_id: GOOGLE_CLIENT_ID,
+			redirect_uri: REDIRECT_URI,
+			response_type: "code",
+			scope: SCOPES,
+			access_type: "offline",
+			prompt: "consent",
+			state,
+		});
+		return `${GOOGLE_AUTH_URL}?${params.toString()}`;
+	}
+
+	/**
+	 * Accept tokens returned by the auth server callback.
+	 * The auth server already exchanged the authorization code for tokens;
+	 * we just verify the CSRF state and store the tokens.
+	 */
+	async handleAuthCallback(params: Record<string, string | undefined>): Promise<void> {
+		this.verifyAndClearState(params.state);
+		if (!params.access_token) {
+			throw new Error("Access token is missing from auth callback");
+		}
+
+		const expiresIn = parseInt(params.expires_in ?? "3600", 10);
+		if (isNaN(expiresIn) || expiresIn <= 0) {
+			throw new Error("Invalid expires_in from auth callback");
+		}
+
+		this.accessToken = params.access_token;
+		this.accessTokenExpiry = Date.now() + expiresIn * 1000;
+		if (params.refresh_token) {
+			this.refreshToken = params.refresh_token;
+		}
+
+		this.clearAuthState();
+	}
+
+	protected async performRefresh(): Promise<string> {
+		this.logger?.info("Refreshing access token");
+
+		const response = await requestUrl({
+			url: `${AUTH_SERVER_URL}/google/token/refresh`,
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ refresh_token: this.refreshToken }),
+		});
+
+		const token: unknown = response.json;
+		assertTokenResponse(token);
+		this.storeTokenResponse(token);
+		return this.accessToken;
+	}
+}
+
+/**
+ * Direct OAuth 2.0 authentication using user-provided client credentials.
+ * The auth server relays the authorization code back without exchanging it;
+ * this class exchanges the code and refreshes tokens directly with Google.
+ */
+export class GoogleAuthDirect extends GoogleAuthBase {
+	private clientId: string;
+	private clientSecret: string;
+	private scope: string;
+	private redirectUri: string;
+
+	constructor(clientId: string, clientSecret: string, logger?: Logger, scope?: string, redirectUri?: string) {
+		super();
+		this.clientId = clientId;
+		this.clientSecret = clientSecret;
+		this.scope = scope || SCOPES;
+		this.redirectUri = redirectUri || DEFAULT_CUSTOM_REDIRECT_URI;
+		this.logger = logger;
+	}
+
+	async getAuthorizationUrl(): Promise<string> {
+		const state = this.generateState({ custom: true });
+		const codeVerifier = generateRandomString(64);
+		this.setCodeVerifier(codeVerifier);
+		const codeChallenge = await computeS256Challenge(codeVerifier);
+
+		const params = new URLSearchParams({
+			client_id: this.clientId,
+			redirect_uri: this.redirectUri,
+			response_type: "code",
+			scope: this.scope,
+			access_type: "offline",
+			prompt: "consent",
+			state,
+			code_challenge: codeChallenge,
+			code_challenge_method: "S256",
+		});
+		return `${GOOGLE_AUTH_URL}?${params.toString()}`;
+	}
+
+	/**
+	 * Exchange the authorization code for tokens directly with Google.
+	 * The auth server passes back code + state without exchanging them.
+	 * Sends code_verifier for PKCE verification.
+	 */
+	async handleAuthCallback(params: Record<string, string | undefined>): Promise<void> {
+		this.verifyAndClearState(params.state);
+		if (!params.code) {
+			throw new Error("Authorization code is missing from auth callback");
+		}
+		const codeVerifier = this.getCodeVerifier();
+		if (!codeVerifier) {
+			throw new Error("PKCE code verifier is missing. Please restart the authorization flow.");
+		}
+
+		const response = await requestUrl({
+			url: GOOGLE_TOKEN_URL,
+			method: "POST",
+			headers: { "Content-Type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({
+				code: params.code,
+				client_id: this.clientId,
+				client_secret: this.clientSecret,
+				redirect_uri: this.redirectUri,
+				grant_type: "authorization_code",
+				code_verifier: codeVerifier,
+			}).toString(),
+		});
+
+		const token: unknown = response.json;
+		assertTokenResponse(token);
+		this.storeTokenResponse(token);
+		this.clearAuthState();
+	}
+
+	protected async performRefresh(): Promise<string> {
+		this.logger?.info("Refreshing access token (direct)");
+
+		const response = await requestUrl({
+			url: GOOGLE_TOKEN_URL,
+			method: "POST",
+			headers: { "Content-Type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({
+				client_id: this.clientId,
+				client_secret: this.clientSecret,
+				refresh_token: this.refreshToken,
+				grant_type: "refresh_token",
+			}).toString(),
+		});
+
+		const token: unknown = response.json;
+		assertTokenResponse(token);
+		this.storeTokenResponse(token);
+		return this.accessToken;
+	}
+}
+
+/** Compute S256 code challenge: base64url(SHA-256(verifier)) */
+async function computeS256Challenge(verifier: string): Promise<string> {
+	const data = new TextEncoder().encode(verifier);
+	const hash = await crypto.subtle.digest("SHA-256", data);
+	// base64url encoding (RFC 7636 Appendix A)
+	let base64 = "";
+	const bytes = new Uint8Array(hash);
+	for (const b of bytes) {
+		base64 += String.fromCharCode(b);
+	}
+	return btoa(base64).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 const RANDOM_CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";

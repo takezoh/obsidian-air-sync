@@ -25,6 +25,11 @@ export interface GoogleDriveAuthProviderInternal {
 	googleAuth: import("./auth").GoogleAuth;
 }
 
+/** Type for accessing private fields on GoogleDriveCustomAuthProvider in tests */
+export interface GoogleDriveCustomAuthProviderInternal {
+	googleAuth: import("./auth").GoogleAuthDirect;
+}
+
 /** Type for accessing private resumableUploader on DriveClient in tests */
 export interface DriveClientInternal {
 	resumableUploader: {

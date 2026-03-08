@@ -1,5 +1,5 @@
 import { requestUrl } from "obsidian";
-import type { GoogleAuth } from "./auth";
+import type { IGoogleAuth } from "./auth";
 import type { Logger } from "../../logging/logger";
 import type { DriveFile, DriveFileList, DriveChangeList } from "./types";
 import {
@@ -22,11 +22,11 @@ const FILE_FIELDS = "id,name,mimeType,size,modifiedTime,parents,md5Checksum";
  * Uses Obsidian's requestUrl for CORS-free requests.
  */
 export class DriveClient {
-	private auth: GoogleAuth;
+	private auth: IGoogleAuth;
 	private logger?: Logger;
 	private resumableUploader: ResumableUploader;
 
-	constructor(auth: GoogleAuth, logger?: Logger) {
+	constructor(auth: IGoogleAuth, logger?: Logger) {
 		this.auth = auth;
 		this.logger = logger;
 		this.resumableUploader = new ResumableUploader({

@@ -1,11 +1,12 @@
 import type { IBackendProvider } from "./backend";
 import { GoogleDriveProvider } from "./googledrive/provider";
+import { GoogleDriveCustomProvider } from "./googledrive/provider-custom";
 
 /**
  * Registry of available backend providers.
  * New backends are added here — no changes needed in main.ts or sync/.
  */
-const providers: IBackendProvider[] = [new GoogleDriveProvider()];
+const providers: IBackendProvider[] = [new GoogleDriveProvider(), new GoogleDriveCustomProvider()];
 
 const providerMap = new Map<string, IBackendProvider>();
 for (const p of providers) {

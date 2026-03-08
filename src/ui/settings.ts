@@ -92,6 +92,38 @@ export class SmartSyncSettingTab extends PluginSettingTab {
 					})
 			);
 
+		// --- Backend-specific settings (config + connection flow) ---
+		const provider = getBackendProvider(
+			this.plugin.settings.backendType
+		);
+		const renderer = getBackendSettingsRenderer(
+			this.plugin.settings.backendType
+		);
+		if (renderer) {
+			new Setting(containerEl)
+				.setName(`${provider?.displayName ?? "Backend"} connection`)
+				.setHeading();
+
+			const backendType = this.plugin.settings.backendType;
+			renderer.render(
+				containerEl,
+				this.plugin.settings,
+				async (updates) => {
+					const current = this.plugin.settings.backendData[backendType] ?? {};
+					this.plugin.settings.backendData[backendType] = { ...current, ...updates };
+					await this.plugin.saveSettings();
+					await this.plugin.backendManager.initBackend();
+				},
+				{
+					startAuth: () => this.plugin.backendManager.startBackendConnect(),
+					completeAuth: (code: string) =>
+						this.plugin.backendManager.completeBackendConnect(code),
+					disconnect: () => this.plugin.backendManager.disconnectBackend(),
+					refreshDisplay: () => this.display(),
+				}
+			);
+		}
+
 		// --- Advanced settings ---
 		new Setting(containerEl).setName("Advanced").setHeading();
 
@@ -189,37 +221,5 @@ export class SmartSyncSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					})
 			);
-
-		// --- Backend-specific settings (config + connection flow) ---
-		const provider = getBackendProvider(
-			this.plugin.settings.backendType
-		);
-		const renderer = getBackendSettingsRenderer(
-			this.plugin.settings.backendType
-		);
-		if (!renderer) return;
-
-		new Setting(containerEl)
-			.setName(`${provider?.displayName ?? "Backend"} connection`)
-			.setHeading();
-
-		const backendType = this.plugin.settings.backendType;
-		renderer.render(
-			containerEl,
-			this.plugin.settings,
-			async (updates) => {
-				const current = this.plugin.settings.backendData[backendType] ?? {};
-				this.plugin.settings.backendData[backendType] = { ...current, ...updates };
-				await this.plugin.saveSettings();
-				await this.plugin.backendManager.initBackend();
-			},
-			{
-				startAuth: () => this.plugin.backendManager.startBackendConnect(),
-				completeAuth: (code: string) =>
-					this.plugin.backendManager.completeBackendConnect(code),
-				disconnect: () => this.plugin.backendManager.disconnectBackend(),
-				refreshDisplay: () => this.display(),
-			}
-		);
 	}
 }

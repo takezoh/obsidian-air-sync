@@ -112,8 +112,8 @@ export class BackendManager {
 		}
 		try {
 			const type = this.backendProvider.type;
-			const updates = await this.backendProvider.auth.startAuth();
 			const current = settings.backendData[type] ?? {};
+			const updates = await this.backendProvider.auth.startAuth(current);
 			settings.backendData[type] = { ...current, ...updates };
 			await this.deps.saveSettings();
 		} catch (err) {

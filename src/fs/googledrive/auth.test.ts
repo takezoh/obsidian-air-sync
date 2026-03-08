@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { spyRequestUrl, mockRes } from "./test-helpers";
-import type { GoogleDriveAuthProviderInternal } from "./test-helpers";
+import type { GoogleDriveAuthProviderInternal, GoogleDriveCustomAuthProviderInternal } from "./test-helpers";
 
 vi.mock("obsidian");
 
@@ -10,7 +10,7 @@ describe("GoogleAuth.handleAuthCallback", () => {
 		const auth = new GoogleAuth();
 		auth.setAuthState("my-csrf");
 
-		auth.handleAuthCallback({
+		await auth.handleAuthCallback({
 			access_token: "access-123",
 			refresh_token: "refresh-456",
 			expires_in: "3600",
@@ -27,13 +27,13 @@ describe("GoogleAuth.handleAuthCallback", () => {
 		const { GoogleAuth } = await import("./auth");
 		const auth = new GoogleAuth();
 
-		expect(() =>
+		await expect(
 			auth.handleAuthCallback({
 				access_token: "token",
 				expires_in: "3600",
 				state: "some-state",
 			})
-		).toThrow("OAuth state is missing");
+		).rejects.toThrow("OAuth state is missing");
 	});
 
 	it("throws when state does not match", async () => {
@@ -41,13 +41,13 @@ describe("GoogleAuth.handleAuthCallback", () => {
 		const auth = new GoogleAuth();
 		auth.setAuthState("correct-state");
 
-		expect(() =>
+		await expect(
 			auth.handleAuthCallback({
 				access_token: "token",
 				expires_in: "3600",
 				state: "wrong-state",
 			})
-		).toThrow("State mismatch");
+		).rejects.toThrow("State mismatch");
 	});
 
 	it("throws when state parameter is omitted", async () => {
@@ -55,12 +55,12 @@ describe("GoogleAuth.handleAuthCallback", () => {
 		const auth = new GoogleAuth();
 		auth.setAuthState("expected-state");
 
-		expect(() =>
+		await expect(
 			auth.handleAuthCallback({
 				access_token: "token",
 				expires_in: "3600",
 			})
-		).toThrow("State mismatch");
+		).rejects.toThrow("State mismatch");
 	});
 
 	it("clears authState after successful callback", async () => {
@@ -68,7 +68,7 @@ describe("GoogleAuth.handleAuthCallback", () => {
 		const auth = new GoogleAuth();
 		auth.setAuthState("csrf");
 
-		auth.handleAuthCallback({
+		await auth.handleAuthCallback({
 			access_token: "token",
 			expires_in: "3600",
 			state: "csrf",
@@ -83,7 +83,7 @@ describe("GoogleAuth.getAuthorizationUrl", () => {
 		const { GoogleAuth } = await import("./auth");
 		const auth = new GoogleAuth();
 
-		const url = auth.getAuthorizationUrl();
+		const url = await auth.getAuthorizationUrl();
 
 		expect(url).toContain("accounts.google.com");
 		expect(url).toContain("state=");
@@ -234,6 +234,193 @@ describe("GoogleAuth.revokeToken", () => {
 
 		await auth.revokeToken();
 		expect(mockRequestUrl).not.toHaveBeenCalled();
+
+		mockRequestUrl.mockRestore();
+	});
+});
+
+describe("GoogleAuthDirect.getAuthorizationUrl", () => {
+	it("uses custom client_id and includes PKCE S256 challenge", async () => {
+		const { GoogleAuthDirect } = await import("./auth");
+		const auth = new GoogleAuthDirect("custom-client-id", "custom-secret");
+
+		const url = await auth.getAuthorizationUrl();
+
+		expect(url).toContain("accounts.google.com");
+		expect(url).toContain("client_id=custom-client-id");
+		expect(url).toContain("code_challenge=");
+		expect(url).toContain("code_challenge_method=S256");
+		expect(auth.getCodeVerifier()).not.toBeNull();
+
+		const state = auth.getAuthState();
+		expect(state).not.toBeNull();
+		const decoded = JSON.parse(atob(state!)) as { custom: boolean };
+		expect(decoded.custom).toBe(true);
+	});
+});
+
+describe("GoogleAuthDirect.handleAuthCallback", () => {
+	it("exchanges code for tokens with PKCE code_verifier", async () => {
+		const mockRequestUrl = (await spyRequestUrl()).mockResolvedValue(
+			mockRes({
+				access_token: "direct-access",
+				refresh_token: "direct-refresh",
+				expires_in: 3600,
+				token_type: "Bearer",
+			})
+		);
+
+		const { GoogleAuthDirect } = await import("./auth");
+		const auth = new GoogleAuthDirect("my-client-id", "my-secret");
+		auth.setAuthState("csrf-state");
+		auth.setCodeVerifier("test-verifier-string");
+
+		await auth.handleAuthCallback({
+			code: "auth-code-123",
+			state: "csrf-state",
+		});
+
+		const tokens = auth.getTokenState();
+		expect(tokens.accessToken).toBe("direct-access");
+		expect(tokens.refreshToken).toBe("direct-refresh");
+
+		expect(mockRequestUrl).toHaveBeenCalledWith(
+			expect.objectContaining({
+				// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+				url: expect.stringContaining("oauth2.googleapis.com/token"),
+				method: "POST",
+			})
+		);
+		// Verify body contains client credentials and PKCE verifier
+		const callBody = mockRequestUrl.mock.calls[0]?.[0];
+		const body = typeof callBody === "object" && callBody !== null && "body" in callBody
+			? (callBody as { body: string }).body : "";
+		expect(body).toContain("client_id=my-client-id");
+		expect(body).toContain("client_secret=my-secret");
+		expect(body).toContain("code=auth-code-123");
+		expect(body).toContain("grant_type=authorization_code");
+		expect(body).toContain("code_verifier=test-verifier-string");
+
+		mockRequestUrl.mockRestore();
+	});
+
+	it("throws when code is missing", async () => {
+		const { GoogleAuthDirect } = await import("./auth");
+		const auth = new GoogleAuthDirect("id", "secret");
+		auth.setAuthState("state");
+		auth.setCodeVerifier("verifier");
+
+		await expect(
+			auth.handleAuthCallback({ state: "state" })
+		).rejects.toThrow("Authorization code is missing");
+	});
+
+	it("throws when code verifier is missing", async () => {
+		const { GoogleAuthDirect } = await import("./auth");
+		const auth = new GoogleAuthDirect("id", "secret");
+		auth.setAuthState("state");
+
+		await expect(
+			auth.handleAuthCallback({ code: "code", state: "state" })
+		).rejects.toThrow("PKCE code verifier is missing");
+	});
+});
+
+describe("GoogleAuthDirect._refreshToken", () => {
+	it("refreshes directly against Google token endpoint", async () => {
+		const mockRequestUrl = (await spyRequestUrl()).mockResolvedValue(
+			mockRes({
+				access_token: "refreshed-access",
+				expires_in: 3600,
+				token_type: "Bearer",
+			})
+		);
+
+		const { GoogleAuthDirect } = await import("./auth");
+		const auth = new GoogleAuthDirect("my-client", "my-secret");
+		auth.setTokens("my-refresh", "", 0);
+
+		const token = await auth.getAccessToken();
+		expect(token).toBe("refreshed-access");
+
+		const callBody = mockRequestUrl.mock.calls[0]?.[0];
+		const body = typeof callBody === "object" && callBody !== null && "body" in callBody
+			? (callBody as { body: string }).body : "";
+		expect(body).toContain("grant_type=refresh_token");
+		expect(body).toContain("client_id=my-client");
+		expect(body).toContain("client_secret=my-secret");
+		expect(body).toContain("refresh_token=my-refresh");
+
+		mockRequestUrl.mockRestore();
+	});
+});
+
+describe("GoogleDriveCustomProvider.completeAuth", () => {
+	it("exchanges code via GoogleAuthDirect with PKCE", async () => {
+		const mockRequestUrl = (await spyRequestUrl()).mockResolvedValue(
+			mockRes({
+				access_token: "custom-access",
+				refresh_token: "custom-refresh",
+				expires_in: 3600,
+				token_type: "Bearer",
+			})
+		);
+
+		const { GoogleDriveCustomProvider } = await import("./provider-custom");
+		const { GoogleAuthDirect } = await import("./auth");
+		const provider = new GoogleDriveCustomProvider();
+		const authInternal = provider.auth as unknown as GoogleDriveCustomAuthProviderInternal;
+
+		authInternal.googleAuth = new GoogleAuthDirect("cid", "csecret");
+		authInternal.googleAuth.setAuthState("csrf");
+		authInternal.googleAuth.setCodeVerifier("my-verifier");
+
+		const result = await provider.auth.completeAuth(
+			"https://callback?code=my-code&state=csrf",
+			{ customClientId: "cid", customClientSecret: "csecret" }
+		);
+
+		expect(result.refreshToken).toBe("custom-refresh");
+		expect(result.accessToken).toBe("custom-access");
+
+		// Verify code_verifier was sent in token exchange
+		const callBody = mockRequestUrl.mock.calls[0]?.[0];
+		const body = typeof callBody === "object" && callBody !== null && "body" in callBody
+			? (callBody as { body: string }).body : "";
+		expect(body).toContain("code_verifier=my-verifier");
+
+		mockRequestUrl.mockRestore();
+	});
+
+	it("restores code verifier from backendData on plugin reload", async () => {
+		const mockRequestUrl = (await spyRequestUrl()).mockResolvedValue(
+			mockRes({
+				access_token: "access",
+				refresh_token: "refresh",
+				expires_in: 3600,
+				token_type: "Bearer",
+			})
+		);
+
+		const { GoogleDriveCustomProvider } = await import("./provider-custom");
+		const provider = new GoogleDriveCustomProvider();
+
+		// Simulate plugin reload: no in-memory auth, but backendData has persisted state
+		const result = await provider.auth.completeAuth(
+			"https://callback?code=code&state=persisted-state",
+			{
+				customClientId: "cid",
+				customClientSecret: "csecret",
+				pendingAuthState: "persisted-state",
+				pendingCodeVerifier: "persisted-verifier",
+			}
+		);
+
+		expect(result.refreshToken).toBe("refresh");
+		const callBody = mockRequestUrl.mock.calls[0]?.[0];
+		const body = typeof callBody === "object" && callBody !== null && "body" in callBody
+			? (callBody as { body: string }).body : "";
+		expect(body).toContain("code_verifier=persisted-verifier");
 
 		mockRequestUrl.mockRestore();
 	});

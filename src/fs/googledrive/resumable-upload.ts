@@ -1,5 +1,5 @@
 import { requestUrl } from "obsidian";
-import type { GoogleAuth } from "./auth";
+import type { IGoogleAuth } from "./auth";
 import type { Logger } from "../../logging/logger";
 import type { DriveFile } from "./types";
 import { assertDriveFile, buildUploadMetadata } from "./types";
@@ -17,7 +17,7 @@ interface ResumeCacheEntry {
 
 /** Dependencies injected by DriveClient */
 export interface ResumableUploadDeps {
-	auth: GoogleAuth;
+	auth: IGoogleAuth;
 	request: (
 		operation: string,
 		opts: Parameters<typeof requestUrl>[0]

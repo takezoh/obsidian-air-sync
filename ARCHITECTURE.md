@@ -27,8 +27,10 @@ src/
 │   ├── googledrive/
 │   │   ├── index.ts                # GoogleDriveFs — IFileSystem implementation (cache + incremental fetch)
 │   │   ├── client.ts               # DriveClient — Drive REST API v3 client
-│   │   ├── auth.ts                 # GoogleAuth — OAuth 2.0 (server-side token exchange)
-│   │   ├── provider.ts             # GoogleDriveProvider — IBackendProvider implementation
+│   │   ├── auth.ts                 # GoogleAuth/GoogleAuthDirect — OAuth 2.0 (server-side & direct PKCE)
+│   │   ├── provider-base.ts        # GoogleDriveAuthProviderBase/GoogleDriveProviderBase — shared base classes
+│   │   ├── provider.ts             # GoogleDriveProvider — built-in OAuth backend
+│   │   ├── provider-custom.ts      # GoogleDriveCustomProvider — custom OAuth backend (user credentials + PKCE)
 │   │   ├── types.ts                # Drive API response types, validation functions + DriveFileRecord alias
 │   │   ├── metadata-cache.ts       # DriveMetadataCache — in-memory path↔ID, folder, children index
 │   │   ├── incremental-sync.ts     # applyIncrementalChanges() — changes.list delta sync
@@ -114,8 +116,9 @@ src/
 │  fs/local/       │  fs/googledrive/                 │
 │  LocalFs         │  GoogleDriveFs                   │
 │  (Vault API)     │  (Drive REST API v3)             │
-│                  │  + DriveClient + GoogleAuth      │
-│                  │  + GoogleDriveAuthProvider       │
+│                  │  + DriveClient                   │
+│                  │  + GoogleAuth / GoogleAuthDirect  │
+│                  │  + Built-in & Custom providers   │
 └──────────────────┴──────────────────────────────────┘
 ```
 
@@ -425,22 +428,31 @@ Per-file errors (e.g., individual read/write failures) do not trigger retry. The
 
 ## Google Drive backend
 
-### GoogleAuth (`fs/googledrive/auth.ts`)
+### GoogleAuth & GoogleAuthDirect (`fs/googledrive/auth.ts`)
 
-OAuth 2.0 authentication with server-side token exchange via `auth-smartsync.takezo.dev` (confidential client). The client secret never leaves the server.
+Two OAuth 2.0 implementations sharing a common base class (`GoogleAuthBase`):
 
-OAuth client ID is embedded as a constant (public, no user configuration needed).
+**GoogleAuth** (built-in flow): Server-side token exchange via `auth-smartsync.takezo.dev` (confidential client). The client secret never leaves the server. OAuth client ID is embedded as a constant.
 
-1. `getAuthorizationUrl()` builds a Google OAuth URL with a random `state` parameter (CSRF protection) and `redirect_uri=https://auth-smartsync.takezo.dev/google/callback`
+1. `getAuthorizationUrl()` builds a Google OAuth URL with a random `state` parameter (CSRF protection), `scope=drive.file`, and `redirect_uri=https://auth-smartsync.takezo.dev/google/callback`
 2. The auth server callback exchanges the authorization code for tokens using `client_secret`, then redirects to `obsidian://smart-sync-auth?access_token=...&refresh_token=...&expires_in=...&state=...`
 3. `handleAuthCallback()` verifies the `state` parameter against the locally stored value and stores the tokens
-4. `getAccessToken()` returns cached tokens, auto-refreshing 60 seconds before expiry via the auth server (`/token/refresh`)
+4. `getAccessToken()` returns cached tokens, auto-refreshing 60 seconds before expiry via the auth server (`/google/token/refresh`)
 
-`pendingAuthState` is persisted in `backendData["googledrive"]` (allowing auth flow to survive plugin reloads).
+**GoogleAuthDirect** (custom OAuth flow): Direct token exchange using user-provided client credentials with PKCE (S256). No auth server involvement for token exchange or refresh.
 
-**Why an auth server is needed**: Google OAuth requires redirect URIs to use `http://` or `https://` — custom schemes like `obsidian://` are not allowed for Web application OAuth clients. The auth server keeps the client secret server-side, enabling secure token exchange without embedding secrets in the plugin.
+1. `getAuthorizationUrl()` builds a Google OAuth URL with CSRF `state`, PKCE `code_challenge`, and user-configurable `scope` (default: `drive.file`) and `redirect_uri` (default: `https://smartsync.takezo.dev/callback`)
+2. The auth server relays the authorization `code` back without exchanging it → `obsidian://smart-sync-auth?code=...&state=...`
+3. `handleAuthCallback()` verifies CSRF state, then exchanges the code directly with Google (`oauth2.googleapis.com/token`) using `client_secret` + `code_verifier`
+4. `getAccessToken()` refreshes tokens directly with Google (no auth server)
 
-**Security model**: The auth server is a confidential OAuth client — it holds the `client_secret` and performs token exchange on behalf of the plugin. As a consequence, the server transiently sees access and refresh tokens during the exchange and refresh flows. The `drive.file` scope limits exposure to files created or opened by the plugin only (not the user's entire Drive). The `state` parameter is verified against a locally stored value before processing, preventing CSRF attacks. Token revocation is performed directly against Google's endpoint (no client secret required).
+`pendingAuthState` and `pendingCodeVerifier` are persisted in `backendData` (allowing auth flow to survive plugin reloads).
+
+**Why an auth server is needed** (built-in flow): Google OAuth requires redirect URIs to use `http://` or `https://` — custom schemes like `obsidian://` are not allowed for Web application OAuth clients. The auth server keeps the client secret server-side, enabling secure token exchange without embedding secrets in the plugin. The custom flow also uses the auth server as a redirect relay (for the same redirect URI restriction), but token exchange happens directly between the plugin and Google.
+
+**Why custom OAuth exists**: The built-in flow is limited to the `drive.file` scope (plugin-created files only) and delegates token management to the auth server. Custom OAuth gives the user full ownership of the OAuth client — they can grant broader scopes (e.g., `drive` for full Drive access, enabling sync of files created outside the plugin), control their own credentials, and exchange tokens directly with Google via PKCE without any intermediary.
+
+**Security model**: The built-in flow's auth server is a confidential OAuth client — it holds the `client_secret` and performs token exchange on behalf of the plugin. As a consequence, the server transiently sees access and refresh tokens during the exchange and refresh flows. The `drive.file` scope limits exposure to files created or opened by the plugin only (not the user's entire Drive). The custom flow uses PKCE (S256) for security — the code verifier is never sent to the auth server, only to Google's token endpoint. The user controls the scope: `drive.file` (default, plugin-created files only) or `drive` (full Drive access, needed to sync files created outside the plugin). The `state` parameter is verified against a locally stored value before processing, preventing CSRF attacks. Token revocation is performed directly against Google's endpoint (no client secret required).
 
 ### DriveClient (`fs/googledrive/client.ts`)
 
@@ -478,36 +490,39 @@ Google Drive REST API v3 client. Uses Obsidian's `requestUrl()` to bypass CORS.
 - Network I/O (downloads/uploads) executes outside the mutex (prevents deadlocks)
 - TOCTOU guard: `read()` resolves ID → releases lock → downloads → re-acquires lock for consistency check
 
-### GoogleDriveProvider (`fs/googledrive/provider.ts`)
+### GoogleDriveProviderBase & GoogleDriveAuthProviderBase (`fs/googledrive/provider-base.ts`)
 
-`IBackendProvider` implementation. Handles FS creation and state management. Authentication is delegated to `GoogleDriveAuthProvider` via composition (`this.auth`). Settings UI is handled separately by `GoogleDriveSettingsRenderer` in `ui/googledrive-settings.ts`.
+Abstract base classes shared by the built-in and custom OAuth providers. Subclasses only need to implement auth instance creation — all other provider logic is shared.
 
-- `createFs()`: Calls `this.auth.getOrCreateGoogleAuth(data)` to obtain a `GoogleAuth` instance, then creates `DriveClient` → `GoogleDriveFs`
-- `getIdentity()`: Returns `googledrive:<driveFolderId>` (or `null` if not configured)
+**GoogleDriveAuthProviderBase** (`IAuthProvider`):
+- Owns `protected googleAuth: IGoogleAuth | null` — shared auth instance field
+- `startAuth()` / `completeAuth()` / `isAuthenticated()` / `getTokenState()` / `revokeAuth()` — fully implemented in base
+- 3 abstract methods for subclasses: `createAuth()`, `createAuthIfNeeded()`, `getOrCreateGoogleAuth()`
+
+**GoogleDriveProviderBase** (`IBackendProvider`):
+- `createFs()`: Calls `this.auth.getOrCreateGoogleAuth(data)` to obtain an `IGoogleAuth` instance, then creates `DriveClient` → `GoogleDriveFs`
+- `getIdentity()`: Returns `<type>:<driveFolderId>` (or `null` if not configured)
 - `resetTargetState()`: Clears stale `changesStartPageToken` from `backendData` when the user switches Drive folders
-- `readBackendState()`: Read `changesStartPageToken` + refreshed tokens from `GoogleDriveFs` and return as opaque record
+- `readBackendState()`: Read `changesStartPageToken` + refreshed tokens and return as opaque record
 - `resolveRemoteVault()`: Discover or create the remote vault folder in Google Drive (`obsidian-smart-sync/{uuid}/`)
 - `disconnect()`: Revoke auth tokens and return reset backend data
 
-All Google Drive-specific data is stored in `settings.backendData["googledrive"]` as `GoogleDriveBackendData` (defined in `provider.ts`). The sync layer never accesses these fields directly.
+Note: `disconnect()` is on the provider base (not on the auth provider), since it must reset both auth tokens and FS state (e.g., `changesStartPageToken`).
+
+### GoogleDriveProvider (`fs/googledrive/provider.ts`)
+
+Built-in OAuth backend (`type: "googledrive"`). Uses `GoogleAuth` (server-side token exchange). All data is stored in `settings.backendData["googledrive"]` as `GoogleDriveBackendData`.
+
+### GoogleDriveCustomProvider (`fs/googledrive/provider-custom.ts`)
+
+Custom OAuth backend (`type: "googledrive-custom"`). Uses `GoogleAuthDirect` (direct PKCE flow with user-provided credentials). The user owns the OAuth client and can configure a broader scope (e.g., `drive` instead of `drive.file`) to access files created outside the plugin. Extends `GoogleDriveBackendData` with `customClientId`, `customClientSecret`, `customScope`, and `customRedirectUri`. Data is stored in `settings.backendData["googledrive-custom"]`.
 
 ### GoogleDriveSettingsRenderer (`ui/googledrive-settings.ts`)
 
-`IBackendSettingsRenderer` implementation. Renders Google Drive-specific settings: connection status indicator and auth code flow. The remote vault folder is automatically managed — no manual folder ID input required.
+`IBackendSettingsRenderer` implementations for both backends.
 
-Connection state is derived from `settings.backendData["googledrive"]` (`!!refreshToken`) — no dependency on the provider instance. When connected, the remote vault folder ID is shown as read-only.
-
-### GoogleDriveAuthProvider (`fs/googledrive/provider.ts`)
-
-`IAuthProvider` implementation. Owns the `GoogleAuth` instance and manages the entire OAuth lifecycle.
-
-- `startAuth()`: Generate auth URL → open in browser → return CSRF state for persistence
-- `completeAuth()`: Accept callback URL with tokens from auth server → verify CSRF state → return token updates
-- `isAuthenticated()`: Returns `true` when `refreshToken` is present (even without folder ID)
-- `getOrCreateGoogleAuth()`: Returns the existing `GoogleAuth` instance, or creates a new one if the stored `refreshToken` has changed. Called by `GoogleDriveProvider.createFs()` to obtain the auth instance for `DriveClient`
-- `revokeAuth()`: Revoke token via Google's revoke endpoint (best-effort). Called by `GoogleDriveProvider.disconnect()`. If revocation fails, local tokens are still cleared to ensure the user can always disconnect
-
-Note: `disconnect()` is on `GoogleDriveProvider` (not on `GoogleDriveAuthProvider`), since it must reset both auth tokens and FS state (e.g., `changesStartPageToken`).
+- **GoogleDriveSettingsRenderer**: Connection status indicator and auth flow. The remote vault folder is automatically managed — no manual input required.
+- **GoogleDriveCustomSettingsRenderer**: Client ID, client secret, scope (default: `drive.file`), redirect URI (default: `https://smartsync.takezo.dev/callback`), connection status, and auth flow. Credentials and settings are locked when connected.
 
 ---
 
@@ -845,6 +860,6 @@ When no `SyncRecord` exists for a file:
 4. **Empty remote folder deletes local files**: When the user changes Drive folders (or reconnects), stale `SyncRecord` entries could cause the engine to interpret all local files as "remote deleted". Mitigated by two layers: (a) `BackendManager` tracks backend identity (`getIdentity()`) and fires `onIdentityChanged` when the identity changes — the provider resets its own stale cursors via `resetTargetState()` and `main.ts` clears sync state via `SyncService.clearSyncState()`, (b) `SyncService` has a mass deletion safety net that aborts and clears state if all local files (>5) would be deleted via `remote_deleted_propagate`
 5. **TOCTOU races**: Delete propagation re-checks via `stat()`. Skips if the other side has changed
 6. **Network reconnect + auto-sync overlap**: When the browser comes back online just before an auto-sync timer fires, two sequential syncs may run. The `syncMutex` prevents concurrent execution, and `syncPending` deduplicates requests during an active sync. However, if the first sync completes before the second trigger fires, both execute independently. Impact is minimal — the second sync uses `changes.list` incremental fetch with no new changes
-7. **OAuth security**: The auth server (`auth-smartsync.takezo.dev`) is a confidential OAuth client that holds the client secret and performs token exchange. The server transiently sees tokens during exchange and refresh, but the `drive.file` scope limits access to plugin-created files only. The `state` parameter prevents CSRF attacks. Refresh tokens are stored only on the user's device
+7. **OAuth security**: The built-in flow's auth server (`auth-smartsync.takezo.dev`) is a confidential OAuth client that holds the client secret and performs token exchange. The server transiently sees tokens during exchange and refresh, but the `drive.file` scope limits access to plugin-created files only. The custom OAuth flow bypasses the auth server for token exchange — credentials and tokens stay between the plugin and Google, secured by PKCE (S256). The `state` parameter prevents CSRF attacks in both flows. Refresh tokens are stored only on the user's device
 8. **Initial sync performance on large vaults**: `resolveEmptyHashes()` reads content and computes SHA-256 for all file pairs where both sides exist, no `prevSync` record exists, and sizes match. For a vault with N same-size pairs, this performs 2N file reads + 2N SHA-256 computations. Entities are processed **sequentially** (outer `for...of` loop); within each entity, the local and remote reads are parallelized via `Promise.all()` (max 2 concurrent reads). Size-mismatched pairs are skipped entirely (no I/O needed). This runs only on initial sync — after the first successful sync, `prevSync` records exist for all files and the function becomes a no-op. Future optimization: `GoogleDriveFs` already stores the Drive MD5 as `contentChecksum` in `backendMeta` during `list()`, which could be compared against a locally computed MD5 to skip remote downloads. The `contentChecksum` key is backend-agnostic (each backend maps its native checksum: Drive's `md5Checksum`, Dropbox's `content_hash`, S3's `ETag`)
 
