@@ -3,7 +3,7 @@ import type { IFileSystem } from "../fs/interface";
 import type { IBackendProvider } from "../fs/backend";
 import type { ConflictStrategy, MixedEntity, SyncDecision } from "./types";
 import type { FileEntity } from "../fs/types";
-import { AsyncMutex } from "../queue/async-queue";
+import { AsyncMutex, AsyncPool } from "../queue/async-queue";
 import { isIgnored } from "../utils/ignore";
 import { sha256 } from "../utils/hash";
 import { SyncStateStore } from "./state";
@@ -241,8 +241,33 @@ export class SyncService {
 			return { pushed: 0, pulled: 0, conflicts: 0, errors: [], mergeConflictPaths: [], conflictRecords: [] };
 		}
 
-		const { entities, deltaToken, remoteFsWithDelta } = buildResult;
+		const { entities, deltaToken, remoteFsWithDelta, localDelta } = buildResult;
 
+		try {
+			return await this.executeSyncWithEntities(
+				entities, deltaToken, remoteFsWithDelta, localFs, remoteFs, settings,
+			);
+		} catch (err) {
+			// Restore consumed local delta so the next retry can re-use it
+			if (localDelta && this._changeDetector) {
+				this._changeDetector.restore(localDelta);
+			}
+			throw err;
+		}
+	}
+
+	/**
+	 * Execute sync operations with the given entities.
+	 * Extracted from executeSyncOnce to allow try/catch around the execution phase.
+	 */
+	private async executeSyncWithEntities(
+		entities: MixedEntity[],
+		deltaToken: string | undefined,
+		remoteFsWithDelta: RemoteFsWithDelta | null,
+		localFs: IFileSystem,
+		remoteFs: IFileSystem,
+		settings: SmartSyncSettings,
+	): Promise<SyncResult> {
 		const isMobile = this.deps.isMobile();
 		const maxBytes = settings.mobileMaxFileSizeMB * 1024 * 1024;
 		const filtered = entities.filter((e) => {
@@ -266,7 +291,7 @@ export class SyncService {
 
 		const decisions = computeDecisions(filtered);
 
-		// Mass deletion safety net: abort if all local files would be deleted
+		// Mass deletion safety net: abort if too many local files would be deleted
 		const deletePropagateCount = decisions.filter(
 			(d) => d.decision === "remote_deleted_propagate"
 		).length;
@@ -274,16 +299,21 @@ export class SyncService {
 
 		if (
 			deletePropagateCount > 5 &&
-			deletePropagateCount === localFileCount
+			(deletePropagateCount === localFileCount ||
+				deletePropagateCount > localFileCount * 0.5)
 		) {
+			const isAll = deletePropagateCount === localFileCount;
 			this.deps.logger?.error("Mass deletion safety net triggered", {
 				deletePropagateCount,
 				localFileCount,
 			});
 			await this.stateStore.clear();
 			throw new Error(
-				`Aborting sync: all ${deletePropagateCount} local files would be deleted ` +
-					`(remote appears empty). Sync state has been reset — please sync again.`
+				isAll
+					? `Aborting sync: all ${deletePropagateCount} local files would be deleted ` +
+						`(remote appears empty). Sync state has been reset — please sync again.`
+					: `Aborting sync: more than half of local files would be deleted ` +
+						`(${deletePropagateCount} of ${localFileCount}). Sync state has been reset — please sync again.`
 			);
 		}
 
@@ -417,7 +447,7 @@ export class SyncService {
 		localFs: IFileSystem,
 		remoteFs: IFileSystem,
 	): Promise<
-		| { entities: MixedEntity[]; deltaToken?: string; remoteFsWithDelta: RemoteFsWithDelta | null }
+		| { entities: MixedEntity[]; deltaToken?: string; remoteFsWithDelta: RemoteFsWithDelta | null; localDelta: Set<string> | null }
 		| "up_to_date"
 	> {
 		const localDelta = this._changeDetector?.consume() ?? null;
@@ -460,7 +490,7 @@ export class SyncService {
 				remoteDelta.changedFiles,
 				this.stateStore,
 			);
-			return { entities, deltaToken: remoteDelta.newToken, remoteFsWithDelta };
+			return { entities, deltaToken: remoteDelta.newToken, remoteFsWithDelta, localDelta };
 		}
 
 		// Fall back to full sync
@@ -471,34 +501,45 @@ export class SyncService {
 			});
 		}
 		const entities = await buildMixedEntities(localFs, remoteFs, this.stateStore);
-		return { entities, remoteFsWithDelta };
+		return { entities, remoteFsWithDelta, localDelta };
 	}
 
 	/**
 	 * For initial sync (both sides exist, no prevSync), list() returns empty hashes.
 	 * Read content and compute SHA-256 so the engine can detect identical files.
 	 * Only reads when sizes match (different sizes are obviously different content).
+	 * Processes eligible entities in bounded parallel (concurrency = 3) for performance.
 	 */
 	private async resolveEmptyHashes(
 		entities: MixedEntity[],
 		localFs: IFileSystem,
 		remoteFs: IFileSystem
 	): Promise<void> {
-		for (const entity of entities) {
-			if (entity.local && entity.remote && !entity.prevSync &&
-				!entity.local.hash && !entity.remote.hash &&
-				entity.local.size === entity.remote.size) {
-				const [localContent, remoteContent] = await Promise.all([
-					localFs.read(entity.path),
-					remoteFs.read(entity.path),
-				]);
-				const [localHash, remoteHash] = await Promise.all([
-					sha256(localContent),
-					sha256(remoteContent),
-				]);
-				entity.local = { ...entity.local, hash: localHash };
-				entity.remote = { ...entity.remote, hash: remoteHash };
-			}
-		}
+		const eligible = entities.filter(
+			(e) =>
+				e.local && e.remote && !e.prevSync &&
+				!e.local.hash && !e.remote.hash &&
+				e.local.size === e.remote.size
+		);
+
+		if (eligible.length === 0) return;
+
+		const pool = new AsyncPool(3);
+		await Promise.all(
+			eligible.map((entity) =>
+				pool.run(async () => {
+					const [localContent, remoteContent] = await Promise.all([
+						localFs.read(entity.path),
+						remoteFs.read(entity.path),
+					]);
+					const [localHash, remoteHash] = await Promise.all([
+						sha256(localContent),
+						sha256(remoteContent),
+					]);
+					entity.local = { ...entity.local!, hash: localHash };
+					entity.remote = { ...entity.remote!, hash: remoteHash };
+				})
+			)
+		);
 	}
 }

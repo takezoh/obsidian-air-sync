@@ -61,6 +61,13 @@ export class LocalChangeDetector {
 		return result;
 	}
 
+	/** Restore previously consumed paths (e.g., after sync failure). */
+	restore(paths: Set<string>): void {
+		if (this.active) {
+			for (const p of paths) this.changedPaths.add(p);
+		}
+	}
+
 	/**
 	 * Save current vault state as a snapshot for future startup diffs.
 	 * Also activates runtime tracking.

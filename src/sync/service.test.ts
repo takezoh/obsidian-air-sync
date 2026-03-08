@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from "vitest";
 import "fake-indexeddb/auto";
 import type { SmartSyncSettings } from "../settings";
 import { SyncService, SyncServiceDeps, getErrorInfo, isRateLimitError } from "./service";
+import { LocalChangeDetector } from "./local-change-detector";
+import type { SyncStateStore } from "./state";
 import { createMockFs, addFile } from "../__mocks__/sync-test-helpers";
 
 function mockSettings(overrides: Partial<SmartSyncSettings> = {}): SmartSyncSettings {
@@ -510,6 +512,82 @@ describe("SyncService — clearSyncState", () => {
 	});
 });
 
+describe("SyncService — mass deletion safety net (ratio-based)", () => {
+	it("triggers when more than half of local files would be deleted", async () => {
+		const localFs = createMockFs("local");
+		const remoteFs = createMockFs("remote");
+
+		// Add 20 files — first sync pushes them to remote
+		for (let i = 0; i < 20; i++) {
+			addFile(localFs, `file${i}.md`, `content ${i}`, 1000);
+		}
+
+		const deps = createMockDeps({
+			localFs: () => localFs,
+			remoteFs: () => remoteFs,
+		});
+		const service = new SyncService(deps);
+
+		await service.runSync();
+		expect(await service.state.getAll()).toHaveLength(20);
+
+		// Delete 12 of 20 files from remote (60% > 50% threshold)
+		for (let i = 0; i < 12; i++) {
+			remoteFs.files.delete(`file${i}.md`);
+		}
+
+		await service.runSync();
+
+		// Local files should NOT be deleted — safety net triggered
+		for (let i = 0; i < 12; i++) {
+			expect(localFs.files.has(`file${i}.md`)).toBe(true);
+		}
+
+		// State was cleared and files re-pushed
+		for (let i = 0; i < 12; i++) {
+			expect(remoteFs.files.has(`file${i}.md`)).toBe(true);
+		}
+
+		await service.close();
+	});
+
+	it("does not trigger when exactly half or fewer files would be deleted", async () => {
+		const localFs = createMockFs("local");
+		const remoteFs = createMockFs("remote");
+
+		// Add 20 files
+		for (let i = 0; i < 20; i++) {
+			addFile(localFs, `file${i}.md`, `content ${i}`, 1000);
+		}
+
+		const deps = createMockDeps({
+			localFs: () => localFs,
+			remoteFs: () => remoteFs,
+		});
+		const service = new SyncService(deps);
+
+		await service.runSync();
+
+		// Delete 10 of 20 (50% = not more than half, so should NOT trigger)
+		for (let i = 0; i < 10; i++) {
+			remoteFs.files.delete(`file${i}.md`);
+		}
+
+		await service.runSync();
+
+		// Deletions should propagate normally
+		for (let i = 0; i < 10; i++) {
+			expect(localFs.files.has(`file${i}.md`)).toBe(false);
+		}
+		// Remaining files untouched
+		for (let i = 10; i < 20; i++) {
+			expect(localFs.files.has(`file${i}.md`)).toBe(true);
+		}
+
+		await service.close();
+	});
+});
+
 describe("SyncService — mass deletion safety net", () => {
 	it("aborts sync when all local files would be deleted (stale state)", async () => {
 		const localFs = createMockFs("local");
@@ -579,6 +657,116 @@ describe("SyncService — mass deletion safety net", () => {
 		// Should NOT trigger the safety net — partial deletion is normal
 		expect(deps.onStatusChange).toHaveBeenCalledWith("idle");
 
+		await service.close();
+	});
+});
+
+describe("LocalChangeDetector — restore", () => {
+	function createDetector(hasSnapshot: boolean) {
+		const mockVault = { getAllLoadedFiles: () => [] } as unknown as import("obsidian").Vault;
+		const mockStore = {
+			loadLocalSnapshot: vi.fn().mockResolvedValue(hasSnapshot ? { files: {} } : null),
+			saveLocalSnapshot: vi.fn().mockResolvedValue(undefined),
+		} as unknown as SyncStateStore;
+		return new LocalChangeDetector(mockVault, mockStore);
+	}
+
+	it("restore merges consumed paths back for retry", async () => {
+		const detector = createDetector(true);
+		await detector.initialize();
+
+		detector.trackChange("a.md");
+		detector.trackChange("b.md");
+		detector.trackChange("c.md");
+
+		const consumed = detector.consume();
+		expect(consumed).not.toBeNull();
+		expect(consumed!.size).toBe(3);
+
+		// After consume, changedPaths is empty
+		expect(detector.consume()!.size).toBe(0);
+
+		// Restore the consumed paths (simulating sync failure)
+		detector.restore(consumed!);
+
+		const restored = detector.consume();
+		expect(restored!.size).toBe(3);
+		expect(restored!.has("a.md")).toBe(true);
+		expect(restored!.has("b.md")).toBe(true);
+		expect(restored!.has("c.md")).toBe(true);
+	});
+
+	it("restore merges with new runtime changes", async () => {
+		const detector = createDetector(true);
+		await detector.initialize();
+
+		detector.trackChange("a.md");
+		detector.trackChange("b.md");
+
+		const consumed = detector.consume();
+		expect(consumed!.size).toBe(2);
+
+		// New change arrives during retry
+		detector.trackChange("d.md");
+
+		// Restore old consumed paths
+		detector.restore(consumed!);
+
+		const result = detector.consume();
+		expect(result!.size).toBe(3);
+		expect(result!.has("a.md")).toBe(true);
+		expect(result!.has("b.md")).toBe(true);
+		expect(result!.has("d.md")).toBe(true);
+	});
+
+	it("restore is no-op when detector is not active", async () => {
+		const detector = createDetector(false);
+		await detector.initialize(); // returns false, not active
+
+		detector.restore(new Set(["a.md", "b.md"]));
+
+		expect(detector.consume()).toBeNull();
+	});
+});
+
+describe("SyncService — retry restores local delta on failure", () => {
+	it("restores consumed local changes when executor throws", async () => {
+		const localFs = createMockFs("local");
+		const remoteFs = createMockFs("remote");
+
+		// Add files to local
+		addFile(localFs, "a.md", "content a", 1000);
+		addFile(localFs, "b.md", "content b", 1000);
+
+		const deps = createMockDeps({
+			localFs: () => localFs,
+			remoteFs: () => remoteFs,
+		});
+		const service = new SyncService(deps);
+
+		// First sync succeeds — pushes files and creates state
+		await service.runSync();
+		expect(remoteFs.files.has("a.md")).toBe(true);
+		expect(remoteFs.files.has("b.md")).toBe(true);
+
+		// Now modify a file locally (different mtime)
+		addFile(localFs, "a.md", "updated content", 2000);
+
+		// Make remote write throw to simulate network failure
+		const origWrite = remoteFs.write.bind(remoteFs);
+		let writeCallCount = 0;
+		remoteFs.write = async (path: string, content: ArrayBuffer, mtime: number) => {
+			writeCallCount++;
+			// Fail on first write attempt (from first retry), succeed on subsequent
+			if (writeCallCount <= 1) throw Object.assign(new Error("Network error"), { status: 500 });
+			return origWrite(path, content, mtime);
+		};
+
+		// Run sync — first attempt fails, retry should succeed
+		await service.runSync();
+
+		// The file should ultimately be synced after retry
+		expect(deps.onStatusChange).toHaveBeenCalledWith("idle");
 		await service.close();
 	});
 });
