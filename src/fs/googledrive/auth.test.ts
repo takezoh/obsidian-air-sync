@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { spyRequestUrl, mockRes } from "./test-helpers";
+import { spyRequestUrl, mockRes, createMockSecretStore } from "./test-helpers";
 import type { GoogleDriveAuthProviderInternal, GoogleDriveCustomAuthProviderInternal } from "./test-helpers";
 
 vi.mock("obsidian");
@@ -130,7 +130,8 @@ describe("GoogleDriveProvider.completeAuth", () => {
 	it("restores CSRF state on existing auth that lacks it", async () => {
 		const { GoogleDriveProvider } = await import("./provider");
 		const { GoogleAuth } = await import("./auth");
-		const provider = new GoogleDriveProvider();
+		const secretStore = createMockSecretStore();
+		const provider = new GoogleDriveProvider(secretStore);
 		const authInternal = provider.auth as unknown as GoogleDriveAuthProviderInternal;
 
 		const backendData = {
@@ -142,16 +143,20 @@ describe("GoogleDriveProvider.completeAuth", () => {
 
 		const result = await provider.auth.completeAuth(
 			"https://callback?access_token=new-access&refresh_token=new-refresh&expires_in=3600&state=saved-state",
-			backendData
+			backendData,
 		);
 
-		expect(result.refreshToken).toBe("new-refresh");
+		// Tokens are stored in SecretStorage, not returned in the result
+		expect(result.refreshToken).toBeUndefined();
+		expect(secretStore.getSecret("smart-sync-googledrive-refresh-token")).toBe("new-refresh");
+		expect(result.accessTokenExpiry).toBeGreaterThan(0);
 		expect(authInternal.googleAuth.getAuthState()).toBeNull();
 	});
 
 	it("rejects empty callback", async () => {
 		const { GoogleDriveProvider } = await import("./provider");
-		const provider = new GoogleDriveProvider();
+		const secretStore = createMockSecretStore();
+		const provider = new GoogleDriveProvider(secretStore);
 
 		await expect(
 			provider.auth.completeAuth("", {})
@@ -160,19 +165,17 @@ describe("GoogleDriveProvider.completeAuth", () => {
 });
 
 describe("GoogleDriveAuthProvider.getOrCreateGoogleAuth", () => {
-	it("recreates auth when refreshToken changes", async () => {
+	it("reuses existing auth instance", async () => {
 		const { GoogleDriveProvider } = await import("./provider");
 		const { GoogleAuth } = await import("./auth");
-		const provider = new GoogleDriveProvider();
+		const secretStore = createMockSecretStore();
+		const provider = new GoogleDriveProvider(secretStore);
 		const authInternal = provider.auth as unknown as GoogleDriveAuthProviderInternal;
 
-		const oldAuth = new GoogleAuth();
-		oldAuth.setTokens("old-refresh", "", 0);
-		authInternal.googleAuth = oldAuth;
+		const existingAuth = new GoogleAuth();
+		authInternal.googleAuth = existingAuth;
 
 		const data = {
-			refreshToken: "new-refresh",
-			accessToken: "",
 			accessTokenExpiry: 0,
 			remoteVaultFolderId: "folder",
 			lastKnownVaultName: "",
@@ -181,7 +184,24 @@ describe("GoogleDriveAuthProvider.getOrCreateGoogleAuth", () => {
 		};
 
 		const auth = provider.auth.getOrCreateGoogleAuth(data);
-		expect(auth).not.toBe(oldAuth);
+		expect(auth).toBe(existingAuth);
+	});
+
+	it("creates auth when none exists", async () => {
+		const { GoogleDriveProvider } = await import("./provider");
+		const secretStore = createMockSecretStore();
+		const provider = new GoogleDriveProvider(secretStore);
+
+		const data = {
+			accessTokenExpiry: 0,
+			remoteVaultFolderId: "folder",
+			lastKnownVaultName: "",
+			changesStartPageToken: "",
+			pendingAuthState: "",
+		};
+
+		const auth = provider.auth.getOrCreateGoogleAuth(data);
+		expect(auth).toBeDefined();
 	});
 });
 
@@ -368,7 +388,8 @@ describe("GoogleDriveCustomProvider.completeAuth", () => {
 
 		const { GoogleDriveCustomProvider } = await import("./provider-custom");
 		const { GoogleAuthDirect } = await import("./auth");
-		const provider = new GoogleDriveCustomProvider();
+		const secretStore = createMockSecretStore({ cid: "cid-value", csecret: "csecret-value" });
+		const provider = new GoogleDriveCustomProvider(secretStore);
 		const authInternal = provider.auth as unknown as GoogleDriveCustomAuthProviderInternal;
 
 		authInternal.googleAuth = new GoogleAuthDirect("cid", "csecret");
@@ -377,11 +398,14 @@ describe("GoogleDriveCustomProvider.completeAuth", () => {
 
 		const result = await provider.auth.completeAuth(
 			"https://callback?code=my-code&state=csrf",
-			{ customClientId: "cid", customClientSecret: "csecret" }
+			{ customClientId: "cid", customClientSecret: "csecret" },
 		);
 
-		expect(result.refreshToken).toBe("custom-refresh");
-		expect(result.accessToken).toBe("custom-access");
+		// Tokens are stored in SecretStorage, not returned in the result
+		expect(result.refreshToken).toBeUndefined();
+		expect(secretStore.getSecret("smart-sync-googledrive-custom-refresh-token")).toBe("custom-refresh");
+		expect(secretStore.getSecret("smart-sync-googledrive-custom-access-token")).toBe("custom-access");
+		expect(result.accessTokenExpiry).toBeGreaterThan(0);
 
 		// Verify code_verifier was sent in token exchange
 		const callBody = mockRequestUrl.mock.calls[0]?.[0];
@@ -403,7 +427,8 @@ describe("GoogleDriveCustomProvider.completeAuth", () => {
 		);
 
 		const { GoogleDriveCustomProvider } = await import("./provider-custom");
-		const provider = new GoogleDriveCustomProvider();
+		const secretStore = createMockSecretStore({ cid: "cid-value", csecret: "csecret-value" });
+		const provider = new GoogleDriveCustomProvider(secretStore);
 
 		// Simulate plugin reload: no in-memory auth, but backendData has persisted state
 		const result = await provider.auth.completeAuth(
@@ -413,10 +438,12 @@ describe("GoogleDriveCustomProvider.completeAuth", () => {
 				customClientSecret: "csecret",
 				pendingAuthState: "persisted-state",
 				pendingCodeVerifier: "persisted-verifier",
-			}
+			},
 		);
 
-		expect(result.refreshToken).toBe("refresh");
+		// Tokens stored in SecretStorage
+		expect(result.refreshToken).toBeUndefined();
+		expect(secretStore.getSecret("smart-sync-googledrive-custom-refresh-token")).toBe("refresh");
 		const callBody = mockRequestUrl.mock.calls[0]?.[0];
 		const body = typeof callBody === "object" && callBody !== null && "body" in callBody
 			? (callBody as { body: string }).body : "";

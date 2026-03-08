@@ -41,6 +41,7 @@ export interface IBackendProvider {
 	 * Read updated internal state from the FS to persist in settings.backendData.
 	 * Called after each sync cycle so backends can save tokens, cursors, etc.
 	 * Returns an opaque record — the sync layer does not inspect its contents.
+	 * Tokens are stored in SecretStorage rather than returned in the record.
 	 */
 	readBackendState?(fs: IFileSystem): Record<string, unknown>;
 

@@ -45,7 +45,7 @@ function createDeps(settings: SmartSyncSettings, overrides: Partial<BackendManag
 	return {
 		getSettings: () => settings,
 		saveSettings: vi.fn().mockResolvedValue(undefined),
-		getApp: vi.fn() as unknown as BackendManagerDeps["getApp"],
+		getApp: (() => ({})) as unknown as BackendManagerDeps["getApp"],
 		getLogger: () => noopLogger,
 		getVaultName: () => "Test Vault",
 		onConnected: vi.fn(),

@@ -1,3 +1,4 @@
+import type { App } from "obsidian";
 import type { SmartSyncSettings } from "../settings";
 import { GoogleDriveSettingsRenderer, GoogleDriveCustomSettingsRenderer } from "./googledrive-settings";
 
@@ -22,7 +23,8 @@ export interface IBackendSettingsRenderer {
 		containerEl: HTMLElement,
 		settings: SmartSyncSettings,
 		onSave: (updates: Record<string, unknown>) => Promise<void>,
-		actions: BackendConnectionActions
+		actions: BackendConnectionActions,
+		app: App,
 	): void;
 }
 

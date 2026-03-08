@@ -1,4 +1,5 @@
-import { Notice, Setting } from "obsidian";
+import type { App } from "obsidian";
+import { Notice, SecretComponent, Setting } from "obsidian";
 import type { SmartSyncSettings } from "../settings";
 import type {
 	BackendConnectionActions,
@@ -7,6 +8,7 @@ import type {
 import type { GoogleDriveBackendData } from "../fs/googledrive/provider";
 import type { GoogleDriveCustomBackendData } from "../fs/googledrive/provider-custom";
 import { DEFAULT_CUSTOM_SCOPE, DEFAULT_CUSTOM_REDIRECT_URI } from "../fs/googledrive/auth";
+import { getBackendProvider } from "../fs/registry";
 
 /**
  * Renders Google Drive-specific settings UI:
@@ -19,11 +21,13 @@ export class GoogleDriveSettingsRenderer implements IBackendSettingsRenderer {
 		containerEl: HTMLElement,
 		settings: SmartSyncSettings,
 		_onSave: (updates: Record<string, unknown>) => Promise<void>,
-		actions: BackendConnectionActions
+		actions: BackendConnectionActions,
+		_app: App,
 	): void {
 		const data = (settings.backendData["googledrive"] ?? {}) as Partial<GoogleDriveBackendData>;
 
-		const isConnected = !!data.refreshToken;
+		const provider = getBackendProvider("googledrive");
+		const isConnected = provider?.isConnected(settings) ?? false;
 
 		let statusDesc: string;
 		let statusClass: string;
@@ -80,36 +84,30 @@ export class GoogleDriveCustomSettingsRenderer implements IBackendSettingsRender
 		containerEl: HTMLElement,
 		settings: SmartSyncSettings,
 		onSave: (updates: Record<string, unknown>) => Promise<void>,
-		actions: BackendConnectionActions
+		actions: BackendConnectionActions,
+		app: App,
 	): void {
 		const data = (settings.backendData["googledrive-custom"] ?? {}) as Partial<GoogleDriveCustomBackendData>;
-		const isConnected = !!data.refreshToken;
+		const provider = getBackendProvider("googledrive-custom");
+		const isConnected = provider?.isConnected(settings) ?? false;
 
 		new Setting(containerEl)
 			.setName("Client id") // eslint-disable-line obsidianmd/ui/sentence-case -- OAuth field name
-			.setDesc("Your Google Cloud OAuth 2.0 client id") // eslint-disable-line obsidianmd/ui/sentence-case -- OAuth field name
-			.addText((text) =>
-				text
-					.setPlaceholder("xxxxx.apps.googleusercontent.com") // eslint-disable-line obsidianmd/ui/sentence-case -- example value
-					.setValue(data.customClientId ?? "")
-					.setDisabled(isConnected)
-					.onChange(async (value) => {
-						await onSave({ customClientId: value });
-					})
-			);
+			.setDesc("Select a secret containing your Google Cloud OAuth 2.0 client id") // eslint-disable-line obsidianmd/ui/sentence-case -- OAuth field name
+			.addComponent(el => new SecretComponent(app, el)
+				.setValue(data.customClientId ?? "")
+				.onChange(async (value) => {
+					await onSave({ customClientId: value });
+				}));
 
 		new Setting(containerEl)
 			.setName("Client secret")
-			.setDesc("Stored locally in your vault's plugin data")
-			.addText((text) =>
-				text
-					.setPlaceholder("GOCSPX-...") // eslint-disable-line obsidianmd/ui/sentence-case -- example value
-					.setValue(data.customClientSecret ?? "")
-					.setDisabled(isConnected)
-					.onChange(async (value) => {
-						await onSave({ customClientSecret: value });
-					})
-			);
+			.setDesc("Select a secret containing your OAuth client secret") // eslint-disable-line obsidianmd/ui/sentence-case -- OAuth is a proper noun
+			.addComponent(el => new SecretComponent(app, el)
+				.setValue(data.customClientSecret ?? "")
+				.onChange(async (value) => {
+					await onSave({ customClientSecret: value });
+				}));
 
 		new Setting(containerEl)
 			.setName("Scope")

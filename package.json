@@ -22,6 +22,7 @@
 		"fake-indexeddb": "^6.2.5",
 		"globals": "14.0.0",
 		"jiti": "2.6.1",
+		"obsidian": "^1.12.3",
 		"tslib": "2.4.0",
 		"typescript": "^5.8.3",
 		"typescript-eslint": "8.35.1",
@@ -29,7 +30,6 @@
 	},
 	"dependencies": {
 		"ignore": "^7.0.5",
-		"node-diff3": "^3.2.0",
-		"obsidian": "latest"
+		"node-diff3": "^3.2.0"
 	}
 }

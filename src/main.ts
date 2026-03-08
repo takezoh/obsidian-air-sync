@@ -3,6 +3,8 @@ import { DEFAULT_SETTINGS, SmartSyncSettings } from "./settings";
 import { SmartSyncSettingTab } from "./ui/settings";
 import { LocalFs } from "./fs/local/index";
 import { BackendManager } from "./fs/backend-manager";
+import { initRegistry } from "./fs/registry";
+import type { ISecretStore } from "./fs/secret-store";
 import { SyncService, SyncStatus } from "./sync/service";
 import { ConflictModal } from "./ui/conflict-modal";
 import { ConflictSummaryModal, summaryChoiceToStrategy } from "./ui/conflict-summary-modal";
@@ -24,6 +26,12 @@ export default class SmartSyncPlugin extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
+
+		const secretStore: ISecretStore = {
+			getSecret: (key) => this.app.secretStorage.getSecret(key),
+			setSecret: (key, value) => { this.app.secretStorage.setSecret(key, value); },
+		};
+		initRegistry(secretStore);
 
 		this.localFs = new LocalFs(this.app, () => this.settings.syncDotPaths);
 

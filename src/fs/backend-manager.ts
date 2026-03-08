@@ -135,7 +135,7 @@ export class BackendManager {
 			const backendData = settings.backendData[type] ?? {};
 			const updates = await this.backendProvider.auth.completeAuth(
 				code,
-				backendData
+				backendData,
 			);
 			settings.backendData[type] = { ...backendData, ...updates };
 			await this.deps.saveSettings();
