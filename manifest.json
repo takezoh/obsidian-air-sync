@@ -1,7 +1,7 @@
 {
 	"id": "obsidian-smart-sync",
 	"name": "Smart Sync",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"minAppVersion": "1.5.7",
 	"description": "Sync your Obsidian vault bidirectionally with Google Drive.",
 	"author": "Takehito Gondo",
