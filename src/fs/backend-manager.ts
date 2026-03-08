@@ -118,6 +118,7 @@ export class BackendManager {
 			await this.deps.saveSettings();
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
+			this.deps.getLogger().error("Failed to start backend connection", { message: msg });
 			this.deps.notify(`Connection failed: ${msg}`);
 		}
 	}
@@ -159,6 +160,7 @@ export class BackendManager {
 			);
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
+			this.deps.getLogger().error("Authorization failed", { message: msg });
 			this.deps.notify(`Authorization failed: ${msg}`);
 		}
 

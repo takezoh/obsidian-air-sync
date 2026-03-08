@@ -92,8 +92,7 @@ export abstract class GoogleDriveAuthProviderBase implements IAuthProvider {
 			return { pendingAuthState, pendingCodeVerifier };
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			new Notice(`Failed to start authorization: ${msg}`);
-			return {};
+			throw new Error(`Failed to start authorization: ${msg}`);
 		}
 	}
 
