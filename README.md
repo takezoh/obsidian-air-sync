@@ -35,7 +35,7 @@ The first sync after connecting performs a full scan of the Drive folder. This m
 
 The built-in OAuth uses the `drive.file` scope, which only allows access to files created by the plugin. With custom OAuth, you own the authorization and can grant broader access — for example, the `drive` scope allows the plugin to access files created outside the plugin as well.
 
-The default redirect URI (`https://smartsync.takezo.dev/callback`) hosts a single static HTML file with no external scripts or dependencies. It only relays the authorization code back to the plugin via `obsidian://` protocol handler. The authorization code itself is protected by PKCE (S256) — it cannot be exchanged for tokens without the code verifier held only by the plugin. You can also host your own redirect page and configure its URL in the settings.
+The default redirect URI (`https://smartsync.takezo.dev/callback`) hosts a [single static HTML file](https://github.com/takezoh/smart-sync-auth/blob/main/docs/callback/index.html) with `Content-Security-Policy: default-src 'none'` — no external scripts, stylesheets, or network requests. It only relays the authorization code back to the plugin via `obsidian://` protocol handler. The authorization code itself is protected by PKCE (S256) — it cannot be exchanged for tokens without the code verifier held only by the plugin. You can also host your own redirect page and configure its URL in the settings.
 
 1. Create an OAuth 2.0 client in the [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
 2. Enable the Google Drive API
