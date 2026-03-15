@@ -217,14 +217,14 @@ describe("GoogleAuth.revokeToken", () => {
 
 		expect(mockRequestUrl).toHaveBeenCalledWith(
 			expect.objectContaining({
-				// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+				// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- vitest matcher returns `any`
 				url: expect.stringContaining("oauth2.googleapis.com/revoke"),
 				method: "POST",
 			})
 		);
 		expect(mockRequestUrl).toHaveBeenCalledWith(
 			expect.objectContaining({
-				// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+				// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- vitest matcher returns `any`
 				url: expect.stringContaining("my-refresh-token"),
 			})
 		);
@@ -306,7 +306,7 @@ describe("GoogleAuthDirect.handleAuthCallback", () => {
 
 		expect(mockRequestUrl).toHaveBeenCalledWith(
 			expect.objectContaining({
-				// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+				// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- vitest matcher returns `any`
 				url: expect.stringContaining("oauth2.googleapis.com/token"),
 				method: "POST",
 			})

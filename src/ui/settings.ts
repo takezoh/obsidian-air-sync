@@ -160,12 +160,12 @@ export class SmartSyncSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Ignore patterns")
-			.setDesc( // eslint-disable-next-line obsidianmd/ui/sentence-case
-				"Gitignore-style patterns, one per line. Use ! to negate, # for comments. Last matching rule wins."
-			)
+			// eslint-disable-next-line obsidianmd/ui/sentence-case -- gitignore syntax uses special chars (!, #)
+			.setDesc("Patterns to exclude from sync (gitignore syntax), one per line. Prefix with ! to negate. Last matching rule wins.")
 			.addTextArea((text) =>
 				text
-					.setPlaceholder("# Ignore secrets\nsecret/**\n!secret/public/\n!secret/public/**") // eslint-disable-line obsidianmd/ui/sentence-case
+					// eslint-disable-next-line obsidianmd/ui/sentence-case -- example glob pattern
+					.setPlaceholder("secret/**")
 					.setValue(
 						this.plugin.settings.ignorePatterns.join("\n")
 					)
@@ -177,8 +177,7 @@ export class SmartSyncSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			// eslint-disable-next-line obsidianmd/ui/sentence-case
-			.setName("Mobile max file size (MB)")
+			.setName("Mobile max file size (mb)")
 			.setDesc(
 				"Files larger than this will be skipped on mobile."
 			)

@@ -41,7 +41,7 @@ export function getDeviceName(isMobile: boolean, vaultId?: string): string {
 		device = "mobile";
 	} else {
 		try {
-			// eslint-disable-next-line @typescript-eslint/no-require-imports, import/no-nodejs-modules, no-undef
+			// eslint-disable-next-line @typescript-eslint/no-require-imports, import/no-nodejs-modules, no-undef -- dynamic require for desktop-only hostname detection
 			const os = require("os") as { hostname: () => string };
 			device = os.hostname();
 		} catch {

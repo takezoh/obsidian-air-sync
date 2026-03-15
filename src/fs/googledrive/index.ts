@@ -243,7 +243,7 @@ export class GoogleDriveFs implements IFileSystem {
 
 		// Phase 3: update cache under mutex with ID guard
 		// (applyIncrementalChanges may have updated the cache during phase 2)
-		await this.cacheMutex.run(async () => {
+		await this.cacheMutex.run(() => {
 			if (existingId && this.cache.getFile(path)?.id !== existingId) {
 				this.logger?.warn("Skipping stale cache update for write", { path });
 				return;
@@ -311,7 +311,7 @@ export class GoogleDriveFs implements IFileSystem {
 
 		// Phase 3: update cache under mutex with ID guard
 		// (applyIncrementalChanges may have updated the cache during phase 2)
-		await this.cacheMutex.run(async () => {
+		await this.cacheMutex.run(() => {
 			if (this.cache.getFile(path)?.id === fileId) {
 				this.cache.removePath(path);
 			} else {
@@ -380,7 +380,7 @@ export class GoogleDriveFs implements IFileSystem {
 
 		// Phase 3: update cache under mutex with ID guard
 		// (applyIncrementalChanges may have updated the cache during phase 2)
-		await this.cacheMutex.run(async () => {
+		await this.cacheMutex.run(() => {
 			if (this.cache.getFile(oldPath)?.id !== fileId) {
 				this.logger?.warn("Skipping stale cache update for rename", { oldPath, newPath });
 				return;

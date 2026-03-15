@@ -37,7 +37,7 @@ describe("LocalFs", () => {
 			vi.spyOn(vault, "getAbstractFileByPath").mockReturnValue(null);
 			vi.spyOn(vault.adapter, "exists").mockResolvedValue(true);
 			const createSpy = vi.spyOn(vault, "createFolder");
-			// eslint-disable-next-line obsidianmd/no-tfile-tfolder-cast
+			// eslint-disable-next-line obsidianmd/no-tfile-tfolder-cast -- test mock: create TFile instance for vault.createBinary return type
 			const mockFile: TFile = Object.create((await import("obsidian")).TFile.prototype) as TFile;
 			Object.assign(mockFile, { path: "a/file.txt", stat: { size: 5, mtime: 0 } });
 			vi.spyOn(vault, "createBinary").mockResolvedValue(mockFile);

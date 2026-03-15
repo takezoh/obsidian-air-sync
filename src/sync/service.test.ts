@@ -67,7 +67,7 @@ describe("SyncService", () => {
 	});
 
 	it("isExcluded respects ignore patterns", () => {
-		const configDir = ".obsidian"; // eslint-disable-line obsidianmd/hardcoded-config-path
+		const configDir = ".obsidian"; // eslint-disable-line obsidianmd/hardcoded-config-path -- test variable for ignore pattern testing
 		const deps = createMockDeps({
 			getSettings: () => mockSettings({
 				ignorePatterns: [`${configDir}/**`, "*.tmp"],

@@ -160,7 +160,7 @@ export class GoogleAuth extends GoogleAuthBase {
 		this.logger = logger;
 	}
 
-	async getAuthorizationUrl(): Promise<string> {
+	getAuthorizationUrl(): Promise<string> {
 		const state = this.generateState();
 
 		const params = new URLSearchParams({
@@ -172,7 +172,7 @@ export class GoogleAuth extends GoogleAuthBase {
 			prompt: "consent",
 			state,
 		});
-		return `${GOOGLE_AUTH_URL}?${params.toString()}`;
+		return Promise.resolve(`${GOOGLE_AUTH_URL}?${params.toString()}`);
 	}
 
 	/**

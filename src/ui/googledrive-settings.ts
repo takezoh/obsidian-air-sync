@@ -92,8 +92,8 @@ export class GoogleDriveCustomSettingsRenderer implements IBackendSettingsRender
 		const isConnected = provider?.isConnected(settings) ?? false;
 
 		new Setting(containerEl)
-			.setName("Client id") // eslint-disable-line obsidianmd/ui/sentence-case -- OAuth field name
-			.setDesc("Select a secret containing your Google Cloud OAuth 2.0 client id") // eslint-disable-line obsidianmd/ui/sentence-case -- OAuth field name
+			.setName("Client id") // eslint-disable-line obsidianmd/ui/sentence-case -- standard OAuth field name
+			.setDesc("Select a secret containing your Google Cloud client id") // eslint-disable-line obsidianmd/ui/sentence-case -- standard OAuth field name
 			.addComponent(el => new SecretComponent(app, el)
 				.setValue(data.customClientId ?? "")
 				.onChange(async (value) => {

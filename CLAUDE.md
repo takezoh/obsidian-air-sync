@@ -45,8 +45,12 @@ Always pass `npm run lint && npm run build && npm test` after making changes.
 - Pass `createMockStateStore()` directly (its intersection type satisfies `SyncStateStore`)
 
 ### obsidianmd ESLint plugin
+- `eslint-plugin-obsidianmd` is installed and included in `eslint.config.mts` (`obsidianmd.configs.recommended`)
+- The community plugin submission bot runs the same plugin to validate PRs — always run `npm run lint` before pushing
 - Never hardcode `.obsidian` — use `Vault#configDir`. In tests, assign to a variable and add `// eslint-disable-line obsidianmd/hardcoded-config-path`
 - UI text (`.setName()` / `.setDesc()`) must use sentence case. Avoid all-caps abbreviations (e.g. `PDFs`, `MB`)
+- `eslint-disable` directives must include a description explaining why (e.g. `// eslint-disable-next-line rule-name -- reason here`)
+- Do not disable rules that the obsidianmd plugin disallows (`obsidianmd/no-tfile-tfolder-cast`, `obsidianmd/ui/sentence-case`, etc.) — fix the code instead
 
 ## Build artifacts
 
