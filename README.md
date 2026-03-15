@@ -1,8 +1,6 @@
 # Smart Sync
 
-A community plugin for bidirectional sync between your Obsidian vault and cloud storage.
-
-Detects file creation, modification, deletion, and renames on both local and remote sides, then safely synchronizes changes. For concurrent text edits, automatic 3-way merge is also available.
+Sync your Obsidian vault bidirectionally with cloud storage, resolving conflicts and concurrent edits automatically via 3-way merge.
 
 Currently supports Google Drive as a storage backend.
 
