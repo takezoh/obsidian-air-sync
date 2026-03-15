@@ -92,8 +92,8 @@ export class GoogleDriveCustomSettingsRenderer implements IBackendSettingsRender
 		const isConnected = provider?.isConnected(settings) ?? false;
 
 		new Setting(containerEl)
-			.setName("Client id") // eslint-disable-line obsidianmd/ui/sentence-case -- standard OAuth field name
-			.setDesc("Select a secret containing your Google Cloud client id") // eslint-disable-line obsidianmd/ui/sentence-case -- standard OAuth field name
+			.setName("Client ID")
+			.setDesc("Select a secret containing your client ID")
 			.addComponent(el => new SecretComponent(app, el)
 				.setValue(data.customClientId ?? "")
 				.onChange(async (value) => {
@@ -102,7 +102,7 @@ export class GoogleDriveCustomSettingsRenderer implements IBackendSettingsRender
 
 		new Setting(containerEl)
 			.setName("Client secret")
-			.setDesc("Select a secret containing your OAuth client secret") // eslint-disable-line obsidianmd/ui/sentence-case -- OAuth is a proper noun
+			.setDesc("Select a secret containing your client secret")
 			.addComponent(el => new SecretComponent(app, el)
 				.setValue(data.customClientSecret ?? "")
 				.onChange(async (value) => {
@@ -111,7 +111,7 @@ export class GoogleDriveCustomSettingsRenderer implements IBackendSettingsRender
 
 		new Setting(containerEl)
 			.setName("Scope")
-			.setDesc("OAuth scope for Google Drive access") // eslint-disable-line obsidianmd/ui/sentence-case -- OAuth is a proper noun
+			.setDesc("Scope for drive access")
 			.addText((text) =>
 				text
 					.setPlaceholder(DEFAULT_CUSTOM_SCOPE)
@@ -124,7 +124,7 @@ export class GoogleDriveCustomSettingsRenderer implements IBackendSettingsRender
 
 		new Setting(containerEl)
 			.setName("Redirect uri")
-			.setDesc("Set this as the authorized redirect uri in Google Cloud Console") // eslint-disable-line obsidianmd/ui/sentence-case -- proper nouns
+			.setDesc("Set this as the authorized redirect uri")
 			.addText((text) =>
 				text
 					.setPlaceholder(DEFAULT_CUSTOM_REDIRECT_URI)
@@ -136,11 +136,11 @@ export class GoogleDriveCustomSettingsRenderer implements IBackendSettingsRender
 			);
 
 		new Setting(containerEl)
-			.setName("Remote vault folder id") // eslint-disable-line obsidianmd/ui/sentence-case -- Google Drive folder ID
-			.setDesc("Google Drive folder id to sync with") // eslint-disable-line obsidianmd/ui/sentence-case -- Google Drive folder ID
+			.setName("Remote vault folder ID")
+			.setDesc("Folder ID to sync with")
 			.addText((text) =>
 				text
-					.setPlaceholder("1AbC...") // eslint-disable-line obsidianmd/ui/sentence-case -- example value
+					.setPlaceholder("...")
 					.setValue(data.remoteVaultFolderId ?? "")
 					.setDisabled(isConnected)
 					.onChange(async (value) => {
@@ -173,7 +173,7 @@ export class GoogleDriveCustomSettingsRenderer implements IBackendSettingsRender
 						} else {
 							const current = (settings.backendData["googledrive-custom"] ?? {}) as Partial<GoogleDriveCustomBackendData>;
 							if (!current.remoteVaultFolderId) {
-								new Notice("Enter a remote vault folder id first"); // eslint-disable-line obsidianmd/ui/sentence-case -- field name
+								new Notice("Enter a remote vault folder ID first");
 								return;
 							}
 							await actions.startAuth();

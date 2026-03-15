@@ -192,7 +192,7 @@ describe("SyncExecutor", () => {
 			path: "will-delete.md", isDirectory: false, size: 50, mtime: 1000, hash: "hash1",
 		};
 		localFs.files.set("will-delete.md", {
-			content: new TextEncoder().encode("content").buffer as ArrayBuffer,
+			content: new TextEncoder().encode("content").buffer.slice(0),
 			entity: localEntity,
 		});
 
@@ -279,7 +279,7 @@ describe("SyncExecutor", () => {
 			stateStore: stateStore as unknown as SyncStateStore,
 			defaultStrategy: "ask",
 			enableThreeWayMerge: false,
-			onConflict: async () => "keep_newer",
+			onConflict: () => Promise.resolve("keep_newer" as const),
 		})).not.toThrow();
 	});
 
@@ -304,7 +304,7 @@ describe("SyncExecutor", () => {
 			stateStore: stateStore as unknown as SyncStateStore,
 			defaultStrategy: "ask",
 			enableThreeWayMerge: false,
-			onConflict: async () => "keep_local",
+			onConflict: () => Promise.resolve("keep_local" as const),
 		});
 
 		const result = await executor.execute(decisions);

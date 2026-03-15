@@ -215,19 +215,10 @@ describe("GoogleAuth.revokeToken", () => {
 
 		await auth.revokeToken();
 
-		expect(mockRequestUrl).toHaveBeenCalledWith(
-			expect.objectContaining({
-				// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- vitest matcher returns `any`
-				url: expect.stringContaining("oauth2.googleapis.com/revoke"),
-				method: "POST",
-			})
-		);
-		expect(mockRequestUrl).toHaveBeenCalledWith(
-			expect.objectContaining({
-				// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- vitest matcher returns `any`
-				url: expect.stringContaining("my-refresh-token"),
-			})
-		);
+		const callArg = mockRequestUrl.mock.calls[0]?.[0] as { url: string; method: string };
+		expect(callArg.url).toContain("oauth2.googleapis.com/revoke");
+		expect(callArg.method).toBe("POST");
+		expect(callArg.url).toContain("my-refresh-token");
 
 		mockRequestUrl.mockRestore();
 	});
@@ -304,13 +295,9 @@ describe("GoogleAuthDirect.handleAuthCallback", () => {
 		expect(tokens.accessToken).toBe("direct-access");
 		expect(tokens.refreshToken).toBe("direct-refresh");
 
-		expect(mockRequestUrl).toHaveBeenCalledWith(
-			expect.objectContaining({
-				// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- vitest matcher returns `any`
-				url: expect.stringContaining("oauth2.googleapis.com/token"),
-				method: "POST",
-			})
-		);
+		const callArg = mockRequestUrl.mock.calls[0]?.[0] as { url: string; method: string };
+		expect(callArg.url).toContain("oauth2.googleapis.com/token");
+		expect(callArg.method).toBe("POST");
 		// Verify body contains client credentials and PKCE verifier
 		const callBody = mockRequestUrl.mock.calls[0]?.[0];
 		const body = typeof callBody === "object" && callBody !== null && "body" in callBody

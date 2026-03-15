@@ -124,7 +124,7 @@ async function writeMetadata(
 	smartsyncFolderId: string,
 	metadata: RemoteVaultMetadata,
 ): Promise<void> {
-	const content = new TextEncoder().encode(JSON.stringify(metadata)).buffer as ArrayBuffer;
+	const content = new TextEncoder().encode(JSON.stringify(metadata)).buffer.slice(0);
 	await client.uploadFile(METADATA_FILE, smartsyncFolderId, content, "application/json");
 }
 
@@ -161,7 +161,7 @@ async function updateMetadataIfNeeded(
 	}
 
 	// Update metadata.json with new vault name
-	const newContent = new TextEncoder().encode(JSON.stringify({ vaultName })).buffer as ArrayBuffer;
+	const newContent = new TextEncoder().encode(JSON.stringify({ vaultName })).buffer.slice(0);
 	await client.uploadFile(METADATA_FILE, smartsyncFolder.id, newContent, "application/json", metaFile.id);
 	logger?.info("Updated metadata.json vault name", { vaultName });
 }

@@ -67,15 +67,14 @@ describe("SyncService", () => {
 	});
 
 	it("isExcluded respects ignore patterns", () => {
-		const configDir = ".obsidian"; // eslint-disable-line obsidianmd/hardcoded-config-path -- test variable for ignore pattern testing
 		const deps = createMockDeps({
 			getSettings: () => mockSettings({
-				ignorePatterns: [`${configDir}/**`, "*.tmp"],
+				ignorePatterns: [".config/**", "*.tmp"],
 			}),
 		});
 		const service = new SyncService(deps);
 
-		expect(service.isExcluded(`${configDir}/plugins/test`)).toBe(true);
+		expect(service.isExcluded(".config/plugins/test")).toBe(true);
 		expect(service.isExcluded("notes/hello.md")).toBe(false);
 	});
 
@@ -107,7 +106,7 @@ describe("SyncService — per-file errors do not trigger retry", () => {
 			hash: "",
 		};
 		localFs.files.set("bad.md", {
-			content: new TextEncoder().encode("data").buffer as ArrayBuffer,
+			content: new TextEncoder().encode("data").buffer.slice(0),
 			entity: badEntity,
 		});
 
@@ -214,7 +213,7 @@ describe("SyncService — mobile filtering", () => {
 			hash: "",
 		};
 		localFs.files.set("notes/big.md", {
-			content: new TextEncoder().encode("big content").buffer as ArrayBuffer,
+			content: new TextEncoder().encode("big content").buffer.slice(0),
 			entity: bigEntity,
 		});
 

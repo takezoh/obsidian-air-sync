@@ -12,13 +12,15 @@ function createMockAdapter(): LoggerAdapter & {
 	return {
 		written,
 		dirs,
-		exists: vi.fn(async (path: string) => written.has(path) || dirs.has(path)),
-		read: vi.fn(async (path: string) => written.get(path) ?? ""),
-		write: vi.fn(async (path: string, data: string) => {
+		exists: vi.fn((path: string) => Promise.resolve(written.has(path) || dirs.has(path))),
+		read: vi.fn((path: string) => Promise.resolve(written.get(path) ?? "")),
+		write: vi.fn((path: string, data: string) => {
 			written.set(path, data);
+			return Promise.resolve();
 		}),
-		mkdir: vi.fn(async (path: string) => {
+		mkdir: vi.fn((path: string) => {
 			dirs.add(path);
+			return Promise.resolve();
 		}),
 	};
 }
@@ -143,16 +145,12 @@ describe("Logger", () => {
 
 	it("getDeviceName returns '{device}-{vaultId}' when vaultId is provided", () => {
 		expect(getDeviceName(true, "abc123")).toBe("mobile-abc123");
-		const desktopName = getDeviceName(false, "xyz789");
-		expect(desktopName).toMatch(/-xyz789$/);
-		expect(desktopName).not.toBe("-xyz789"); // has a device prefix
+		expect(getDeviceName(false, "xyz789")).toBe("desktop-xyz789");
 	});
 
 	it("getDeviceName returns device only when no vaultId", () => {
 		expect(getDeviceName(true)).toBe("mobile");
-		const desktopName = getDeviceName(false);
-		expect(desktopName).toBeTruthy();
-		expect(desktopName).not.toBe("mobile");
+		expect(getDeviceName(false)).toBe("desktop");
 	});
 
 	it("formats timestamp in ISO format", async () => {

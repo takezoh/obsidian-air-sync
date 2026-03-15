@@ -54,7 +54,7 @@ describe("DriveClient error wrapping", () => {
 describe("DriveClient.uploadFile modifiedTime default", () => {
 	it("does not send epoch (1970) when modifiedTime is omitted", async () => {
 		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(
-			async () => mockRes({ id: "f1", name: "test.txt", mimeType: "text/plain" })
+			() => Promise.resolve(mockRes({ id: "f1", name: "test.txt", mimeType: "text/plain" }))
 		);
 
 		const { GoogleAuth } = await import("./auth");
@@ -63,10 +63,10 @@ describe("DriveClient.uploadFile modifiedTime default", () => {
 		auth.setTokens("refresh", "access", Date.now() + 3600_000);
 
 		const client = new DriveClient(auth);
-		const content = new TextEncoder().encode("hello").buffer;
+		const content = new TextEncoder().encode("hello").buffer.slice(0);
 
 		// Call without modifiedTime parameter
-		await client.uploadFile("test.txt", "parent-id", content as ArrayBuffer);
+		await client.uploadFile("test.txt", "parent-id", content);
 
 		// The multipart body should contain a modifiedTime that is NOT 1970
 		const callArgs = mockRequestUrl.mock.calls[0]![0] as { body?: ArrayBuffer };
@@ -92,35 +92,35 @@ describe("DriveClient.listAllFiles parallelization", () => {
 		let concurrent = 0;
 		let maxConcurrent = 0;
 
-		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(async (req) => {
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation((req) => {
 			concurrent++;
 			if (concurrent > maxConcurrent) maxConcurrent = concurrent;
 
 			// Small delay to allow parallel calls to overlap
-			await new Promise((r) => setTimeout(r, 10));
+			return new Promise((r) => setTimeout(r, 10)).then(() => {
+				const url = typeof req === "string" ? req : (req as { url: string }).url;
+				const params = new URLSearchParams(url.split("?")[1]);
+				const q = params.get("q") ?? "";
 
-			const url = typeof req === "string" ? req : req.url;
-			const params = new URLSearchParams(url.split("?")[1]);
-			const q = params.get("q") ?? "";
+				let files: unknown[] = [];
+				if (q.includes("'root'")) {
+					// Root contains 3 subfolders
+					files = [
+						{ id: "f1", name: "folder1", mimeType: "application/vnd.google-apps.folder", parents: ["root"] },
+						{ id: "f2", name: "folder2", mimeType: "application/vnd.google-apps.folder", parents: ["root"] },
+						{ id: "f3", name: "folder3", mimeType: "application/vnd.google-apps.folder", parents: ["root"] },
+					];
+				} else if (q.includes("'f1'")) {
+					files = [{ id: "a", name: "a.txt", mimeType: "text/plain", parents: ["f1"] }];
+				} else if (q.includes("'f2'")) {
+					files = [{ id: "b", name: "b.txt", mimeType: "text/plain", parents: ["f2"] }];
+				} else if (q.includes("'f3'")) {
+					files = [{ id: "c", name: "c.txt", mimeType: "text/plain", parents: ["f3"] }];
+				}
 
-			let files: unknown[] = [];
-			if (q.includes("'root'")) {
-				// Root contains 3 subfolders
-				files = [
-					{ id: "f1", name: "folder1", mimeType: "application/vnd.google-apps.folder", parents: ["root"] },
-					{ id: "f2", name: "folder2", mimeType: "application/vnd.google-apps.folder", parents: ["root"] },
-					{ id: "f3", name: "folder3", mimeType: "application/vnd.google-apps.folder", parents: ["root"] },
-				];
-			} else if (q.includes("'f1'")) {
-				files = [{ id: "a", name: "a.txt", mimeType: "text/plain", parents: ["f1"] }];
-			} else if (q.includes("'f2'")) {
-				files = [{ id: "b", name: "b.txt", mimeType: "text/plain", parents: ["f2"] }];
-			} else if (q.includes("'f3'")) {
-				files = [{ id: "c", name: "c.txt", mimeType: "text/plain", parents: ["f3"] }];
-			}
-
-			concurrent--;
-			return mockRes({ files });
+				concurrent--;
+				return mockRes({ files });
+			});
 		});
 
 		const client = new DriveClient(auth);
@@ -142,8 +142,8 @@ describe("DriveClient.listAllFiles parallelization", () => {
 		const auth = new GoogleAuth();
 		auth.setTokens("refresh", "access", Date.now() + 3600_000);
 
-		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(async (req) => {
-			const url = typeof req === "string" ? req : req.url;
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation((req) => {
+			const url = typeof req === "string" ? req : (req as { url: string }).url;
 			const params = new URLSearchParams(url.split("?")[1]);
 			const q = params.get("q") ?? "";
 
@@ -156,7 +156,7 @@ describe("DriveClient.listAllFiles parallelization", () => {
 				files = [{ id: "leaf", name: "deep.txt", mimeType: "text/plain", parents: ["d2"] }];
 			}
 
-			return mockRes({ files });
+			return Promise.resolve(mockRes({ files }));
 		});
 
 		const client = new DriveClient(auth);
@@ -177,23 +177,23 @@ describe("DriveClient.listAllFiles parallelization", () => {
 		const auth = new GoogleAuth();
 		auth.setTokens("refresh", "access", Date.now() + 3600_000);
 
-		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(async (req) => {
-			const url = typeof req === "string" ? req : req.url;
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation((req) => {
+			const url = typeof req === "string" ? req : (req as { url: string }).url;
 			const params = new URLSearchParams(url.split("?")[1]);
 			const q = params.get("q") ?? "";
 
 			if (q.includes("'root'")) {
-				return mockRes({
+				return Promise.resolve(mockRes({
 					files: [
 						{ id: "f1", name: "ok", mimeType: "application/vnd.google-apps.folder", parents: ["root"] },
 						{ id: "f2", name: "bad", mimeType: "application/vnd.google-apps.folder", parents: ["root"] },
 					],
-				});
+				}));
 			}
 			if (q.includes("'f2'")) {
-				throw Object.assign(new Error("Rate limited"), { status: 429 });
+				return Promise.reject(Object.assign(new Error("Rate limited"), { status: 429 }));
 			}
-			return mockRes({ files: [] });
+			return Promise.resolve(mockRes({ files: [] }));
 		});
 
 		const client = new DriveClient(auth);
@@ -212,17 +212,17 @@ describe("DriveClient resumable upload", () => {
 		auth.setTokens("refresh", "access", Date.now() + 3600_000);
 
 		let callCount = 0;
-		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(async () => {
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(() => {
 			callCount++;
 			if (callCount === 1) {
-				return mockRes({}, { headers: { location: "https://upload.example.com/resumable-session" } });
+				return Promise.resolve(mockRes({}, { headers: { location: "https://upload.example.com/resumable-session" } }));
 			}
-			return mockRes({
+			return Promise.resolve(mockRes({
 				id: "uploaded-file",
 				name: "large.bin",
 				mimeType: "application/octet-stream",
 				md5Checksum: "finalhash",
-			});
+			}));
 		});
 
 		const client = new DriveClient(auth);
@@ -253,35 +253,31 @@ describe("DriveClient resumable upload", () => {
 		const content = new ArrayBuffer(fileSize);
 		let callCount = 0;
 
-		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(async (req) => {
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation((req) => {
 			callCount++;
 			if (callCount === 1) {
-				// Init: return session URL
-				return mockRes({}, { headers: { location: "https://upload.example.com/session-abc" } });
+				return Promise.resolve(mockRes({}, { headers: { location: "https://upload.example.com/session-abc" } }));
 			}
 			if (callCount === 2) {
-				// First PUT: fails midway
-				throw Object.assign(new Error("Connection reset"), { status: 500 });
+				return Promise.reject(Object.assign(new Error("Connection reset"), { status: 500 }));
 			}
 			if (callCount === 3) {
-				// Status query: 308 with Range header (Google received first 2MB)
-				throw Object.assign(new Error("Resume Incomplete"), {
+				return Promise.reject(Object.assign(new Error("Resume Incomplete"), {
 					status: 308,
 					headers: { range: "bytes=0-2097151" },
-				});
+				}));
 			}
 			if (callCount === 4) {
-				// Resume PUT: verify Content-Range header
-				const headers = typeof req === "string" ? {} : (req.headers ?? {});
+				const headers = typeof req === "string" ? {} : ((req as { headers?: Record<string, string> }).headers ?? {});
 				const contentRange = headers["Content-Range"] ?? "";
 				expect(contentRange).toBe(`bytes 2097152-${fileSize - 1}/${fileSize}`);
-				return mockRes({
+				return Promise.resolve(mockRes({
 					id: "resumed-file",
 					name: "file.bin",
 					mimeType: "application/octet-stream",
-				});
+				}));
 			}
-			throw new Error("Unexpected call");
+			return Promise.reject(new Error("Unexpected call"));
 		});
 
 		const client = new DriveClient(auth);
@@ -318,33 +314,28 @@ describe("DriveClient resumable upload", () => {
 		const content = new ArrayBuffer(fileSize);
 		let callCount = 0;
 
-		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(async () => {
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(() => {
 			callCount++;
 			if (callCount === 1) {
-				// Init
-				return mockRes({}, { headers: { location: "https://upload.example.com/session-1" } });
+				return Promise.resolve(mockRes({}, { headers: { location: "https://upload.example.com/session-1" } }));
 			}
 			if (callCount === 2) {
-				// First PUT fails
-				throw Object.assign(new Error("Timeout"), { status: 408 });
+				return Promise.reject(Object.assign(new Error("Timeout"), { status: 408 }));
 			}
 			if (callCount === 3) {
-				// Status query: fails with 404 (session expired)
-				throw Object.assign(new Error("Not Found"), { status: 404 });
+				return Promise.reject(Object.assign(new Error("Not Found"), { status: 404 }));
 			}
 			if (callCount === 4) {
-				// Fresh init
-				return mockRes({}, { headers: { location: "https://upload.example.com/session-2" } });
+				return Promise.resolve(mockRes({}, { headers: { location: "https://upload.example.com/session-2" } }));
 			}
 			if (callCount === 5) {
-				// Fresh PUT succeeds
-				return mockRes({
+				return Promise.resolve(mockRes({
 					id: "fresh-file",
 					name: "file.bin",
 					mimeType: "application/octet-stream",
-				});
+				}));
 			}
-			throw new Error("Unexpected call");
+			return Promise.reject(new Error("Unexpected call"));
 		});
 
 		const client = new DriveClient(auth);
@@ -371,23 +362,22 @@ describe("DriveClient resumable upload", () => {
 		const content = new ArrayBuffer(fileSize);
 		let callCount = 0;
 
-		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(async () => {
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(() => {
 			callCount++;
 			if (callCount === 1) {
-				return mockRes({}, { headers: { location: "https://upload.example.com/session-done" } });
+				return Promise.resolve(mockRes({}, { headers: { location: "https://upload.example.com/session-done" } }));
 			}
 			if (callCount === 2) {
-				throw Object.assign(new Error("Reset"), { status: 500 });
+				return Promise.reject(Object.assign(new Error("Reset"), { status: 500 }));
 			}
 			if (callCount === 3) {
-				// Status query returns 200 — upload already completed
-				return mockRes({
+				return Promise.resolve(mockRes({
 					id: "already-done",
 					name: "file.bin",
 					mimeType: "application/octet-stream",
-				});
+				}));
 			}
-			throw new Error("Unexpected call");
+			return Promise.reject(new Error("Unexpected call"));
 		});
 
 		const client = new DriveClient(auth);
@@ -412,16 +402,16 @@ describe("DriveClient resumable upload", () => {
 		const content = new ArrayBuffer(fileSize);
 		let callCount = 0;
 
-		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(async () => {
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(() => {
 			callCount++;
 			if (callCount === 1) {
-				return mockRes({}, { headers: { location: "https://upload.example.com/fresh" } });
+				return Promise.resolve(mockRes({}, { headers: { location: "https://upload.example.com/fresh" } }));
 			}
-			return mockRes({
+			return Promise.resolve(mockRes({
 				id: "fresh-upload",
 				name: "file.bin",
 				mimeType: "application/octet-stream",
-			});
+			}));
 		});
 
 		const client = new DriveClient(auth);
@@ -450,16 +440,16 @@ describe("DriveClient resumable upload", () => {
 		auth.setTokens("refresh", "access", Date.now() + 3600_000);
 
 		let callCount = 0;
-		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(async () => {
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(() => {
 			callCount++;
 			if (callCount === 1) {
-				return mockRes({}, { headers: { location: "https://upload.example.com/new" } });
+				return Promise.resolve(mockRes({}, { headers: { location: "https://upload.example.com/new" } }));
 			}
-			return mockRes({
+			return Promise.resolve(mockRes({
 				id: "new-file",
 				name: "file.bin",
 				mimeType: "application/octet-stream",
-			});
+			}));
 		});
 
 		const client = new DriveClient(auth);
@@ -491,15 +481,15 @@ describe("DriveClient resumable upload", () => {
 		const content = new ArrayBuffer(fileSize);
 		let callCount = 0;
 
-		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(async () => {
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(() => {
 			callCount++;
 			if (callCount === 1) {
-				return mockRes({}, { headers: { location: "https://upload.example.com/session" } });
+				return Promise.resolve(mockRes({}, { headers: { location: "https://upload.example.com/session" } }));
 			}
 			if (callCount === 2) {
-				throw Object.assign(new Error("Fail"), { status: 500 });
+				return Promise.reject(Object.assign(new Error("Fail"), { status: 500 }));
 			}
-			throw new Error("Unexpected call");
+			return Promise.reject(new Error("Unexpected call"));
 		});
 
 		const client = new DriveClient(auth);
@@ -522,15 +512,14 @@ describe("DriveClient resumable upload", () => {
 		auth.setTokens("refresh", "access", Date.now() + 3600_000);
 
 		let callCount = 0;
-		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(async () => {
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(() => {
 			callCount++;
 			if (callCount === 1) {
-				return mockRes({}, { headers: { location: "https://upload.example.com/session" } });
+				return Promise.resolve(mockRes({}, { headers: { location: "https://upload.example.com/session" } }));
 			}
-			const err = Object.assign(new Error("Internal Server Error"), {
+			return Promise.reject(Object.assign(new Error("Internal Server Error"), {
 				status: 500,
-			});
-			throw err;
+			}));
 		});
 
 		const client = new DriveClient(auth);
@@ -551,16 +540,16 @@ describe("DriveClient resumable upload", () => {
 		auth.setTokens("refresh", "access", Date.now() + 3600_000);
 
 		let callCount = 0;
-		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(async () => {
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(() => {
 			callCount++;
 			if (callCount === 1) {
-				return mockRes({}, { headers: { location: "https://upload.example.com/session" } });
+				return Promise.resolve(mockRes({}, { headers: { location: "https://upload.example.com/session" } }));
 			}
-			return mockRes({
+			return Promise.resolve(mockRes({
 				id: "f1",
 				name: "medium.bin",
 				mimeType: "application/octet-stream",
-			});
+			}));
 		});
 
 		const client = new DriveClient(auth);

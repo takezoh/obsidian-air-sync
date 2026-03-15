@@ -160,12 +160,9 @@ export class SmartSyncSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Ignore patterns")
-			// eslint-disable-next-line obsidianmd/ui/sentence-case -- gitignore syntax uses special chars (!, #)
-			.setDesc("Patterns to exclude from sync (gitignore syntax), one per line. Prefix with ! to negate. Last matching rule wins.")
+			.setDesc("Patterns to exclude from sync (gitignore syntax), one per line.")
 			.addTextArea((text) =>
 				text
-					// eslint-disable-next-line obsidianmd/ui/sentence-case -- example glob pattern
-					.setPlaceholder("secret/**")
 					.setValue(
 						this.plugin.settings.ignorePatterns.join("\n")
 					)

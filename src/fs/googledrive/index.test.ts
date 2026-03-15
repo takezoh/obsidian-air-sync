@@ -87,7 +87,7 @@ describe("GoogleDriveFs.write contentChecksum", () => {
 			md5Checksum: "abc123hash",
 		};
 		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(
-			async () => mockRes(uploadResult)
+			() => Promise.resolve(mockRes(uploadResult))
 		);
 
 		const { GoogleDriveFs } = await import("./index");
@@ -100,7 +100,7 @@ describe("GoogleDriveFs.write contentChecksum", () => {
 
 		(fs as unknown as GoogleDriveFsInternal).initialized = true;
 
-		const content = new TextEncoder().encode("hello").buffer as ArrayBuffer;
+		const content = new TextEncoder().encode("hello").buffer.slice(0);
 		const result = await fs.write("test.md", content, Date.now());
 
 		expect(result.backendMeta?.contentChecksum).toBe("abc123hash");
@@ -117,10 +117,10 @@ describe("GoogleDriveFs.write contentChecksum", () => {
 			modifiedTime: "2024-01-01T00:00:00.000Z",
 		};
 		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(
-			async (opts: string | { url: string }) => {
+			(opts: string | { url: string }) => {
 				const url = typeof opts === "string" ? opts : opts.url;
-				if (url.includes("uploadType=")) return mockRes(uploadResult);
-				return mockRes({ files: [] });
+				if (url.includes("uploadType=")) return Promise.resolve(mockRes(uploadResult));
+				return Promise.resolve(mockRes({ files: [] }));
 			}
 		);
 
@@ -134,7 +134,7 @@ describe("GoogleDriveFs.write contentChecksum", () => {
 
 		(fs as unknown as GoogleDriveFsInternal).initialized = true;
 
-		const content = new TextEncoder().encode("hello").buffer as ArrayBuffer;
+		const content = new TextEncoder().encode("hello").buffer.slice(0);
 		const result = await fs.write("doc.gdoc", content, Date.now());
 
 		expect(result.backendMeta?.contentChecksum).toBeUndefined();

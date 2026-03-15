@@ -256,7 +256,7 @@ async function attemptThreeWayMerge(
 		}
 	}
 
-	const mergedBuffer = encoder.encode(mergeResult.content).buffer as ArrayBuffer;
+	const mergedBuffer = encoder.encode(mergeResult.content).buffer.slice(0);
 
 	// Write merged content to both sides (with rollback if remote fails)
 	const now = Date.now();
@@ -266,7 +266,7 @@ async function attemptThreeWayMerge(
 	} catch (remoteWriteErr) {
 		// Restore local to pre-merge state
 		try {
-			await localFs.write(path, encoder.encode(localText).buffer as ArrayBuffer, local.mtime);
+			await localFs.write(path, encoder.encode(localText).buffer.slice(0), local.mtime);
 		} catch (restoreErr) {
 			logger?.error("Failed to restore local after merge failure", { path, error: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) });
 		}

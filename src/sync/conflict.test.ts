@@ -258,7 +258,7 @@ describe("resolveConflict", () => {
 			addFile(remoteFs, "file.md", remoteText, 2000);
 
 			const stateStore = createMockStateStore();
-			const baseBuf = new TextEncoder().encode(base).buffer as ArrayBuffer;
+			const baseBuf = new TextEncoder().encode(base).buffer.slice(0);
 			stateStore.contents.set("file.md", baseBuf);
 
 			const prevSync: SyncRecord = {
@@ -288,7 +288,7 @@ describe("resolveConflict", () => {
 			addFile(remoteFs, "file.md", remoteText, 2000);
 
 			const stateStore = createMockStateStore();
-			const baseBuf = new TextEncoder().encode(base).buffer as ArrayBuffer;
+			const baseBuf = new TextEncoder().encode(base).buffer.slice(0);
 			stateStore.contents.set("file.md", baseBuf);
 
 			const prevSync: SyncRecord = {
@@ -327,7 +327,7 @@ describe("resolveConflict", () => {
 			const remote = addFile(remoteFs, "image.png", "remote-binary", 1000);
 
 			const stateStore = createMockStateStore();
-			const baseBuf = new TextEncoder().encode("base").buffer as ArrayBuffer;
+			const baseBuf = new TextEncoder().encode("base").buffer.slice(0);
 			stateStore.contents.set("image.png", baseBuf);
 
 			const prevSync: SyncRecord = {
@@ -456,7 +456,7 @@ describe("resolveConflict", () => {
 			addFile(remoteFs, "data.json", remoteText, 2000);
 
 			const stateStore = createMockStateStore();
-			const baseBuf = new TextEncoder().encode(base).buffer as ArrayBuffer;
+			const baseBuf = new TextEncoder().encode(base).buffer.slice(0);
 			stateStore.contents.set("data.json", baseBuf);
 
 			const prevSync: SyncRecord = {
@@ -486,7 +486,7 @@ describe("resolveConflict", () => {
 			addFile(remoteFs, "note.canvas", remoteText, 2000);
 
 			const stateStore = createMockStateStore();
-			const baseBuf = new TextEncoder().encode(base).buffer as ArrayBuffer;
+			const baseBuf = new TextEncoder().encode(base).buffer.slice(0);
 			stateStore.contents.set("note.canvas", baseBuf);
 
 			const prevSync: SyncRecord = {
@@ -516,7 +516,7 @@ describe("resolveConflict", () => {
 			addFile(remoteFs, "config.json", remoteText, 2000);
 
 			const stateStore = createMockStateStore();
-			const baseBuf = new TextEncoder().encode(base).buffer as ArrayBuffer;
+			const baseBuf = new TextEncoder().encode(base).buffer.slice(0);
 			stateStore.contents.set("config.json", baseBuf);
 
 			const prevSync: SyncRecord = {
@@ -554,12 +554,12 @@ describe("resolveConflict", () => {
 			addFile(remoteFs, "file.md", remoteText, 2000);
 
 			// Make remote write throw
-			remoteFs.write = async (_path: string, _content: ArrayBuffer, _mtime?: number) => {
-				throw new Error("Remote write failed");
+			remoteFs.write = (_path: string, _content: ArrayBuffer, _mtime?: number) => {
+				return Promise.reject(new Error("Remote write failed"));
 			};
 
 			const stateStore = createMockStateStore();
-			const baseBuf = new TextEncoder().encode(base).buffer as ArrayBuffer;
+			const baseBuf = new TextEncoder().encode(base).buffer.slice(0);
 			stateStore.contents.set("file.md", baseBuf);
 
 			const prevSync: SyncRecord = {

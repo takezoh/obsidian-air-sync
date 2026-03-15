@@ -164,9 +164,10 @@ describe("AsyncPool", () => {
 		const completed: number[] = [];
 
 		const promises = [0, 1, 2, 3].map((i) =>
-			pool.run(async () => {
-				if (i === 1) throw new Error("fail");
+			pool.run(() => {
+				if (i === 1) return Promise.reject(new Error("fail"));
 				completed.push(i);
+				return Promise.resolve();
 			}).catch(() => { /* swallow */ })
 		);
 

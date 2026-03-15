@@ -180,24 +180,29 @@ export class GoogleAuth extends GoogleAuthBase {
 	 * The auth server already exchanged the authorization code for tokens;
 	 * we just verify the CSRF state and store the tokens.
 	 */
-	async handleAuthCallback(params: Record<string, string | undefined>): Promise<void> {
-		this.verifyAndClearState(params.state);
-		if (!params.access_token) {
-			throw new Error("Access token is missing from auth callback");
-		}
+	handleAuthCallback(params: Record<string, string | undefined>): Promise<void> {
+		try {
+			this.verifyAndClearState(params.state);
+			if (!params.access_token) {
+				throw new Error("Access token is missing from auth callback");
+			}
 
-		const expiresIn = parseInt(params.expires_in ?? "3600", 10);
-		if (isNaN(expiresIn) || expiresIn <= 0) {
-			throw new Error("Invalid expires_in from auth callback");
-		}
+			const expiresIn = parseInt(params.expires_in ?? "3600", 10);
+			if (isNaN(expiresIn) || expiresIn <= 0) {
+				throw new Error("Invalid expires_in from auth callback");
+			}
 
-		this.accessToken = params.access_token;
-		this.accessTokenExpiry = Date.now() + expiresIn * 1000;
-		if (params.refresh_token) {
-			this.refreshToken = params.refresh_token;
-		}
+			this.accessToken = params.access_token;
+			this.accessTokenExpiry = Date.now() + expiresIn * 1000;
+			if (params.refresh_token) {
+				this.refreshToken = params.refresh_token;
+			}
 
-		this.clearAuthState();
+			this.clearAuthState();
+			return Promise.resolve();
+		} catch (err: unknown) {
+			return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+		}
 	}
 
 	protected async performRefresh(): Promise<string> {

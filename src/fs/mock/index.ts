@@ -18,7 +18,7 @@ export class MockFs implements IFileSystem {
 		this.name = name;
 	}
 
-	async list(): Promise<FileEntity[]> {
+	list(): Promise<FileEntity[]> {
 		const entities: FileEntity[] = [];
 		for (const [path, file] of this.files) {
 			entities.push({
@@ -29,7 +29,7 @@ export class MockFs implements IFileSystem {
 				hash: "",
 			});
 		}
-		return entities;
+		return Promise.resolve(entities);
 	}
 
 	async stat(path: string): Promise<FileEntity | null> {
@@ -46,16 +46,16 @@ export class MockFs implements IFileSystem {
 		};
 	}
 
-	async read(path: string): Promise<ArrayBuffer> {
+	read(path: string): Promise<ArrayBuffer> {
 		path = normalizeSyncPath(path);
 		const file = this.files.get(path);
 		if (!file) {
-			throw new Error(`File not found: ${path}`);
+			return Promise.reject(new Error(`File not found: ${path}`));
 		}
 		if (file.isDirectory) {
-			throw new Error(`Not a file (is a directory): ${path}`);
+			return Promise.reject(new Error(`Not a file (is a directory): ${path}`));
 		}
-		return file.content.slice(0);
+		return Promise.resolve(file.content.slice(0));
 	}
 
 	async write(path: string, content: ArrayBuffer, mtime: number): Promise<FileEntity> {
@@ -84,7 +84,7 @@ export class MockFs implements IFileSystem {
 		};
 	}
 
-	async mkdir(path: string): Promise<FileEntity> {
+	mkdir(path: string): Promise<FileEntity> {
 		path = normalizeSyncPath(path);
 		const parts = path.split("/");
 		let current = "";
@@ -92,7 +92,7 @@ export class MockFs implements IFileSystem {
 			current = current ? `${current}/${part}` : part;
 			const existing = this.files.get(current);
 			if (existing && !existing.isDirectory) {
-				throw new Error(`Cannot create directory "${path}": "${current}" is a file`);
+				return Promise.reject(new Error(`Cannot create directory "${path}": "${current}" is a file`));
 			}
 			if (!existing) {
 				this.files.set(current, {
@@ -102,10 +102,10 @@ export class MockFs implements IFileSystem {
 				});
 			}
 		}
-		return { path, isDirectory: true, size: 0, mtime: 0, hash: "" };
+		return Promise.resolve({ path, isDirectory: true, size: 0, mtime: 0, hash: "" });
 	}
 
-	async listDir(path: string): Promise<FileEntity[]> {
+	listDir(path: string): Promise<FileEntity[]> {
 		path = normalizeSyncPath(path);
 		const prefix = path + "/";
 		const entities: FileEntity[] = [];
@@ -120,10 +120,10 @@ export class MockFs implements IFileSystem {
 				});
 			}
 		}
-		return entities;
+		return Promise.resolve(entities);
 	}
 
-	async delete(path: string): Promise<void> {
+	delete(path: string): Promise<void> {
 		path = normalizeSyncPath(path);
 		// Delete the path and all children
 		const prefix = path + "/";
@@ -136,6 +136,7 @@ export class MockFs implements IFileSystem {
 		for (const key of keysToDelete) {
 			this.files.delete(key);
 		}
+		return Promise.resolve();
 	}
 
 	async rename(oldPath: string, newPath: string): Promise<void> {

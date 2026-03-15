@@ -36,18 +36,7 @@ function sanitizeDeviceName(name: string): string {
  * logs and conflict history are scoped per device AND per vault.
  */
 export function getDeviceName(isMobile: boolean, vaultId?: string): string {
-	let device: string;
-	if (isMobile) {
-		device = "mobile";
-	} else {
-		try {
-			// eslint-disable-next-line @typescript-eslint/no-require-imports, import/no-nodejs-modules, no-undef -- dynamic require for desktop-only hostname detection
-			const os = require("os") as { hostname: () => string };
-			device = os.hostname();
-		} catch {
-			device = "desktop";
-		}
-	}
+	const device = isMobile ? "mobile" : "desktop";
 	return vaultId ? `${device}-${vaultId}` : device;
 }
 

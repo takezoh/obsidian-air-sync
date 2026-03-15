@@ -72,7 +72,7 @@ describe("SyncStateStore", () => {
 	});
 
 	it("delete: removes a record and its content", async () => {
-		const content = new TextEncoder().encode("hello").buffer as ArrayBuffer;
+		const content = new TextEncoder().encode("hello").buffer.slice(0);
 		await store.put(makeRecord("a.md"));
 		await store.putContent("a.md", content);
 
@@ -87,7 +87,7 @@ describe("SyncStateStore", () => {
 	});
 
 	it("clear: removes all records and content", async () => {
-		const content = new TextEncoder().encode("data").buffer as ArrayBuffer;
+		const content = new TextEncoder().encode("data").buffer.slice(0);
 		await store.put(makeRecord("a.md"));
 		await store.put(makeRecord("b.md"));
 		await store.putContent("a.md", content);
@@ -99,7 +99,7 @@ describe("SyncStateStore", () => {
 	});
 
 	it("putContent + getContent: round-trips content", async () => {
-		const content = new TextEncoder().encode("hello world").buffer as ArrayBuffer;
+		const content = new TextEncoder().encode("hello world").buffer.slice(0);
 		await store.putContent("notes/test.md", content);
 
 		const result = await store.getContent("notes/test.md");

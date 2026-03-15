@@ -9,17 +9,19 @@ function createMockAdapter(): LoggerAdapter & { files: Map<string, string>; dirs
 	return {
 		files,
 		dirs,
-		exists: async (path: string) => files.has(path) || dirs.has(path),
-		read: async (path: string) => {
+		exists: (path: string) => Promise.resolve(files.has(path) || dirs.has(path)),
+		read: (path: string) => {
 			const content = files.get(path);
-			if (content === undefined) throw new Error(`File not found: ${path}`);
-			return content;
+			if (content === undefined) return Promise.reject(new Error(`File not found: ${path}`));
+			return Promise.resolve(content);
 		},
-		write: async (path: string, data: string) => {
+		write: (path: string, data: string) => {
 			files.set(path, data);
+			return Promise.resolve();
 		},
-		mkdir: async (path: string) => {
+		mkdir: (path: string) => {
 			dirs.add(path);
+			return Promise.resolve();
 		},
 	};
 }
