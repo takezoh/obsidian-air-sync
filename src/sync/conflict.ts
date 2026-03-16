@@ -55,6 +55,9 @@ export async function resolveConflict(
 		case "three_way_merge":
 			return attemptThreeWayMerge(ctx, fallback ?? "keep_newer");
 
+		case "auto_merge":
+			return attemptThreeWayMerge(ctx, fallback ?? "keep_newer");
+
 		case "ask":
 			// Handled by executor via onConflict callback before reaching here.
 			// If we get here, it means the callback was not provided — fall back safely.

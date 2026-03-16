@@ -16,6 +16,8 @@ export interface SyncRecord {
 	remoteSize: number;
 	/** Backend-specific metadata snapshot (e.g. Drive file ID) */
 	backendMeta?: Record<string, unknown>;
+	/** Drive md5Checksum (promoted from backendMeta.contentChecksum) */
+	backendChecksum?: string;
 	/** Timestamp when this sync completed (Unix epoch ms) */
 	syncedAt: number;
 }
@@ -50,6 +52,7 @@ export type ConflictStrategy =
 	| "keep_remote"
 	| "duplicate"
 	| "three_way_merge"
+	| "auto_merge"
 	| "ask";
 
 /** A computed sync decision for a single path */
@@ -73,4 +76,35 @@ export interface ConflictRecord {
 	hasConflictMarkers?: boolean;
 	resolvedAt: string;
 	sessionId: string;
+}
+
+/** v2 pipeline: action types */
+export type SyncActionType =
+	| "push"
+	| "pull"
+	| "delete_local"
+	| "delete_remote"
+	| "conflict"
+	| "match"
+	| "cleanup";
+
+/** v2 pipeline: a single planned action for a path */
+export interface SyncAction {
+	path: string;
+	action: SyncActionType;
+	local?: FileEntity;
+	remote?: FileEntity;
+	baseline?: SyncRecord;
+}
+
+/** v2 pipeline: result of safety checks before execution */
+export interface SafetyCheckResult {
+	safe: boolean;
+	reasons: string[];
+}
+
+/** v2 pipeline: the full sync plan */
+export interface SyncPlan {
+	actions: SyncAction[];
+	safetyCheck: SafetyCheckResult;
 }
