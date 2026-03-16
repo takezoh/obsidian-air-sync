@@ -61,7 +61,7 @@ export async function applyIncrementalChanges(
 					if (path) {
 						// Collect descendants before removing
 						deletedPaths.push(path, ...ctx.cache.collectDescendants(path));
-						ctx.cache.removePath(path);
+						ctx.cache.removeTree(path);
 					}
 				} else if (change.file) {
 					ctx.cache.applyFileChange(change.file);

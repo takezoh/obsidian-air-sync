@@ -11,7 +11,7 @@ describe("applyIncrementalChanges", () => {
 	let listChanges: ReturnType<typeof vi.fn>;
 	let getPathById: ReturnType<typeof vi.fn>;
 	let collectDescendants: ReturnType<typeof vi.fn>;
-	let removePath: ReturnType<typeof vi.fn>;
+	let removeTree: ReturnType<typeof vi.fn>;
 	let applyFileChange: ReturnType<typeof vi.fn>;
 	let loggerInfo: ReturnType<typeof vi.fn>;
 	let loggerWarn: ReturnType<typeof vi.fn>;
@@ -23,7 +23,7 @@ describe("applyIncrementalChanges", () => {
 		listChanges = vi.fn();
 		getPathById = vi.fn();
 		collectDescendants = vi.fn().mockReturnValue([]);
-		removePath = vi.fn();
+		removeTree = vi.fn();
 		applyFileChange = vi.fn();
 		loggerInfo = vi.fn();
 		loggerWarn = vi.fn();
@@ -32,7 +32,7 @@ describe("applyIncrementalChanges", () => {
 		mockCache = {
 			getPathById,
 			collectDescendants,
-			removePath,
+			removeTree,
 			applyFileChange,
 		} as unknown as DriveMetadataCache;
 

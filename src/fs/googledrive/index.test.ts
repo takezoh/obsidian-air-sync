@@ -313,7 +313,7 @@ describe("GoogleDriveFs circular parent reference", () => {
 });
 
 describe("GoogleDriveFs children index", () => {
-	it("removePath removes all descendants (nested folders)", async () => {
+	it("removeTree removes all descendants (nested folders)", async () => {
 		const { GoogleDriveFs } = await import("./index");
 
 		const mockClient = {
