@@ -196,3 +196,35 @@ describe("BackendManager — auth error notification on initBackend", () => {
 		expect(deps.notify).not.toHaveBeenCalled();
 	});
 });
+
+describe("BackendManager — isConnected false with prior connection", () => {
+	it("notifies when isConnected is false but remoteVaultFolderId exists", async () => {
+		fakeProvider.isConnected = () => false;
+
+		const settings = mockSettings({
+			backendData: { test: { remoteVaultFolderId: "folder-123" } },
+		});
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+
+		await mgr.initBackend();
+
+		expect(deps.notify).toHaveBeenCalledWith(
+			"Authentication expired. Please reconnect in settings."
+		);
+		expect(deps.onDisconnected).toHaveBeenCalled();
+	});
+
+	it("does not notify when isConnected is false and no prior connection", async () => {
+		fakeProvider.isConnected = () => false;
+
+		const settings = mockSettings();
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+
+		await mgr.initBackend();
+
+		expect(deps.notify).not.toHaveBeenCalled();
+		expect(deps.onDisconnected).toHaveBeenCalled();
+	});
+});

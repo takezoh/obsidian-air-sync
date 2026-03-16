@@ -59,6 +59,10 @@ export class BackendManager {
 			if (!provider.isConnected(settings)) {
 				this.remoteFs = null;
 				this.deps.onDisconnected();
+				const data = settings.backendData[provider.type] as Record<string, unknown> | undefined;
+				if (data?.remoteVaultFolderId) {
+					this.deps.notify("Authentication expired. Please reconnect in settings.");
+				}
 				return;
 			}
 

@@ -229,16 +229,24 @@ export default class SmartSyncPlugin extends Plugin {
 	}
 
 	async runSync(): Promise<void> {
-		if (!this.localFs || !this.backendManager.getRemoteFs()) {
-			await this.backendManager.initBackend();
+		try {
 			if (!this.localFs || !this.backendManager.getRemoteFs()) {
-				this.syncStatus = "not_connected";
-				this.updateStatusBar();
-				new Notice("Not connected to a remote backend");
-				return;
+				await this.backendManager.initBackend();
+				if (!this.localFs || !this.backendManager.getRemoteFs()) {
+					this.syncStatus = "not_connected";
+					this.updateStatusBar();
+					new Notice("Not connected to a remote backend");
+					return;
+				}
 			}
+			await this.syncService.runSync();
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			this.syncStatus = "error";
+			this.updateStatusBar();
+			new Notice(`Sync error: ${msg}`);
+			this.logger.error("Unhandled sync error", { error: msg });
 		}
-		await this.syncService.runSync();
 	}
 
 	private updateStatusBar(): void {
