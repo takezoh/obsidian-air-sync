@@ -44,6 +44,11 @@ Always pass `npm run lint && npm run build && npm test` after making changes.
 - Access private fields via `as unknown as { field: Type }` pattern
 - Pass `createMockStateStore()` directly (its intersection type satisfies `SyncStateStore`)
 
+### No `async` without `await`
+- Never write `async` functions or arrow functions that contain no `await` expression — fix the code, do not disable the lint rule
+- Mock functions that only throw: use `() => { throw err; }` (synchronous, no `async`)
+- Mock functions with mixed throw/return: ensure at least one `await` (e.g. `return await Promise.resolve(...)`)
+
 ### obsidianmd ESLint plugin
 - `eslint-plugin-obsidianmd` is installed and included in `eslint.config.mts` (`obsidianmd.configs.recommended`)
 - The community plugin submission bot runs the same plugin to validate PRs — always run `npm run lint` before pushing
