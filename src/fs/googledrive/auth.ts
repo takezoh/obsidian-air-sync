@@ -97,6 +97,20 @@ abstract class GoogleAuthBase implements IGoogleAuth {
 
 	protected abstract performRefresh(): Promise<string>;
 
+	/** Handle token refresh errors: set authFailed flag and throw AuthError for 400/401 */
+	protected handleRefreshError(err: unknown): never {
+		const status = (err as { status?: number }).status;
+		if (status === 400 || status === 401) {
+			this.authFailed = true;
+		}
+		const msg = err instanceof Error ? err.message : String(err);
+		this.logger?.error("Token refresh failed", { error: msg });
+		if (status === 400 || status === 401) {
+			throw new AuthError(`Token refresh failed: ${msg}`, status);
+		}
+		throw err as Error;
+	}
+
 	getTokenState(): { refreshToken: string; accessToken: string; accessTokenExpiry: number } {
 		return {
 			refreshToken: this.refreshToken,
@@ -226,16 +240,7 @@ export class GoogleAuth extends GoogleAuthBase {
 			this.storeTokenResponse(token);
 			return this.accessToken;
 		} catch (err) {
-			const status = (err as { status?: number }).status;
-			if (status === 400 || status === 401) {
-				this.authFailed = true;
-			}
-			const msg = err instanceof Error ? err.message : String(err);
-			this.logger?.error("Token refresh failed", { error: msg });
-			if (status === 400 || status === 401) {
-				throw new AuthError(`Token refresh failed: ${msg}`, status);
-			}
-			throw err;
+			this.handleRefreshError(err);
 		}
 	}
 }
@@ -335,16 +340,7 @@ export class GoogleAuthDirect extends GoogleAuthBase {
 			this.storeTokenResponse(token);
 			return this.accessToken;
 		} catch (err) {
-			const status = (err as { status?: number }).status;
-			if (status === 400 || status === 401) {
-				this.authFailed = true;
-			}
-			const msg = err instanceof Error ? err.message : String(err);
-			this.logger?.error("Token refresh failed", { error: msg });
-			if (status === 400 || status === 401) {
-				throw new AuthError(`Token refresh failed: ${msg}`, status);
-			}
-			throw err;
+			this.handleRefreshError(err);
 		}
 	}
 }

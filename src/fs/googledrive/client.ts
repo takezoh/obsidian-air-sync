@@ -49,17 +49,17 @@ export class DriveClient {
 			});
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			const status = err && typeof err === "object" && "status" in err ? (err as Record<string, unknown>).status : undefined;
-			this.logger?.error("Drive API request failed", { operation, status, error: msg });
 			const wrapped = new Error(`Drive API ${operation} failed: ${msg}`);
-			if (err && typeof err === "object" && "status" in err) {
-				(wrapped as unknown as Record<string, unknown>).status = (err as Record<string, unknown>).status;
-			}
-			if (err && typeof err === "object" && "headers" in err) {
-				(wrapped as unknown as Record<string, unknown>).headers = (err as Record<string, unknown>).headers;
-			}
-			if (err && typeof err === "object" && "json" in err) {
-				(wrapped as unknown as Record<string, unknown>).json = (err as Record<string, unknown>).json;
+			if (err && typeof err === "object") {
+				const src = err as Record<string, unknown>;
+				this.logger?.error("Drive API request failed", { operation, status: src.status, error: msg });
+				for (const key of ["status", "headers", "json"] as const) {
+					if (key in src) {
+						(wrapped as unknown as Record<string, unknown>)[key] = src[key];
+					}
+				}
+			} else {
+				this.logger?.error("Drive API request failed", { operation, error: msg });
 			}
 			throw wrapped;
 		}
