@@ -9,6 +9,7 @@ import {
 	executeDeletePropagation,
 	executeConflict,
 } from "./executor-ops";
+import { getErrorInfo } from "./error";
 import type { ExecutorContext } from "./executor-ops";
 
 export interface SyncProgress {
@@ -113,6 +114,10 @@ export class SyncExecutor implements ExecutorContext {
 			try {
 				await this.executeOne(decision, result);
 			} catch (err) {
+				const { status } = getErrorInfo(err);
+				if (status === 400 || status === 401) {
+					throw err;
+				}
 				const msg = err instanceof Error ? err.message : String(err);
 				result.errors.push(`${decision.path}: ${msg}`);
 				this.logger?.error("File sync failed", { path: decision.path, decision: decision.decision, error: msg });

@@ -124,6 +124,64 @@ describe("GoogleAuth.getAccessToken concurrency", () => {
 
 		mockRequestUrl.mockRestore();
 	});
+
+	it("short-circuits after refresh failure with status 400", async () => {
+		let callCount = 0;
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(
+			async () => {
+				callCount++;
+				const err = new Error("Request failed, status 400");
+				(err as Error & { status: number }).status = 400;
+				throw err;
+			}
+		);
+
+		const { GoogleAuth } = await import("./auth");
+		const auth = new GoogleAuth();
+		auth.setTokens("refresh-token", "", 0);
+
+		await expect(auth.getAccessToken()).rejects.toThrow("status 400");
+		expect(callCount).toBe(1);
+
+		await expect(auth.getAccessToken()).rejects.toThrow(
+			"Authentication expired"
+		);
+		expect(callCount).toBe(1);
+
+		mockRequestUrl.mockRestore();
+	});
+
+	it("resets authFailed when setTokens is called", async () => {
+		let callCount = 0;
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(
+			async () => {
+				callCount++;
+				if (callCount === 1) {
+					const err = new Error("Request failed, status 400");
+					(err as Error & { status: number }).status = 400;
+					throw err;
+				}
+				return mockRes({
+					access_token: "recovered",
+					expires_in: 3600,
+					token_type: "Bearer",
+				});
+			}
+		);
+
+		const { GoogleAuth } = await import("./auth");
+		const auth = new GoogleAuth();
+		auth.setTokens("refresh-token", "", 0);
+
+		await expect(auth.getAccessToken()).rejects.toThrow("status 400");
+
+		auth.setTokens("new-refresh-token", "", 0);
+		const token = await auth.getAccessToken();
+		expect(token).toBe("recovered");
+		expect(callCount).toBe(2);
+
+		mockRequestUrl.mockRestore();
+	});
 });
 
 describe("GoogleDriveProvider.completeAuth", () => {

@@ -781,4 +781,42 @@ describe("SyncExecutor — empty parent cleanup", () => {
 		expect(result.pushed).toBe(1);
 		expect(remoteFs.files.has("root.md")).toBe(false);
 	});
+
+	it("re-throws auth errors (status 400) instead of catching per-file", async () => {
+		const { entity, content } = makeFile("a.md", "hello");
+		localFs.files.set("a.md", { content, entity });
+
+		remoteFs.write = async () => {
+			const err = new Error("Request failed, status 400");
+			(err as Error & { status: number }).status = 400;
+			throw err;
+		};
+
+		const decisions: SyncDecision[] = [
+			{ path: "a.md", decision: "local_created_push", local: entity },
+		];
+
+		const executor = createExecutor();
+		await expect(executor.execute(decisions)).rejects.toThrow("status 400");
+	});
+
+	it("catches non-auth errors into result.errors", async () => {
+		const { entity, content } = makeFile("a.md", "hello");
+		localFs.files.set("a.md", { content, entity });
+
+		remoteFs.write = async () => {
+			const err = new Error("Network timeout");
+			(err as Error & { status: number }).status = 503;
+			throw err;
+		};
+
+		const decisions: SyncDecision[] = [
+			{ path: "a.md", decision: "local_created_push", local: entity },
+		];
+
+		const executor = createExecutor();
+		const result = await executor.execute(decisions);
+		expect(result.errors).toHaveLength(1);
+		expect(result.errors[0]).toContain("Network timeout");
+	});
 });

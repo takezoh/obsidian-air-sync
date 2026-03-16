@@ -131,7 +131,14 @@ export class SyncService {
 							);
 							return;
 						}
-						if (status === 400 || status === 404) {
+						if (status === 400) {
+							this.deps.onStatusChange("error");
+							this.deps.notify(
+								"Authentication expired. Please reconnect in settings."
+							);
+							return;
+						}
+						if (status === 404) {
 							break;
 						}
 

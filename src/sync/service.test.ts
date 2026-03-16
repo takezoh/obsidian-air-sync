@@ -131,6 +131,45 @@ describe("SyncService — per-file errors do not trigger retry", () => {
 	});
 });
 
+describe("SyncService — auth error aborts with reconnect notification", () => {
+	it("shows reconnect message when executor throws status 400", async () => {
+		const localFs = createMockFs("local");
+		const remoteFs = createMockFs("remote");
+
+		const badEntity = {
+			path: "file.md",
+			isDirectory: false,
+			size: 5,
+			mtime: 1000,
+			hash: "",
+		};
+		localFs.files.set("file.md", {
+			content: new TextEncoder().encode("data").buffer.slice(0),
+			entity: badEntity,
+		});
+
+		remoteFs.write = async () => {
+			const err = new Error("Request failed, status 400");
+			(err as Error & { status: number }).status = 400;
+			throw err;
+		};
+
+		const deps = createMockDeps({
+			localFs: () => localFs,
+			remoteFs: () => remoteFs,
+		});
+		const service = new SyncService(deps);
+
+		await service.runSync();
+
+		expect(deps.onStatusChange).toHaveBeenCalledWith("error");
+		expect(deps.notify).toHaveBeenCalledWith(
+			"Authentication expired. Please reconnect in settings."
+		);
+		await service.close();
+	});
+});
+
 describe("SyncService — mobile filtering", () => {
 	const mobilePatterns = ["*", "!*/", "!**/*.md", "!**/*.canvas", "!**/*.base"];
 

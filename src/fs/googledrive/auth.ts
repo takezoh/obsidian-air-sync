@@ -40,11 +40,13 @@ abstract class GoogleAuthBase implements IGoogleAuth {
 	protected logger?: Logger;
 	private authState: string | null = null;
 	private codeVerifier: string | null = null;
+	protected authFailed = false;
 
 	setTokens(refreshToken: string, accessToken: string, expiry: number): void {
 		this.refreshToken = refreshToken;
 		this.accessToken = accessToken;
 		this.accessTokenExpiry = expiry;
+		this.authFailed = false;
 	}
 
 	get isAuthenticated(): boolean {
@@ -74,6 +76,9 @@ abstract class GoogleAuthBase implements IGoogleAuth {
 	async getAccessToken(): Promise<string> {
 		if (!this.refreshToken) {
 			throw new Error("Not authenticated. Please connect to Google Drive first.");
+		}
+		if (this.authFailed) {
+			throw new Error("Authentication expired. Please reconnect in settings.");
 		}
 		if (this.accessToken && Date.now() < this.accessTokenExpiry - 60_000) {
 			return this.accessToken;
@@ -207,18 +212,27 @@ export class GoogleAuth extends GoogleAuthBase {
 
 	protected async performRefresh(): Promise<string> {
 		this.logger?.info("Refreshing access token");
+		try {
+			const response = await requestUrl({
+				url: `${AUTH_SERVER_URL}/google/token/refresh`,
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ refresh_token: this.refreshToken }),
+			});
 
-		const response = await requestUrl({
-			url: `${AUTH_SERVER_URL}/google/token/refresh`,
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ refresh_token: this.refreshToken }),
-		});
-
-		const token: unknown = response.json;
-		assertTokenResponse(token);
-		this.storeTokenResponse(token);
-		return this.accessToken;
+			const token: unknown = response.json;
+			assertTokenResponse(token);
+			this.storeTokenResponse(token);
+			return this.accessToken;
+		} catch (err) {
+			const status = (err as { status?: number }).status;
+			if (status === 400 || status === 401) {
+				this.authFailed = true;
+			}
+			const msg = err instanceof Error ? err.message : String(err);
+			this.logger?.error("Token refresh failed", { error: msg });
+			throw err;
+		}
 	}
 }
 
@@ -299,23 +313,32 @@ export class GoogleAuthDirect extends GoogleAuthBase {
 
 	protected async performRefresh(): Promise<string> {
 		this.logger?.info("Refreshing access token (direct)");
+		try {
+			const response = await requestUrl({
+				url: GOOGLE_TOKEN_URL,
+				method: "POST",
+				headers: { "Content-Type": "application/x-www-form-urlencoded" },
+				body: new URLSearchParams({
+					client_id: this.clientId,
+					client_secret: this.clientSecret,
+					refresh_token: this.refreshToken,
+					grant_type: "refresh_token",
+				}).toString(),
+			});
 
-		const response = await requestUrl({
-			url: GOOGLE_TOKEN_URL,
-			method: "POST",
-			headers: { "Content-Type": "application/x-www-form-urlencoded" },
-			body: new URLSearchParams({
-				client_id: this.clientId,
-				client_secret: this.clientSecret,
-				refresh_token: this.refreshToken,
-				grant_type: "refresh_token",
-			}).toString(),
-		});
-
-		const token: unknown = response.json;
-		assertTokenResponse(token);
-		this.storeTokenResponse(token);
-		return this.accessToken;
+			const token: unknown = response.json;
+			assertTokenResponse(token);
+			this.storeTokenResponse(token);
+			return this.accessToken;
+		} catch (err) {
+			const status = (err as { status?: number }).status;
+			if (status === 400 || status === 401) {
+				this.authFailed = true;
+			}
+			const msg = err instanceof Error ? err.message : String(err);
+			this.logger?.error("Token refresh failed", { error: msg });
+			throw err;
+		}
 	}
 }
 
