@@ -27,6 +27,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for details.
 - Mobile compatible (`isDesktopOnly: false`) — no Node/Electron APIs
 - Minimize network calls; require explicit disclosure
 - Command IDs are immutable once published
+- No migration code — on IndexedDB schema changes, cold-start (drop all stores and recreate). Settings schema changes should use sensible defaults for missing fields via `Object.assign({}, DEFAULT_SETTINGS, stored)`
 
 ## Type safety & lint rules
 

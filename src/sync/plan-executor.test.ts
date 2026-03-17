@@ -235,7 +235,7 @@ describe("executePlan", () => {
 			expect(result.failed).toHaveLength(0);
 		});
 
-		it("records conflict in failed array when resolveConflictV2 throws a non-Auth error", async () => {
+		it("records conflict in failed array when resolveConflict throws a non-Auth error", async () => {
 			const ctx = makeCtx({ conflictStrategy: "duplicate" });
 			const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
 			const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;

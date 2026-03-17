@@ -2,13 +2,10 @@ import { App, Modal, Setting } from "obsidian";
 import type { ButtonComponent } from "obsidian";
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
-import type { SyncRecord } from "./types";
+import type { ConflictStrategy, SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
 import type { Logger } from "../logging/logger";
-import { resolveConflict, type ConflictResolutionResult } from "./conflict";
-
-/** Simplified 3-strategy conflict resolution for v2 pipeline */
-export type SimplifiedConflictStrategy = "auto_merge" | "duplicate" | "ask";
+import { resolveWithStrategy, type ConflictResolutionResult } from "./conflict";
 
 export interface ConflictResolverContext {
 	path: string;
@@ -25,27 +22,27 @@ export interface ConflictResolverContext {
 export type { ConflictResolutionResult };
 
 /**
- * Resolve a conflict using the simplified v2 strategies.
+ * Resolve a conflict using the configured strategy.
  *
  * auto_merge fallback chain:
  *   text file + base content → 3-way merge → success: write merged to both sides
- *                                           → fail: keep_newer
- *   else → keep_newer
- *   keep_newer: mtime comparable → newer wins, older saved as .conflict backup
- *              else → duplicate
+ *                                           → fail: keep newer
+ *   else → keep newer
+ *   keep newer: mtime comparable → newer wins, older saved as .conflict backup
+ *               else → duplicate
  *   duplicate: save remote as .conflict file, keep local at original path
  *
- * ask: show UI modal for user to choose keep_local / keep_remote / duplicate
+ * ask: show UI modal for user to choose keep local / keep remote / duplicate
  */
-export async function resolveConflictV2(
+export async function resolveConflict(
 	ctx: ConflictResolverContext,
-	strategy: SimplifiedConflictStrategy,
+	strategy: ConflictStrategy,
 ): Promise<ConflictResolutionResult> {
 	switch (strategy) {
 		case "auto_merge":
 			return resolveAutoMerge(ctx);
 		case "duplicate":
-			return resolveConflict(
+			return resolveWithStrategy(
 				{
 					path: ctx.path,
 					localFs: ctx.localFs,
@@ -79,12 +76,12 @@ async function resolveAutoMerge(
 		logger,
 	};
 
-	// Try 3-way merge if we have everything needed; keep_newer is the fallback
+	// Try 3-way merge if we have everything needed; newer-wins is the fallback
 	if (local && remote && baseline && stateStore) {
-		return resolveConflict(conflictCtx, "auto_merge", "keep_newer");
+		return resolveWithStrategy(conflictCtx, "auto_merge", "keep_newer");
 	}
 
-	return resolveConflict(conflictCtx, "keep_newer");
+	return resolveWithStrategy(conflictCtx, "keep_newer");
 }
 
 async function resolveAsk(
@@ -105,18 +102,18 @@ async function resolveAsk(
 
 	if (!app) {
 		logger?.warn("Ask strategy: no app provided, falling back to duplicate", { path });
-		return resolveConflict(conflictCtx, "duplicate");
+		return resolveWithStrategy(conflictCtx, "duplicate");
 	}
 
 	const choice = await showAskModal(app, ctx);
 
 	switch (choice) {
 		case "keep_local":
-			return resolveConflict(conflictCtx, "keep_local");
+			return resolveWithStrategy(conflictCtx, "keep_local");
 		case "keep_remote":
-			return resolveConflict(conflictCtx, "keep_remote");
+			return resolveWithStrategy(conflictCtx, "keep_remote");
 		case "duplicate":
-			return resolveConflict(conflictCtx, "duplicate");
+			return resolveWithStrategy(conflictCtx, "duplicate");
 	}
 }
 

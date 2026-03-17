@@ -15,7 +15,7 @@ export class SyncStateStore {
 			dbName: `${DB_NAME_PREFIX}-${sanitizeDbName(vaultId)}`,
 			version: DB_VERSION,
 			onUpgrade: (db, oldVersion) => {
-				// Drop and recreate stores on schema-breaking upgrades (v2→v3: size → localSize/remoteSize)
+				// Cold start: drop all stores and recreate on any schema version change
 				if (oldVersion > 0) {
 					for (const name of Array.from(db.objectStoreNames)) {
 						db.deleteObjectStore(name);

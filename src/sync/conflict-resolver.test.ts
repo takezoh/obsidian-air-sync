@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { resolveConflictV2 } from "./conflict-resolver";
+import { resolveConflict } from "./conflict-resolver";
 import type { SyncRecord } from "./types";
 import { createMockFs, createMockStateStore, addFile, readText } from "../__mocks__/sync-test-helpers";
 
-describe("resolveConflictV2", () => {
+describe("resolveConflict", () => {
 	let localFs: ReturnType<typeof createMockFs>;
 	let remoteFs: ReturnType<typeof createMockFs>;
 
@@ -17,7 +17,7 @@ describe("resolveConflictV2", () => {
 			const local = addFile(localFs, "file.md", "local content", 2000);
 			const remote = addFile(remoteFs, "file.md", "remote content", 1000);
 
-			const result = await resolveConflictV2(
+			const result = await resolveConflict(
 				{ path: "file.md", localFs, remoteFs, local, remote },
 				"duplicate",
 			);
@@ -31,7 +31,7 @@ describe("resolveConflictV2", () => {
 		it("restores remote version locally when local is deleted", async () => {
 			const remote = addFile(remoteFs, "file.md", "remote only", 1000);
 
-			const result = await resolveConflictV2(
+			const result = await resolveConflict(
 				{ path: "file.md", localFs, remoteFs, remote },
 				"duplicate",
 			);
@@ -43,7 +43,7 @@ describe("resolveConflictV2", () => {
 		it("restores local version remotely when remote is deleted", async () => {
 			const local = addFile(localFs, "file.md", "local only", 1000);
 
-			const result = await resolveConflictV2(
+			const result = await resolveConflict(
 				{ path: "file.md", localFs, remoteFs, local },
 				"duplicate",
 			);
@@ -70,7 +70,7 @@ describe("resolveConflictV2", () => {
 				localSize: base.length, remoteSize: base.length, syncedAt: 900,
 			};
 
-			const result = await resolveConflictV2(
+			const result = await resolveConflict(
 				{
 					path: "file.md", localFs, remoteFs,
 					local: localFs.files.get("file.md")!.entity,
@@ -100,7 +100,7 @@ describe("resolveConflictV2", () => {
 				localSize: base.length, remoteSize: base.length, syncedAt: 900,
 			};
 
-			const result = await resolveConflictV2(
+			const result = await resolveConflict(
 				{
 					path: "file.md", localFs, remoteFs,
 					local: localFs.files.get("file.md")!.entity,
@@ -114,21 +114,21 @@ describe("resolveConflictV2", () => {
 			expect(result.hasConflictMarkers).toBe(true);
 		});
 
-		it("falls back to keep_newer when baseline is missing", async () => {
+		it("falls back to newer-wins when baseline is missing", async () => {
 			const local = addFile(localFs, "file.md", "local content", 2000);
 			const remote = addFile(remoteFs, "file.md", "remote content", 1000);
 
-			const result = await resolveConflictV2(
+			const result = await resolveConflict(
 				{ path: "file.md", localFs, remoteFs, local, remote },
 				"auto_merge",
 			);
 
-			// keep_newer → local is newer
+			// newer wins → local is newer
 			expect(result.action).toBe("kept_local");
 			expect(readText(remoteFs, "file.md")).toBe("local content");
 		});
 
-		it("falls back to keep_newer when stateStore is missing", async () => {
+		it("falls back to newer-wins when stateStore is missing", async () => {
 			const local = addFile(localFs, "file.md", "local content", 2000);
 			const remote = addFile(remoteFs, "file.md", "remote content", 1000);
 
@@ -137,16 +137,16 @@ describe("resolveConflictV2", () => {
 				localSize: 10, remoteSize: 10, syncedAt: 900,
 			};
 
-			const result = await resolveConflictV2(
+			const result = await resolveConflict(
 				{ path: "file.md", localFs, remoteFs, local, remote, baseline },
 				"auto_merge",
 			);
 
-			// Missing stateStore → fallback to keep_newer via auto_merge in resolveConflict
+			// Missing stateStore → fallback to newer-wins via auto_merge
 			expect(result.action).toBe("kept_local");
 		});
 
-		it("falls back to keep_newer for binary files (not merge eligible)", async () => {
+		it("falls back to newer-wins for binary files (not merge eligible)", async () => {
 			const local = addFile(localFs, "image.png", "local-binary", 2000);
 			const remote = addFile(remoteFs, "image.png", "remote-binary", 1000);
 
@@ -158,23 +158,23 @@ describe("resolveConflictV2", () => {
 				localSize: 4, remoteSize: 4, syncedAt: 900,
 			};
 
-			const result = await resolveConflictV2(
+			const result = await resolveConflict(
 				{ path: "image.png", localFs, remoteFs, local, remote, baseline, stateStore },
 				"auto_merge",
 			);
 
-			// .png not eligible → keep_newer → local is newer
+			// .png not eligible → newer wins → local is newer
 			expect(result.action).toBe("kept_local");
 		});
 
-		it("falls back to duplicate when mtime is equal and hashes differ (keep_newer fallback)", async () => {
+		it("falls back to duplicate when mtime is equal and hashes differ", async () => {
 			const local = addFile(localFs, "file.md", "local ver", 1000);
 			local.hash = "aaa";
 			const remote = addFile(remoteFs, "file.md", "remote ver", 1000);
 			remote.hash = "bbb";
 
-			// No stateStore → skips 3-way merge path → keep_newer
-			const result = await resolveConflictV2(
+			// No stateStore → skips 3-way merge path → newer-wins
+			const result = await resolveConflict(
 				{ path: "file.md", localFs, remoteFs, local, remote },
 				"auto_merge",
 			);
@@ -182,7 +182,7 @@ describe("resolveConflictV2", () => {
 			expect(result.action).toBe("duplicated");
 		});
 
-		it("falls back to keep_newer when base content is unavailable in store", async () => {
+		it("falls back to newer-wins when base content is unavailable in store", async () => {
 			const local = addFile(localFs, "file.md", "local content", 2000);
 			const remote = addFile(remoteFs, "file.md", "remote content", 1000);
 
@@ -194,12 +194,12 @@ describe("resolveConflictV2", () => {
 				localSize: 10, remoteSize: 10, syncedAt: 900,
 			};
 
-			const result = await resolveConflictV2(
+			const result = await resolveConflict(
 				{ path: "file.md", localFs, remoteFs, local, remote, baseline, stateStore },
 				"auto_merge",
 			);
 
-			// stateStore has no content → falls back to keep_newer → local is newer
+			// stateStore has no content → falls back to newer-wins → local is newer
 			expect(result.action).toBe("kept_local");
 		});
 	});
@@ -209,7 +209,7 @@ describe("resolveConflictV2", () => {
 			const local = addFile(localFs, "file.md", "local content", 2000);
 			const remote = addFile(remoteFs, "file.md", "remote content", 1000);
 
-			const result = await resolveConflictV2(
+			const result = await resolveConflict(
 				{ path: "file.md", localFs, remoteFs, local, remote },
 				"ask",
 			);

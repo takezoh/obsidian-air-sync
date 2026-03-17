@@ -12,8 +12,6 @@ Backends are swappable via `IFileSystem` + `IBackendProvider` abstractions. The 
 src/
 ├── main.ts                          # Plugin entry point (lifecycle only)
 ├── settings.ts                      # SmartSyncSettings type & defaults
-├── migrate.ts                       # Legacy conflict strategy migration
-│
 ├── sync/
 │   ├── types.ts                     # SyncRecord, MixedEntity, SyncAction, SyncPlan, SafetyCheckResult
 │   ├── local-tracker.ts             # LocalChangeTracker — in-memory dirty path set
@@ -23,8 +21,8 @@ src/
 │   ├── safety-check.ts              # checkSafety() — mass-deletion guard
 │   ├── plan-executor.ts             # executePlan() — grouped execution (A/B/C/D)
 │   ├── state-committer.ts           # commitAction() — per-action SyncRecord upsert/delete
-│   ├── conflict-resolver.ts         # resolveConflictV2() — simplified 3-strategy resolver
-│   ├── conflict.ts                  # resolveConflict() — low-level strategy implementations
+│   ├── conflict-resolver.ts         # resolveConflict() — 3-strategy conflict resolver
+│   ├── conflict.ts                  # resolveWithStrategy() — low-level strategy implementations
 │   ├── merge.ts                     # threeWayMerge() — node-diff3 wrapper
 │   ├── orchestrator.ts              # SyncOrchestrator — retry loop, mutex, status transitions
 │   ├── scheduler.ts                 # SyncScheduler — vault events, timers, file-open priority sync

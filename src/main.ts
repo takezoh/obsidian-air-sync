@@ -11,7 +11,6 @@ import { SyncScheduler } from "./sync/scheduler";
 import { LocalChangeTracker } from "./sync/local-tracker";
 import { Logger, getDeviceName } from "./logging/logger";
 import type { LoggerAdapter } from "./logging/logger";
-import { migrateConflictStrategy } from "./migrate";
 
 export default class SmartSyncPlugin extends Plugin {
 	settings!: SmartSyncSettings;
@@ -170,13 +169,6 @@ export default class SmartSyncPlugin extends Plugin {
 		// Generate a stable vault ID on first load
 		if (!this.settings.vaultId) {
 			this.settings.vaultId = crypto.randomUUID();
-			needsSave = true;
-		}
-
-		// Migrate legacy conflict strategies to v2 values
-		const migrated = migrateConflictStrategy(this.settings.conflictStrategy);
-		if (migrated !== this.settings.conflictStrategy) {
-			this.settings.conflictStrategy = migrated;
 			needsSave = true;
 		}
 

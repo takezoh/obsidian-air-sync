@@ -12,7 +12,7 @@ function mockSettings() {
 		backendType: "none",
 		ignorePatterns: [] as string[],
 		syncDotPaths: [] as string[],
-		conflictStrategy: "keep_newer" as const,
+		conflictStrategy: "auto_merge" as const,
 		enableThreeWayMerge: false,
 		autoSyncIntervalMinutes: 0,
 		mobileMaxFileSizeMB: 10,

@@ -10,7 +10,6 @@ import { collectChanges } from "./change-detector";
 import { planSync } from "./decision-engine";
 import { executePlan } from "./plan-executor";
 import type { ExecutionContext, ExecutionResult } from "./plan-executor";
-import type { SimplifiedConflictStrategy } from "./conflict-resolver";
 import { AuthError } from "../fs/errors";
 import { getErrorInfo, isRateLimitError, sleep } from "./error";
 import type { SyncStatus } from "./types";
@@ -302,10 +301,6 @@ export class SyncOrchestrator {
 
 		const total = plan.actions.length;
 
-		const s = settings.conflictStrategy;
-		const conflictStrategy: SimplifiedConflictStrategy =
-			s === "auto_merge" || s === "duplicate" || s === "ask" ? s : "auto_merge";
-
 		const ctx: ExecutionContext = {
 			localFs,
 			remoteFs,
@@ -315,7 +310,7 @@ export class SyncOrchestrator {
 				localFs,
 				logger: this.deps.logger,
 			},
-			conflictStrategy,
+			conflictStrategy: settings.conflictStrategy,
 			onProgress: (completed: number) => {
 				if (total > 0) {
 					this.deps.onProgress(`Syncing ${completed}/${total}...`);

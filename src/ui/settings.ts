@@ -1,6 +1,6 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 import type SmartSyncPlugin from "../main";
-import type { SimplifiedConflictStrategy } from "../sync/conflict-resolver";
+import type { ConflictStrategy } from "../sync/types";
 import { getAllBackendProviders, getBackendProvider } from "../fs/registry";
 import { getBackendSettingsRenderer } from "./backend-settings";
 
@@ -50,7 +50,7 @@ export class SmartSyncSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.conflictStrategy)
 					.onChange(async (value) => {
 						this.plugin.settings.conflictStrategy =
-							value as SimplifiedConflictStrategy;
+							value as ConflictStrategy;
 						await this.plugin.saveSettings();
 					})
 			);

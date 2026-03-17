@@ -31,7 +31,7 @@ export const DEFAULT_SETTINGS: SmartSyncSettings = {
 	vaultId: "",
 	backendType: "googledrive",
 	autoSyncIntervalMinutes: 5,
-	conflictStrategy: "keep_newer",
+	conflictStrategy: "auto_merge",
 	ignorePatterns: [],
 	syncDotPaths: [],
 	enableThreeWayMerge: true,

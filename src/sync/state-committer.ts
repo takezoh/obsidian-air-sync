@@ -13,7 +13,7 @@ export interface StateCommitterContext {
 
 /**
  * Build a SyncRecord from a local and remote FileEntity.
- * Moved from conflict.ts to centralise record construction in the v2 pipeline.
+ * Centralised record construction for the sync pipeline.
  */
 export function buildSyncRecord(local: FileEntity | undefined, remote: FileEntity | undefined, path: string): SyncRecord {
 	return {

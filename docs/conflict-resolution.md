@@ -1,23 +1,16 @@
 # Conflict Resolution
 
-## v2 simplified strategies
+## Conflict strategies
 
-The v2 pipeline (`conflict-resolver.ts`) exposes 3 user-facing strategies via `SimplifiedConflictStrategy`:
+`conflict-resolver.ts` exposes 3 user-facing strategies via `ConflictStrategy`:
 
 | Strategy | Behavior |
 |----------|----------|
-| `auto_merge` | Try 3-way merge, fall back to `keep_newer`, then `duplicate` |
+| `auto_merge` | Try 3-way merge, fall back to newer-wins, then `duplicate` |
 | `duplicate` | Save remote as `.conflict` file, keep local at original path |
 | `ask` | Show a modal for the user to choose `keep_local` / `keep_remote` / `duplicate` |
 
-The setting is stored as `conflictStrategy` in `SmartSyncSettings`. Legacy values are migrated on load by `migrateConflictStrategy()` in `migrate.ts`:
-
-| Legacy value | Migrated to |
-|-------------|-------------|
-| `keep_newer` | `auto_merge` |
-| `three_way_merge` | `auto_merge` |
-| `keep_local` | `ask` |
-| `keep_remote` | `ask` |
+The setting is stored as `conflictStrategy` in `SmartSyncSettings`.
 
 ## auto_merge fallback chain
 
@@ -26,14 +19,14 @@ The setting is stored as `conflictStrategy` in `SmartSyncSettings`. Legacy value
 ```
 auto_merge
   ├── local + remote + baseline all present?
-  │     ├── yes → attempt 3-way merge (via conflict.ts "auto_merge" with "keep_newer" fallback)
+  │     ├── yes → attempt 3-way merge
   │     │           ├── merge-eligible (text, <=1 MB) + base content in store?
   │     │           │     ├── success (no conflicts) → write merged to both sides → "merged"
   │     │           │     ├── has conflicts (markers) → write merged to both sides → "merged" (hasConflictMarkers: true)
   │     │           │     └── JSON/Canvas with conflicts → duplicate
-  │     │           └── not eligible / no base → keep_newer fallback
-  │     └── no  → keep_newer
-  └── keep_newer
+  │     │           └── not eligible / no base → newer-wins fallback
+  │     └── no  → newer-wins
+  └── newer-wins
         ├── one side deleted → other side wins
         ├── both exist, mtime comparable → newer wins (overwrites older side)
         ├── same mtime + same hash → keep local (content identical)
@@ -78,19 +71,19 @@ remote change
 - Beyond 100: timestamp-based suffix
 - Checks all involved filesystems to avoid overwrites on either side
 
-## Legacy strategies
+## Internal resolver strategies
 
-The following strategies are retained in `conflict.ts` for internal use by `resolveConflict()`:
+`conflict.ts` defines `ResolverStrategy` — low-level building blocks used internally by `resolveConflict()`:
 
 | Strategy | Behavior |
 |----------|----------|
 | `keep_newer` | Compare mtime; newer side overwrites the other |
 | `keep_local` | Push local to remote (or delete remote if local deleted) |
 | `keep_remote` | Pull remote to local (or delete local if remote deleted) |
-| `three_way_merge` | Same as `auto_merge` in `conflict.ts` (tries merge, falls back) |
 | `duplicate` | Save remote copy with `.conflict` suffix, keep local |
+| `auto_merge` | Attempt 3-way merge, fall back to `keep_newer` |
 
-These are never exposed in the settings UI. They are used internally as building blocks by `resolveConflictV2()`.
+These are not exposed in the settings UI.
 
 ## Conflict history
 

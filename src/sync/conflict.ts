@@ -1,10 +1,13 @@
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
-import type { ConflictStrategy, SyncRecord } from "./types";
+import type { SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
 import type { Logger } from "../logging/logger";
 import { getFileExtension } from "../utils/path";
 import { isMergeEligible, threeWayMerge } from "./merge";
+
+/** Internal strategy used by the low-level conflict resolver */
+export type ResolverStrategy = "keep_newer" | "keep_local" | "keep_remote" | "duplicate" | "auto_merge";
 
 export interface ConflictResolutionResult {
 	/** The action that was taken */
@@ -26,18 +29,14 @@ export interface ConflictContext {
 	logger?: Logger;
 }
 
-/**
- * Resolve a conflict between local and remote versions of a file.
- * Supports: keep_newer, keep_local, keep_remote, duplicate, three_way_merge, ask.
- */
-export type FallbackResolver = ConflictStrategy | (() => Promise<ConflictStrategy>);
+export type FallbackResolver = ResolverStrategy | (() => Promise<ResolverStrategy>);
 
-export async function resolveConflict(
+export async function resolveWithStrategy(
 	ctx: ConflictContext,
-	strategy: ConflictStrategy,
+	strategy: ResolverStrategy,
 	fallback?: FallbackResolver,
 ): Promise<ConflictResolutionResult> {
-	const { path, localFs, remoteFs, local, remote, logger } = ctx;
+	const { path, localFs, remoteFs, local, remote } = ctx;
 
 	switch (strategy) {
 		case "keep_local":
@@ -52,17 +51,8 @@ export async function resolveConflict(
 		case "duplicate":
 			return duplicate(path, localFs, remoteFs, local, remote);
 
-		case "three_way_merge":
-			return attemptThreeWayMerge(ctx, fallback ?? "keep_newer");
-
 		case "auto_merge":
 			return attemptThreeWayMerge(ctx, fallback ?? "keep_newer");
-
-		case "ask":
-			// Handled by executor via onConflict callback before reaching here.
-			// If we get here, it means the callback was not provided — fall back safely.
-			logger?.warn("Ask strategy reached resolveConflict without callback, falling back to keep_newer", { path });
-			return keepNewer(path, localFs, remoteFs, local, remote);
 	}
 }
 
@@ -211,26 +201,26 @@ async function attemptThreeWayMerge(
 ): Promise<ConflictResolutionResult> {
 	const { path, localFs, remoteFs, local, remote, prevSync, stateStore, logger } = ctx;
 
-	const resolveFallback = async (): Promise<ConflictStrategy> => {
+	const resolveFallback = async (): Promise<ResolverStrategy> => {
 		return typeof fallback === "function" ? await fallback() : fallback;
 	};
 
 	// Must have both sides present and a previous sync record
 	if (!local || !remote || !prevSync) {
 		const fb = await resolveFallback();
-		return resolveConflict(ctx, fb);
+		return resolveWithStrategy(ctx, fb);
 	}
 
 	// Retrieve the stored base content
 	const prevSyncContent = stateStore ? await stateStore.getContent(path) : undefined;
 	if (!prevSyncContent) {
 		const fb = await resolveFallback();
-		return resolveConflict(ctx, fb);
+		return resolveWithStrategy(ctx, fb);
 	}
 
 	if (!isMergeEligible(path, Math.max(local.size, remote.size))) {
 		const fb = await resolveFallback();
-		return resolveConflict(ctx, fb);
+		return resolveWithStrategy(ctx, fb);
 	}
 
 	const decoder = new TextDecoder();
@@ -248,7 +238,7 @@ async function attemptThreeWayMerge(
 	} catch (mergeErr) {
 		logger?.warn("3-way merge failed, falling back", { path, error: mergeErr instanceof Error ? mergeErr.message : String(mergeErr) });
 		const fb = await resolveFallback();
-		return resolveConflict(ctx, fb);
+		return resolveWithStrategy(ctx, fb);
 	}
 
 	// For JSON/Canvas files, validate the merge result

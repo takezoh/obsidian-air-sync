@@ -28,21 +28,8 @@ export interface MixedEntity {
 	prevSync?: SyncRecord;
 }
 
-/**
- * Strategy for resolving conflicts.
- *
- * v2 simplified strategies: auto_merge, duplicate, ask
- * Legacy strategies (keep_newer, keep_local, keep_remote, three_way_merge)
- * are retained for conflict.ts internal use and migration support.
- */
-export type ConflictStrategy =
-	| "keep_newer"
-	| "keep_local"
-	| "keep_remote"
-	| "duplicate"
-	| "three_way_merge"
-	| "auto_merge"
-	| "ask";
+/** User-facing strategy for resolving conflicts */
+export type ConflictStrategy = "auto_merge" | "duplicate" | "ask";
 
 /** A record of a conflict resolution for audit/history purposes */
 export interface ConflictRecord {
@@ -61,7 +48,7 @@ export interface ConflictRecord {
 /** Sync service status */
 export type SyncStatus = "idle" | "syncing" | "error" | "partial_error" | "not_connected";
 
-/** v2 pipeline: action types */
+/** Action types produced by the decision engine */
 export type SyncActionType =
 	| "push"
 	| "pull"
@@ -71,7 +58,7 @@ export type SyncActionType =
 	| "match"
 	| "cleanup";
 
-/** v2 pipeline: a single planned action for a path */
+/** A single planned action for a path */
 export interface SyncAction {
 	path: string;
 	action: SyncActionType;
@@ -80,7 +67,7 @@ export interface SyncAction {
 	baseline?: SyncRecord;
 }
 
-/** v2 pipeline: result of safety checks before execution */
+/** Result of safety checks before execution */
 export interface SafetyCheckResult {
 	shouldAbort: boolean;
 	requiresConfirmation: boolean;
@@ -88,7 +75,7 @@ export interface SafetyCheckResult {
 	deletionCount?: number;
 }
 
-/** v2 pipeline: the full sync plan */
+/** The full sync plan */
 export interface SyncPlan {
 	actions: SyncAction[];
 	safetyCheck: SafetyCheckResult;

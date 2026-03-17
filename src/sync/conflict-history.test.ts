@@ -30,7 +30,7 @@ function makeRecord(overrides: Partial<ConflictRecord> = {}): ConflictRecord {
 	return {
 		path: "notes/test.md",
 		actionType: "conflict",
-		strategy: "keep_newer",
+		strategy: "auto_merge",
 		action: "kept_local",
 		resolvedAt: "2026-03-07T10:00:00.000Z",
 		sessionId: "test-session",

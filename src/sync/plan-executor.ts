@@ -1,11 +1,11 @@
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
-import type { SyncAction, SyncPlan } from "./types";
+import type { ConflictStrategy, SyncAction, SyncPlan } from "./types";
 import type { StateCommitterContext } from "./state-committer";
-import type { ConflictResolverContext, SimplifiedConflictStrategy, ConflictResolutionResult } from "./conflict-resolver";
+import type { ConflictResolverContext, ConflictResolutionResult } from "./conflict-resolver";
 import type { Logger } from "../logging/logger";
 import { commitAction } from "./state-committer";
-import { resolveConflictV2 } from "./conflict-resolver";
+import { resolveConflict } from "./conflict-resolver";
 import { AuthError } from "../fs/errors";
 import { AsyncPool } from "../queue/async-queue";
 
@@ -37,7 +37,7 @@ export interface ExecutionContext {
 	localFs: IFileSystem;
 	remoteFs: IFileSystem;
 	committer: StateCommitterContext;
-	conflictStrategy: SimplifiedConflictStrategy;
+	conflictStrategy: ConflictStrategy;
 	onConfirmation?: () => Promise<boolean>;
 	onProgress?: (completed: number, total: number) => void;
 	logger?: Logger;
@@ -228,7 +228,7 @@ async function executeConflictAction(
 			logger: ctx.logger,
 		};
 
-		const resolution = await resolveConflictV2(conflictCtx, ctx.conflictStrategy);
+		const resolution = await resolveConflict(conflictCtx, ctx.conflictStrategy);
 
 		const localEntity = await ctx.localFs.stat(action.path) ?? action.local;
 		const remoteEntity = await ctx.remoteFs.stat(action.path) ?? action.remote;

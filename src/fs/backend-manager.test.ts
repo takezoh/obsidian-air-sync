@@ -23,7 +23,7 @@ function mockSettings(overrides: Partial<SmartSyncSettings> = {}): SmartSyncSett
 		backendType: "test",
 		ignorePatterns: [],
 		syncDotPaths: [],
-		conflictStrategy: "keep_newer",
+		conflictStrategy: "auto_merge",
 		enableThreeWayMerge: false,
 		autoSyncIntervalMinutes: 0,
 		mobileMaxFileSizeMB: 10,
