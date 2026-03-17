@@ -458,72 +458,7 @@ describe("GoogleDriveFs cache persistence", () => {
 		await store.close();
 	});
 
-	it("rootFolderId mismatch falls back to fullScan", async () => {
-		const { GoogleDriveFs } = await import("./index");
-		const { MetadataStore } = await import("../../store/metadata-store");
 
-		const mockClient1 = {
-			listAllFiles: vi.fn().mockResolvedValue([
-				{ id: "file1", name: "a.md", mimeType: "text/plain", parents: ["root1"] },
-			]),
-			getChangesStartToken: vi.fn().mockResolvedValue("token1"),
-		} as never;
-
-		const store = new MetadataStore<DriveFile>("mismatch-test", { dbNamePrefix: "smart-sync-drive", version: 1 });
-
-		// Persist with rootFolderId = "root1"
-		const fs1 = new GoogleDriveFs(mockClient1, "root1", undefined, store);
-		await fs1.list();
-
-		// Second instance with different rootFolderId
-		const listAllFilesSpy2 = vi.fn().mockResolvedValue([
-			{ id: "file2", name: "b.md", mimeType: "text/plain", parents: ["root2"] },
-		]);
-		const mockClient2 = {
-			listAllFiles: listAllFilesSpy2,
-			getChangesStartToken: vi.fn().mockResolvedValue("token2"),
-		} as never;
-		const fs2 = new GoogleDriveFs(mockClient2, "root2", undefined, store);
-		const files = await fs2.list();
-
-		// Should have done a full scan with root2
-		expect(listAllFilesSpy2).toHaveBeenCalled();
-		expect(files[0]!.path).toBe("b.md");
-
-		await store.close();
-	});
-
-	it("invalidateCache clears IDB so next load does fullScan", async () => {
-		const { GoogleDriveFs } = await import("./index");
-		const { MetadataStore } = await import("../../store/metadata-store");
-
-		const mockClient = {
-			listAllFiles: vi.fn().mockResolvedValue([
-				{ id: "file1", name: "a.md", mimeType: "text/plain", parents: ["root"] },
-			]),
-			getChangesStartToken: vi.fn().mockResolvedValue("token1"),
-		} as never;
-
-		const store = new MetadataStore<DriveFile>("invalidate-test", { dbNamePrefix: "smart-sync-drive", version: 1 });
-		const fs = new GoogleDriveFs(mockClient, "root", undefined, store);
-		await fs.list();
-		// Wait for async persist
-		await new Promise((r) => setTimeout(r, 50));
-
-		// Verify IDB has data
-		let loaded = await store.loadAll();
-		expect(loaded.files).toHaveLength(1);
-
-		// Now invalidate and wait for clear
-		fs.invalidateCache();
-		await new Promise((r) => setTimeout(r, 50));
-
-		loaded = await store.loadAll();
-		expect(loaded.files).toHaveLength(0);
-		expect(loaded.meta.size).toBe(0);
-
-		await store.close();
-	});
 });
 
 describe("GoogleDriveFs.getChangedPaths", () => {

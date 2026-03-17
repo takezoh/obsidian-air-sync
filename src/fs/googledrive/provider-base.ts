@@ -181,7 +181,7 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 		const googleAuth = this.auth.getOrCreateGoogleAuth(data, logger);
 		googleAuth.setTokens(tokens.refreshToken, tokens.accessToken, data.accessTokenExpiry);
 		const client = new DriveClient((force) => googleAuth.getAccessToken(force), logger);
-		const metadataStore = new MetadataStore<DriveFile>(data.remoteVaultFolderId, {
+		const metadataStore = new MetadataStore<DriveFile>(`${settings.vaultId}-${data.remoteVaultFolderId}`, {
 			dbNamePrefix: "smart-sync-drive",
 			version: 1,
 		});

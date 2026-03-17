@@ -265,14 +265,18 @@ export class SyncOrchestrator {
 			localTracker: this.deps.localTracker,
 		});
 
+		const remoteOnlyPaths = changeSet.entries.filter((e) => !e.local && e.remote).map((e) => e.path);
 		this.deps.logger?.info("Change detection completed", {
 			temperature: changeSet.temperature,
 			entries: changeSet.entries.length,
 			localOnly: changeSet.entries.filter((e) => e.local && !e.remote).length,
-			remoteOnly: changeSet.entries.filter((e) => !e.local && e.remote).length,
+			remoteOnly: remoteOnlyPaths.length,
 			both: changeSet.entries.filter((e) => e.local && e.remote).length,
 			enriched: changeSet.entries.filter((e) => e.local?.hash?.startsWith("md5:")).length,
 		});
+		if (remoteOnlyPaths.length > 0) {
+			this.deps.logger?.debug("Remote-only paths", { paths: remoteOnlyPaths });
+		}
 
 		const isMobile = this.deps.isMobile();
 		const maxBytes = settings.mobileMaxFileSizeMB * 1024 * 1024;

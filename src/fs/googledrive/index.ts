@@ -102,9 +102,8 @@ export class GoogleDriveFs implements IFileSystem {
 		try {
 			await this.metadataStore.open();
 			const { files, meta } = await this.metadataStore.loadAll();
-			const storedRootId = meta.get("rootFolderId");
 			const storedToken = meta.get("changesStartPageToken");
-			if (storedRootId !== this.rootFolderId || !storedToken) {
+			if (!storedToken) {
 				return false;
 			}
 
@@ -130,7 +129,6 @@ export class GoogleDriveFs implements IFileSystem {
 			await this.metadataStore.open();
 			const records = this.cache.exportRecords();
 			const meta = new Map<string, string>();
-			meta.set("rootFolderId", this.rootFolderId);
 			if (this._changesPageToken) {
 				meta.set("changesStartPageToken", this._changesPageToken);
 			}
@@ -201,7 +199,11 @@ export class GoogleDriveFs implements IFileSystem {
 		return this.cacheMutex.run(async () => {
 			if (!this.initialized) {
 				const loaded = await this.loadFromCache();
-				if (!loaded) await this.fullScan();
+				if (loaded) {
+					await this._applyIncrementalChanges();
+				} else {
+					await this.fullScan();
+				}
 			} else if (this._changesPageToken) {
 				await this._applyIncrementalChanges();
 			}
@@ -439,12 +441,6 @@ export class GoogleDriveFs implements IFileSystem {
 		}
 
 		return parentId;
-	}
-
-	/** Force re-initialization on next operation */
-	invalidateCache(): void {
-		this.initialized = false;
-		void this.metadataStore?.clear();
 	}
 
 	/** Close the metadata store (call on plugin unload) */
