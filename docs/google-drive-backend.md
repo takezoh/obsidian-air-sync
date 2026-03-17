@@ -7,13 +7,15 @@
 ### Initialization lifecycle
 
 1. On first `list()`, `stat()`, `read()`, or `write()`, `ensureInitialized()` is called
-2. Try to restore cache from IndexedDB (`MetadataStore`) -- checks `rootFolderId` match and presence of a stored `changesStartPageToken`
-3. If IndexedDB restore fails, perform a full scan: get a changes start token, then `listAllFiles()` recursively with `AsyncPool(3)` concurrency
-4. Build the `DriveMetadataCache` from the flat file list
+2. Try to restore cache from IndexedDB (`MetadataStore`, keyed by `{vaultId}-{remoteVaultFolderId}`) -- checks presence of a stored `changesStartPageToken`
+3. If cache is restored, apply incremental changes via `_applyIncrementalChanges()` to catch up with Drive
+4. If IndexedDB restore fails, perform a full scan: get a changes start token, then `listAllFiles()` recursively with `AsyncPool(3)` concurrency
+5. Build the `DriveMetadataCache` from the flat file list
+
+The cache is scoped to `vaultId` so that plugin reinstall (which regenerates `vaultId`) starts with a fresh cache, preventing stale entries.
 
 ### Cache invalidation
 
-- `invalidateCache()`: sets `initialized = false` and clears the IndexedDB store. Next operation triggers a full scan.
 - `getChangedPaths()`: applies incremental changes before the sync cycle. If the changes token is expired (410), triggers a full scan.
 
 ### Mutex protection
