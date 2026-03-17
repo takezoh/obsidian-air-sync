@@ -78,6 +78,7 @@ src/
 │
 └── utils/
     ├── hash.ts                      # sha256() — Web Crypto wrapper
+    ├── md5.ts                       # md5() — js-md5 wrapper for cold start hash matching
     ├── path.ts                      # Path utilities (getFileExtension, etc.)
     └── ignore.ts                    # isIgnored() — gitignore-style pattern matching
 ```
@@ -109,7 +110,9 @@ src/
      │            Pipeline                │
      │                                    │
      │  collectChanges()                  │  ChangeDetector
-     │        │                           │    hot / warm / cold
+     │    collect (hot / warm / cold)     │    temperature modes
+     │    enrichHashesForInitialMatch()   │    MD5 vs contentChecksum
+     │        │                           │
      │        ▼                           │
      │  planSync()                        │  DecisionEngine
      │        │                           │    7 action types

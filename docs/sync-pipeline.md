@@ -42,6 +42,20 @@ Selected when `stateStore.getAll()` returns an empty array (first sync or after 
 - Full outer join on path to build `MixedEntity[]` for every file on either side
 - No filtering -- all paths are candidates
 
+## Hash enrichment
+
+After any temperature mode collects entries, `collectChanges()` runs `enrichHashesForInitialMatch()` on entries where both sides exist but no baseline (`prevSync`) is present. This handles cold starts, partial initial syncs, and simultaneous file creation.
+
+`list()` returns `hash: ""` for performance. Without enrichment, the decision engine cannot distinguish identical files from conflicts (both hashes are falsy). The enrichment step:
+
+1. Filters to entries where `local.size === remote.size` and `remote.backendMeta.contentChecksum` is available
+2. Reads local file content and computes MD5 (via `js-md5`)
+3. Compares with Drive's `contentChecksum` (MD5 from the files.list API response)
+4. If match: sets a sentinel hash (`md5:<hex>`) on both entities so the decision engine returns `match`
+5. If mismatch: leaves hashes empty → decision engine returns `conflict`
+
+Uses `AsyncPool(10)` for parallel local reads. Per-file errors are caught and skipped (file stays unenriched → treated as conflict, safe side).
+
 ## Change detection
 
 ### Local changes
