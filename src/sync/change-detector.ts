@@ -28,22 +28,30 @@ export interface ChangeDetectorDeps {
 export async function collectChanges(deps: ChangeDetectorDeps): Promise<ChangeSet> {
 	const { localTracker, stateStore } = deps;
 
+	let changeSet: ChangeSet;
+
 	// Determine temperature
 	if (localTracker.isInitialized()) {
 		const dirtyPaths = localTracker.getDirtyPaths();
 		if (dirtyPaths.size > 0) {
-			return collectHot(deps);
+			changeSet = await collectHot(deps);
+		} else {
+			const allRecords = await stateStore.getAll();
+			changeSet = allRecords.length === 0
+				? await collectCold(deps, allRecords)
+				: await collectWarm(deps, allRecords);
 		}
+	} else {
+		const allRecords = await stateStore.getAll();
+		changeSet = allRecords.length === 0
+			? await collectCold(deps, allRecords)
+			: await collectWarm(deps, allRecords);
 	}
 
-	const allRecords = await stateStore.getAll();
-	const isCold = allRecords.length === 0;
+	// Enrich empty hashes for entries without baseline (all temperature modes)
+	await enrichHashesForInitialMatch(changeSet.entries, deps.localFs);
 
-	if (isCold) {
-		return collectCold(deps, allRecords);
-	}
-
-	return collectWarm(deps, allRecords);
+	return changeSet;
 }
 
 async function collectHot(deps: ChangeDetectorDeps): Promise<ChangeSet> {
@@ -190,19 +198,29 @@ async function collectCold(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): 
 		getOrCreate(record.path).prevSync = record;
 	}
 
-	// Resolve empty hashes for cold start: compare local MD5 with remote's
-	// backend-provided contentChecksum to detect identical files without downloading.
-	// Only checks same-size files (different sizes are guaranteed different content).
-	const overlapping = [...pathMap.values()].filter(
+	return { entries: Array.from(pathMap.values()), temperature: "cold" };
+}
+
+/**
+ * Enrich empty hashes for entries without baseline by comparing local MD5
+ * with remote's backend-provided contentChecksum. Runs for all temperature
+ * modes to handle partial initial syncs and simultaneous file creation.
+ */
+async function enrichHashesForInitialMatch(
+	entries: MixedEntity[],
+	localFs: IFileSystem,
+): Promise<void> {
+	const candidates = entries.filter(
 		(e) => e.local && e.remote && !e.prevSync &&
 			!e.local.hash && !e.remote.hash &&
 			e.local.size === e.remote.size &&
 			typeof e.remote.backendMeta?.contentChecksum === "string"
 	);
+	if (candidates.length === 0) return;
 
 	const pool = new AsyncPool(10);
 	await Promise.all(
-		overlapping.map((entry) =>
+		candidates.map((entry) =>
 			pool.run(async () => {
 				const content = await localFs.read(entry.path);
 				const localMd5 = md5(content);
@@ -214,8 +232,6 @@ async function collectCold(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): 
 			})
 		)
 	);
-
-	return { entries: Array.from(pathMap.values()), temperature: "cold" };
 }
 
 async function getRemoteChangedPaths(remoteFs: IFileSystem): Promise<string[]> {
