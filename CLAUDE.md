@@ -35,6 +35,8 @@ Always pass `npm run lint && npm run build && npm test` after making changes.
 
 ### No `any`
 - Never use `as any`. Use `as unknown as TargetType` when a cast is unavoidable
+- Never use `any` in type definitions. Use `unknown` instead (e.g. `(...args: unknown[]) => void`)
+- Never disable `@typescript-eslint/no-explicit-any` — the obsidianmd plugin forbids it
 - Type external API responses (`response.json`, etc.) as `const x: unknown = ...` and narrow with a runtime validator (assert function)
 - Annotate `JSON.parse()` return values explicitly (`as { key: Type }`)
 
@@ -49,6 +51,8 @@ Always pass `npm run lint && npm run build && npm test` after making changes.
 - Never write `async` functions or arrow functions that contain no `await` expression — fix the code, do not disable the lint rule
 - Mock functions that only throw: use `() => { throw err; }` (synchronous, no `async`)
 - Mock functions with mixed throw/return: ensure at least one `await` (e.g. `return await Promise.resolve(...)`)
+- Mock functions that return a value synchronously but must return a Promise: use `() => Promise.resolve(value)` (no `async`)
+- Assigning a mock function to a property: same rules apply (e.g. `obj.fn = () => Promise.resolve(value)`, not `async () => value`)
 
 ### obsidianmd ESLint plugin
 - `eslint-plugin-obsidianmd` is installed and included in `eslint.config.mts` (`obsidianmd.configs.recommended`)
@@ -56,7 +60,8 @@ Always pass `npm run lint && npm run build && npm test` after making changes.
 - Never hardcode `.obsidian` — use `Vault#configDir`. In tests, assign to a variable and add `// eslint-disable-line obsidianmd/hardcoded-config-path`
 - UI text (`.setName()` / `.setDesc()`) must use sentence case. Avoid all-caps abbreviations (e.g. `PDFs`, `MB`)
 - `eslint-disable` directives must include a description explaining why (e.g. `// eslint-disable-next-line rule-name -- reason here`)
-- Do not disable rules that the obsidianmd plugin disallows (`obsidianmd/no-tfile-tfolder-cast`, `obsidianmd/ui/sentence-case`, etc.) — fix the code instead
+- Do not disable rules that the obsidianmd plugin disallows (`obsidianmd/no-tfile-tfolder-cast`, `obsidianmd/ui/sentence-case`, `@typescript-eslint/no-explicit-any`, etc.) — fix the code instead
+- Do not write unnecessary type assertions. If `.buffer` is already `ArrayBuffer`, do not cast `as ArrayBuffer`
 
 ## Build artifacts
 

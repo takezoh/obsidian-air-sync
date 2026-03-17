@@ -91,7 +91,7 @@ describe("collectChanges — temperature selection", () => {
 		it("enriches hashes when local MD5 matches remote contentChecksum", async () => {
 			const content = "identical content";
 			const contentBuf = new TextEncoder().encode(content);
-			const expectedMd5 = md5(contentBuf.buffer as ArrayBuffer);
+			const expectedMd5 = md5(contentBuf.buffer);
 
 			addFile(localFs, "a.md", content, 1000);
 			addFileWithMeta(remoteFs, "a.md", content, 2000, {
@@ -124,7 +124,7 @@ describe("collectChanges — temperature selection", () => {
 
 		it("skips enrichment when sizes differ", async () => {
 			const content = "same content";
-			const expectedMd5 = md5(new TextEncoder().encode(content).buffer as ArrayBuffer);
+			const expectedMd5 = md5(new TextEncoder().encode(content).buffer);
 
 			addFile(localFs, "a.md", content, 1000);
 			addFileWithMeta(remoteFs, "a.md", "different length content here", 2000, {
@@ -227,7 +227,7 @@ describe("collectChanges — temperature selection", () => {
 
 			// Attach getChangedPaths to remoteFs
 			(remoteFs as unknown as { getChangedPaths: () => Promise<{ modified: string[]; deleted: string[] }> })
-				.getChangedPaths = async () => ({ modified: ["remote-changed.md"], deleted: [] });
+				.getChangedPaths = () => Promise.resolve({ modified: ["remote-changed.md"], deleted: [] });
 
 			const result = await collectChanges(makeDeps());
 
@@ -274,7 +274,7 @@ describe("collectChanges — temperature selection", () => {
 			addFile(remoteFs, "remote-only.md", "remote changed", 2000);
 
 			(remoteFs as unknown as { getChangedPaths: () => Promise<{ modified: string[]; deleted: string[] }> })
-				.getChangedPaths = async () => ({ modified: ["remote-only.md"], deleted: [] });
+				.getChangedPaths = () => Promise.resolve({ modified: ["remote-only.md"], deleted: [] });
 
 			localTracker.acknowledge([]);
 			localTracker.markDirty("local-dirty.md");
@@ -294,7 +294,7 @@ describe("collectChanges — temperature selection", () => {
 			// remote-deleted.md is absent from remoteFs (deleted)
 
 			(remoteFs as unknown as { getChangedPaths: () => Promise<{ modified: string[]; deleted: string[] }> })
-				.getChangedPaths = async () => ({ modified: [], deleted: ["remote-deleted.md"] });
+				.getChangedPaths = () => Promise.resolve({ modified: [], deleted: ["remote-deleted.md"] });
 
 			localTracker.acknowledge([]);
 			localTracker.markDirty("local-dirty.md");
@@ -339,7 +339,7 @@ describe("collectChanges — temperature selection", () => {
 			addFile(localFs, "a.md", "modified", 2000);
 
 			(remoteFs as unknown as { getChangedPaths: () => Promise<null> })
-				.getChangedPaths = async () => null;
+				.getChangedPaths = () => Promise.resolve(null);
 
 			const result = await collectChanges(makeDeps());
 

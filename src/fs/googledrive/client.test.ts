@@ -528,7 +528,7 @@ describe("DriveClient 401 retry", () => {
 			if (callCount === 1) {
 				throw Object.assign(new Error("Unauthorized"), { status: 401 });
 			}
-			return mockRes({ startPageToken: "token123" });
+			return await Promise.resolve(mockRes({ startPageToken: "token123" }));
 		});
 
 		const { DriveClient } = await import("./client");
@@ -546,7 +546,7 @@ describe("DriveClient 401 retry", () => {
 	});
 
 	it("does not retry more than once on repeated 401", async () => {
-		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(async () => {
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(() => {
 			throw Object.assign(new Error("Unauthorized"), { status: 401 });
 		});
 
@@ -561,7 +561,7 @@ describe("DriveClient 401 retry", () => {
 	});
 
 	it("does not retry on non-401 errors", async () => {
-		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(async () => {
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(() => {
 			throw Object.assign(new Error("Server Error"), { status: 500 });
 		});
 

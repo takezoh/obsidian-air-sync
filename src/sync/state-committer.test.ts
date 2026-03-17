@@ -137,7 +137,7 @@ describe("commitAction", () => {
 	});
 
 	it("push with enableThreeWayMerge: stores merge-base content for eligible file", async () => {
-		const buf = new TextEncoder().encode("hello world").buffer as ArrayBuffer;
+		const buf = new TextEncoder().encode("hello world").buffer;
 		const localEntry = makeFile("h.md", "hello world", 1000);
 		localFs.files.set("h.md", { content: buf, entity: localEntry.entity });
 

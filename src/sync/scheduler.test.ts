@@ -26,8 +26,7 @@ import type { SyncRecord } from "./types";
 
 type VaultHandler = (file: TAbstractFile) => void;
 type RenameHandler = (file: TAbstractFile, oldPath: string) => void;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- workspace event handler type varies by event
-type WorkspaceHandler = (...args: any[]) => Promise<void> | void;
+type WorkspaceHandler = (...args: unknown[]) => Promise<void> | void;
 
 function createDeps(overrides: Partial<SyncSchedulerDeps> = {}) {
 	const vaultHandlers = new Map<string, WorkspaceHandler>();

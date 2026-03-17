@@ -62,10 +62,10 @@ describe("SyncOrchestrator", () => {
 			// Intercept list to block sync and capture isSyncing state
 			let isSyncingDuringSync = false;
 			const orchestrator = new SyncOrchestrator(deps);
-			vi.spyOn(localFs, "list").mockImplementationOnce(async () => {
+			vi.spyOn(localFs, "list").mockImplementationOnce(() => {
 				isSyncingDuringSync = orchestrator.isSyncing();
 				resolveSync();
-				return [];
+				return Promise.resolve([]);
 			});
 
 			const syncPromise = orchestrator.runSync();
@@ -155,7 +155,7 @@ describe("SyncOrchestrator", () => {
 			vi.spyOn(localFs, "list").mockImplementation(async () => {
 				attempt++;
 				if (attempt === 1) throw new Error("transient");
-				return [];
+				return await Promise.resolve([]);
 			});
 
 			const orchestrator = new SyncOrchestrator(deps);
@@ -332,9 +332,9 @@ describe("SyncOrchestrator", () => {
 			// Start runSync first, then immediately call pullSingle
 			// pullSingle should wait because mutex is held
 			let syncStarted = false;
-			vi.spyOn(localFs, "list").mockImplementation(async () => {
+			vi.spyOn(localFs, "list").mockImplementation(() => {
 				syncStarted = true;
-				return [];
+				return Promise.resolve([]);
 			});
 
 			const syncPromise = orchestrator.runSync();
