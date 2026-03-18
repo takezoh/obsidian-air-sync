@@ -19,25 +19,6 @@ export class SmartSyncSettingTab extends PluginSettingTab {
 		new Setting(containerEl).setName("Sync").setHeading();
 
 		new Setting(containerEl)
-			.setName("Auto-sync interval")
-			.setDesc("Sync automatically every n minutes. Set to 0 to disable.")
-			.addText((text) =>
-				text
-					.setPlaceholder("5")
-					.setValue(
-						String(this.plugin.settings.autoSyncIntervalMinutes)
-					)
-					.onChange(async (value) => {
-						const num = parseInt(value, 10);
-						if (!isNaN(num) && num >= 0) {
-							this.plugin.settings.autoSyncIntervalMinutes = num;
-							await this.plugin.saveSettings();
-							this.plugin.setupAutoSync();
-						}
-					})
-			);
-
-		new Setting(containerEl)
 			.setName("Conflict strategy")
 			.setDesc(
 				"How to resolve conflicts when both local and remote files have changed."

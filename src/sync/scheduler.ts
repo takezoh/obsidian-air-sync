@@ -21,16 +21,13 @@ export interface SyncSchedulerDeps {
 	stateStore: SyncStateStore;
 	localTracker: LocalChangeTracker;
 	orchestrator: SyncOrchestrator;
-	autoSyncIntervalMinutes: () => number;
 	isExcluded: (path: string) => boolean;
 	registerEvent: (ref: EventRef) => void;
-	registerInterval: (id: number) => number;
 	register: (cb: () => void) => void;
 }
 
 export class SyncScheduler {
 	private deps: SyncSchedulerDeps;
-	private autoSyncIntervalId: number | null = null;
 	private debouncedSync: ReturnType<typeof debounce>;
 
 	constructor(deps: SyncSchedulerDeps) {
@@ -38,7 +35,7 @@ export class SyncScheduler {
 		this.debouncedSync = debounce(
 			() => { void deps.orchestrator.runSync(); },
 			DEBOUNCE_MS,
-			false,
+			true,
 		);
 	}
 
@@ -46,38 +43,22 @@ export class SyncScheduler {
 		this.wireVaultEvents();
 		this.wireOnlineEvent();
 		this.wireVisibilityEvent();
+		this.wireFocusEvent();
 		this.wireFileOpenEvent();
-		this.startAutoSync();
-	}
-
-	stop(): void {
-		if (this.autoSyncIntervalId !== null) {
-			window.clearInterval(this.autoSyncIntervalId);
-			this.autoSyncIntervalId = null;
-		}
 	}
 
 	destroy(): void {
-		this.stop();
 		this.debouncedSync.cancel();
 	}
 
-	restartAutoSync(): void {
-		this.stop();
-		this.startAutoSync();
-	}
-
-	private startAutoSync(): void {
-		const minutes = this.deps.autoSyncIntervalMinutes();
-		if (minutes > 0) {
-			this.autoSyncIntervalId = this.deps.registerInterval(
-				window.setInterval(() => {
-					if (!this.deps.orchestrator.isSyncing()) {
-						void this.deps.orchestrator.runSync();
-					}
-				}, minutes * 60 * 1000),
-			);
-		}
+	private wireFocusEvent(): void {
+		const onFocus = () => {
+			if (!this.deps.orchestrator.isSyncing()) {
+				void this.deps.orchestrator.runSync();
+			}
+		};
+		window.addEventListener("focus", onFocus);
+		this.deps.register(() => window.removeEventListener("focus", onFocus));
 	}
 
 	private wireVaultEvents(): void {
@@ -121,7 +102,7 @@ export class SyncScheduler {
 	private wireVisibilityEvent(): void {
 		const onVisibilityChange = () => {
 			if (document.visibilityState === "visible" && !this.deps.orchestrator.isSyncing()) {
-				this.debouncedSync();
+				void this.deps.orchestrator.runSync();
 			}
 		};
 		document.addEventListener("visibilitychange", onVisibilityChange);

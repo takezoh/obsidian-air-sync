@@ -1,10 +1,12 @@
 // Minimal mock of obsidian module for testing
 
-export function debounce<T extends (...args: unknown[]) => unknown>(fn: T, ms: number, _immediate?: boolean): T & { cancel: () => void } {
+export function debounce<T extends (...args: unknown[]) => unknown>(fn: T, ms: number, resetTimer = true): T & { cancel: () => void } {
 	let timer: ReturnType<typeof setTimeout> | null = null;
 	const debounced = (...args: unknown[]) => {
-		if (timer) clearTimeout(timer);
-		timer = setTimeout(() => fn(...args), ms);
+		if (resetTimer && timer) clearTimeout(timer);
+		if (resetTimer || !timer) {
+			timer = setTimeout(() => { timer = null; fn(...args); }, ms);
+		}
 	};
 	debounced.cancel = () => { if (timer) clearTimeout(timer); timer = null; };
 	return debounced as unknown as T & { cancel: () => void };

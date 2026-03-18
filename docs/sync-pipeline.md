@@ -137,17 +137,17 @@ Failed actions are not committed; they will be re-detected on the next sync cycl
 
 ## Sync triggers
 
-`SyncScheduler` (`scheduler.ts`) registers five sync triggers on `start()`:
+`SyncScheduler` (`scheduler.ts`) registers five event-driven sync triggers on `start()`:
 
 | Trigger | Event | Behaviour |
 |---------|-------|-----------|
 | Vault change | `create` / `modify` / `delete` / `rename` | Marks path dirty via `localTracker.markDirty()`, then calls `debouncedSync()` (5 s debounce). Consecutive edits reset the timer so sync fires 5 s after the last change. |
-| Visibility | `document.visibilitychange` → `"visible"` | Calls `debouncedSync()` when the app returns to the foreground, unless a sync is already running. |
+| Visibility | `document.visibilitychange` → `"visible"` | Immediately calls `runSync()` when the app returns to the foreground (e.g. mobile app switch, desktop minimize restore), unless a sync is already running. |
+| Focus | `window.focus` | Immediately calls `runSync()` when the window gains focus (e.g. switching back from another desktop app), unless a sync is already running. |
 | Online | `window.online` | Immediately calls `runSync()` when the network connection is restored. |
-| Auto sync | `setInterval` | Periodic sync at the user-configured interval (`autoSyncIntervalMinutes`). Skipped if a sync is already running. |
 | File open | `workspace.on("file-open")` | Priority pull for the opened file (see below). |
 
-All triggers except file-open run a full sync cycle through the pipeline. Ignored paths (from `ignorePatterns`) are excluded at the vault-event level — dirty marks and debounce are skipped entirely.
+All triggers are event-driven — there is no periodic timer. All triggers except file-open run a full sync cycle through the pipeline. Ignored paths (from `ignorePatterns`) are excluded at the vault-event level — dirty marks and debounce are skipped entirely.
 
 ## Active file priority sync
 
@@ -157,4 +157,4 @@ All triggers except file-open run a full sync cycle through the pipeline. Ignore
 2. Look up the file's `SyncRecord`
 3. Call `stat()` on both local and remote
 4. If remote has changed (`hasRemoteChanged`) but local has NOT changed (`hasChanged`), call `orchestrator.pullSingle(path)` to immediately pull the latest version
-5. This gives the user the freshest content without waiting for the next scheduled sync
+5. This gives the user the freshest content immediately on file open

@@ -7,8 +7,6 @@ const documentListeners = new Map<string, EventListener>();
 vi.stubGlobal("window", {
 	addEventListener: (event: string, handler: EventListener) => { windowListeners.set(event, handler); },
 	removeEventListener: (event: string, _handler: EventListener) => { windowListeners.delete(event); },
-	setInterval: globalThis.setInterval.bind(globalThis),
-	clearInterval: globalThis.clearInterval.bind(globalThis),
 });
 
 vi.stubGlobal("document", {
@@ -62,10 +60,8 @@ function createDeps(overrides: Partial<SyncSchedulerDeps> = {}) {
 		stateStore: createMockStateStore(),
 		localTracker: new LocalChangeTracker(),
 		orchestrator: { isSyncing, runSync, pullSingle },
-		autoSyncIntervalMinutes: () => 5,
 		isExcluded: () => false,
 		registerEvent: vi.fn(),
-		registerInterval: vi.fn((id: number) => id),
 		register: vi.fn((cb: () => void) => { cleanups.push(cb); }),
 		vaultHandlers,
 		workspaceHandlers,
@@ -135,6 +131,17 @@ describe("SyncScheduler", () => {
 			handler(makeFile("note.md"));
 			vi.advanceTimersByTime(5000);
 			expect(deps.runSync).toHaveBeenCalled();
+		});
+
+		it("coalesces rapid vault changes into a single sync", () => {
+			const handler = deps.vaultHandlers.get("modify") as VaultHandler;
+			handler(makeFile("a.md"));
+			vi.advanceTimersByTime(2000);
+			handler(makeFile("b.md"));
+			vi.advanceTimersByTime(2000);
+			handler(makeFile("c.md"));
+			vi.advanceTimersByTime(5000);
+			expect(deps.runSync).toHaveBeenCalledTimes(1);
 		});
 
 		it("does not trigger sync for excluded paths", () => {
@@ -211,24 +218,18 @@ describe("SyncScheduler", () => {
 		});
 	});
 
-	describe("auto sync", () => {
-		it("sets interval based on configured minutes", () => {
-			expect(vi.mocked(deps.registerInterval)).toHaveBeenCalled();
-		});
-
-		it("does not set interval when minutes is 0", () => {
-			scheduler.destroy();
-			deps = createDeps({ autoSyncIntervalMinutes: () => 0 });
-			const spy = vi.mocked(deps.registerInterval);
-			spy.mockClear();
-			scheduler = new SyncScheduler(deps);
-			scheduler.start();
-			expect(spy).not.toHaveBeenCalled();
+	describe("focus event", () => {
+		it("triggers immediate sync when window gains focus", () => {
+			const handler = windowListeners.get("focus");
+			expect(handler).toBeDefined();
+			handler!(new Event("focus"));
+			expect(deps.runSync).toHaveBeenCalled();
 		});
 
 		it("skips sync when already syncing", () => {
 			deps.isSyncing.mockReturnValue(true);
-			vi.advanceTimersByTime(5 * 60 * 1000);
+			const handler = windowListeners.get("focus");
+			handler!(new Event("focus"));
 			expect(deps.runSync).not.toHaveBeenCalled();
 		});
 	});
@@ -250,11 +251,10 @@ describe("SyncScheduler", () => {
 	});
 
 	describe("visibility event", () => {
-		it("triggers debounced sync when app becomes visible", () => {
+		it("triggers immediate sync when app becomes visible", () => {
 			const handler = documentListeners.get("visibilitychange");
 			expect(handler).toBeDefined();
 			handler!(new Event("visibilitychange"));
-			vi.advanceTimersByTime(5000);
 			expect(deps.runSync).toHaveBeenCalled();
 		});
 
@@ -262,7 +262,6 @@ describe("SyncScheduler", () => {
 			deps.isSyncing.mockReturnValue(true);
 			const handler = documentListeners.get("visibilitychange");
 			handler!(new Event("visibilitychange"));
-			vi.advanceTimersByTime(5000);
 			expect(deps.runSync).not.toHaveBeenCalled();
 		});
 	});

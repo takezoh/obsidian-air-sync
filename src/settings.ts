@@ -5,8 +5,6 @@ export interface SmartSyncSettings {
 	vaultId: string;
 	/** Selected backend type (e.g. "googledrive") */
 	backendType: string;
-	/** Auto-sync interval in minutes (0 = disabled) */
-	autoSyncIntervalMinutes: number;
 	/** Strategy for conflict resolution */
 	conflictStrategy: ConflictStrategy;
 	/** Gitignore-style patterns to exclude from sync */
@@ -30,7 +28,6 @@ export interface SmartSyncSettings {
 export const DEFAULT_SETTINGS: SmartSyncSettings = {
 	vaultId: "",
 	backendType: "googledrive",
-	autoSyncIntervalMinutes: 5,
 	conflictStrategy: "auto_merge",
 	ignorePatterns: [],
 	syncDotPaths: [],

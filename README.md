@@ -9,7 +9,7 @@ Currently supports Google Drive as a storage backend.
 ## Features
 
 - **Bidirectional sync**: Push local changes to remote, pull remote changes to local
-- **Auto-sync**: Triggers on vault file changes (5 s debounce), app foreground, network restore, and configurable interval
+- **Auto-sync**: Triggers on vault file changes, app foreground/focus, and network restore — fully event-driven with no periodic timer
 - **Incremental sync**: After the initial full scan, only changed files are synced (hot/warm detection)
 - **Conflict detection**: 3-state comparison (local / remote / last sync record) accurately detects changes even when both sides are edited
 - **Conflict resolution**: 3 strategies — auto merge (3-way merge → keep newer fallback) / duplicate / ask
@@ -56,7 +56,6 @@ The default redirect page (`https://smartsync.takezo.dev/callback`) is a [single
 | Setting | Description | Default |
 |---------|-------------|---------|
 | Backend | Storage backend for sync | Google Drive (or Google Drive custom OAuth) |
-| Auto-sync interval | Periodic sync interval in minutes (0 to disable). Vault changes, app foreground, and network restore also trigger sync independently. | 5 |
 | Conflict strategy | Resolution strategy for conflicts (see below) | Auto merge |
 
 ### Advanced

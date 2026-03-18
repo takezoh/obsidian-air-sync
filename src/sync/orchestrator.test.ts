@@ -14,7 +14,6 @@ function mockSettings() {
 		syncDotPaths: [] as string[],
 		conflictStrategy: "auto_merge" as const,
 		enableThreeWayMerge: false,
-		autoSyncIntervalMinutes: 0,
 		mobileMaxFileSizeMB: 10,
 		enableLogging: false,
 		logLevel: "info" as const,

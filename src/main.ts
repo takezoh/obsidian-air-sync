@@ -99,10 +99,8 @@ export default class SmartSyncPlugin extends Plugin {
 			stateStore: this.orchestrator.state,
 			localTracker: this.localTracker,
 			orchestrator: this.orchestrator,
-			autoSyncIntervalMinutes: () => this.settings.autoSyncIntervalMinutes,
 			isExcluded: (path) => this.orchestrator.isExcluded(path),
 			registerEvent: (ref) => this.registerEvent(ref),
-			registerInterval: (id) => this.registerInterval(id),
 			register: (cb) => this.register(cb),
 		});
 
@@ -179,11 +177,6 @@ export default class SmartSyncPlugin extends Plugin {
 
 	async saveSettings() {
 		await this.saveData(this.settings);
-	}
-
-	/** Restart the auto-sync interval (called from settings UI) */
-	setupAutoSync(): void {
-		this.scheduler.restartAutoSync();
 	}
 
 	async runSync(): Promise<void> {
