@@ -8,7 +8,6 @@ import { hasChanged, hasRemoteChanged } from "./change-compare";
 const DEBOUNCE_MS = 5000;
 
 export interface SyncOrchestrator {
-	isSyncing(): boolean;
 	runSync(): Promise<void>;
 	pullSingle(path: string): Promise<void>;
 }
@@ -52,11 +51,7 @@ export class SyncScheduler {
 	}
 
 	private wireFocusEvent(): void {
-		const onFocus = () => {
-			if (!this.deps.orchestrator.isSyncing()) {
-				void this.deps.orchestrator.runSync();
-			}
-		};
+		const onFocus = () => { void this.deps.orchestrator.runSync(); };
 		window.addEventListener("focus", onFocus);
 		this.deps.register(() => window.removeEventListener("focus", onFocus));
 	}
@@ -90,18 +85,14 @@ export class SyncScheduler {
 	}
 
 	private wireOnlineEvent(): void {
-		const onOnline = () => {
-			if (!this.deps.orchestrator.isSyncing()) {
-				void this.deps.orchestrator.runSync();
-			}
-		};
+		const onOnline = () => { void this.deps.orchestrator.runSync(); };
 		window.addEventListener("online", onOnline);
 		this.deps.register(() => window.removeEventListener("online", onOnline));
 	}
 
 	private wireVisibilityEvent(): void {
 		const onVisibilityChange = () => {
-			if (document.visibilityState === "visible" && !this.deps.orchestrator.isSyncing()) {
+			if (document.visibilityState === "visible") {
 				void this.deps.orchestrator.runSync();
 			}
 		};
@@ -114,7 +105,7 @@ export class SyncScheduler {
 
 		this.deps.registerEvent(
 			workspace.on("file-open", async (file: TFile | null) => {
-				if (!file || orchestrator.isSyncing()) return;
+				if (!file) return;
 				const record = await stateStore.get(file.path);
 				if (!record) return;
 				const lFs = localFs();
