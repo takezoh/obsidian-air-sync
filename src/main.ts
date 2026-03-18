@@ -89,6 +89,7 @@ export default class AirSyncPlugin extends Plugin {
 			},
 			localTracker: this.localTracker,
 			logger: this.logger,
+			isBackendConnecting: () => this.backendManager.isConnecting(),
 		});
 
 		this.scheduler = new SyncScheduler({

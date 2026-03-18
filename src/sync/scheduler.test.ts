@@ -33,7 +33,6 @@ function createDeps(overrides: Partial<SyncSchedulerDeps> = {}) {
 
 	const runSync = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
 	const pullSingle = vi.fn<(path: string) => Promise<void>>().mockResolvedValue(undefined);
-	const isSyncing = vi.fn().mockReturnValue(false);
 
 	const deps: SyncSchedulerDeps & {
 		vaultHandlers: Map<string, WorkspaceHandler>;
@@ -41,7 +40,6 @@ function createDeps(overrides: Partial<SyncSchedulerDeps> = {}) {
 		cleanups: (() => void)[];
 		runSync: typeof runSync;
 		pullSingle: typeof pullSingle;
-		isSyncing: typeof isSyncing;
 	} = {
 		workspace: {
 			on: vi.fn((event: string, handler: WorkspaceHandler) => {
@@ -59,7 +57,7 @@ function createDeps(overrides: Partial<SyncSchedulerDeps> = {}) {
 		remoteFs: () => createMockFs("remote"),
 		stateStore: createMockStateStore(),
 		localTracker: new LocalChangeTracker(),
-		orchestrator: { isSyncing, runSync, pullSingle },
+		orchestrator: { runSync, pullSingle },
 		isExcluded: () => false,
 		registerEvent: vi.fn(),
 		register: vi.fn((cb: () => void) => { cleanups.push(cb); }),
@@ -68,7 +66,6 @@ function createDeps(overrides: Partial<SyncSchedulerDeps> = {}) {
 		cleanups,
 		runSync,
 		pullSingle,
-		isSyncing,
 		...overrides,
 	};
 	return deps;
@@ -203,20 +200,6 @@ describe("SyncScheduler", () => {
 			expect(deps.pullSingle).toHaveBeenCalledWith("note.md");
 		});
 
-		it("skips pull when syncing", async () => {
-			const record: SyncRecord = {
-				path: "note.md", hash: "abc", localMtime: 1000,
-				remoteMtime: 1000, localSize: 10, remoteSize: 10, syncedAt: 900,
-			};
-			await deps.stateStore.put(record);
-			deps.isSyncing.mockReturnValue(true);
-
-			const handler = deps.workspaceHandlers.get("file-open")!;
-			await handler({ path: "note.md" });
-
-			expect(deps.pullSingle).not.toHaveBeenCalled();
-		});
-
 		it("skips pull when no sync record", async () => {
 			const handler = deps.workspaceHandlers.get("file-open")!;
 			await handler({ path: "unknown.md" });
@@ -236,13 +219,6 @@ describe("SyncScheduler", () => {
 			expect(handler).toBeDefined();
 			handler!(new Event("focus"));
 			expect(deps.runSync).toHaveBeenCalled();
-		});
-
-		it("skips sync when already syncing", () => {
-			deps.isSyncing.mockReturnValue(true);
-			const handler = windowListeners.get("focus");
-			handler!(new Event("focus"));
-			expect(deps.runSync).not.toHaveBeenCalled();
 		});
 
 		it("skips sync on focus when remoteFs is null", () => {
@@ -265,13 +241,6 @@ describe("SyncScheduler", () => {
 			expect(deps.runSync).toHaveBeenCalled();
 		});
 
-		it("skips sync when already syncing", () => {
-			deps.isSyncing.mockReturnValue(true);
-			const handler = windowListeners.get("online");
-			handler!(new Event("online"));
-			expect(deps.runSync).not.toHaveBeenCalled();
-		});
-
 		it("skips sync on online event when remoteFs is null", () => {
 			scheduler.destroy();
 			deps = createDeps({ remoteFs: () => null });
@@ -290,13 +259,6 @@ describe("SyncScheduler", () => {
 			expect(handler).toBeDefined();
 			handler!(new Event("visibilitychange"));
 			expect(deps.runSync).toHaveBeenCalled();
-		});
-
-		it("skips sync when already syncing", () => {
-			deps.isSyncing.mockReturnValue(true);
-			const handler = documentListeners.get("visibilitychange");
-			handler!(new Event("visibilitychange"));
-			expect(deps.runSync).not.toHaveBeenCalled();
 		});
 
 		it("skips sync on visibility change when remoteFs is null", () => {
