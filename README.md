@@ -58,6 +58,11 @@ The default redirect page (`https://smartsync.takezo.dev/callback`) is a [single
 | Backend | Storage backend for sync | Google Drive (or Google Drive custom OAuth) |
 | Auto-sync interval | Periodic sync interval in minutes (0 to disable). Vault changes, app foreground, and network restore also trigger sync independently. | 5 |
 | Conflict strategy | Resolution strategy for conflicts (see below) | Auto merge |
+
+### Advanced
+
+| Setting | Description | Default |
+|---------|-------------|---------|
 | Dot-prefixed paths to sync | Dot-prefixed folders to include in sync (e.g. `.templates`) | (none) |
 | Ignore patterns | Glob patterns to exclude (one per line) | Desktop: (none), Mobile: `.md`/`.canvas`/`.base` only |
 | Mobile max file size | Skip files larger than this on mobile | 10 MB |

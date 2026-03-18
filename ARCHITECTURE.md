@@ -4,19 +4,15 @@
 
 Sync should be invisible -- like air. When the user opens Obsidian, changes since the last session are reflected within hundreds of milliseconds. After editing, background sync runs on a 5-second batch interval. Opening a note always shows the latest version. If the network drops or the app crashes, the worst case is a duplicate file; user data is never lost. Conflicts are resolved transparently via auto-merge, and the user is only prompted when edits truly contradict each other.
 
-## Overview
-
-Smart Sync is an Obsidian community plugin for bidirectional sync between a vault and cloud storage. It uses 3-state comparison (local / remote / last sync record) for accurate change detection and supports 3-way merge for text file conflicts.
-
-Backends are swappable via `IFileSystem` + `IBackendProvider` abstractions. The initial implementation covers Google Drive; the same interface allows adding Dropbox, S3, etc.
-
 ## Design principles
 
-1. **Delta-first** -- Only process files that changed. O(n) full scans are allowed only on cold start.
-2. **Pipeline as data** -- Each sync phase is a pure transformation: `ChangeSet → SyncPlan → Result`. I/O is isolated at boundaries; all intermediate states are testable.
-3. **Crash-safe by construction** -- State is updated only *after* an action succeeds (per-action commit). An interrupted sync converges by simply re-syncing.
-4. **Duplicate over delete** -- When in doubt, keep the file. Deleting an unwanted copy is easy; recovering a lost file is impossible.
-5. **Single responsibility per module** -- Each file owns one concept. Target 200-300 lines; split when exceeded.
+1. **3-state sync** -- Compare local, remote, and last-sync-record to detect changes. Text conflicts use 3-way merge.
+2. **Swappable backends** -- All remote I/O goes through `IFileSystem` + `IBackendProvider`. Adding a backend requires no changes outside `fs/`.
+3. **Delta-first** -- Only process files that changed. O(n) full scans are allowed only on cold start.
+4. **Pipeline as data** -- Each sync phase is a pure transformation: `ChangeSet → SyncPlan → Result`. I/O is isolated at boundaries; all intermediate states are testable.
+5. **Crash-safe by construction** -- State is updated only *after* an action succeeds (per-action commit). An interrupted sync converges by simply re-syncing.
+6. **Duplicate over delete** -- When in doubt, keep the file. Deleting an unwanted copy is easy; recovering a lost file is impossible.
+7. **Single responsibility per module** -- Each file owns one concept. Target 200-300 lines; split when exceeded.
 
 ## File structure
 
