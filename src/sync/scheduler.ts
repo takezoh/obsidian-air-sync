@@ -32,7 +32,10 @@ export class SyncScheduler {
 	constructor(deps: SyncSchedulerDeps) {
 		this.deps = deps;
 		this.debouncedSync = debounce(
-			() => { void deps.orchestrator.runSync(); },
+			() => {
+				if (!this.deps.remoteFs()) return;
+				void deps.orchestrator.runSync();
+			},
 			DEBOUNCE_MS,
 			true,
 		);
@@ -51,7 +54,10 @@ export class SyncScheduler {
 	}
 
 	private wireFocusEvent(): void {
-		const onFocus = () => { void this.deps.orchestrator.runSync(); };
+		const onFocus = () => {
+			if (!this.deps.remoteFs()) return;
+			void this.deps.orchestrator.runSync();
+		};
 		window.addEventListener("focus", onFocus);
 		this.deps.register(() => window.removeEventListener("focus", onFocus));
 	}
@@ -85,13 +91,17 @@ export class SyncScheduler {
 	}
 
 	private wireOnlineEvent(): void {
-		const onOnline = () => { void this.deps.orchestrator.runSync(); };
+		const onOnline = () => {
+			if (!this.deps.remoteFs()) return;
+			void this.deps.orchestrator.runSync();
+		};
 		window.addEventListener("online", onOnline);
 		this.deps.register(() => window.removeEventListener("online", onOnline));
 	}
 
 	private wireVisibilityEvent(): void {
 		const onVisibilityChange = () => {
+			if (!this.deps.remoteFs()) return;
 			if (document.visibilityState === "visible") {
 				void this.deps.orchestrator.runSync();
 			}

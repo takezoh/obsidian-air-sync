@@ -112,7 +112,7 @@ export class SyncOrchestrator {
 		const remoteFs = this.deps.remoteFs();
 		if (!remoteFs) {
 			this.deps.onStatusChange("not_connected");
-			this.deps.notify("Not connected to a remote backend");
+			this.deps.logger?.debug("runSync: skipped — no remote backend");
 			return;
 		}
 
@@ -144,7 +144,9 @@ export class SyncOrchestrator {
 					this.deps.logger?.info("Sync completed", { succeeded, conflicts, failed });
 				}
 
-				this.deps.notify(buildNotificationMessage(result));
+				if (this.deps.getSettings().enableLogging) {
+					this.deps.notify(buildNotificationMessage(result));
+				}
 				await this.deps.logger?.flush();
 
 				const allPaths = this.deps.localTracker.getDirtyPaths();
