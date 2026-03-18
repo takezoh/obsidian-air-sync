@@ -181,6 +181,7 @@ export default class AirSyncPlugin extends Plugin {
 	}
 
 	async runSync(): Promise<void> {
+		if (this.orchestrator.isSyncing()) return;
 		try {
 			if (!this.localFs || !this.backendManager.getRemoteFs()) {
 				await this.backendManager.initBackend();

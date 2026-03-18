@@ -235,7 +235,12 @@ describe("SyncOrchestrator", () => {
 		});
 
 		it("runs normally when backend is not connecting", async () => {
-			const deps = createDeps({ isBackendConnecting: () => false });
+			const settings = mockSettings();
+			settings.enableLogging = true;
+			const deps = createDeps({
+				isBackendConnecting: () => false,
+				getSettings: () => settings,
+			});
 			const orchestrator = new SyncOrchestrator(deps);
 			await orchestrator.runSync();
 			expect(deps.notify).toHaveBeenCalledWith("Everything up to date");
