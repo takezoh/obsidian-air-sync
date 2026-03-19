@@ -31,7 +31,7 @@ src/
 │   ├── state-committer.ts           # commitAction() — per-action SyncRecord upsert/delete
 │   ├── conflict-resolver.ts         # resolveConflict() — 3-strategy conflict resolver
 │   ├── conflict.ts                  # resolveWithStrategy() — low-level strategy implementations
-│   ├── merge.ts                     # threeWayMerge() — node-diff3 wrapper
+│   ├── merge.ts                     # threeWayMerge() — git-style merge via diffIndices
 │   ├── orchestrator.ts              # SyncOrchestrator — retry loop, mutex, status transitions
 │   ├── scheduler.ts                 # SyncScheduler — vault events, timers, file-open priority sync
 │   ├── state.ts                     # SyncStateStore — IndexedDB persistence for SyncRecords

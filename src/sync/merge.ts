@@ -1,4 +1,4 @@
-import { mergeDiff3 } from "node-diff3";
+import { diffIndices } from "node-diff3";
 import { getFileExtension } from "../utils/path";
 
 const TEXT_EXTENSIONS = new Set([
@@ -26,35 +26,102 @@ export interface MergeResult {
 	hasConflicts: boolean;
 }
 
+interface DiffHunk {
+	baseStart: number;
+	baseLen: number;
+	content: string[];
+}
+
+function rangesOverlap(s1: number, l1: number, s2: number, l2: number): boolean {
+	const e1 = s1 + Math.max(l1, 1);
+	const e2 = s2 + Math.max(l2, 1);
+	return s1 < e2 && s2 < e1;
+}
+
+function isSameHunk(a: DiffHunk, b: DiffHunk): boolean {
+	return a.baseStart === b.baseStart
+		&& a.baseLen === b.baseLen
+		&& a.content.length === b.content.length
+		&& a.content.every((line, i) => line === b.content[i]);
+}
+
+function toHunks(diffs: ReturnType<typeof diffIndices>): DiffHunk[] {
+	return diffs.map(d => ({
+		baseStart: d.buffer1[0],
+		baseLen: d.buffer1[1],
+		content: d.buffer2Content as string[],
+	}));
+}
+
 /**
  * Perform a 3-way merge using the base (last synced), local, and remote versions.
- * Returns the merged content. If there are conflicting changes, conflict markers
- * are inserted (<<<<<<< / ======= / >>>>>>>).
+ *
+ * Uses independent diffs (diffIndices) from base to each side, then checks for
+ * overlapping change ranges — the same principle as git merge. Non-overlapping
+ * hunks are applied independently; overlapping hunks produce conflict markers.
  */
 export function threeWayMerge(
 	base: string,
 	local: string,
 	remote: string
 ): MergeResult {
-	// Normalize CRLF to LF before merging; restore if either side used CRLF
 	const useCRLF = local.includes("\r\n") || remote.includes("\r\n");
 	const normBase = base.replace(/\r\n/g, "\n");
 	const normLocal = local.replace(/\r\n/g, "\n");
 	const normRemote = remote.replace(/\r\n/g, "\n");
 
-	const result = mergeDiff3(normLocal, normBase, normRemote, {
-		stringSeparator: "\n",
-		label: { a: "LOCAL", o: "BASE", b: "REMOTE" },
-	});
+	if (normBase === normLocal) return ok(normRemote, useCRLF);
+	if (normBase === normRemote) return ok(normLocal, useCRLF);
+	if (normLocal === normRemote) return ok(normLocal, useCRLF);
 
-	let content = result.result.join("\n");
+	const baseLines = normBase.split("\n");
+	const localLines = normLocal.split("\n");
+	const remoteLines = normRemote.split("\n");
+
+	const localHunks = toHunks(diffIndices(baseLines, localLines));
+	const remoteHunks = toHunks(diffIndices(baseLines, remoteLines));
+
+	if (localHunks.length === 0) return ok(normRemote, useCRLF);
+	if (remoteHunks.length === 0) return ok(normLocal, useCRLF);
+
+	for (const lh of localHunks) {
+		for (const rh of remoteHunks) {
+			if (rangesOverlap(lh.baseStart, lh.baseLen, rh.baseStart, rh.baseLen)) {
+				if (isSameHunk(lh, rh)) continue;
+				return conflict(localLines, remoteLines, useCRLF);
+			}
+		}
+	}
+
+	const allHunks = [...localHunks, ...remoteHunks]
+		.sort((a, b) => b.baseStart - a.baseStart);
+	const result = [...baseLines];
+	for (const h of allHunks) {
+		result.splice(h.baseStart, h.baseLen, ...h.content);
+	}
+
+	return ok(result.join("\n"), useCRLF);
+}
+
+function ok(content: string, useCRLF: boolean): MergeResult {
+	return {
+		success: true,
+		content: useCRLF ? content.replace(/\n/g, "\r\n") : content,
+		hasConflicts: false,
+	};
+}
+
+function conflict(localLines: string[], remoteLines: string[], useCRLF: boolean): MergeResult {
+	const lines = [
+		"<<<<<<< LOCAL",
+		...localLines,
+		"=======",
+		...remoteLines,
+		">>>>>>> REMOTE",
+	];
+	let content = lines.join("\n");
 	if (useCRLF) {
 		content = content.replace(/\n/g, "\r\n");
 	}
-
-	return {
-		success: !result.conflict,
-		content,
-		hasConflicts: result.conflict,
-	};
+	return { success: false, content, hasConflicts: true };
 }

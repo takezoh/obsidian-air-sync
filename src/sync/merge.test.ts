@@ -149,4 +149,90 @@ describe("threeWayMerge", () => {
 		expect(result.success).toBe(true);
 		expect(result.content).toBe("line 1 changed\nline 2\n");
 	});
+
+	it("merges adjacent lines changed by different sides", () => {
+		const base = "- item A\n- item B";
+		const local = "- item A\n- item Bb";
+		const remote = "- item Aa\n- item B";
+
+		const result = threeWayMerge(base, local, remote);
+
+		expect(result.success).toBe(true);
+		expect(result.hasConflicts).toBe(false);
+		expect(result.content).toBe("- item Aa\n- item Bb");
+	});
+
+	it("merges insertion adjacent to modification", () => {
+		const base = "A\nB";
+		const local = "A\nX\nBb";
+		const remote = "Aa\nB";
+
+		const result = threeWayMerge(base, local, remote);
+
+		expect(result.success).toBe(true);
+		expect(result.hasConflicts).toBe(false);
+		expect(result.content).toBe("Aa\nX\nBb");
+	});
+
+	it("merges deletion with non-adjacent modification", () => {
+		const base = "A\nB\nC";
+		const local = "A\nC";
+		const remote = "Aa\nB\nC";
+
+		const result = threeWayMerge(base, local, remote);
+
+		expect(result.success).toBe(true);
+		expect(result.content).toBe("Aa\nC");
+	});
+
+	it("merges 5 lines with L=1,3 R=0,4 changes", () => {
+		const base = "A\nB\nC\nD\nE";
+		const local = "A\nX\nC\nY\nE";
+		const remote = "Z\nB\nC\nD\nW";
+
+		const result = threeWayMerge(base, local, remote);
+
+		expect(result.success).toBe(true);
+		expect(result.content).toBe("Z\nX\nC\nY\nW");
+	});
+
+	it("handles both sides making the same change (false conflict)", () => {
+		const base = "A\nB\nC";
+		const local = "A\nX\nC";
+		const remote = "A\nX\nC";
+
+		const result = threeWayMerge(base, local, remote);
+
+		expect(result.success).toBe(true);
+		expect(result.content).toBe("A\nX\nC");
+	});
+
+	it("conflicts when delete vs modify on same line", () => {
+		const base = "A\nB\nC";
+		const local = "A\nC";
+		const remote = "A\nBb\nC";
+
+		const result = threeWayMerge(base, local, remote);
+
+		expect(result.hasConflicts).toBe(true);
+		expect(result.content).toContain("<<<<<<< LOCAL");
+		expect(result.content).toContain(">>>>>>> REMOTE");
+	});
+
+	it("conflicts when empty base and both sides add different content", () => {
+		const result = threeWayMerge("", "A", "B");
+
+		expect(result.hasConflicts).toBe(true);
+	});
+
+	it("does not include diff3-style BASE markers", () => {
+		const base = "A\nB";
+		const local = "X\nB";
+		const remote = "Y\nB";
+
+		const result = threeWayMerge(base, local, remote);
+
+		expect(result.hasConflicts).toBe(true);
+		expect(result.content).not.toContain("||||||| BASE");
+	});
 });

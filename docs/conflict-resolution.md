@@ -35,7 +35,7 @@ auto_merge
 
 ## 3-way merge
 
-Implemented in `merge.ts` using the `node-diff3` library.
+Implemented in `merge.ts` using `node-diff3`'s `diffIndices` function.
 
 **Eligibility** (`isMergeEligible()`):
 - File size <= 1 MB (`MAX_MERGE_SIZE`)
@@ -43,18 +43,20 @@ Implemented in `merge.ts` using the `node-diff3` library.
 
 **Merge process** (`threeWayMerge()`):
 1. Normalize CRLF to LF in all three inputs
-2. Run `mergeDiff3(local, base, remote)` with `\n` separator
-3. If either input used CRLF, convert output back to CRLF
-4. Return `{ success, content, hasConflicts }`
+2. Compute independent diffs: `diffIndices(base, local)` and `diffIndices(base, remote)`
+3. Check if any hunk pair overlaps in base line ranges. Overlapping hunks with identical content (false conflicts) are skipped
+4. No overlaps → apply both sides' hunks to base. Overlaps → insert conflict markers
+5. If either input used CRLF, convert output back to CRLF
+6. Return `{ success, content, hasConflicts }`
 
-Conflict markers use labels `LOCAL`, `BASE`, `REMOTE`:
+This uses the same principle as git merge: independent diffs from base to each side, with overlap detection on base line ranges. Adjacent but non-overlapping changes (including insertions and deletions) are merged cleanly.
+
+Conflict markers use labels `LOCAL` and `REMOTE`:
 ```
 <<<<<<< LOCAL
-local change
-||||||| BASE
-original text
+local version
 =======
-remote change
+remote version
 >>>>>>> REMOTE
 ```
 
