@@ -133,13 +133,12 @@ describe("resolveGDriveRemoteVault", () => {
 			expect(mock.findChildByName).not.toHaveBeenCalledWith("root", expect.anything(), expect.anything());
 		});
 
-		it("throws when cached vault folder was deleted", async () => {
-			// getFile fails (folder deleted)
-			mock.getFile.mockRejectedValueOnce(new Error("File not found"));
+		it("throws with original error detail when getFile fails", async () => {
+			mock.getFile.mockRejectedValueOnce(new Error("Drive API getFile failed: File not found"));
 
 			await expect(
 				resolveGDriveRemoteVault(mock.client, "My Vault", "deleted-folder-id")
-			).rejects.toThrow("was deleted from Google Drive");
+			).rejects.toThrow("Failed to access remote vault folder: Drive API getFile failed: File not found");
 		});
 	});
 

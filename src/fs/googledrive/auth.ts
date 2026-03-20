@@ -302,24 +302,36 @@ export class GoogleAuthDirect extends GoogleAuthBase {
 			throw new Error("PKCE code verifier is missing. Please restart the authorization flow.");
 		}
 
-		const response = await requestUrl({
-			url: GOOGLE_TOKEN_URL,
-			method: "POST",
-			headers: { "Content-Type": "application/x-www-form-urlencoded" },
-			body: new URLSearchParams({
-				code: params.code,
-				client_id: this.clientId,
-				client_secret: this.clientSecret,
-				redirect_uri: this.redirectUri,
-				grant_type: "authorization_code",
-				code_verifier: codeVerifier,
-			}).toString(),
+		this.logger?.debug("Exchanging authorization code", {
+			redirectUri: this.redirectUri,
+			codeLength: params.code.length,
 		});
 
-		const token: unknown = response.json;
-		assertTokenResponse(token);
-		this.storeTokenResponse(token);
-		this.clearAuthState();
+		try {
+			const response = await requestUrl({
+				url: GOOGLE_TOKEN_URL,
+				method: "POST",
+				headers: { "Content-Type": "application/x-www-form-urlencoded" },
+				body: new URLSearchParams({
+					code: params.code,
+					client_id: this.clientId,
+					client_secret: this.clientSecret,
+					redirect_uri: this.redirectUri,
+					grant_type: "authorization_code",
+					code_verifier: codeVerifier,
+				}).toString(),
+			});
+
+			const token: unknown = response.json;
+			assertTokenResponse(token);
+			this.storeTokenResponse(token);
+			this.clearAuthState();
+			this.logger?.debug("Token exchange successful");
+		} catch (err) {
+			const detail = extractGoogleErrorDetail(err);
+			this.logger?.error("Token exchange failed", { error: detail });
+			throw new Error(`Token exchange failed: ${detail}`);
+		}
 	}
 
 	protected async performRefresh(): Promise<string> {
@@ -345,6 +357,19 @@ export class GoogleAuthDirect extends GoogleAuthBase {
 			this.handleRefreshError(err);
 		}
 	}
+}
+
+/** Extract error detail from a Google OAuth error response */
+function extractGoogleErrorDetail(err: unknown): string {
+	const json = (err as { json?: unknown }).json;
+	if (json && typeof json === "object") {
+		const obj = json as Record<string, unknown>;
+		if (typeof obj.error === "string") {
+			const desc = typeof obj.error_description === "string" ? obj.error_description : "";
+			return desc ? `${obj.error}: ${desc}` : obj.error;
+		}
+	}
+	return err instanceof Error ? err.message : String(err);
 }
 
 /** Compute S256 code challenge: base64url(SHA-256(verifier)) */

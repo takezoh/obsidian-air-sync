@@ -432,6 +432,43 @@ describe("GoogleAuthDirect.handleAuthCallback", () => {
 			auth.handleAuthCallback({ code: "code", state: "state" })
 		).rejects.toThrow("PKCE code verifier is missing");
 	});
+
+	it("includes Google error detail when token exchange fails", async () => {
+		const err = new Error("Request failed, status 400");
+		Object.assign(err, {
+			status: 400,
+			json: { error: "redirect_uri_mismatch", error_description: "Bad Request" },
+		});
+		const mockRequestUrl = (await spyRequestUrl()).mockRejectedValue(err);
+
+		const { GoogleAuthDirect } = await import("./auth");
+		const auth = new GoogleAuthDirect("id", "secret");
+		auth.setAuthState("state");
+		auth.setCodeVerifier("verifier");
+
+		await expect(
+			auth.handleAuthCallback({ code: "code", state: "state" })
+		).rejects.toThrow("Token exchange failed: redirect_uri_mismatch: Bad Request");
+
+		mockRequestUrl.mockRestore();
+	});
+
+	it("falls back to error message when no Google error body", async () => {
+		const mockRequestUrl = (await spyRequestUrl()).mockRejectedValue(
+			new Error("Network error")
+		);
+
+		const { GoogleAuthDirect } = await import("./auth");
+		const auth = new GoogleAuthDirect("id", "secret");
+		auth.setAuthState("state");
+		auth.setCodeVerifier("verifier");
+
+		await expect(
+			auth.handleAuthCallback({ code: "code", state: "state" })
+		).rejects.toThrow("Token exchange failed: Network error");
+
+		mockRequestUrl.mockRestore();
+	});
 });
 
 describe("GoogleAuthDirect._refreshToken", () => {

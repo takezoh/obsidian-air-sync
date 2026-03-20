@@ -40,14 +40,12 @@ async function resolveLinked(
 	vaultName: string,
 	logger?: Logger,
 ): Promise<RemoteVaultResolution> {
-	// Verify the cached folder still exists
+	// Verify the cached folder still exists and is accessible
 	try {
 		await client.getFile(cachedFolderId);
-	} catch {
-		throw new Error(
-			"Remote vault folder was deleted from Google Drive. " +
-			"Please disconnect and reconnect to create a new remote vault."
-		);
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		throw new Error(`Failed to access remote vault folder: ${msg}`);
 	}
 
 	// Update metadata.json if vault name changed
