@@ -252,19 +252,30 @@ export class GoogleAuth extends GoogleAuthBase {
  * The auth server relays the authorization code back without exchanging it;
  * this class exchanges the code and refreshes tokens directly with Google.
  */
+export interface GoogleAuthDirectOptions {
+	clientId: string;
+	clientSecret: string;
+	logger?: Logger;
+	scope?: string;
+	redirectUri?: string;
+	includeGrantedScopes?: boolean;
+}
+
 export class GoogleAuthDirect extends GoogleAuthBase {
 	private clientId: string;
 	private clientSecret: string;
 	private scope: string;
 	private redirectUri: string;
+	private includeGrantedScopes: boolean;
 
-	constructor(clientId: string, clientSecret: string, logger?: Logger, scope?: string, redirectUri?: string) {
+	constructor(options: GoogleAuthDirectOptions) {
 		super();
-		this.clientId = clientId;
-		this.clientSecret = clientSecret;
-		this.scope = scope || SCOPES;
-		this.redirectUri = redirectUri || DEFAULT_CUSTOM_REDIRECT_URI;
-		this.logger = logger;
+		this.clientId = options.clientId;
+		this.clientSecret = options.clientSecret;
+		this.scope = options.scope || SCOPES;
+		this.redirectUri = options.redirectUri || DEFAULT_CUSTOM_REDIRECT_URI;
+		this.includeGrantedScopes = options.includeGrantedScopes ?? false;
+		this.logger = options.logger;
 	}
 
 	async getAuthorizationUrl(): Promise<string> {
@@ -284,6 +295,9 @@ export class GoogleAuthDirect extends GoogleAuthBase {
 			code_challenge: codeChallenge,
 			code_challenge_method: "S256",
 		});
+		if (this.includeGrantedScopes) {
+			params.set("include_granted_scopes", "true");
+		}
 		return `${GOOGLE_AUTH_URL}?${params.toString()}`;
 	}
 

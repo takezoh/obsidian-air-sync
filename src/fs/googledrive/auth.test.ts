@@ -354,7 +354,7 @@ describe("GoogleAuth.revokeToken", () => {
 describe("GoogleAuthDirect.getAuthorizationUrl", () => {
 	it("uses custom client_id and includes PKCE S256 challenge", async () => {
 		const { GoogleAuthDirect } = await import("./auth");
-		const auth = new GoogleAuthDirect("custom-client-id", "custom-secret");
+		const auth = new GoogleAuthDirect({ clientId: "custom-client-id", clientSecret: "custom-secret" });
 
 		const url = await auth.getAuthorizationUrl();
 
@@ -371,6 +371,35 @@ describe("GoogleAuthDirect.getAuthorizationUrl", () => {
 	});
 });
 
+describe("GoogleAuthDirect.getAuthorizationUrl with includeGrantedScopes", () => {
+	it("includes include_granted_scopes when enabled", async () => {
+		const { GoogleAuthDirect } = await import("./auth");
+		const auth = new GoogleAuthDirect({ clientId: "cid", clientSecret: "csecret", includeGrantedScopes: true });
+
+		const url = await auth.getAuthorizationUrl();
+
+		expect(url).toContain("include_granted_scopes=true");
+	});
+
+	it("omits include_granted_scopes when disabled", async () => {
+		const { GoogleAuthDirect } = await import("./auth");
+		const auth = new GoogleAuthDirect({ clientId: "cid", clientSecret: "csecret", includeGrantedScopes: false });
+
+		const url = await auth.getAuthorizationUrl();
+
+		expect(url).not.toContain("include_granted_scopes");
+	});
+
+	it("omits include_granted_scopes by default", async () => {
+		const { GoogleAuthDirect } = await import("./auth");
+		const auth = new GoogleAuthDirect({ clientId: "cid", clientSecret: "csecret" });
+
+		const url = await auth.getAuthorizationUrl();
+
+		expect(url).not.toContain("include_granted_scopes");
+	});
+});
+
 describe("GoogleAuthDirect.handleAuthCallback", () => {
 	it("exchanges code for tokens with PKCE code_verifier", async () => {
 		const mockRequestUrl = (await spyRequestUrl()).mockResolvedValue(
@@ -383,7 +412,7 @@ describe("GoogleAuthDirect.handleAuthCallback", () => {
 		);
 
 		const { GoogleAuthDirect } = await import("./auth");
-		const auth = new GoogleAuthDirect("my-client-id", "my-secret");
+		const auth = new GoogleAuthDirect({ clientId: "my-client-id", clientSecret: "my-secret" });
 		auth.setAuthState("csrf-state");
 		auth.setCodeVerifier("test-verifier-string");
 
@@ -414,7 +443,7 @@ describe("GoogleAuthDirect.handleAuthCallback", () => {
 
 	it("throws when code is missing", async () => {
 		const { GoogleAuthDirect } = await import("./auth");
-		const auth = new GoogleAuthDirect("id", "secret");
+		const auth = new GoogleAuthDirect({ clientId: "id", clientSecret: "secret" });
 		auth.setAuthState("state");
 		auth.setCodeVerifier("verifier");
 
@@ -425,7 +454,7 @@ describe("GoogleAuthDirect.handleAuthCallback", () => {
 
 	it("throws when code verifier is missing", async () => {
 		const { GoogleAuthDirect } = await import("./auth");
-		const auth = new GoogleAuthDirect("id", "secret");
+		const auth = new GoogleAuthDirect({ clientId: "id", clientSecret: "secret" });
 		auth.setAuthState("state");
 
 		await expect(
@@ -442,7 +471,7 @@ describe("GoogleAuthDirect.handleAuthCallback", () => {
 		const mockRequestUrl = (await spyRequestUrl()).mockRejectedValue(err);
 
 		const { GoogleAuthDirect } = await import("./auth");
-		const auth = new GoogleAuthDirect("id", "secret");
+		const auth = new GoogleAuthDirect({ clientId: "id", clientSecret: "secret" });
 		auth.setAuthState("state");
 		auth.setCodeVerifier("verifier");
 
@@ -459,7 +488,7 @@ describe("GoogleAuthDirect.handleAuthCallback", () => {
 		);
 
 		const { GoogleAuthDirect } = await import("./auth");
-		const auth = new GoogleAuthDirect("id", "secret");
+		const auth = new GoogleAuthDirect({ clientId: "id", clientSecret: "secret" });
 		auth.setAuthState("state");
 		auth.setCodeVerifier("verifier");
 
@@ -482,7 +511,7 @@ describe("GoogleAuthDirect._refreshToken", () => {
 		);
 
 		const { GoogleAuthDirect } = await import("./auth");
-		const auth = new GoogleAuthDirect("my-client", "my-secret");
+		const auth = new GoogleAuthDirect({ clientId: "my-client", clientSecret: "my-secret" });
 		auth.setTokens("my-refresh", "", 0);
 
 		const token = await auth.getAccessToken();
@@ -517,7 +546,7 @@ describe("GoogleDriveCustomProvider.completeAuth", () => {
 		const provider = new GoogleDriveCustomProvider(secretStore);
 		const authInternal = provider.auth as unknown as GoogleDriveCustomAuthProviderInternal;
 
-		authInternal.googleAuth = new GoogleAuthDirect("cid", "csecret");
+		authInternal.googleAuth = new GoogleAuthDirect({ clientId: "cid", clientSecret: "csecret" });
 		authInternal.googleAuth.setAuthState("csrf");
 		authInternal.googleAuth.setCodeVerifier("my-verifier");
 

@@ -19,6 +19,7 @@ export interface GoogleDriveCustomBackendData extends GoogleDriveBackendData {
 	customClientSecret: string;
 	customScope: string;
 	customRedirectUri: string;
+	customIncludeGrantedScopes: boolean;
 }
 
 const DEFAULT_GDRIVE_CUSTOM_DATA: GoogleDriveCustomBackendData = {
@@ -31,6 +32,7 @@ const DEFAULT_GDRIVE_CUSTOM_DATA: GoogleDriveCustomBackendData = {
 	customClientSecret: "",
 	customScope: "",
 	customRedirectUri: "",
+	customIncludeGrantedScopes: false,
 };
 
 function getGDriveCustomData(settings: AirSyncSettings): GoogleDriveCustomBackendData {
@@ -59,10 +61,12 @@ export class GoogleDriveCustomAuthProvider extends GoogleDriveAuthProviderBase {
 			new Notice("Enter your client ID and client secret first");
 			return null;
 		}
-		this.googleAuth = new GoogleAuthDirect(
-			clientId, clientSecret, undefined,
-			data.customScope || undefined, data.customRedirectUri || undefined,
-		);
+		this.googleAuth = new GoogleAuthDirect({
+			clientId, clientSecret,
+			scope: data.customScope || undefined,
+			redirectUri: data.customRedirectUri || undefined,
+			includeGrantedScopes: data.customIncludeGrantedScopes,
+		});
 		return this.googleAuth;
 	}
 
@@ -72,10 +76,12 @@ export class GoogleDriveCustomAuthProvider extends GoogleDriveAuthProviderBase {
 			const clientId = this.resolveSecret(data.customClientId);
 			const clientSecret = this.resolveSecret(data.customClientSecret);
 			if (clientId && clientSecret) {
-				this.googleAuth = new GoogleAuthDirect(
-					clientId, clientSecret, undefined,
-					data.customScope || undefined, data.customRedirectUri || undefined,
-				);
+				this.googleAuth = new GoogleAuthDirect({
+					clientId, clientSecret,
+					scope: data.customScope || undefined,
+					redirectUri: data.customRedirectUri || undefined,
+					includeGrantedScopes: data.customIncludeGrantedScopes,
+				});
 			}
 		}
 		if (!this.googleAuth) {
@@ -89,13 +95,14 @@ export class GoogleDriveCustomAuthProvider extends GoogleDriveAuthProviderBase {
 		if (!this.googleAuth) {
 			const clientId = this.resolveSecret(customData.customClientId);
 			const clientSecret = this.resolveSecret(customData.customClientSecret);
-			this.googleAuth = new GoogleAuthDirect(
+			this.googleAuth = new GoogleAuthDirect({
 				clientId,
 				clientSecret,
 				logger,
-				customData.customScope || undefined,
-				customData.customRedirectUri || undefined,
-			);
+				scope: customData.customScope || undefined,
+				redirectUri: customData.customRedirectUri || undefined,
+				includeGrantedScopes: customData.customIncludeGrantedScopes,
+			});
 		}
 		return this.googleAuth;
 	}
@@ -144,6 +151,7 @@ export class GoogleDriveCustomProvider extends GoogleDriveProviderBase {
 			customClientSecret: data.customClientSecret,
 			customScope: data.customScope,
 			customRedirectUri: data.customRedirectUri,
+			customIncludeGrantedScopes: data.customIncludeGrantedScopes,
 			remoteVaultFolderId: data.remoteVaultFolderId,
 		};
 	}

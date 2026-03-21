@@ -123,6 +123,18 @@ export class GoogleDriveCustomSettingsRenderer implements IBackendSettingsRender
 			);
 
 		new Setting(containerEl)
+			.setName("Include granted scopes")
+			.setDesc("Include previously granted scopes in new tokens (incremental authorization)")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(data.customIncludeGrantedScopes ?? false)
+					.setDisabled(isConnected)
+					.onChange(async (value) => {
+						await onSave({ customIncludeGrantedScopes: value });
+					})
+			);
+
+		new Setting(containerEl)
 			.setName("Redirect uri")
 			.setDesc("Set this as the authorized redirect uri")
 			.addText((text) =>
