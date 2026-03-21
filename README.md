@@ -37,6 +37,8 @@ The built-in OAuth uses the `drive.file` scope, which only allows access to file
 
 The authorization code exchange is protected by PKCE — the code cannot be used without the verifier held only by the plugin.
 
+> **Note**: Tokens are stored in Obsidian's secret storage, which may be readable by other plugins. The built-in OAuth limits exposure with the `drive.file` scope. Custom OAuth may increase risk depending on the scope you configure.
+
 ### Troubleshooting
 
 - **Authentication completes but sync doesn't start**: Restart the plugin (disable → enable in Community plugins settings), then try syncing manually
