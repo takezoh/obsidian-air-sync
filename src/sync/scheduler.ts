@@ -60,20 +60,21 @@ export class SyncScheduler {
 		this.lastSyncCompletedAt = Date.now();
 	}
 
+	/** Called by setInterval() every HEARTBEAT_MS, schedules a sync pass if the time is ripe. **/
 	private onHeartbeat(): void {
 		const now = Date.now();
 		const remoteFs = this.deps.remoteFs();
 		if (!remoteFs) return;
 		if (this.deps.orchestrator.isSyncing()) return;
 
-		// Debounce path: a vault change scheduled a sync
+		// deadline 1: debounce interval after last vault change has passed
 		if (this.nextSyncAt !== null && now >= this.nextSyncAt) {
 			this.nextSyncAt = null;
 			void this.deps.orchestrator.runSync();
 			return;
 		}
 
-		// Slow poll path: time since last sync exceeds the configured interval
+		// deadline 2: do slow interval poll once in a while if no vault change or even if there's a steady stream of them.
 		const slowPollMs = this.deps.getSlowPollIntervalSec() * 1000;
 		if (slowPollMs > 0 && now >= this.lastSyncCompletedAt + slowPollMs) {
 			void this.deps.orchestrator.runSync();

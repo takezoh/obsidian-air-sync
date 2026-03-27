@@ -142,6 +142,21 @@ describe("SyncScheduler", () => {
 			expect(deps.runSync).toHaveBeenCalledTimes(1);
 		});
 
+		it("does not sync while local changes arrive every 4s; fires only after final debounce window", () => {
+			const handler = deps.vaultHandlers.get("modify") as VaultHandler;
+			handler(makeFile("a.md")); // T=0s, nextSyncAt=5s
+			vi.advanceTimersByTime(4_000); // T=4s — debounce not yet due
+			handler(makeFile("b.md")); // T=4s, nextSyncAt=9s
+			vi.advanceTimersByTime(4_000); // T=8s — debounce not yet due
+			handler(makeFile("c.md")); // T=8s, nextSyncAt=13s
+
+			vi.advanceTimersByTime(4_999); // T=12.999s — still inside window
+			expect(deps.runSync).not.toHaveBeenCalled();
+
+			vi.advanceTimersByTime(1); // T=13s — debounce fires
+			expect(deps.runSync).toHaveBeenCalledTimes(1);
+		});
+
 		it("does not trigger sync for excluded paths", () => {
 			scheduler.destroy();
 			deps = createDeps({ isExcluded: () => true });
@@ -360,6 +375,37 @@ describe("SyncScheduler", () => {
 			scheduler.notifySyncComplete();
 			vi.advanceTimersByTime(120_000);
 			expect(runSync).not.toHaveBeenCalled();
+		});
+
+		it("fires at poll interval despite a steady stream of local changes every 4s", () => {
+			// runSync mock calls notifySyncComplete so the poll clock resets after each sync.
+			const runSync = vi.fn<() => Promise<void>>();
+			scheduler.destroy();
+			deps = createDeps({
+				getSlowPollIntervalSec: () => 300,
+				orchestrator: { runSync, pullSingle: vi.fn().mockResolvedValue(undefined), isSyncing: () => false },
+			});
+			scheduler = new SyncScheduler(deps);
+			runSync.mockImplementation(() => {
+				scheduler.notifySyncComplete();
+				return Promise.resolve();
+			});
+			scheduler.start();
+
+			scheduler.notifySyncComplete(); // T=0: reset poll clock
+
+			const handler = deps.vaultHandlers.get("modify") as VaultHandler;
+
+			// Simulate a vault change every 4s for 7 minutes (105 steps).
+			// The debounce window (5s) is continuously pushed forward, so it never fires.
+			// The slow poll fires once at T=300s; notifySyncComplete resets lastSyncCompletedAt
+			// to T=300s, so the next poll would be at T=600s which is beyond our 7-min window.
+			for (let i = 0; i < 105; i++) {
+				vi.advanceTimersByTime(4_000);
+				handler(makeFile("note.md"));
+			}
+
+			expect(runSync).toHaveBeenCalledTimes(1);
 		});
 
 		it("debounce-triggered sync takes priority over slow poll in same tick", () => {

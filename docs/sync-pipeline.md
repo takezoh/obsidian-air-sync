@@ -153,7 +153,7 @@ The heartbeat checks `isSyncing()` and `remoteFs()` before calling `runSync()` i
 | Trigger | Mechanism | Behaviour |
 | ------- | --------- | --------- |
 | Vault change | `create` / `modify` / `delete` / `rename` | Marks path dirty via `localTracker.markDirty()` and sets `nextSyncAt = now + 5 s`. The heartbeat fires the sync once the debounce window elapses. |
-| Slow poll | Heartbeat (`setInterval`, 1 s) | When `slowPollIntervalSec > 0`, fires `runSync()` if the configured interval has elapsed since `lastSyncCompletedAt`. Detects remote changes while the user is idle. Disabled when `slowPollIntervalSec = 0`. Default is 300 s (5 minutes). |
+| Slow poll | Heartbeat (`setInterval`, 1 s) | When `slowPollIntervalSec > 0`, fires `runSync()` if the configured interval has elapsed since `lastSyncCompletedAt`. Detects remote changes while the user is idle, but also a long string of local changes happening within the debounce window. Disabled when `slowPollIntervalSec = 0`. Default is 300 s (5 minutes). |
 | Visibility | `document.visibilitychange` → `"visible"` | Immediately calls `runSync()` when the app returns to the foreground, unless a sync is already running. |
 | Focus | `window.focus` | Immediately calls `runSync()` when the window gains focus, unless a sync is already running. |
 | Online | `window.online` | Immediately calls `runSync()` when the network connection is restored. |
