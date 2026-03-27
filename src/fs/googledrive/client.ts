@@ -281,22 +281,34 @@ export class DriveClient {
 		return updated;
 	}
 
-	/** Delete a file or folder (trash or permanent) */
+	/** Delete a file or folder (trash or permanent). Idempotent: 404/403 are treated as no-ops. */
 	async deleteFile(fileId: string, permanent = false): Promise<void> {
-		if (permanent) {
-			await this.request("deleteFile", {
-				url: `${DRIVE_API}/files/${fileId}`,
-				method: "DELETE",
-			});
-		} else {
-			await this.request("trashFile", {
-				url: `${DRIVE_API}/files/${fileId}`,
-				method: "PATCH",
-				headers: {
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify({ trashed: true }),
-			});
+		try {
+			if (permanent) {
+				await this.request("deleteFile", {
+					url: `${DRIVE_API}/files/${fileId}`,
+					method: "DELETE",
+				});
+			} else {
+				await this.request("trashFile", {
+					url: `${DRIVE_API}/files/${fileId}`,
+					method: "PATCH",
+					headers: {
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify({ trashed: true }),
+				});
+			}
+		} catch (err) {
+			const status = err && typeof err === "object"
+				? (err as Record<string, unknown>).status
+				: undefined;
+			if (status === 404) return;
+			if (status === 403) {
+				this.logger?.warn("deleteFile: 403 on delete, treating as already gone", { fileId });
+				return;
+			}
+			throw err;
 		}
 	}
 

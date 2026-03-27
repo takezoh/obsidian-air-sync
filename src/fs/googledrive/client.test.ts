@@ -45,6 +45,56 @@ describe("DriveClient error wrapping", () => {
 	});
 });
 
+describe("DriveClient.deleteFile idempotency", () => {
+	it("treats 404 as a no-op", async () => {
+		const mockRequestUrl = (await spyRequestUrl()).mockRejectedValue(
+			Object.assign(new Error("Not Found"), { status: 404 })
+		);
+
+		const { DriveClient } = await import("./client");
+		const client = new DriveClient(() => Promise.resolve("access"));
+
+		await expect(client.deleteFile("gone-id")).resolves.toBeUndefined();
+		mockRequestUrl.mockRestore();
+	});
+
+	it("treats 403 as a no-op (file inaccessible)", async () => {
+		const mockRequestUrl = (await spyRequestUrl()).mockRejectedValue(
+			Object.assign(new Error("Forbidden"), { status: 403 })
+		);
+
+		const { DriveClient } = await import("./client");
+		const client = new DriveClient(() => Promise.resolve("access"));
+
+		await expect(client.deleteFile("no-access-id")).resolves.toBeUndefined();
+		mockRequestUrl.mockRestore();
+	});
+
+	it("re-throws other errors", async () => {
+		const mockRequestUrl = (await spyRequestUrl()).mockRejectedValue(
+			Object.assign(new Error("Server Error"), { status: 500 })
+		);
+
+		const { DriveClient } = await import("./client");
+		const client = new DriveClient(() => Promise.resolve("access"));
+
+		await expect(client.deleteFile("file-id")).rejects.toThrow("Drive API trashFile failed");
+		mockRequestUrl.mockRestore();
+	});
+
+	it("treats 404 as a no-op for permanent delete", async () => {
+		const mockRequestUrl = (await spyRequestUrl()).mockRejectedValue(
+			Object.assign(new Error("Not Found"), { status: 404 })
+		);
+
+		const { DriveClient } = await import("./client");
+		const client = new DriveClient(() => Promise.resolve("access"));
+
+		await expect(client.deleteFile("gone-id", true)).resolves.toBeUndefined();
+		mockRequestUrl.mockRestore();
+	});
+});
+
 describe("DriveClient.uploadFile modifiedTime default", () => {
 	it("does not send epoch (1970) when modifiedTime is omitted", async () => {
 		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(
