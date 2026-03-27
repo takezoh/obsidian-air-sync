@@ -72,8 +72,15 @@ export async function applyIncrementalChanges(
 						ctx.cache.removeTree(path);
 					}
 				} else if (change.file) {
+					// Capture old path before cache mutation to detect move/rename
+					const oldPath = ctx.cache.getPathById(change.file.id);
+					const wasFolder = oldPath ? ctx.cache.isFolder(oldPath) : false;
+					const oldDescendants = (oldPath && wasFolder)
+						? ctx.cache.collectDescendants(oldPath) : [];
+
 					ctx.cache.applyFileChange(change.file);
 					const updatedPath = ctx.cache.getPathById(change.file.id);
+
 					if (updatedPath) {
 						updatedRecords.push({
 							path: updatedPath,
@@ -81,6 +88,34 @@ export async function applyIncrementalChanges(
 							isFolder: change.file.mimeType === FOLDER_MIME,
 						});
 						changedPaths.add(updatedPath);
+					}
+
+					// File was moved/renamed — report old path(s) as deleted
+					const moved = oldPath && updatedPath && oldPath !== updatedPath;
+					const movedOutOfRoot = oldPath && !updatedPath;
+					if (moved || movedOutOfRoot) {
+						changedPaths.add(oldPath);
+						deletedPaths.push(oldPath);
+						for (const d of oldDescendants) {
+							changedPaths.add(d);
+							deletedPaths.push(d);
+						}
+					}
+
+					// Folder move — also report new descendant paths as updated
+					if (moved && wasFolder) {
+						const newDescendants = ctx.cache.collectDescendants(updatedPath);
+						for (const nd of newDescendants) {
+							changedPaths.add(nd);
+							const ndFile = ctx.cache.getFile(nd);
+							if (ndFile) {
+								updatedRecords.push({
+									path: nd,
+									file: ndFile,
+									isFolder: ndFile.mimeType === FOLDER_MIME,
+								});
+							}
+						}
 					}
 				}
 			}
