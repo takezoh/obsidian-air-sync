@@ -8,6 +8,8 @@ import { SyncStateStore } from "./state";
 import { LocalChangeTracker } from "./local-tracker";
 import { collectChanges } from "./change-detector";
 import { planSync } from "./decision-engine";
+import { optimizeRenames } from "./rename-optimizer";
+import { checkSafety } from "./safety-check";
 import { executePlan } from "./plan-executor";
 import type { ExecutionContext, ExecutionResult } from "./plan-executor";
 import { AuthError } from "../fs/errors";
@@ -25,18 +27,20 @@ interface SyncCycleResult {
 }
 
 function buildNotificationMessage(cycle: SyncCycleResult): string {
-	const counts = { pushed: 0, pulled: 0, matched: 0, deleted: 0 };
+	const counts = { pushed: 0, pulled: 0, matched: 0, deleted: 0, renamed: 0 };
 	for (const a of cycle.result.succeeded) {
 		if (a.action.action === "push") counts.pushed++;
 		else if (a.action.action === "pull") counts.pulled++;
 		else if (a.action.action === "match") counts.matched++;
 		else if (a.action.action === "delete_local" || a.action.action === "delete_remote") counts.deleted++;
+		else if (a.action.action === "rename_remote") counts.renamed++;
 	}
 	const parts: string[] = [];
 	if (counts.pushed > 0) parts.push(`${counts.pushed} pushed`);
 	if (counts.pulled > 0) parts.push(`${counts.pulled} pulled`);
 	if (counts.matched > 0) parts.push(`${counts.matched} matched`);
 	if (counts.deleted > 0) parts.push(`${counts.deleted} deleted`);
+	if (counts.renamed > 0) parts.push(`${counts.renamed} renamed`);
 	if (cycle.conflicts > 0) parts.push(`${cycle.conflicts} conflicts`);
 	if (cycle.failed > 0) parts.push(`${cycle.failed} errors`);
 	return parts.length === 0 ? "Everything up to date" : `Sync: ${parts.join(", ")}`;
@@ -297,7 +301,12 @@ export class SyncOrchestrator {
 			});
 		}
 
-		const plan = planSync(filtered);
+		let plan = planSync(filtered);
+		const renamePairs = this.deps.localTracker.getRenamePairs();
+		if (renamePairs.size > 0) {
+			const optimized = optimizeRenames(plan.actions, renamePairs);
+			plan = { actions: optimized, safetyCheck: checkSafety(optimized) };
+		}
 
 		const actionBreakdown: Record<string, number> = {};
 		for (const a of plan.actions) {

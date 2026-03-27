@@ -88,6 +88,7 @@ export async function executePlan(
 			case "cleanup": // cleanup is state-only (no I/O), safe to run in parallel with Group A
 				groupA.push(action);
 				break;
+			case "rename_remote":
 			case "delete_remote":
 				groupB.push(action);
 				break;
@@ -187,6 +188,14 @@ async function runActionIO(
 
 		case "match": {
 			return { localEntity: action.local, remoteEntity: action.remote };
+		}
+
+		case "rename_remote": {
+			if (!action.oldPath) throw new Error(`rename_remote requires oldPath: ${path}`);
+			await remoteFs.rename(action.oldPath, path);
+			const remoteEntity = await remoteFs.stat(path);
+			const localEntity = await localFs.stat(path) ?? action.local;
+			return { localEntity, remoteEntity: remoteEntity ?? undefined };
 		}
 
 		case "delete_remote": {

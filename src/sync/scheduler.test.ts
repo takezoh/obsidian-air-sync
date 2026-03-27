@@ -105,11 +105,25 @@ describe("SyncScheduler", () => {
 			expect(deps.localTracker.getDirtyPaths().has("note.md")).toBe(true);
 		});
 
-		it("marks both old and new paths dirty on rename", () => {
+		it("records rename pair and marks both paths dirty on rename", () => {
 			const handler = deps.vaultHandlers.get("rename") as RenameHandler;
 			handler(makeFile("new.md"), "old.md");
 			expect(deps.localTracker.getDirtyPaths().has("new.md")).toBe(true);
 			expect(deps.localTracker.getDirtyPaths().has("old.md")).toBe(true);
+			expect(deps.localTracker.getRenamePairs().get("new.md")).toBe("old.md");
+		});
+
+		it("falls back to markDirty when one side of rename is excluded", () => {
+			scheduler.destroy();
+			deps = createDeps({ isExcluded: (p: string) => p === "old.md" });
+			scheduler = new SyncScheduler(deps);
+			scheduler.start();
+
+			const handler = deps.vaultHandlers.get("rename") as RenameHandler;
+			handler(makeFile("new.md"), "old.md");
+			expect(deps.localTracker.getDirtyPaths().has("new.md")).toBe(true);
+			expect(deps.localTracker.getDirtyPaths().has("old.md")).toBe(false);
+			expect(deps.localTracker.getRenamePairs().size).toBe(0);
 		});
 
 		it("skips excluded paths", () => {

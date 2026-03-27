@@ -69,6 +69,27 @@ export async function commitAction(
 			break;
 		}
 
+		case "rename_remote": {
+			if (action.oldPath) {
+				await stateStore.delete(action.oldPath);
+			}
+			const renameRecord = buildSyncRecord(localEntity, remoteEntity, path);
+			await stateStore.put(renameRecord);
+
+			if (enableThreeWayMerge && localFs && localEntity && isMergeEligible(path, renameRecord.localSize)) {
+				try {
+					const content = await localFs.read(path);
+					await stateStore.putContent(path, content);
+				} catch (err) {
+					logger?.warn("Failed to store content for 3-way merge", {
+						path,
+						error: err instanceof Error ? err.message : String(err),
+					});
+				}
+			}
+			break;
+		}
+
 		case "delete_local":
 		case "delete_remote":
 		case "cleanup":
