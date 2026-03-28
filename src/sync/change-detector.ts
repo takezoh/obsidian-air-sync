@@ -1,5 +1,5 @@
 import type { IFileSystem } from "../fs/interface";
-import type { MixedEntity, SyncRecord } from "./types";
+import type { MixedEntity, RenamePair, SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
 import type { LocalChangeTracker } from "./local-tracker";
 import { hasChanged, hasRemoteChanged } from "./change-compare";
@@ -10,7 +10,7 @@ import { AsyncPool } from "../queue/async-queue";
 export interface ChangeSet {
 	entries: MixedEntity[];
 	temperature: "hot" | "warm" | "cold";
-	remoteRenamePairs: { oldPath: string; newPath: string }[];
+	remoteRenamePairs: RenamePair[];
 }
 
 export interface ChangeDetectorDeps {
@@ -272,7 +272,7 @@ async function enrichHashesForRenames(
 
 interface RemoteChanges {
 	paths: string[];
-	renamed: { oldPath: string; newPath: string }[];
+	renamed: RenamePair[];
 }
 
 async function getRemoteChanges(remoteFs: IFileSystem): Promise<RemoteChanges> {

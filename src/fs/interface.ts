@@ -1,4 +1,5 @@
 import type { FileEntity } from "./types";
+import type { RenamePair } from "../sync/types";
 
 /**
  * Abstract filesystem interface for sync operations.
@@ -96,7 +97,7 @@ export interface IFileSystem {
 	getChangedPaths?(): Promise<{
 		modified: string[];
 		deleted: string[];
-		renamed?: { oldPath: string; newPath: string }[];
+		renamed?: RenamePair[];
 	} | null>;
 
 	/**

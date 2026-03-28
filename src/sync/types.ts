@@ -45,6 +45,12 @@ export interface ConflictRecord {
 	sessionId: string;
 }
 
+/** A rename pair: source and destination paths */
+export interface RenamePair {
+	oldPath: string;
+	newPath: string;
+}
+
 /** Sync service status */
 export type SyncStatus = "idle" | "syncing" | "error" | "partial_error" | "not_connected";
 

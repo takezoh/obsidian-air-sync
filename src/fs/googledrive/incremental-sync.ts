@@ -3,6 +3,7 @@ import { FOLDER_MIME } from "./types";
 import type { DriveMetadataCache } from "./metadata-cache";
 import type { DriveClient } from "./client";
 import type { MetadataStore } from "../../store/metadata-store";
+import type { RenamePair } from "../../sync/types";
 import type { Logger } from "../../logging/logger";
 
 /** Context for incremental sync operations */
@@ -14,7 +15,7 @@ export interface IncrementalSyncContext {
 }
 
 export type IncrementalChangesResult =
-	| { needsFullScan: false; newToken: string; changedPaths: Set<string>; renamedPaths: { oldPath: string; newPath: string }[] }
+	| { needsFullScan: false; newToken: string; changedPaths: Set<string>; renamedPaths: RenamePair[] }
 	| { needsFullScan: true; changedPaths: Set<string> };
 
 /**
@@ -36,7 +37,7 @@ export async function applyIncrementalChanges(
 		const updatedRecords: { path: string; file: DriveFile; isFolder: boolean }[] = [];
 		const deletedPaths: string[] = [];
 		const changedPaths = new Set<string>();
-		const renamedPaths: { oldPath: string; newPath: string }[] = [];
+		const renamedPaths: RenamePair[] = [];
 
 		do {
 			const result = await ctx.client.listChanges(

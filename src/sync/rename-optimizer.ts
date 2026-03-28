@@ -1,4 +1,4 @@
-import type { SyncAction, SyncPlan } from "./types";
+import type { RenamePair, SyncAction, SyncPlan } from "./types";
 import type { Logger } from "../logging/logger";
 import { checkSafety } from "./safety-check";
 
@@ -66,7 +66,7 @@ export function optimizeRenames(
  */
 export function optimizeRemoteRenames(
 	actions: SyncAction[],
-	remoteRenamePairs: { oldPath: string; newPath: string }[],
+	remoteRenamePairs: RenamePair[],
 	logger?: Logger,
 ): SyncAction[] {
 	if (remoteRenamePairs.length === 0) return actions;
@@ -118,7 +118,7 @@ export function optimizeRemoteRenames(
 export function refinePlan(
 	plan: SyncPlan,
 	localRenamePairs: ReadonlyMap<string, string>,
-	remoteRenamePairs: { oldPath: string; newPath: string }[],
+	remoteRenamePairs: RenamePair[],
 	logger?: Logger,
 ): SyncPlan {
 	let actions = plan.actions;

@@ -10,10 +10,12 @@ import { applyIncrementalChanges } from "./incremental-sync";
 import { sha256 } from "../../utils/hash";
 import { AsyncMutex } from "../../queue/async-queue";
 
+import type { RenamePair } from "../../sync/types";
+
 interface RemoteDelta {
 	modified: string[];
 	deleted: string[];
-	renamed: { oldPath: string; newPath: string }[];
+	renamed: RenamePair[];
 }
 
 /**
@@ -218,7 +220,7 @@ export class GoogleDriveFs implements IFileSystem {
 
 		const modified: string[] = [];
 		const deleted: string[] = [];
-		const renamed: { oldPath: string; newPath: string }[] = [];
+		const renamed: RenamePair[] = [];
 		const newIds = new Set<string>();
 
 		for (const [newPath, file] of this.cache.entries()) {
