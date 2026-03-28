@@ -247,6 +247,39 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.close();
 		});
 
+		it("optimizes rename pair into rename_remote action", async () => {
+			const settings = { ...mockSettings(), enableLogging: true };
+			const deps = createDeps({ getSettings: () => settings });
+			const localFs = createMockFs("local");
+			const remoteFs = createMockFs("remote");
+			deps.localFs = () => localFs;
+			deps.remoteFs = () => remoteFs;
+
+			// Add files with matching hash so optimizer can verify content unchanged
+			const localEntity = addFile(localFs, "new.md", "content", 1000);
+			localEntity.hash = "h1";
+			const remoteEntity = addFile(remoteFs, "old.md", "content", 1000);
+			remoteEntity.hash = "h1";
+
+			// Set up tracker with rename pair (do NOT initialize — cold mode
+			// lists all files so the "local deleted" entry survives filtering)
+			deps.localTracker.markRenamed("new.md", "old.md");
+
+			const orchestrator = new SyncOrchestrator(deps);
+			// Seed baseline for old.md so change detector sees it as previously synced
+			await orchestrator.state.put({
+				path: "old.md", hash: "h1", localMtime: 1000, remoteMtime: 1000,
+				localSize: 7, remoteSize: 7, syncedAt: 900,
+			});
+
+			const renameSpy = vi.spyOn(remoteFs, "rename");
+			await orchestrator.runSync();
+
+			expect(renameSpy).toHaveBeenCalledWith("old.md", "new.md");
+			expect(deps.notify).toHaveBeenCalledWith(expect.stringContaining("renamed"));
+			await orchestrator.close();
+		});
+
 		it("acknowledges dirty paths after sync", async () => {
 			const deps = createDeps();
 			const localFs = createMockFs("local");

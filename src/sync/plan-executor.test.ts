@@ -195,6 +195,53 @@ describe("executePlan", () => {
 		});
 	});
 
+	describe("rename_remote", () => {
+		it("renames remote file and commits state at new path", async () => {
+			const ctx = makeCtx();
+			const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
+			const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+			addFile(localFs, "new.md", "content");
+			addFile(remoteFs, "old.md", "content");
+			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
+			stateStore.records.set("old.md", {
+				path: "old.md", hash: "h1", localMtime: 1000, remoteMtime: 1000,
+				localSize: 7, remoteSize: 7, syncedAt: 900,
+			});
+
+			const plan = makePlan([{
+				path: "new.md",
+				action: "rename_remote",
+				oldPath: "old.md",
+				local: { path: "new.md", isDirectory: false, size: 7, mtime: 1000, hash: "h1" },
+				remote: { path: "old.md", isDirectory: false, size: 7, mtime: 1000, hash: "h1" },
+				baseline: stateStore.records.get("old.md"),
+			}]);
+
+			const result = await executePlan(plan, ctx);
+
+			expect(result.succeeded).toHaveLength(1);
+			expect(result.failed).toHaveLength(0);
+			expect(remoteFs.files.has("new.md")).toBe(true);
+			expect(remoteFs.files.has("old.md")).toBe(false);
+			expect(stateStore.records.has("new.md")).toBe(true);
+			expect(stateStore.records.has("old.md")).toBe(false);
+		});
+
+		it("throws when oldPath is missing", async () => {
+			const ctx = makeCtx();
+			addFile(ctx.localFs as ReturnType<typeof createMockFs>, "new.md", "content");
+
+			const plan = makePlan([{
+				path: "new.md",
+				action: "rename_remote",
+				local: { path: "new.md", isDirectory: false, size: 7, mtime: 1000, hash: "" },
+			}]);
+
+			const result = await executePlan(plan, ctx);
+			expect(result.failed).toHaveLength(1);
+		});
+	});
+
 	describe("cleanup", () => {
 		it("removes state record without file I/O", async () => {
 			const ctx = makeCtx();

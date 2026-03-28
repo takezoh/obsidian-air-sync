@@ -124,6 +124,34 @@ describe("commitAction", () => {
 		expect(stateStore.records.has("f.md")).toBe(false);
 	});
 
+	it("rename_remote: deletes old path and upserts new path", async () => {
+		stateStore.records.set("old.md", {
+			path: "old.md", hash: "h1", localMtime: 1000, remoteMtime: 1000,
+			localSize: 7, remoteSize: 7, syncedAt: 900,
+		});
+		const { entity: local } = makeFile("new.md", "content", 1000);
+		const { entity: remote } = makeFile("new.md", "content", 2000);
+		const action: SyncAction = { path: "new.md", action: "rename_remote", oldPath: "old.md" };
+
+		await commitAction(action, local, remote, makeCtx());
+
+		expect(stateStore.records.has("old.md")).toBe(false);
+		expect(stateStore.records.has("new.md")).toBe(true);
+		expect(stateStore.records.get("new.md")!.remoteMtime).toBe(2000);
+	});
+
+	it("rename_remote with enableThreeWayMerge: stores content at new path", async () => {
+		const buf = new TextEncoder().encode("content").buffer;
+		const localEntry = makeFile("new.md", "content", 1000);
+		localFs.files.set("new.md", { content: buf, entity: localEntry.entity });
+		const { entity: remote } = makeFile("new.md", "content", 2000);
+		const action: SyncAction = { path: "new.md", action: "rename_remote", oldPath: "old.md" };
+
+		await commitAction(action, localEntry.entity, remote, makeCtx(true));
+
+		expect(stateStore.contents.has("new.md")).toBe(true);
+	});
+
 	it("cleanup: deletes SyncRecord", async () => {
 		stateStore.records.set("g.md", {
 			path: "g.md", hash: "", localMtime: 1000, remoteMtime: 1000,

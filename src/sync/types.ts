@@ -54,6 +54,7 @@ export type SyncActionType =
 	| "pull"
 	| "delete_local"
 	| "delete_remote"
+	| "rename_remote"
 	| "conflict"
 	| "match"
 	| "cleanup";
@@ -62,6 +63,8 @@ export type SyncActionType =
 export interface SyncAction {
 	path: string;
 	action: SyncActionType;
+	/** For rename_remote: the path being renamed from */
+	oldPath?: string;
 	local?: FileEntity;
 	remote?: FileEntity;
 	baseline?: SyncRecord;

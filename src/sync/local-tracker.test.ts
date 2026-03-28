@@ -85,6 +85,50 @@ describe("LocalChangeTracker", () => {
 		});
 	});
 
+	describe("markRenamed", () => {
+		it("records rename pair and marks both paths dirty", () => {
+			tracker.markRenamed("new.md", "old.md");
+			expect(tracker.getRenamePairs().get("new.md")).toBe("old.md");
+			expect(tracker.getDirtyPaths().has("old.md")).toBe(true);
+			expect(tracker.getDirtyPaths().has("new.md")).toBe(true);
+		});
+
+		it("collapses rename chain A→B→C into A→C", () => {
+			tracker.markRenamed("b.md", "a.md");
+			tracker.markRenamed("c.md", "b.md");
+			expect(tracker.getRenamePairs().has("b.md")).toBe(false);
+			expect(tracker.getRenamePairs().get("c.md")).toBe("a.md");
+		});
+
+		it("is no-op when renamed back to original (A→B→A)", () => {
+			tracker.markRenamed("b.md", "a.md");
+			tracker.markRenamed("a.md", "b.md");
+			expect(tracker.getRenamePairs().size).toBe(0);
+		});
+
+		it("handles multiple independent renames", () => {
+			tracker.markRenamed("b.md", "a.md");
+			tracker.markRenamed("d.md", "c.md");
+			expect(tracker.getRenamePairs().size).toBe(2);
+			expect(tracker.getRenamePairs().get("b.md")).toBe("a.md");
+			expect(tracker.getRenamePairs().get("d.md")).toBe("c.md");
+		});
+	});
+
+	describe("acknowledge with rename pairs", () => {
+		it("clears rename pairs when newPath is acknowledged", () => {
+			tracker.markRenamed("new.md", "old.md");
+			tracker.acknowledge(["new.md", "old.md"]);
+			expect(tracker.getRenamePairs().size).toBe(0);
+		});
+
+		it("retains rename pair if newPath is not acknowledged", () => {
+			tracker.markRenamed("new.md", "old.md");
+			tracker.acknowledge(["old.md"]);
+			expect(tracker.getRenamePairs().get("new.md")).toBe("old.md");
+		});
+	});
+
 	describe("isInitialized", () => {
 		it("returns false before any acknowledge call", () => {
 			expect(tracker.isInitialized()).toBe(false);
