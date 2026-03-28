@@ -91,9 +91,13 @@ export interface IFileSystem {
 	/**
 	 * Return paths changed since the last sync, or null if unavailable.
 	 * Should be called before list() to allow the change-detector to skip
-	 * unchanged paths. Returns modified and deleted path lists.
+	 * unchanged paths. Returns modified, deleted, and optionally renamed path lists.
 	 */
-	getChangedPaths?(): Promise<{ modified: string[]; deleted: string[] } | null>;
+	getChangedPaths?(): Promise<{
+		modified: string[];
+		deleted: string[];
+		renamed?: { oldPath: string; newPath: string }[];
+	} | null>;
 
 	/**
 	 * Release resources (e.g. close IndexedDB connections).

@@ -346,7 +346,7 @@ describe("collectChanges — temperature selection", () => {
 		it("warm mode falls back gracefully when getChangedPaths is absent", async () => {
 			await stateStore.put(makeRecord("a.md", { localMtime: 500 }));
 			addFile(localFs, "a.md", "modified", 2000);
-			// remoteFs has no getChangedPaths
+			delete (remoteFs as unknown as Record<string, unknown>).getChangedPaths;
 
 			const result = await collectChanges(makeDeps());
 

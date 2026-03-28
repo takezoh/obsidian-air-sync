@@ -88,6 +88,7 @@ describe("applyIncrementalChanges", () => {
 			newToken: "new-token-123",
 			needsFullScan: false,
 			changedPaths: new Set(["/test.txt"]),
+			renamedPaths: [],
 		});
 		expect(loggerInfo).toHaveBeenCalledWith("Incremental changes applied", {
 			changeCount: 1,
@@ -166,6 +167,9 @@ describe("applyIncrementalChanges", () => {
 			expect(result.changedPaths).toEqual(
 				new Set(["old/test.txt", "new/renamed.txt"]),
 			);
+			expect(result.renamedPaths).toEqual([
+				{ oldPath: "old/test.txt", newPath: "new/renamed.txt" },
+			]);
 		}
 	});
 

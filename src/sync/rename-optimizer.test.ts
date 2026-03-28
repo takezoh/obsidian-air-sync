@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { optimizeRenames } from "./rename-optimizer";
+import { optimizeRenames, optimizeRemoteRenames } from "./rename-optimizer";
 import type { SyncAction, SyncRecord } from "./types";
 import type { FileEntity } from "../fs/types";
 
@@ -117,5 +117,79 @@ describe("optimizeRenames", () => {
 		expect(result[0]!.remote).toBe(remote);
 		expect(result[0]!.baseline).toBe(bl);
 		expect(result[0]!.local).toBe(local);
+	});
+});
+
+describe("optimizeRemoteRenames", () => {
+	it("returns actions unchanged when no remote rename pairs", () => {
+		const actions: SyncAction[] = [
+			{ path: "a.md", action: "pull", remote: entity("a.md", "h1") },
+		];
+		const result = optimizeRemoteRenames(actions, []);
+		expect(result).toBe(actions);
+	});
+
+	it("replaces delete_local+pull with rename_local", () => {
+		const local = entity("old.md", "h1");
+		const remote = entity("new.md", "h1");
+		const bl = baseline("old.md", "h1");
+		const actions: SyncAction[] = [
+			{ path: "old.md", action: "delete_local", local, baseline: bl },
+			{ path: "new.md", action: "pull", remote },
+		];
+		const pairs = [{ oldPath: "old.md", newPath: "new.md" }];
+		const result = optimizeRemoteRenames(actions, pairs);
+
+		expect(result).toHaveLength(1);
+		expect(result[0]).toMatchObject({
+			path: "new.md",
+			action: "rename_local",
+			oldPath: "old.md",
+		});
+		expect(result[0]!.local).toBe(local);
+		expect(result[0]!.remote).toBe(remote);
+		expect(result[0]!.baseline).toBe(bl);
+	});
+
+	it("keeps original actions when oldPath is not delete_local", () => {
+		const actions: SyncAction[] = [
+			{ path: "old.md", action: "push", local: entity("old.md", "h1") },
+			{ path: "new.md", action: "pull", remote: entity("new.md", "h1") },
+		];
+		const pairs = [{ oldPath: "old.md", newPath: "new.md" }];
+		const result = optimizeRemoteRenames(actions, pairs);
+
+		expect(result).toHaveLength(2);
+	});
+
+	it("keeps original actions when newPath is not pull", () => {
+		const actions: SyncAction[] = [
+			{ path: "old.md", action: "delete_local", local: entity("old.md", "h1"), baseline: baseline("old.md", "h1") },
+			{ path: "new.md", action: "push", local: entity("new.md", "h1") },
+		];
+		const pairs = [{ oldPath: "old.md", newPath: "new.md" }];
+		const result = optimizeRemoteRenames(actions, pairs);
+
+		expect(result).toHaveLength(2);
+	});
+
+	it("optimizes some pairs and leaves others", () => {
+		const actions: SyncAction[] = [
+			{ path: "old-a.md", action: "delete_local", local: entity("old-a.md", "h1"), baseline: baseline("old-a.md", "h1") },
+			{ path: "new-a.md", action: "pull", remote: entity("new-a.md", "h1") },
+			{ path: "old-b.md", action: "push", local: entity("old-b.md", "h2") },
+			{ path: "new-b.md", action: "pull", remote: entity("new-b.md", "h2") },
+		];
+		const pairs = [
+			{ oldPath: "old-a.md", newPath: "new-a.md" },
+			{ oldPath: "old-b.md", newPath: "new-b.md" },
+		];
+		const result = optimizeRemoteRenames(actions, pairs);
+
+		expect(result).toHaveLength(3);
+		const types = result.map((a) => a.action);
+		expect(types).toContain("rename_local");
+		expect(types).toContain("push");
+		expect(types).toContain("pull");
 	});
 });

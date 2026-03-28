@@ -32,7 +32,7 @@ function buildNotificationMessage(cycle: SyncCycleResult): string {
 		else if (a.action.action === "pull") counts.pulled++;
 		else if (a.action.action === "match") counts.matched++;
 		else if (a.action.action === "delete_local" || a.action.action === "delete_remote") counts.deleted++;
-		else if (a.action.action === "rename_remote") counts.renamed++;
+		else if (a.action.action === "rename_remote" || a.action.action === "rename_local") counts.renamed++;
 	}
 	const parts: string[] = [];
 	if (counts.pushed > 0) parts.push(`${counts.pushed} pushed`);
@@ -318,6 +318,7 @@ export class SyncOrchestrator {
 		const plan = refinePlan(
 			planSync(filtered),
 			renamePairs,
+			changeSet.remoteRenamePairs,
 			this.deps.logger,
 		);
 

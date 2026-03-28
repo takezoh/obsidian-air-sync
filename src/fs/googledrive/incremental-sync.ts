@@ -14,7 +14,7 @@ export interface IncrementalSyncContext {
 }
 
 export type IncrementalChangesResult =
-	| { needsFullScan: false; newToken: string; changedPaths: Set<string> }
+	| { needsFullScan: false; newToken: string; changedPaths: Set<string>; renamedPaths: { oldPath: string; newPath: string }[] }
 	| { needsFullScan: true; changedPaths: Set<string> };
 
 /**
@@ -36,6 +36,7 @@ export async function applyIncrementalChanges(
 		const updatedRecords: { path: string; file: DriveFile; isFolder: boolean }[] = [];
 		const deletedPaths: string[] = [];
 		const changedPaths = new Set<string>();
+		const renamedPaths: { oldPath: string; newPath: string }[] = [];
 
 		do {
 			const result = await ctx.client.listChanges(
@@ -95,6 +96,9 @@ export async function applyIncrementalChanges(
 							deletedPaths.push(d);
 						}
 					}
+					if (moved) {
+						renamedPaths.push({ oldPath, newPath: updatedPath });
+					}
 
 					// Folder move — also report new descendant paths as updated
 					if (moved && wasFolder) {
@@ -127,7 +131,7 @@ export async function applyIncrementalChanges(
 			await persistIncrementalChanges(ctx, updatedRecords, deletedPaths, currentToken);
 		}
 
-		return { newToken: currentToken, needsFullScan: false, changedPaths };
+		return { newToken: currentToken, needsFullScan: false, changedPaths, renamedPaths };
 	} catch (err) {
 		if (isHttpError(err, 410)) {
 			// Token expired, fall back to full scan

@@ -30,6 +30,7 @@ src/
 │   ├── plan-executor.ts             # executePlan() — grouped execution (A/B/C/D)
 │   ├── state-committer.ts           # commitAction() — per-action SyncRecord upsert/delete
 │   ├── conflict-resolver.ts         # resolveConflict() — 3-strategy conflict resolver
+│   ├── rename-optimizer.ts           # optimizeRenames(), optimizeRemoteRenames(), refinePlan()
 │   ├── conflict.ts                  # resolveWithStrategy() — low-level strategy implementations
 │   ├── merge.ts                     # threeWayMerge() — git-style merge via diffIndices
 │   ├── orchestrator.ts              # SyncOrchestrator — retry loop, mutex, status transitions
@@ -121,14 +122,19 @@ src/
      │        │                           │
      │        ▼                           │
      │  planSync()                        │  DecisionEngine
-     │        │                           │    7 action types
+     │        │                           │    9 action types
      │        ▼                           │
      │  checkSafety()                     │  SafetyCheck
      │        │                           │    deletion ratio guard
      │        ▼                           │
+     │  refinePlan()                      │  RenameOptimizer
+     │    local:  delete_remote+push      │    → rename_remote
+     │    remote: delete_local+pull       │    → rename_local
+     │        │                           │
+     │        ▼                           │
      │  executePlan()                     │  PlanExecutor
      │    Group A: push/pull/match/cleanup│    AsyncPool(5)
-     │    Group B: delete_remote          │    serial
+     │    Group B: rename_*/delete_remote │    serial
      │    Group C: delete_local           │    serial
      │    Group D: conflict               │    serial
      │        │                           │
@@ -193,11 +199,23 @@ interface MixedEntity {
 type SyncActionType =
   | "push" | "pull"
   | "delete_local" | "delete_remote"
+  | "rename_remote" | "rename_local"
   | "conflict" | "match" | "cleanup";
 
-interface SyncAction {
+type SyncAction = StandardSyncAction | RenameAction;
+
+interface StandardSyncAction {
   path: string;
-  action: SyncActionType;
+  action: Exclude<SyncActionType, "rename_remote" | "rename_local">;
+  local?: FileEntity;
+  remote?: FileEntity;
+  baseline?: SyncRecord;
+}
+
+interface RenameAction {
+  path: string;
+  action: "rename_remote" | "rename_local";
+  oldPath: string;
   local?: FileEntity;
   remote?: FileEntity;
   baseline?: SyncRecord;
@@ -235,7 +253,11 @@ interface IFileSystem {
   listDir(path: string): Promise<FileEntity[]>;
   delete(path: string): Promise<void>;
   rename(oldPath: string, newPath: string): Promise<void>;
-  getChangedPaths?(): Promise<{ modified: string[]; deleted: string[] } | null>;
+  getChangedPaths?(): Promise<{
+    modified: string[];
+    deleted: string[];
+    renamed?: { oldPath: string; newPath: string }[];
+  } | null>;
   close?(): Promise<void>;
 }
 ```
@@ -243,7 +265,7 @@ interface IFileSystem {
 Key design points:
 
 - `list()` may return `hash: ""` for performance; use `stat()` when an accurate hash is needed.
-- `getChangedPaths()` is optional. When implemented (e.g. Google Drive changes.list), it enables the hot change-detection path.
+- `getChangedPaths()` is optional. When implemented (e.g. Google Drive changes.list), it enables the hot change-detection path. The `renamed` field allows backends to report file moves for native rename optimization.
 - `delete()` is idempotent. Backends may use soft deletion (trash).
 - `write()` auto-creates parent directories.
 

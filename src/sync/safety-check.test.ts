@@ -7,7 +7,7 @@ function makeActions(counts: Partial<Record<SyncActionType, number>>): SyncActio
 	for (const [type, count] of Object.entries(counts) as [SyncActionType, number][]) {
 		for (let i = 0; i < count; i++) {
 			const path = `file-${type}-${i}.md`;
-			if (type === "rename_remote") {
+			if (type === "rename_remote" || type === "rename_local") {
 				actions.push({ path, action: type, oldPath: `old-${path}` });
 			} else {
 				actions.push({ path, action: type });

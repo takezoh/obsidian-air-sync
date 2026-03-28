@@ -10,6 +10,7 @@ import { AsyncPool } from "../queue/async-queue";
 export interface ChangeSet {
 	entries: MixedEntity[];
 	temperature: "hot" | "warm" | "cold";
+	remoteRenamePairs: { oldPath: string; newPath: string }[];
 }
 
 export interface ChangeDetectorDeps {
@@ -56,11 +57,11 @@ async function collectHot(deps: ChangeDetectorDeps): Promise<ChangeSet> {
 	const dirtyPaths = localTracker.getDirtyPaths();
 
 	// Get remote changed paths if supported
-	const remoteChangedPaths = await getRemoteChangedPaths(remoteFs);
+	const remoteChanges = await getRemoteChanges(remoteFs);
 
 	// Union of local dirty and remote changed paths
 	const changedPaths = new Set<string>(dirtyPaths);
-	for (const p of remoteChangedPaths) {
+	for (const p of remoteChanges.paths) {
 		changedPaths.add(p);
 	}
 
@@ -108,15 +109,15 @@ async function collectHot(deps: ChangeDetectorDeps): Promise<ChangeSet> {
 		return false;
 	});
 
-	return { entries: changed, temperature: "hot" };
+	return { entries: changed, temperature: "hot", remoteRenamePairs: remoteChanges.renamed };
 }
 
 async function collectWarm(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): Promise<ChangeSet> {
 	const { localFs, remoteFs } = deps;
 
-	const [localFiles, remoteChangedPaths] = await Promise.all([
+	const [localFiles, remoteChanges] = await Promise.all([
 		localFs.list(),
-		getRemoteChangedPaths(remoteFs),
+		getRemoteChanges(remoteFs),
 	]);
 
 	const recordMap = new Map(allRecords.map((r) => [r.path, r]));
@@ -140,7 +141,7 @@ async function collectWarm(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): 
 	}
 
 	// Add remote changed paths
-	for (const p of remoteChangedPaths) {
+	for (const p of remoteChanges.paths) {
 		changedPaths.add(p);
 	}
 
@@ -159,7 +160,7 @@ async function collectWarm(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): 
 		};
 	});
 
-	return { entries, temperature: "warm" };
+	return { entries, temperature: "warm", remoteRenamePairs: remoteChanges.renamed };
 }
 
 async function collectCold(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): Promise<ChangeSet> {
@@ -196,7 +197,7 @@ async function collectCold(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): 
 		getOrCreate(record.path).prevSync = record;
 	}
 
-	return { entries: Array.from(pathMap.values()), temperature: "cold" };
+	return { entries: Array.from(pathMap.values()), temperature: "cold", remoteRenamePairs: [] };
 }
 
 /**
@@ -269,9 +270,17 @@ async function enrichHashesForRenames(
 	);
 }
 
-async function getRemoteChangedPaths(remoteFs: IFileSystem): Promise<string[]> {
-	if (!remoteFs.getChangedPaths) return [];
+interface RemoteChanges {
+	paths: string[];
+	renamed: { oldPath: string; newPath: string }[];
+}
+
+async function getRemoteChanges(remoteFs: IFileSystem): Promise<RemoteChanges> {
+	if (!remoteFs.getChangedPaths) return { paths: [], renamed: [] };
 	const result = await remoteFs.getChangedPaths();
-	if (!result) return [];
-	return [...result.modified, ...result.deleted];
+	if (!result) return { paths: [], renamed: [] };
+	return {
+		paths: [...result.modified, ...result.deleted],
+		renamed: result.renamed ?? [],
+	};
 }

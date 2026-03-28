@@ -84,6 +84,7 @@ export function createMockFs(name: string): IFileSystem & {
 			entry.entity.path = newPath;
 			files.set(newPath, entry);
 		},
+		getChangedPaths: () => Promise.resolve({ modified: [] as string[], deleted: [] as string[] }),
 	};
 }
 

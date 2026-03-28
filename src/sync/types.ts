@@ -55,6 +55,7 @@ export type SyncActionType =
 	| "delete_local"
 	| "delete_remote"
 	| "rename_remote"
+	| "rename_local"
 	| "conflict"
 	| "match"
 	| "cleanup";
@@ -67,19 +68,19 @@ interface SyncActionBase {
 	baseline?: SyncRecord;
 }
 
-/** Standard sync action (all types except rename_remote) */
+/** Standard sync action (all types except rename actions) */
 export interface StandardSyncAction extends SyncActionBase {
-	action: Exclude<SyncActionType, "rename_remote">;
+	action: Exclude<SyncActionType, "rename_remote" | "rename_local">;
 }
 
-/** Rename action — oldPath is required */
-export interface RenameRemoteAction extends SyncActionBase {
-	action: "rename_remote";
+/** Rename action (local or remote) — oldPath is required */
+export interface RenameAction extends SyncActionBase {
+	action: "rename_remote" | "rename_local";
 	oldPath: string;
 }
 
 /** A single planned action for a path */
-export type SyncAction = StandardSyncAction | RenameRemoteAction;
+export type SyncAction = StandardSyncAction | RenameAction;
 
 /** Result of safety checks before execution */
 export interface SafetyCheckResult {

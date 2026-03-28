@@ -520,7 +520,7 @@ describe("GoogleDriveFs.getChangedPaths", () => {
 		expect(listAllFiles).toHaveBeenCalledOnce();
 	});
 
-	it("returns null on 410 fallback (token expired)", async () => {
+	it("returns delta on 410 fallback (token expired)", async () => {
 		const { GoogleDriveFs } = await import("./index");
 
 		const httpError = { status: 410, message: "Gone" };
@@ -538,8 +538,10 @@ describe("GoogleDriveFs.getChangedPaths", () => {
 
 		const result = await fs.getChangedPaths();
 
-		// 410 triggers full scan, returns null
-		expect(result).toBeNull();
+		// 410 triggers full scan with delta (no changes since cache matches)
+		expect(result).not.toBeNull();
+		expect(result?.modified).toEqual([]);
+		expect(result?.deleted).toEqual([]);
 		// A second full scan should have been triggered
 		expect(listAllFiles).toHaveBeenCalledTimes(2);
 	});

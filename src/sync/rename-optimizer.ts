@@ -61,17 +61,82 @@ export function optimizeRenames(
 }
 
 /**
- * Pure pipeline stage: apply rename optimization and recompute safety check.
+ * Replace matching `delete_local(oldPath) + pull(newPath)` pairs
+ * with a single `rename_local` action using remote rename pair info.
+ */
+export function optimizeRemoteRenames(
+	actions: SyncAction[],
+	remoteRenamePairs: { oldPath: string; newPath: string }[],
+	logger?: Logger,
+): SyncAction[] {
+	if (remoteRenamePairs.length === 0) return actions;
+
+	const byPath = new Map<string, SyncAction>();
+	for (const a of actions) byPath.set(a.path, a);
+
+	const consumed = new Set<string>();
+	const renamed: SyncAction[] = [];
+
+	for (const { oldPath, newPath } of remoteRenamePairs) {
+		const del = byPath.get(oldPath);
+		const pull = byPath.get(newPath);
+		if (
+			del?.action !== "delete_local" ||
+			pull?.action !== "pull"
+		) {
+			logger?.debug("Remote rename optimization skipped", {
+				newPath, oldPath,
+				delAction: del?.action,
+				pullAction: pull?.action,
+			});
+			continue;
+		}
+		renamed.push({
+			path: newPath,
+			action: "rename_local",
+			oldPath,
+			local: del.local,
+			remote: pull.remote,
+			baseline: del.baseline,
+		});
+		consumed.add(oldPath);
+		consumed.add(newPath);
+	}
+
+	if (consumed.size === 0) return actions;
+
+	const result: SyncAction[] = [];
+	for (const a of actions) {
+		if (!consumed.has(a.path)) result.push(a);
+	}
+	return result.concat(renamed);
+}
+
+/**
+ * Pure pipeline stage: apply rename optimizations and recompute safety check.
  */
 export function refinePlan(
 	plan: SyncPlan,
-	renamePairs: ReadonlyMap<string, string>,
+	localRenamePairs: ReadonlyMap<string, string>,
+	remoteRenamePairs: { oldPath: string; newPath: string }[],
 	logger?: Logger,
 ): SyncPlan {
-	if (renamePairs.size === 0) return plan;
-	logger?.debug("Rename pairs", {
-		pairs: [...renamePairs.entries()].map(([n, o]) => `${o} → ${n}`),
-	});
-	const optimized = optimizeRenames(plan.actions, renamePairs, logger);
-	return { actions: optimized, safetyCheck: checkSafety(optimized) };
+	let actions = plan.actions;
+
+	if (localRenamePairs.size > 0) {
+		logger?.debug("Local rename pairs", {
+			pairs: [...localRenamePairs.entries()].map(([n, o]) => `${o} → ${n}`),
+		});
+		actions = optimizeRenames(actions, localRenamePairs, logger);
+	}
+
+	if (remoteRenamePairs.length > 0) {
+		logger?.debug("Remote rename pairs", {
+			pairs: remoteRenamePairs.map(({ oldPath, newPath }) => `${oldPath} → ${newPath}`),
+		});
+		actions = optimizeRemoteRenames(actions, remoteRenamePairs, logger);
+	}
+
+	if (actions === plan.actions) return plan;
+	return { actions, safetyCheck: checkSafety(actions) };
 }

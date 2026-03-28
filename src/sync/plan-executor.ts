@@ -89,6 +89,7 @@ export async function executePlan(
 				groupA.push(action);
 				break;
 			case "rename_remote":
+			case "rename_local":
 			case "delete_remote":
 				groupB.push(action);
 				break;
@@ -195,6 +196,12 @@ async function runActionIO(
 			const remoteEntity = await remoteFs.stat(path);
 			const localEntity = await localFs.stat(path) ?? action.local;
 			return { localEntity, remoteEntity: remoteEntity ?? undefined };
+		}
+
+		case "rename_local": {
+			await localFs.rename(action.oldPath, path);
+			const localEntity = await localFs.stat(path) ?? undefined;
+			return { localEntity, remoteEntity: action.remote };
 		}
 
 		case "delete_remote": {

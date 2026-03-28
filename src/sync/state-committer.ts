@@ -69,7 +69,8 @@ export async function commitAction(
 			break;
 		}
 
-		case "rename_remote": {
+		case "rename_remote":
+		case "rename_local": {
 			await stateStore.delete(action.oldPath);
 			const renameRecord = buildSyncRecord(localEntity, remoteEntity, path);
 			await stateStore.put(renameRecord);

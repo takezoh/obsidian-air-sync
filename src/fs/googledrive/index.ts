@@ -10,6 +10,12 @@ import { applyIncrementalChanges } from "./incremental-sync";
 import { sha256 } from "../../utils/hash";
 import { AsyncMutex } from "../../queue/async-queue";
 
+interface RemoteDelta {
+	modified: string[];
+	deleted: string[];
+	renamed: { oldPath: string; newPath: string }[];
+}
+
 /**
  * IFileSystem implementation backed by Google Drive.
  * Caches Drive file metadata (path↔ID, modifiedTime, size) to avoid
@@ -146,10 +152,10 @@ export class GoogleDriveFs implements IFileSystem {
 	}
 
 	/** Internal implementation of applyIncrementalChanges (caller must hold mutex) */
-	private async _applyIncrementalChanges(): Promise<{ modified: string[]; deleted: string[] } | null> {
+	private async _applyIncrementalChanges(): Promise<RemoteDelta | null> {
 		if (!this.initialized || !this._changesPageToken) {
-			await this.fullScan();
-			return null;
+			const delta = await this.fullScanWithDelta();
+			return delta;
 		}
 
 		const result = await applyIncrementalChanges(
@@ -164,8 +170,8 @@ export class GoogleDriveFs implements IFileSystem {
 
 		if (result.needsFullScan) {
 			this.initialized = false;
-			await this.fullScan();
-			return null;
+			const delta = await this.fullScanWithDelta();
+			return delta;
 		}
 
 		this._changesPageToken = result.newToken;
@@ -173,25 +179,82 @@ export class GoogleDriveFs implements IFileSystem {
 		const modified: string[] = [];
 		const deleted: string[] = [];
 		for (const path of result.changedPaths) {
-			// Note: removeTree() was already called during applyIncrementalChanges(), so
-			// deleted paths will correctly be absent from cache here. Edge case: if a path
-			// was removed as a descendant of a deleted folder, but a new file with the same
-			// path was added in the same batch, it would be misclassified as modified.
-			// This is unlikely in practice and does not cause data loss.
+			// removeTree() was already called during applyIncrementalChanges(), so
+			// deleted paths will correctly be absent from cache here. Edge case: if a
+			// path was removed as a descendant of a deleted folder but a new file with
+			// the same path was added in the same batch, it would be misclassified as
+			// modified. This is unlikely in practice and does not cause data loss.
 			if (this.cache.hasFile(path)) {
 				modified.push(path);
 			} else {
 				deleted.push(path);
 			}
 		}
-		return { modified, deleted };
+		return { modified, deleted, renamed: result.renamedPaths };
+	}
+
+	/**
+	 * Full scan with delta computation: snapshot old state from persisted
+	 * metadata, perform full scan, then diff old vs new by Drive file ID.
+	 * Detects renames, additions, and deletions. Does NOT detect in-place
+	 * content changes (same path, same ID) — those are caught by the next
+	 * incremental sync or by WARM mode's local-vs-record comparison.
+	 */
+	private async fullScanWithDelta(): Promise<RemoteDelta | null> {
+		// Snapshot old paths by ID before full scan overwrites cache.
+		// After restart, cache is empty — restore from persisted metadata.
+		if (this.cache.size === 0 && this.metadataStore) {
+			await this.loadFromCache();
+		}
+
+		const oldPathById = new Map<string, string>();
+		for (const [path, file] of this.cache.entries()) {
+			oldPathById.set(file.id, path);
+		}
+
+		await this.fullScan();
+
+		if (oldPathById.size === 0) return null; // initial sync — no delta
+
+		const modified: string[] = [];
+		const deleted: string[] = [];
+		const renamed: { oldPath: string; newPath: string }[] = [];
+		const newIds = new Set<string>();
+
+		for (const [newPath, file] of this.cache.entries()) {
+			newIds.add(file.id);
+			const oldPath = oldPathById.get(file.id);
+			if (!oldPath) {
+				modified.push(newPath);
+			} else if (oldPath !== newPath) {
+				renamed.push({ oldPath, newPath });
+				modified.push(newPath);
+				deleted.push(oldPath);
+			}
+		}
+
+		for (const [id, oldPath] of oldPathById) {
+			if (!newIds.has(id)) {
+				deleted.push(oldPath);
+			}
+		}
+
+		if (modified.length > 0 || deleted.length > 0 || renamed.length > 0) {
+			this.logger?.info("Full scan delta", {
+				added: modified.length - renamed.length,
+				deleted: deleted.length - renamed.length,
+				renamed: renamed.length,
+			});
+		}
+
+		return { modified, deleted, renamed };
 	}
 
 	/**
 	 * Return paths changed since the last sync by applying incremental changes.
-	 * Should be called before list(). Returns null if a full scan was needed.
+	 * Should be called before list(). Returns null only on initial sync (no prior cache).
 	 */
-	async getChangedPaths(): Promise<{ modified: string[]; deleted: string[] } | null> {
+	async getChangedPaths(): Promise<{ modified: string[]; deleted: string[]; renamed?: { oldPath: string; newPath: string }[] } | null> {
 		return this.cacheMutex.run(() => this._applyIncrementalChanges());
 	}
 
