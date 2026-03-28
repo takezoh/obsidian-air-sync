@@ -16,7 +16,7 @@ The cache is scoped to `vaultId` so that plugin reinstall (which regenerates `va
 
 ### Cache invalidation
 
-- `getChangedPaths()`: applies incremental changes before the sync cycle. If the changes token is expired (410), triggers a full scan.
+- `getChangedPaths()`: applies incremental changes before the sync cycle. Returns `{ modified, deleted, renamed }`. If the changes token is expired (410) or the cache is not initialized, `fullScanWithDelta()` computes the delta by comparing persisted metadata against the new cache by Drive file ID, detecting renames, additions, and deletions.
 
 ### Mutex protection
 
@@ -43,6 +43,7 @@ All cache reads and writes are protected by `cacheMutex` (an `AsyncMutex`). Writ
 Key operations:
 - `buildFromFiles(files)`: builds the cache from a flat `DriveFile[]` list. Uses memoized path resolution (`resolveFilePathCached()`) to compute relative paths from parent chains in O(n) total.
 - `applyFileChange(file)`: handles a single incremental change -- resolves path from cache, handles renames/moves, maintains all indexes.
+- `applyFileChangeDetectMove(file)`: wraps `applyFileChange()` with before/after path comparison. Returns `{ oldPath, newPath, wasFolder, oldDescendants }` for move detection.
 - `removeTree(path)`: removes a path and all descendants (via `collectDescendants()`).
 - `rewriteChildPaths(old, new)`: rewrites descendant paths when a folder is renamed.
 - `driveFileToEntity(path, driveFile)`: converts cached metadata to `FileEntity` without downloading content.
@@ -55,11 +56,11 @@ Key operations:
 2. Sort each page: folders first (shallow before deep) so parent paths resolve correctly before children
 3. For each change:
    - **Removed/trashed**: collect descendants, call `cache.removeTree()`, add all paths to `changedPaths`
-   - **Modified/created**: call `cache.applyFileChange()`, add resolved path to `changedPaths`
-4. Persist incremental updates to IndexedDB (parallel with main flow via fire-and-forget)
-5. Return `{ newToken, changedPaths }` or `{ needsFullScan: true }` on 410
+   - **Modified/created**: call `cache.applyFileChangeDetectMove()`, add resolved path to `changedPaths`. If a move is detected (oldPath ≠ newPath), add oldPath to `deletedPaths` and record in `renamedPaths`
+4. Persist incremental updates to IndexedDB
+5. Return `{ newToken, changedPaths, renamedPaths }` or `{ needsFullScan: true }` on 410
 
-The 410 fallback resets `initialized = false` and triggers a full scan on the next cache access.
+The 410 fallback triggers `fullScanWithDelta()` which compares persisted metadata against the fresh cache to compute renames, additions, and deletions.
 
 ## DriveClient
 

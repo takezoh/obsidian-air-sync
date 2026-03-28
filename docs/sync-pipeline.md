@@ -51,20 +51,22 @@ After any temperature mode collects entries, `collectChanges()` runs `enrichHash
 1. Filters to entries where `local.size === remote.size` and `remote.backendMeta.contentChecksum` is available
 2. Reads local file content and computes MD5 (via `js-md5`)
 3. Compares with Drive's `contentChecksum` (MD5 from the files.list API response)
-4. If match: sets a sentinel hash (`md5:<hex>`) on both entities so the decision engine returns `match`
+4. If match: computes SHA-256 from the same content and sets it on both entities so the decision engine returns `match`
 5. If mismatch: leaves hashes empty → decision engine returns `conflict`
 
 Uses `AsyncPool(10)` for parallel local reads. Per-file errors are caught and skipped (file stays unenriched → treated as conflict, safe side).
+
+After initial-match enrichment, `enrichHashesForRenames()` runs for entries that are rename destinations (from `localTracker.getRenamePairs()`). In warm/cold mode, `list()` returns `hash: ""`, but the rename optimizer needs SHA-256 to verify content equivalence. This step calls `stat()` on rename destination entries to compute their hash. Only the `hash` field is updated; `mtime` and `size` from `list()` are preserved.
 
 ## Change detection
 
 ### Local changes
 
-`LocalChangeTracker` (`local-tracker.ts`) tracks dirty paths in memory via a `Set<string>`. Vault events (`create`, `modify`, `delete`, `rename`) call `markDirty(path)`. After a successful sync cycle, `acknowledge(paths)` clears the set and sets `initialized = true`.
+`LocalChangeTracker` (`local-tracker.ts`) tracks dirty paths in memory via a `Set<string>`. Vault events (`create`, `modify`, `delete`) call `markDirty(path)`. The `rename` event calls `markRenamed(newPath, oldPath)`, which records the pair in a `renamePairs` map (used by the rename optimizer) and marks both paths dirty. Rename chains are collapsed (A→B→C becomes A→C). After a successful sync cycle, `acknowledge(paths)` clears dirty paths, rename pairs, and sets `initialized = true`.
 
 ### Remote changes
 
-`IFileSystem.getChangedPaths()` returns `{ modified: string[]; deleted: string[] }` or `null`. For Google Drive, this calls the changes.list API via `applyIncrementalChanges()`, which updates the metadata cache and returns the set of affected paths. Returns `null` when a full scan is triggered (token expired or first run).
+`IFileSystem.getChangedPaths()` returns `{ modified, deleted, renamed? }` or `null`. For Google Drive, this calls the changes.list API via `applyIncrementalChanges()`, which updates the metadata cache and returns the set of affected paths. The `renamed` array contains `{ oldPath, newPath }` pairs detected during incremental sync (file moved or renamed on Drive). When a full scan is triggered (token expired or first run), `fullScanWithDelta()` computes the delta by comparing the persisted metadata snapshot against the new cache by Drive file ID, detecting renames, additions, and deletions. Returns `null` only on initial sync (no prior cache).
 
 ### Comparison functions
 
@@ -113,6 +115,15 @@ Uses `AsyncPool(10)` for parallel local reads. Per-file errors are caught and sk
 
 `match` and `cleanup` actions are excluded from the ratio denominator (they are state-only).
 
+## Rename optimization
+
+`refinePlan()` in `rename-optimizer.ts` runs after `planSync()` + `checkSafety()`. It replaces redundant delete+transfer pairs with native rename operations:
+
+- **Local renames** (`optimizeRenames`): When `LocalChangeTracker` records a rename pair (from Obsidian's `rename` event), matches `delete_remote(oldPath) + push(newPath)` → `rename_remote`. Requires SHA-256 hash match between `push.local` and `del.baseline` to verify content is unchanged.
+- **Remote renames** (`optimizeRemoteRenames`): When `getChangedPaths()` reports a rename pair, matches `delete_local(oldPath) + pull(newPath)` → `rename_local`. The rename pair from the backend is authoritative, so no hash verification is needed.
+
+Both optimizations call `checkSafety()` on the resulting actions to recompute the safety check.
+
 ## Execution groups
 
 `executePlan()` in `plan-executor.ts` partitions actions into 4 groups executed in order:
@@ -120,7 +131,7 @@ Uses `AsyncPool(10)` for parallel local reads. Per-file errors are caught and sk
 | Group | Actions | Execution | Rationale |
 |-------|---------|-----------|-----------|
 | A | `push`, `pull`, `match`, `cleanup` | Parallel via `AsyncPool(5)` | Independent file I/O, safe to parallelize |
-| B | `delete_remote` | Serial | Avoids race conditions with remote API |
+| B | `rename_remote`, `rename_local`, `delete_remote` | Serial | Rename before delete to avoid orphaned state |
 | C | `delete_local` | Serial | Avoids local filesystem conflicts |
 | D | `conflict` | Serial | May show UI modal (`ask` strategy) |
 
@@ -131,6 +142,7 @@ Each action calls `executeAction()` which runs `runActionIO()` followed by `comm
 `commitAction()` in `state-committer.ts` persists state per successfully-executed action:
 
 - `push` / `pull` / `match` / `conflict`: upsert `SyncRecord` via `stateStore.put()`. If `enableThreeWayMerge` is on and the file is merge-eligible (text, <=1 MB), stores the file content via `stateStore.putContent()` for future 3-way merge base.
+- `rename_remote` / `rename_local`: delete old path record, upsert new path record (+ optional 3-way merge content).
 - `delete_local` / `delete_remote` / `cleanup`: delete `SyncRecord` via `stateStore.delete()`.
 
 Failed actions are not committed; they will be re-detected on the next sync cycle.
@@ -141,7 +153,8 @@ Failed actions are not committed; they will be re-detected on the next sync cycl
 
 | Trigger | Event | Behaviour |
 |---------|-------|-----------|
-| Vault change | `create` / `modify` / `delete` / `rename` | Marks path dirty via `localTracker.markDirty()`, then calls `debouncedSync()` (5 s debounce). Consecutive edits reset the timer so sync fires 5 s after the last change. |
+| Vault change | `create` / `modify` / `delete` | Marks path dirty via `localTracker.markDirty()`, then calls `debouncedSync()` (5 s debounce). Consecutive edits reset the timer so sync fires 5 s after the last change. |
+| Vault rename | `rename` | Calls `localTracker.markRenamed(newPath, oldPath)` which records the rename pair and marks both paths dirty, then calls `debouncedSync()`. |
 | Visibility | `document.visibilitychange` → `"visible"` | Immediately calls `runSync()` when the app returns to the foreground (e.g. mobile app switch, desktop minimize restore), unless a sync is already running. |
 | Focus | `window.focus` | Immediately calls `runSync()` when the window gains focus (e.g. switching back from another desktop app), unless a sync is already running. |
 | Online | `window.online` | Immediately calls `runSync()` when the network connection is restored. |
