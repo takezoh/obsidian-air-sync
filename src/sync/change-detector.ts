@@ -4,6 +4,7 @@ import type { SyncStateStore } from "./state";
 import type { LocalChangeTracker } from "./local-tracker";
 import { hasChanged, hasRemoteChanged } from "./change-compare";
 import { md5 } from "../utils/md5";
+import { sha256 } from "../utils/hash";
 import { AsyncPool } from "../queue/async-queue";
 
 export interface ChangeSet {
@@ -42,6 +43,9 @@ export async function collectChanges(deps: ChangeDetectorDeps): Promise<ChangeSe
 
 	// Enrich empty hashes for entries without baseline (all temperature modes)
 	await enrichHashesForInitialMatch(changeSet.entries, deps.localFs);
+
+	// Ensure rename-related local entries have hashes (WARM/COLD use list() → hash:"")
+	await enrichHashesForRenames(changeSet.entries, deps.localFs, localTracker.getRenamePairs());
 
 	return changeSet;
 }
@@ -91,10 +95,12 @@ async function collectHot(deps: ChangeDetectorDeps): Promise<ChangeSet> {
 	// Check which hot entries actually changed vs baseline (prune no-ops)
 	const changed = filtered.filter((e) => {
 		const prev = e.prevSync;
-		// Deletion: exists in prev but not locally or remotely
+		// Both deleted — include if previously synced (cleanup)
 		if (!e.local && !e.remote) return !!prev;
 		// New file: no prev record
 		if (!prev) return true;
+		// Local deleted but remote still exists (e.g. rename source)
+		if (!e.local && e.remote) return true;
 		// Local changed
 		if (e.local && hasChanged(e.local, prev)) return true;
 		// Remote changed
@@ -219,14 +225,47 @@ async function enrichHashesForInitialMatch(
 					const localMd5 = md5(content);
 					const remoteMd5 = entry.remote!.backendMeta!.contentChecksum as string;
 					if (localMd5 === remoteMd5) {
-						entry.local = { ...entry.local!, hash: `md5:${localMd5}` };
-						entry.remote = { ...entry.remote!, hash: `md5:${localMd5}` };
+						const contentHash = await sha256(content);
+						entry.local = { ...entry.local!, hash: contentHash };
+						entry.remote = { ...entry.remote!, hash: contentHash };
 					}
 				} catch {
 					// Skip failed reads — entry stays unenriched (conflict, safe side)
 				}
 			})
 		)
+	);
+}
+
+/**
+ * Ensure rename destination entries have hashes via stat().
+ * In WARM/COLD mode, list() returns hash:"" — the rename optimizer
+ * needs a real hash to verify content equivalence.
+ */
+async function enrichHashesForRenames(
+	entries: MixedEntity[],
+	localFs: IFileSystem,
+	renamePairs: ReadonlyMap<string, string>,
+): Promise<void> {
+	if (renamePairs.size === 0) return;
+
+	const newPaths = new Set(renamePairs.keys());
+	const candidates = entries.filter(
+		(e) => newPaths.has(e.path) && e.local && !e.local.hash,
+	);
+	if (candidates.length === 0) return;
+
+	await Promise.all(
+		candidates.map(async (entry) => {
+			try {
+				const stat = await localFs.stat(entry.path);
+				if (stat && !stat.isDirectory && stat.hash) {
+					entry.local = { ...entry.local!, hash: stat.hash };
+				}
+			} catch {
+				// Skip — rename optimizer falls back to push+delete
+			}
+		})
 	);
 }
 

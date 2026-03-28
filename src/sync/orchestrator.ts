@@ -268,6 +268,7 @@ export class SyncOrchestrator {
 			localTracker: this.deps.localTracker,
 		});
 
+		const renamePairs = this.deps.localTracker.getRenamePairs();
 		const remoteOnlyPaths = changeSet.entries.filter((e) => !e.local && e.remote).map((e) => e.path);
 		this.deps.logger?.info("Change detection completed", {
 			temperature: changeSet.temperature,
@@ -275,10 +276,24 @@ export class SyncOrchestrator {
 			localOnly: changeSet.entries.filter((e) => e.local && !e.remote).length,
 			remoteOnly: remoteOnlyPaths.length,
 			both: changeSet.entries.filter((e) => e.local && e.remote).length,
-			enriched: changeSet.entries.filter((e) => e.local?.hash?.startsWith("md5:")).length,
+			enriched: changeSet.entries.filter((e) => e.local?.hash && !e.prevSync).length,
+			renamePairs: renamePairs.size,
 		});
 		if (remoteOnlyPaths.length > 0) {
 			this.deps.logger?.debug("Remote-only paths", { paths: remoteOnlyPaths });
+		}
+		if (renamePairs.size > 0) {
+			const rpPaths = new Set([...renamePairs.keys(), ...renamePairs.values()]);
+			const rpEntries = changeSet.entries
+				.filter((e) => rpPaths.has(e.path))
+				.map((e) => ({
+					path: e.path,
+					local: !!e.local,
+					remote: !!e.remote,
+					prevSync: !!e.prevSync,
+					hash: (e.local?.hash || e.prevSync?.hash || "").substring(0, 8) || undefined,
+				}));
+			this.deps.logger?.debug("Rename entry details", { entries: rpEntries });
 		}
 
 		const isMobile = this.deps.isMobile();
@@ -302,7 +317,8 @@ export class SyncOrchestrator {
 
 		const plan = refinePlan(
 			planSync(filtered),
-			this.deps.localTracker.getRenamePairs(),
+			renamePairs,
+			this.deps.logger,
 		);
 
 		const actionBreakdown: Record<string, number> = {};

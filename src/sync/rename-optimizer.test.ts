@@ -70,6 +70,17 @@ describe("optimizeRenames", () => {
 		expect(result).toHaveLength(2);
 	});
 
+	it("keeps original actions when local hash is missing", () => {
+		const actions: SyncAction[] = [
+			{ path: "old.md", action: "delete_remote", remote: entity("old.md", "h1"), baseline: baseline("old.md", "h1") },
+			{ path: "new.md", action: "push", local: entity("new.md", "") },
+		];
+		const pairs = new Map([["new.md", "old.md"]]);
+		const result = optimizeRenames(actions, pairs);
+
+		expect(result).toHaveLength(2);
+	});
+
 	it("optimizes some pairs and leaves others unchanged", () => {
 		const actions: SyncAction[] = [
 			{ path: "old-a.md", action: "delete_remote", remote: entity("old-a.md", "h1"), baseline: baseline("old-a.md", "h1") },

@@ -6,6 +6,7 @@ import { createMockFs, createMockStateStore, addFile } from "../__mocks__/sync-t
 import type { FileEntity } from "../fs/types";
 import type { SyncRecord } from "./types";
 import { md5 } from "../utils/md5";
+import { sha256 } from "../utils/hash";
 
 function makeRecord(path: string, overrides: Partial<SyncRecord> = {}): SyncRecord {
 	return {
@@ -88,10 +89,11 @@ describe("collectChanges — temperature selection", () => {
 			expect(result.entries).toHaveLength(0);
 		});
 
-		it("enriches hashes when local MD5 matches remote contentChecksum", async () => {
+		it("enriches hashes with SHA-256 when local MD5 matches remote contentChecksum", async () => {
 			const content = "identical content";
 			const contentBuf = new TextEncoder().encode(content);
 			const expectedMd5 = md5(contentBuf.buffer);
+			const expectedSha256 = await sha256(contentBuf.buffer);
 
 			addFile(localFs, "a.md", content, 1000);
 			addFileWithMeta(remoteFs, "a.md", content, 2000, {
@@ -101,8 +103,8 @@ describe("collectChanges — temperature selection", () => {
 			const result = await collectChanges(makeDeps());
 
 			const entry = result.entries.find((e) => e.path === "a.md");
-			expect(entry?.local?.hash).toBe(`md5:${expectedMd5}`);
-			expect(entry?.remote?.hash).toBe(`md5:${expectedMd5}`);
+			expect(entry?.local?.hash).toBe(expectedSha256);
+			expect(entry?.remote?.hash).toBe(expectedSha256);
 		});
 
 		it("does not enrich hashes when MD5 differs", async () => {
@@ -308,6 +310,23 @@ describe("collectChanges — temperature selection", () => {
 			expect(deleted?.remote).toBeUndefined();
 		});
 
+		it("includes locally deleted file that still exists on remote", async () => {
+			await stateStore.put(makeRecord("deleted.md"));
+			addFile(remoteFs, "deleted.md", "content", 1000);
+			// deleted.md is not in localFs (locally deleted)
+			localTracker.acknowledge([]);
+			localTracker.markDirty("deleted.md");
+
+			const result = await collectChanges(makeDeps());
+
+			expect(result.temperature).toBe("hot");
+			const entry = result.entries.find((e) => e.path === "deleted.md");
+			expect(entry).toBeDefined();
+			expect(entry?.local).toBeUndefined();
+			expect(entry?.remote).toBeDefined();
+			expect(entry?.prevSync).toBeDefined();
+		});
+
 		it("returns empty entries when no dirty paths and no remote changes", async () => {
 			await stateStore.put(makeRecord("a.md"));
 			addFile(localFs, "a.md", "content", 1000);
@@ -346,6 +365,60 @@ describe("collectChanges — temperature selection", () => {
 			expect(result.temperature).toBe("warm");
 			const entry = result.entries.find((e) => e.path === "a.md");
 			expect(entry).toBeDefined();
+		});
+	});
+
+	describe("enrichHashesForRenames", () => {
+		it("enriches hash while preserving mtime and size from list()", async () => {
+			await stateStore.put(makeRecord("old.md", { hash: "sha256abc", localMtime: 1000, localSize: 7 }));
+			const listEntity = addFile(localFs, "new.md", "content", 1000);
+			addFile(remoteFs, "old.md", "content", 1000);
+			localTracker.markRenamed("new.md", "old.md");
+
+			// Override stat() to return a different mtime (simulates stat/list divergence)
+			localFs.stat = async (path: string) => {
+				const content = await localFs.read(path);
+				return {
+					path, isDirectory: false, size: content.byteLength,
+					mtime: 9999, hash: await sha256(content),
+				};
+			};
+
+			const result = await collectChanges(makeDeps());
+
+			expect(result.temperature).toBe("warm");
+			const entry = result.entries.find((e) => e.path === "new.md");
+			expect(entry?.local?.hash).not.toBe("");
+			expect(entry?.local?.mtime).toBe(listEntity.mtime);
+			expect(entry?.local?.size).toBe(listEntity.size);
+		});
+
+		it("does not enrich when no rename pairs exist", async () => {
+			await stateStore.put(makeRecord("a.md", { localMtime: 500 }));
+			addFile(localFs, "a.md", "modified", 2000);
+
+			const result = await collectChanges(makeDeps());
+
+			expect(result.temperature).toBe("warm");
+			const entry = result.entries.find((e) => e.path === "a.md");
+			expect(entry?.local?.hash).toBe("");
+		});
+
+		it("preserves local entry unchanged when stat() throws", async () => {
+			await stateStore.put(makeRecord("old.md", { hash: "sha256abc", localMtime: 1000, localSize: 7 }));
+			const listEntity = addFile(localFs, "new.md", "content", 1000);
+			addFile(remoteFs, "old.md", "content", 1000);
+			localTracker.markRenamed("new.md", "old.md");
+
+			localFs.stat = () => { throw new Error("disk error"); };
+
+			const result = await collectChanges(makeDeps());
+
+			expect(result.temperature).toBe("warm");
+			const entry = result.entries.find((e) => e.path === "new.md");
+			expect(entry?.local?.hash).toBe("");
+			expect(entry?.local?.mtime).toBe(listEntity.mtime);
+			expect(entry?.local?.size).toBe(listEntity.size);
 		});
 	});
 });

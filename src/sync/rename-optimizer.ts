@@ -1,4 +1,5 @@
 import type { SyncAction, SyncPlan } from "./types";
+import type { Logger } from "../logging/logger";
 import { checkSafety } from "./safety-check";
 
 /**
@@ -8,6 +9,7 @@ import { checkSafety } from "./safety-check";
 export function optimizeRenames(
 	actions: SyncAction[],
 	renamePairs: ReadonlyMap<string, string>,
+	logger?: Logger,
 ): SyncAction[] {
 	if (renamePairs.size === 0) return actions;
 
@@ -27,6 +29,14 @@ export function optimizeRenames(
 			!push.local?.hash ||
 			push.local.hash !== del.baseline.hash
 		) {
+			logger?.debug("Rename optimization skipped", {
+				newPath,
+				oldPath,
+				delAction: del?.action,
+				pushAction: push?.action,
+				baselineHash: del?.baseline?.hash ? `${del.baseline.hash.substring(0, 8)}...` : "(empty)",
+				localHash: push?.local?.hash ? `${push.local.hash.substring(0, 8)}...` : "(empty)",
+			});
 			continue;
 		}
 		renamed.push({
@@ -56,8 +66,12 @@ export function optimizeRenames(
 export function refinePlan(
 	plan: SyncPlan,
 	renamePairs: ReadonlyMap<string, string>,
+	logger?: Logger,
 ): SyncPlan {
 	if (renamePairs.size === 0) return plan;
-	const optimized = optimizeRenames(plan.actions, renamePairs);
+	logger?.debug("Rename pairs", {
+		pairs: [...renamePairs.entries()].map(([n, o]) => `${o} → ${n}`),
+	});
+	const optimized = optimizeRenames(plan.actions, renamePairs, logger);
 	return { actions: optimized, safetyCheck: checkSafety(optimized) };
 }
