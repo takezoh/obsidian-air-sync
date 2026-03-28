@@ -48,7 +48,7 @@ export interface ConflictRecord {
 /** Sync service status */
 export type SyncStatus = "idle" | "syncing" | "error" | "partial_error" | "not_connected";
 
-/** Action types produced by the decision engine */
+/** Action types produced by the decision engine and optimizer */
 export type SyncActionType =
 	| "push"
 	| "pull"
@@ -59,16 +59,27 @@ export type SyncActionType =
 	| "match"
 	| "cleanup";
 
-/** A single planned action for a path */
-export interface SyncAction {
+/** Shared fields across all sync actions */
+interface SyncActionBase {
 	path: string;
-	action: SyncActionType;
-	/** For rename_remote: the path being renamed from */
-	oldPath?: string;
 	local?: FileEntity;
 	remote?: FileEntity;
 	baseline?: SyncRecord;
 }
+
+/** Standard sync action (all types except rename_remote) */
+export interface StandardSyncAction extends SyncActionBase {
+	action: Exclude<SyncActionType, "rename_remote">;
+}
+
+/** Rename action — oldPath is required */
+export interface RenameRemoteAction extends SyncActionBase {
+	action: "rename_remote";
+	oldPath: string;
+}
+
+/** A single planned action for a path */
+export type SyncAction = StandardSyncAction | RenameRemoteAction;
 
 /** Result of safety checks before execution */
 export interface SafetyCheckResult {

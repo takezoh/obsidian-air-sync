@@ -3,6 +3,13 @@ import type { DriveFile } from "./types";
 import { FOLDER_MIME } from "./types";
 import type { Logger } from "../../logging/logger";
 
+export interface FileChangeResult {
+	oldPath: string | undefined;
+	newPath: string | undefined;
+	wasFolder: boolean;
+	oldDescendants: string[];
+}
+
 /**
  * In-memory metadata cache for Google Drive files.
  * Maintains path↔ID mappings, folder tracking, and parent→children index.
@@ -286,6 +293,20 @@ export class DriveMetadataCache {
 				contentChecksum: driveFile.md5Checksum,
 			},
 		};
+	}
+
+	/**
+	 * Apply a file change and return move/rename information.
+	 * Captures the old path before cache mutation for move detection.
+	 */
+	applyFileChangeDetectMove(file: DriveFile): FileChangeResult {
+		const oldPath = this.getPathById(file.id);
+		const wasFolder = oldPath ? this.isFolder(oldPath) : false;
+		const oldDescendants = (oldPath && wasFolder)
+			? this.collectDescendants(oldPath) : [];
+		this.applyFileChange(file);
+		const newPath = this.getPathById(file.id);
+		return { oldPath, newPath, wasFolder, oldDescendants };
 	}
 
 	/** Apply a single file change to the metadata cache */

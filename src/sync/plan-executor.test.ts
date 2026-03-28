@@ -227,19 +227,6 @@ describe("executePlan", () => {
 			expect(stateStore.records.has("old.md")).toBe(false);
 		});
 
-		it("throws when oldPath is missing", async () => {
-			const ctx = makeCtx();
-			addFile(ctx.localFs as ReturnType<typeof createMockFs>, "new.md", "content");
-
-			const plan = makePlan([{
-				path: "new.md",
-				action: "rename_remote",
-				local: { path: "new.md", isDirectory: false, size: 7, mtime: 1000, hash: "" },
-			}]);
-
-			const result = await executePlan(plan, ctx);
-			expect(result.failed).toHaveLength(1);
-		});
 	});
 
 	describe("cleanup", () => {

@@ -494,3 +494,73 @@ describe("applyFileChange", () => {
 		expect(cache.getPathById("f1")).toBeUndefined();
 	});
 });
+
+describe("applyFileChangeDetectMove", () => {
+	it("detects file rename (same parent, different name)", () => {
+		const cache = makeCache();
+		cache.setFile("old.txt", makeDriveFile({ id: "f1", name: "old.txt", parents: [ROOT] }));
+
+		const renamed = makeDriveFile({ id: "f1", name: "new.txt", parents: [ROOT] });
+		const result = cache.applyFileChangeDetectMove(renamed);
+
+		expect(result.oldPath).toBe("old.txt");
+		expect(result.newPath).toBe("new.txt");
+		expect(result.wasFolder).toBe(false);
+		expect(result.oldDescendants).toEqual([]);
+	});
+
+	it("detects file move (different parent)", () => {
+		const cache = makeCache();
+		cache.setFile("docs", makeFolder({ id: "d1", name: "docs", parents: [ROOT] }));
+		cache.setFile("archive", makeFolder({ id: "d2", name: "archive", parents: [ROOT] }));
+		cache.setFile("docs/a.txt", makeDriveFile({ id: "f1", name: "a.txt", parents: ["d1"] }));
+
+		const moved = makeDriveFile({ id: "f1", name: "a.txt", parents: ["d2"] });
+		const result = cache.applyFileChangeDetectMove(moved);
+
+		expect(result.oldPath).toBe("docs/a.txt");
+		expect(result.newPath).toBe("archive/a.txt");
+		expect(result.wasFolder).toBe(false);
+	});
+
+	it("detects folder move with descendants", () => {
+		const cache = makeCache();
+		cache.setFile("src", makeFolder({ id: "d1", name: "src", parents: [ROOT] }));
+		cache.setFile("src/a.txt", makeDriveFile({ id: "f1", name: "a.txt", parents: ["d1"] }));
+		cache.setFile("src/b.txt", makeDriveFile({ id: "f2", name: "b.txt", parents: ["d1"] }));
+		cache.setFile("lib", makeFolder({ id: "d2", name: "lib", parents: [ROOT] }));
+
+		const moved = makeFolder({ id: "d1", name: "src", parents: ["d2"] });
+		const result = cache.applyFileChangeDetectMove(moved);
+
+		expect(result.oldPath).toBe("src");
+		expect(result.newPath).toBe("lib/src");
+		expect(result.wasFolder).toBe(true);
+		expect(result.oldDescendants).toEqual(expect.arrayContaining(["src/a.txt", "src/b.txt"]));
+		expect(result.oldDescendants).toHaveLength(2);
+	});
+
+	it("returns undefined oldPath for new file", () => {
+		const cache = makeCache();
+
+		const file = makeDriveFile({ id: "f1", name: "new.txt", parents: [ROOT] });
+		const result = cache.applyFileChangeDetectMove(file);
+
+		expect(result.oldPath).toBeUndefined();
+		expect(result.newPath).toBe("new.txt");
+		expect(result.wasFolder).toBe(false);
+		expect(result.oldDescendants).toEqual([]);
+	});
+
+	it("returns undefined newPath when moved outside sync root", () => {
+		const cache = makeCache();
+		cache.setFile("a.txt", makeDriveFile({ id: "f1", name: "a.txt", parents: [ROOT] }));
+
+		const movedOut = makeDriveFile({ id: "f1", name: "a.txt", parents: ["unknown"] });
+		const result = cache.applyFileChangeDetectMove(movedOut);
+
+		expect(result.oldPath).toBe("a.txt");
+		expect(result.newPath).toBeUndefined();
+		expect(result.wasFolder).toBe(false);
+	});
+});

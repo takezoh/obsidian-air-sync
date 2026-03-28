@@ -8,8 +8,7 @@ import { SyncStateStore } from "./state";
 import { LocalChangeTracker } from "./local-tracker";
 import { collectChanges } from "./change-detector";
 import { planSync } from "./decision-engine";
-import { optimizeRenames } from "./rename-optimizer";
-import { checkSafety } from "./safety-check";
+import { refinePlan } from "./rename-optimizer";
 import { executePlan } from "./plan-executor";
 import type { ExecutionContext, ExecutionResult } from "./plan-executor";
 import { AuthError } from "../fs/errors";
@@ -301,12 +300,10 @@ export class SyncOrchestrator {
 			});
 		}
 
-		let plan = planSync(filtered);
-		const renamePairs = this.deps.localTracker.getRenamePairs();
-		if (renamePairs.size > 0) {
-			const optimized = optimizeRenames(plan.actions, renamePairs);
-			plan = { actions: optimized, safetyCheck: checkSafety(optimized) };
-		}
+		const plan = refinePlan(
+			planSync(filtered),
+			this.deps.localTracker.getRenamePairs(),
+		);
 
 		const actionBreakdown: Record<string, number> = {};
 		for (const a of plan.actions) {

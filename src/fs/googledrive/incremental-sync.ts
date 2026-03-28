@@ -72,14 +72,8 @@ export async function applyIncrementalChanges(
 						ctx.cache.removeTree(path);
 					}
 				} else if (change.file) {
-					// Capture old path before cache mutation to detect move/rename
-					const oldPath = ctx.cache.getPathById(change.file.id);
-					const wasFolder = oldPath ? ctx.cache.isFolder(oldPath) : false;
-					const oldDescendants = (oldPath && wasFolder)
-						? ctx.cache.collectDescendants(oldPath) : [];
-
-					ctx.cache.applyFileChange(change.file);
-					const updatedPath = ctx.cache.getPathById(change.file.id);
+					const { oldPath, newPath: updatedPath, wasFolder, oldDescendants } =
+						ctx.cache.applyFileChangeDetectMove(change.file);
 
 					if (updatedPath) {
 						updatedRecords.push({
@@ -114,6 +108,8 @@ export async function applyIncrementalChanges(
 									file: ndFile,
 									isFolder: ndFile.mimeType === FOLDER_MIME,
 								});
+							} else {
+								ctx.logger?.warn("Descendant not found in cache after folder move", { path: nd });
 							}
 						}
 					}
@@ -128,7 +124,7 @@ export async function applyIncrementalChanges(
 
 		if (totalChanges > 0) {
 			ctx.logger?.info("Incremental changes applied", { changeCount: totalChanges });
-			void persistIncrementalChanges(ctx, updatedRecords, deletedPaths, currentToken);
+			await persistIncrementalChanges(ctx, updatedRecords, deletedPaths, currentToken);
 		}
 
 		return { newToken: currentToken, needsFullScan: false, changedPaths };

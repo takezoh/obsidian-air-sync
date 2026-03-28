@@ -1,4 +1,5 @@
-import type { SyncAction } from "./types";
+import type { SyncAction, SyncPlan } from "./types";
+import { checkSafety } from "./safety-check";
 
 /**
  * Replace matching `delete_remote(oldPath) + push(newPath)` pairs
@@ -47,4 +48,16 @@ export function optimizeRenames(
 		if (!consumed.has(a.path)) result.push(a);
 	}
 	return result.concat(renamed);
+}
+
+/**
+ * Pure pipeline stage: apply rename optimization and recompute safety check.
+ */
+export function refinePlan(
+	plan: SyncPlan,
+	renamePairs: ReadonlyMap<string, string>,
+): SyncPlan {
+	if (renamePairs.size === 0) return plan;
+	const optimized = optimizeRenames(plan.actions, renamePairs);
+	return { actions: optimized, safetyCheck: checkSafety(optimized) };
 }

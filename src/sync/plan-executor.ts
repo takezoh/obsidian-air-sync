@@ -191,7 +191,6 @@ async function runActionIO(
 		}
 
 		case "rename_remote": {
-			if (!action.oldPath) throw new Error(`rename_remote requires oldPath: ${path}`);
 			await remoteFs.rename(action.oldPath, path);
 			const remoteEntity = await remoteFs.stat(path);
 			const localEntity = await localFs.stat(path) ?? action.local;

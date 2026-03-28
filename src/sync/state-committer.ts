@@ -70,9 +70,7 @@ export async function commitAction(
 		}
 
 		case "rename_remote": {
-			if (action.oldPath) {
-				await stateStore.delete(action.oldPath);
-			}
+			await stateStore.delete(action.oldPath);
 			const renameRecord = buildSyncRecord(localEntity, remoteEntity, path);
 			await stateStore.put(renameRecord);
 
@@ -98,7 +96,7 @@ export async function commitAction(
 
 		default: {
 			// Exhaustive check: if a new SyncActionType is added, TypeScript will error here
-			const _exhaustive: never = action.action;
+			const _exhaustive: never = action;
 			void _exhaustive;
 			break;
 		}

@@ -3,7 +3,7 @@ import { applyIncrementalChanges } from "./incremental-sync";
 import type { IncrementalSyncContext } from "./incremental-sync";
 import type { DriveFile } from "./types";
 import { FOLDER_MIME } from "./types";
-import type { DriveMetadataCache } from "./metadata-cache";
+import type { DriveMetadataCache, FileChangeResult } from "./metadata-cache";
 import type { DriveClient } from "./client";
 
 vi.mock("obsidian");
@@ -16,6 +16,7 @@ describe("applyIncrementalChanges", () => {
 	let applyFileChange: ReturnType<typeof vi.fn>;
 	let isFolder: ReturnType<typeof vi.fn>;
 	let getFile: ReturnType<typeof vi.fn>;
+	let applyFileChangeDetectMove: ReturnType<typeof vi.fn>;
 	let loggerInfo: ReturnType<typeof vi.fn>;
 	let loggerWarn: ReturnType<typeof vi.fn>;
 	let mockClient: DriveClient;
@@ -30,6 +31,15 @@ describe("applyIncrementalChanges", () => {
 		applyFileChange = vi.fn();
 		isFolder = vi.fn().mockReturnValue(false);
 		getFile = vi.fn().mockReturnValue(undefined);
+		applyFileChangeDetectMove = vi.fn<(file: DriveFile) => FileChangeResult>().mockImplementation((file) => {
+			const oldPath = (getPathById as (id: string) => string | undefined)(file.id);
+			const wasFolderVal = oldPath ? (isFolder as (p: string) => boolean)(oldPath) : false;
+			const oldDescendants = (oldPath && wasFolderVal)
+				? (collectDescendants as (p: string) => string[])(oldPath) : [];
+			(applyFileChange as (f: DriveFile) => void)(file);
+			const newPath = (getPathById as (id: string) => string | undefined)(file.id);
+			return { oldPath, newPath, wasFolder: wasFolderVal, oldDescendants };
+		});
 		loggerInfo = vi.fn();
 		loggerWarn = vi.fn();
 
@@ -39,6 +49,7 @@ describe("applyIncrementalChanges", () => {
 			collectDescendants,
 			removeTree,
 			applyFileChange,
+			applyFileChangeDetectMove,
 			isFolder,
 			getFile,
 		} as unknown as DriveMetadataCache;
