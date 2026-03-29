@@ -30,7 +30,10 @@ src/
 │   ├── plan-executor.ts             # executePlan() — grouped execution (A/B/C/D)
 │   ├── state-committer.ts           # commitAction() — per-action SyncRecord upsert/delete
 │   ├── conflict-resolver.ts         # resolveConflict() — 3-strategy conflict resolver
-│   ├── rename-optimizer.ts           # optimizeRenames(), optimizeRemoteRenames(), refinePlan()
+│   ├── rename-optimizer.ts           # refinePlan() — rename optimization orchestrator
+│   ├── rename-optimizer-types.ts    # RenameOptResult, SkippedRename — optimization result types
+│   ├── optimize-local-renames.ts    # Hot state: local rename optimization (hash-verified)
+│   ├── optimize-remote-renames.ts   # Warm state: remote rename optimization (trusted)
 │   ├── conflict.ts                  # resolveWithStrategy() — low-level strategy implementations
 │   ├── merge.ts                     # threeWayMerge() — git-style merge via diffIndices
 │   ├── orchestrator.ts              # SyncOrchestrator — retry loop, mutex, status transitions
@@ -128,8 +131,8 @@ src/
      │        │                           │    deletion ratio guard
      │        ▼                           │
      │  refinePlan()                      │  RenameOptimizer
-     │    local:  delete_remote+push      │    → rename_remote
-     │    remote: delete_local+pull       │    → rename_local
+     │    Hot:  optimizeLocalFileRenames   │    → rename_remote (hash-verified)
+     │    Warm: optimizeRemoteFileRenames  │    → rename_local  (trusted)
      │        │                           │
      │        ▼                           │
      │  executePlan()                     │  PlanExecutor
