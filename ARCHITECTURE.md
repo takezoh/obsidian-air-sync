@@ -32,8 +32,8 @@ src/
 │   ├── conflict-resolver.ts         # resolveConflict() — 3-strategy conflict resolver
 │   ├── rename-optimizer.ts           # refinePlan() — rename optimization orchestrator
 │   ├── rename-optimizer-types.ts    # RenameOptResult, SkippedRename — optimization result types
-│   ├── optimize-local-renames.ts    # Hot state: local rename optimization (hash-verified)
-│   ├── optimize-remote-renames.ts   # Warm state: remote rename optimization (trusted)
+│   ├── optimize-local-renames.ts    # Local rename optimization (hash-verified)
+│   ├── optimize-remote-renames.ts   # Remote rename optimization (trusted)
 │   ├── conflict.ts                  # resolveWithStrategy() — low-level strategy implementations
 │   ├── merge.ts                     # threeWayMerge() — git-style merge via diffIndices
 │   ├── orchestrator.ts              # SyncOrchestrator — retry loop, mutex, status transitions
@@ -131,8 +131,8 @@ src/
      │        │                           │    deletion ratio guard
      │        ▼                           │
      │  refinePlan()                      │  RenameOptimizer
-     │    Hot:  optimizeLocalFileRenames   │    → rename_remote (hash-verified)
-     │    Warm: optimizeRemoteFileRenames  │    → rename_local  (trusted)
+     │    optimizeLocalFileRenames         │    → rename_remote (hash-verified)
+     │    optimizeRemoteFileRenames        │    → rename_local  (trusted)
      │        │                           │
      │        ▼                           │
      │  executePlan()                     │  PlanExecutor

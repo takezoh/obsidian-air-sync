@@ -16,9 +16,9 @@ export function replaceConsumed(
 /**
  * Pure pipeline stage: apply rename optimizations and recompute safety check.
  *
- * Local (Hot) renames are processed first — they require hash verification
+ * Local renames are processed first — they require hash verification
  * to prove the rename is content-preserving.
- * Remote (Warm) renames are processed second — they are authoritative from
+ * Remote renames are processed second — they are authoritative from
  * the backend and require no hash verification.
  */
 export function refinePlan(

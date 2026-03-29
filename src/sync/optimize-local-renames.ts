@@ -5,7 +5,7 @@ import { replaceConsumed } from "./rename-optimizer";
 
 /**
  * Validate that a delete_remote + push pair represents a pure local rename
- * (content unchanged). Centralises the hash-verification rule for Hot state.
+ * (content unchanged). Centralises the hash-verification rule for local renames.
  */
 function isValidLocalRename(del: SyncAction, push: SyncAction): boolean {
 	return (
@@ -27,8 +27,8 @@ function classifySkipReason(del: SyncAction | undefined, push: SyncAction | unde
  * Replace matching `delete_remote(oldPath) + push(newPath)` pairs
  * with a single `rename_remote` action when the content hash is unchanged.
  *
- * Operates on Hot state: local rename events require hash verification
- * to distinguish pure renames from delete-and-re-upload.
+ * Local rename events require hash verification to distinguish
+ * pure renames from delete-and-re-upload.
  */
 export function optimizeLocalFileRenames(
 	actions: SyncAction[],
@@ -81,7 +81,7 @@ export function optimizeLocalFileRenames(
  * Only coalesces when ALL descendant file renames have matching hashes
  * (pure renames with no content changes).
  *
- * Operates on Hot state: uses the same hash-verification rule as file renames.
+ * Uses the same hash-verification rule as file renames.
  */
 export function coalesceLocalFolderRenames(
 	actions: SyncAction[],

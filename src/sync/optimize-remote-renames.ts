@@ -7,7 +7,7 @@ import { replaceConsumed } from "./rename-optimizer";
  * Replace matching `delete_local(oldPath) + pull(newPath)` pairs
  * with a single `rename_local` action using remote rename pair info.
  *
- * Operates on Warm state: remote rename information is authoritative,
+ * Remote rename information is authoritative (from the backend),
  * so no hash verification is needed.
  */
 export function optimizeRemoteFileRenames(
@@ -64,7 +64,7 @@ export function optimizeRemoteFileRenames(
  * prefix, since incremental-sync only reports the folder-level rename pair
  * (individual file pairs are reported as separate changes, not rename pairs).
  *
- * Operates on Warm state: trusts remote backend's rename detection.
+ * Trusts remote backend's rename detection (no hash verification).
  */
 export function coalesceRemoteFolderRenames(
 	actions: SyncAction[],

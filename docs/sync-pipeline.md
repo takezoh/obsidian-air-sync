@@ -119,14 +119,14 @@ After initial-match enrichment, `enrichHashesForRenames()` runs for entries that
 
 `refinePlan()` in `rename-optimizer.ts` runs after `planSync()` + `checkSafety()`. It replaces redundant delete+transfer pairs with native rename operations. The optimizer is split by trust boundary into two modules:
 
-### Hot state — local renames (`optimize-local-renames.ts`)
+### Local renames — hash-verified (`optimize-local-renames.ts`)
 
 When `LocalChangeTracker` records a rename pair (from Obsidian's `rename` event), the optimizer matches `delete_remote(oldPath) + push(newPath)` → `rename_remote`. Hash verification is mandatory: `push.local.hash === del.baseline.hash` must hold, confirming content is unchanged. The centralised `isValidLocalRename()` function enforces this rule for both file and folder renames.
 
 - **File renames** (`optimizeLocalFileRenames`): Matches individual rename pairs from `localTracker.getRenamePairs()`.
 - **Folder renames** (`coalesceLocalFolderRenames`): When a folder rename is detected, coalesces all descendant file rename actions into a single `rename_remote` with `isFolder: true`. Only coalesces when ALL descendants pass hash verification. Uncoalesced file renames fall through to individual file rename optimization.
 
-### Warm state — remote renames (`optimize-remote-renames.ts`)
+### Remote renames — trusted (`optimize-remote-renames.ts`)
 
 When `getChangedPaths()` reports a rename pair, the optimizer matches `delete_local(oldPath) + pull(newPath)` → `rename_local`. The rename pair from the backend is authoritative, so no hash verification is needed.
 
