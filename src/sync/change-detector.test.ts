@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { collectChanges } from "./change-detector";
+import { collectChanges, enrichHashesForRenames } from "./change-detector";
 import type { ChangeDetectorDeps } from "./change-detector";
 import { LocalChangeTracker } from "./local-tracker";
 import { createMockFs, createMockStateStore, addFile } from "../__mocks__/sync-test-helpers";
 import type { FileEntity } from "../fs/types";
-import type { SyncRecord } from "./types";
+import type { MixedEntity, SyncRecord } from "./types";
 import { md5 } from "../utils/md5";
 import { sha256 } from "../utils/hash";
 
@@ -368,6 +368,116 @@ describe("collectChanges — temperature selection", () => {
 		});
 	});
 
+	describe("rename pairs across temperature modes", () => {
+		it("hot mode: enrichHashesForRenames fills hash via stat() for rename destination", async () => {
+			await stateStore.put(makeRecord("old.md", { hash: "sha256abc", localMtime: 1000, localSize: 7 }));
+			addFile(localFs, "new.md", "content", 1000);
+			addFile(remoteFs, "old.md", "content", 1000);
+
+			// Initialize tracker, then simulate rename
+			localTracker.acknowledge([]);
+			localTracker.markRenamed("new.md", "old.md");
+
+			// Mock stat() returns hash (real LocalFs.stat computes SHA-256)
+			const origStat = localFs.stat.bind(localFs);
+			localFs.stat = async (path: string) => {
+				const entity = await origStat(path);
+				if (entity && path === "new.md") {
+					return { ...entity, hash: await sha256(await localFs.read(path)) };
+				}
+				return entity;
+			};
+
+			const result = await collectChanges(makeDeps());
+
+			expect(result.temperature).toBe("hot");
+			const entry = result.entries.find((e) => e.path === "new.md");
+			expect(entry).toBeDefined();
+			expect(entry?.local?.hash).not.toBe("");
+		});
+
+		it("hot mode: both old and new paths are included in entries", async () => {
+			await stateStore.put(makeRecord("old.md", { hash: "sha256abc", localMtime: 1000, localSize: 7 }));
+			addFile(localFs, "new.md", "content", 1000);
+			addFile(remoteFs, "old.md", "content", 1000);
+
+			localTracker.acknowledge([]);
+			localTracker.markRenamed("new.md", "old.md");
+
+			const result = await collectChanges(makeDeps());
+
+			expect(result.temperature).toBe("hot");
+			const paths = result.entries.map((e) => e.path);
+			// markRenamed marks both paths dirty → both in stat() results
+			expect(paths).toContain("new.md");
+			expect(paths).toContain("old.md");
+		});
+
+		it("hot mode: remote rename pairs are included in ChangeSet", async () => {
+			await stateStore.put(makeRecord("a.md"));
+			addFile(localFs, "a.md", "content", 1000);
+
+			(remoteFs as unknown as { getChangedPaths: () => Promise<{ modified: string[]; deleted: string[]; renamed: { oldPath: string; newPath: string }[] }> })
+				.getChangedPaths = () => Promise.resolve({
+					modified: ["b.md"], deleted: ["a.md"],
+					renamed: [{ oldPath: "a.md", newPath: "b.md" }],
+				});
+
+			localTracker.acknowledge([]);
+			localTracker.markDirty("a.md");
+
+			const result = await collectChanges(makeDeps());
+
+			expect(result.temperature).toBe("hot");
+			expect(result.remoteRenamePairs).toEqual([{ oldPath: "a.md", newPath: "b.md" }]);
+		});
+
+		it("warm mode: rename pair paths are included in changedPaths", async () => {
+			// old.md has a sync record (known file)
+			await stateStore.put(makeRecord("old.md", { localMtime: 1000, localSize: 7 }));
+			// new.md exists locally (renamed from old.md), old.md gone locally
+			addFile(localFs, "new.md", "content", 1000);
+			addFile(remoteFs, "old.md", "content", 1000);
+
+			// Tracker has rename pair but is NOT initialized (warm mode)
+			localTracker.markRenamed("new.md", "old.md");
+
+			const result = await collectChanges(makeDeps());
+
+			expect(result.temperature).toBe("warm");
+			const paths = result.entries.map((e) => e.path);
+			// L149-153: rename pair paths explicitly injected into changedPaths
+			expect(paths).toContain("new.md");
+			expect(paths).toContain("old.md");
+		});
+
+		it("warm mode: remote rename pairs are included in ChangeSet", async () => {
+			await stateStore.put(makeRecord("a.md"));
+			addFile(localFs, "a.md", "content", 1000);
+
+			(remoteFs as unknown as { getChangedPaths: () => Promise<{ modified: string[]; deleted: string[]; renamed: { oldPath: string; newPath: string }[] }> })
+				.getChangedPaths = () => Promise.resolve({
+					modified: ["b.md"], deleted: ["a.md"],
+					renamed: [{ oldPath: "a.md", newPath: "b.md" }],
+				});
+
+			const result = await collectChanges(makeDeps());
+
+			expect(result.temperature).toBe("warm");
+			expect(result.remoteRenamePairs).toEqual([{ oldPath: "a.md", newPath: "b.md" }]);
+		});
+
+		it("cold mode: remoteRenamePairs is empty", async () => {
+			addFile(localFs, "a.md", "content", 1000);
+			addFile(remoteFs, "a.md", "content", 1000);
+
+			const result = await collectChanges(makeDeps());
+
+			expect(result.temperature).toBe("cold");
+			expect(result.remoteRenamePairs).toEqual([]);
+		});
+	});
+
 	describe("enrichHashesForRenames", () => {
 		it("enriches hash while preserving mtime and size from list()", async () => {
 			await stateStore.put(makeRecord("old.md", { hash: "sha256abc", localMtime: 1000, localSize: 7 }));
@@ -419,6 +529,86 @@ describe("collectChanges — temperature selection", () => {
 			expect(entry?.local?.hash).toBe("");
 			expect(entry?.local?.mtime).toBe(listEntity.mtime);
 			expect(entry?.local?.size).toBe(listEntity.size);
+		});
+	});
+
+	describe("enrichHashesForRenames (unit)", () => {
+		function entry(path: string, localHash: string): MixedEntity {
+			return { path, local: { path, isDirectory: false, size: 7, mtime: 1000, hash: localHash } };
+		}
+
+		it("fills hash on rename destination when local hash is empty", async () => {
+			const entries = [entry("new.md", "")];
+			const pairs = new Map([["new.md", "old.md"]]);
+
+			addFile(localFs, "new.md", "content", 1000);
+			const origStat = localFs.stat.bind(localFs);
+			localFs.stat = async (path: string) => {
+				const e = await origStat(path);
+				if (e) return { ...e, hash: "sha256-hash" };
+				return e;
+			};
+
+			await enrichHashesForRenames(entries, localFs, pairs);
+
+			expect(entries[0]!.local!.hash).toBe("sha256-hash");
+		});
+
+		it("skips entries where hash is already present", async () => {
+			const entries = [entry("new.md", "existing-hash")];
+			const pairs = new Map([["new.md", "old.md"]]);
+
+			await enrichHashesForRenames(entries, localFs, pairs);
+
+			expect(entries[0]!.local!.hash).toBe("existing-hash");
+		});
+
+		it("skips entries where local is undefined", async () => {
+			const entries: MixedEntity[] = [{ path: "new.md" }];
+			const pairs = new Map([["new.md", "old.md"]]);
+
+			await enrichHashesForRenames(entries, localFs, pairs);
+
+			expect(entries[0]!.local).toBeUndefined();
+		});
+
+		it("skips entries not in rename pairs", async () => {
+			const entries = [entry("unrelated.md", "")];
+			const pairs = new Map([["new.md", "old.md"]]);
+
+			await enrichHashesForRenames(entries, localFs, pairs);
+
+			expect(entries[0]!.local!.hash).toBe("");
+		});
+
+		it("skips when stat() throws", async () => {
+			const entries = [entry("new.md", "")];
+			const pairs = new Map([["new.md", "old.md"]]);
+
+			localFs.stat = () => { throw new Error("disk error"); };
+
+			await enrichHashesForRenames(entries, localFs, pairs);
+
+			expect(entries[0]!.local!.hash).toBe("");
+		});
+
+		it("skips when stat() returns null", async () => {
+			const entries = [entry("new.md", "")];
+			const pairs = new Map([["new.md", "old.md"]]);
+
+			localFs.stat = () => Promise.resolve(null);
+
+			await enrichHashesForRenames(entries, localFs, pairs);
+
+			expect(entries[0]!.local!.hash).toBe("");
+		});
+
+		it("no-ops when rename pairs is empty", async () => {
+			const entries = [entry("new.md", "")];
+
+			await enrichHashesForRenames(entries, localFs, new Map());
+
+			expect(entries[0]!.local!.hash).toBe("");
 		});
 	});
 });

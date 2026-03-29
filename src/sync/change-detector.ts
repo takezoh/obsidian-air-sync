@@ -250,7 +250,7 @@ async function enrichHashesForInitialMatch(
  * In WARM/COLD mode, list() returns hash:"" — the rename optimizer
  * needs a real hash to verify content equivalence.
  */
-async function enrichHashesForRenames(
+export async function enrichHashesForRenames(
 	entries: MixedEntity[],
 	localFs: IFileSystem,
 	renamePairs: ReadonlyMap<string, string>,
