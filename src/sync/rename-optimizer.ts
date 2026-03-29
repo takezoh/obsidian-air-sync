@@ -208,6 +208,9 @@ export function coalesceFolderRenames(
  * when the remote rename pair is flagged as a folder rename.
  *
  * Remote rename info is authoritative — no hash verification needed.
+ * Scans actions directly for delete_local+pull pairs matching the folder
+ * prefix, since incremental-sync only reports the folder-level rename pair
+ * (individual file pairs are reported as separate changes, not rename pairs).
  */
 export function coalesceRemoteFolderRenames(
 	actions: SyncAction[],
@@ -222,7 +225,6 @@ export function coalesceRemoteFolderRenames(
 	for (const a of actions) byPath.set(a.path, a);
 
 	const consumed = new Set<string>();
-	const consumedFilePairOldPaths = new Set<string>();
 	const folderRenames: SyncAction[] = [];
 
 	for (const { oldPath: oldFolder, newPath: newFolder } of folderPairs) {
@@ -230,12 +232,13 @@ export function coalesceRemoteFolderRenames(
 		const newPrefix = newFolder + "/";
 		const descendants: RenamePair[] = [];
 
-		for (const fp of filePairs) {
-			if (!fp.oldPath.startsWith(oldPrefix) || !fp.newPath.startsWith(newPrefix)) continue;
-			const del = byPath.get(fp.oldPath);
-			const pull = byPath.get(fp.newPath);
-			if (del?.action !== "delete_local" || pull?.action !== "pull") continue;
-			descendants.push({ oldPath: fp.oldPath, newPath: fp.newPath });
+		for (const a of actions) {
+			if (a.action !== "delete_local" || !a.path.startsWith(oldPrefix)) continue;
+			const suffix = a.path.substring(oldPrefix.length);
+			const newPath = newPrefix + suffix;
+			const pull = byPath.get(newPath);
+			if (pull?.action !== "pull") continue;
+			descendants.push({ oldPath: a.path, newPath });
 		}
 
 		if (descendants.length === 0) continue;
@@ -243,7 +246,6 @@ export function coalesceRemoteFolderRenames(
 		for (const { oldPath, newPath } of descendants) {
 			consumed.add(oldPath);
 			consumed.add(newPath);
-			consumedFilePairOldPaths.add(oldPath);
 		}
 
 		folderRenames.push({
@@ -263,8 +265,7 @@ export function coalesceRemoteFolderRenames(
 		if (!consumed.has(a.path)) result.push(a);
 	}
 
-	const remainingPairs = filePairs.filter((p) => !consumedFilePairOldPaths.has(p.oldPath));
-	return { actions: result.concat(folderRenames), remainingPairs };
+	return { actions: result.concat(folderRenames), remainingPairs: filePairs };
 }
 
 /**

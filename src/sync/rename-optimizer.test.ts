@@ -203,18 +203,15 @@ describe("coalesceFolderRenames", () => {
 });
 
 describe("coalesceRemoteFolderRenames", () => {
-	it("coalesces remote folder rename into a single rename_local", () => {
+	it("coalesces remote folder rename by scanning actions for delete_local+pull pairs", () => {
 		const actions: SyncAction[] = [
 			{ path: "A/f1.md", action: "delete_local", local: entity("A/f1.md", "h1"), baseline: baseline("A/f1.md", "h1") },
 			{ path: "B/f1.md", action: "pull", remote: entity("B/f1.md", "h1") },
 			{ path: "A/f2.md", action: "delete_local", local: entity("A/f2.md", "h2"), baseline: baseline("A/f2.md", "h2") },
 			{ path: "B/f2.md", action: "pull", remote: entity("B/f2.md", "h2") },
 		];
-		const pairs = [
-			{ oldPath: "A", newPath: "B", isFolder: true },
-			{ oldPath: "A/f1.md", newPath: "B/f1.md" },
-			{ oldPath: "A/f2.md", newPath: "B/f2.md" },
-		];
+		// Only folder-level pair — no file-level pairs (matches incremental-sync behavior)
+		const pairs = [{ oldPath: "A", newPath: "B", isFolder: true }];
 		const result = coalesceRemoteFolderRenames(actions, pairs);
 
 		expect(result.actions).toHaveLength(1);
