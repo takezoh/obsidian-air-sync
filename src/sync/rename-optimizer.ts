@@ -218,7 +218,12 @@ export function coalesceRemoteFolderRenames(
 	logger?: Logger,
 ): { actions: SyncAction[]; remainingPairs: RenamePair[] } {
 	const folderPairs = remoteRenamePairs.filter((p) => p.isFolder);
-	if (folderPairs.length === 0) return { actions, remainingPairs: remoteRenamePairs };
+	if (folderPairs.length === 0) {
+		logger?.debug("Remote folder coalesce: no isFolder pairs", {
+			pairs: remoteRenamePairs.map((p) => ({ old: p.oldPath, new: p.newPath, isFolder: p.isFolder })),
+		});
+		return { actions, remainingPairs: remoteRenamePairs };
+	}
 
 	const filePairs = remoteRenamePairs.filter((p) => !p.isFolder);
 	const byPath = new Map<string, SyncAction>();
@@ -241,7 +246,16 @@ export function coalesceRemoteFolderRenames(
 			descendants.push({ oldPath: a.path, newPath });
 		}
 
-		if (descendants.length === 0) continue;
+		if (descendants.length === 0) {
+			const deleteLocals = actions.filter((a) => a.action === "delete_local" && a.path.startsWith(oldPrefix));
+			logger?.debug("Remote folder coalesce: no descendants", {
+				oldFolder, newFolder,
+				deleteLocalCount: deleteLocals.length,
+				deleteLocalPaths: deleteLocals.map((a) => a.path),
+				actionTypes: [...new Set(actions.map((a) => a.action))],
+			});
+			continue;
+		}
 
 		for (const { oldPath, newPath } of descendants) {
 			consumed.add(oldPath);
@@ -265,7 +279,8 @@ export function coalesceRemoteFolderRenames(
 		if (!consumed.has(a.path)) result.push(a);
 	}
 
-	return { actions: result.concat(folderRenames), remainingPairs: filePairs };
+	const remainingPairs = filePairs.filter((p) => !consumed.has(p.oldPath) && !consumed.has(p.newPath));
+	return { actions: result.concat(folderRenames), remainingPairs };
 }
 
 /**

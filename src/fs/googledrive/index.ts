@@ -229,7 +229,7 @@ export class GoogleDriveFs implements IFileSystem {
 			if (!oldPath) {
 				modified.push(newPath);
 			} else if (oldPath !== newPath) {
-				renamed.push({ oldPath, newPath });
+				renamed.push({ oldPath, newPath, isFolder: this.cache.isFolder(newPath) || undefined });
 				modified.push(newPath);
 				deleted.push(oldPath);
 			}
