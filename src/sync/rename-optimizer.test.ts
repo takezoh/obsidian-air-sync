@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { optimizeRenames, optimizeRemoteRenames } from "./rename-optimizer";
+import { optimizeRenames, optimizeRemoteRenames, coalesceFolderRenames, coalesceRemoteFolderRenames } from "./rename-optimizer";
 import type { SyncAction, SyncRecord } from "./types";
 import type { FileEntity } from "../fs/types";
 
@@ -117,6 +117,128 @@ describe("optimizeRenames", () => {
 		expect(result[0]!.remote).toBe(remote);
 		expect(result[0]!.baseline).toBe(bl);
 		expect(result[0]!.local).toBe(local);
+	});
+});
+
+describe("coalesceFolderRenames", () => {
+	it("coalesces all child file renames into a single folder rename_remote", () => {
+		const actions: SyncAction[] = [
+			{ path: "A/f1.md", action: "delete_remote", remote: entity("A/f1.md", "h1"), baseline: baseline("A/f1.md", "h1") },
+			{ path: "B/f1.md", action: "push", local: entity("B/f1.md", "h1") },
+			{ path: "A/f2.md", action: "delete_remote", remote: entity("A/f2.md", "h2"), baseline: baseline("A/f2.md", "h2") },
+			{ path: "B/f2.md", action: "push", local: entity("B/f2.md", "h2") },
+		];
+		const folderPairs = new Map([["B", "A"]]);
+		const filePairs = new Map([["B/f1.md", "A/f1.md"], ["B/f2.md", "A/f2.md"]]);
+		const result = coalesceFolderRenames(actions, folderPairs, filePairs);
+
+		expect(result.actions).toHaveLength(1);
+		expect(result.actions[0]).toMatchObject({
+			path: "B",
+			action: "rename_remote",
+			oldPath: "A",
+			isFolder: true,
+		});
+		const renameAction = result.actions[0] as { descendants: { oldPath: string; newPath: string }[] };
+		expect(renameAction.descendants).toHaveLength(2);
+		expect(result.remainingFileRenames.size).toBe(0);
+	});
+
+	it("skips folder coalescing when a child has hash mismatch", () => {
+		const actions: SyncAction[] = [
+			{ path: "A/f1.md", action: "delete_remote", remote: entity("A/f1.md", "h1"), baseline: baseline("A/f1.md", "h1") },
+			{ path: "B/f1.md", action: "push", local: entity("B/f1.md", "h1") },
+			{ path: "A/f2.md", action: "delete_remote", remote: entity("A/f2.md", "h2"), baseline: baseline("A/f2.md", "h2") },
+			{ path: "B/f2.md", action: "push", local: entity("B/f2.md", "h3") },
+		];
+		const folderPairs = new Map([["B", "A"]]);
+		const filePairs = new Map([["B/f1.md", "A/f1.md"], ["B/f2.md", "A/f2.md"]]);
+		const result = coalesceFolderRenames(actions, folderPairs, filePairs);
+
+		expect(result.actions).toHaveLength(4);
+		expect(result.remainingFileRenames.size).toBe(2);
+	});
+
+	it("handles nested folder contents", () => {
+		const actions: SyncAction[] = [
+			{ path: "A/f1.md", action: "delete_remote", remote: entity("A/f1.md", "h1"), baseline: baseline("A/f1.md", "h1") },
+			{ path: "B/f1.md", action: "push", local: entity("B/f1.md", "h1") },
+			{ path: "A/sub/f2.md", action: "delete_remote", remote: entity("A/sub/f2.md", "h2"), baseline: baseline("A/sub/f2.md", "h2") },
+			{ path: "B/sub/f2.md", action: "push", local: entity("B/sub/f2.md", "h2") },
+		];
+		const folderPairs = new Map([["B", "A"]]);
+		const filePairs = new Map([["B/f1.md", "A/f1.md"], ["B/sub/f2.md", "A/sub/f2.md"]]);
+		const result = coalesceFolderRenames(actions, folderPairs, filePairs);
+
+		expect(result.actions).toHaveLength(1);
+		expect(result.actions[0]).toMatchObject({ action: "rename_remote", isFolder: true });
+	});
+
+	it("skips when no child file rename pairs exist", () => {
+		const actions: SyncAction[] = [
+			{ path: "other.md", action: "push", local: entity("other.md", "h1") },
+		];
+		const folderPairs = new Map([["B", "A"]]);
+		const filePairs = new Map<string, string>();
+		const result = coalesceFolderRenames(actions, folderPairs, filePairs);
+
+		expect(result.actions).toHaveLength(1);
+		expect(result.actions[0]!.action).toBe("push");
+	});
+
+	it("preserves unrelated actions", () => {
+		const actions: SyncAction[] = [
+			{ path: "A/f1.md", action: "delete_remote", remote: entity("A/f1.md", "h1"), baseline: baseline("A/f1.md", "h1") },
+			{ path: "B/f1.md", action: "push", local: entity("B/f1.md", "h1") },
+			{ path: "other.md", action: "pull", remote: entity("other.md", "h3") },
+		];
+		const folderPairs = new Map([["B", "A"]]);
+		const filePairs = new Map([["B/f1.md", "A/f1.md"]]);
+		const result = coalesceFolderRenames(actions, folderPairs, filePairs);
+
+		expect(result.actions).toHaveLength(2);
+		expect(result.actions.map((a) => a.action)).toContain("pull");
+		expect(result.actions.map((a) => a.action)).toContain("rename_remote");
+	});
+});
+
+describe("coalesceRemoteFolderRenames", () => {
+	it("coalesces remote folder rename into a single rename_local", () => {
+		const actions: SyncAction[] = [
+			{ path: "A/f1.md", action: "delete_local", local: entity("A/f1.md", "h1"), baseline: baseline("A/f1.md", "h1") },
+			{ path: "B/f1.md", action: "pull", remote: entity("B/f1.md", "h1") },
+			{ path: "A/f2.md", action: "delete_local", local: entity("A/f2.md", "h2"), baseline: baseline("A/f2.md", "h2") },
+			{ path: "B/f2.md", action: "pull", remote: entity("B/f2.md", "h2") },
+		];
+		const pairs = [
+			{ oldPath: "A", newPath: "B", isFolder: true },
+			{ oldPath: "A/f1.md", newPath: "B/f1.md" },
+			{ oldPath: "A/f2.md", newPath: "B/f2.md" },
+		];
+		const result = coalesceRemoteFolderRenames(actions, pairs);
+
+		expect(result.actions).toHaveLength(1);
+		expect(result.actions[0]).toMatchObject({
+			path: "B",
+			action: "rename_local",
+			oldPath: "A",
+			isFolder: true,
+		});
+		const renameAction = result.actions[0] as { descendants: { oldPath: string; newPath: string }[] };
+		expect(renameAction.descendants).toHaveLength(2);
+		expect(result.remainingPairs).toHaveLength(0);
+	});
+
+	it("passes through when no folder rename pairs exist", () => {
+		const actions: SyncAction[] = [
+			{ path: "old.md", action: "delete_local", local: entity("old.md", "h1"), baseline: baseline("old.md", "h1") },
+			{ path: "new.md", action: "pull", remote: entity("new.md", "h1") },
+		];
+		const pairs = [{ oldPath: "old.md", newPath: "new.md" }];
+		const result = coalesceRemoteFolderRenames(actions, pairs);
+
+		expect(result.actions).toBe(actions);
+		expect(result.remainingPairs).toEqual(pairs);
 	});
 });
 

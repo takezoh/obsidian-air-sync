@@ -315,9 +315,17 @@ export class SyncOrchestrator {
 			});
 		}
 
+		const folderRenamePairs = this.deps.localTracker.getFolderRenamePairs();
+		if (folderRenamePairs.size > 0) {
+			this.deps.logger?.info("Folder rename pairs detected", {
+				count: folderRenamePairs.size,
+				pairs: [...folderRenamePairs.entries()].map(([n, o]) => `${o} → ${n}`),
+			});
+		}
 		const plan = refinePlan(
 			planSync(filtered),
 			renamePairs,
+			folderRenamePairs,
 			changeSet.remoteRenamePairs,
 			this.deps.logger,
 		);

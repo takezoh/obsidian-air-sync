@@ -98,7 +98,7 @@ export async function applyIncrementalChanges(
 						}
 					}
 					if (moved) {
-						renamedPaths.push({ oldPath, newPath: updatedPath });
+						renamedPaths.push({ oldPath, newPath: updatedPath, isFolder: wasFolder || undefined });
 					}
 
 					// Folder move — also report new descendant paths as updated

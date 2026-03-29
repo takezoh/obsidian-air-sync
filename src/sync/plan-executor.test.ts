@@ -229,6 +229,55 @@ describe("executePlan", () => {
 
 	});
 
+	describe("rename_remote with isFolder", () => {
+		it("renames folder on remote and rewrites descendant sync records", async () => {
+			const ctx = makeCtx();
+			const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
+			const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
+
+			// Set up: folder A with 2 files on remote, folder B with same files locally
+			addFile(remoteFs, "A/f1.md", "content1");
+			addFile(remoteFs, "A/f2.md", "content2");
+			addFile(localFs, "B/f1.md", "content1");
+			addFile(localFs, "B/f2.md", "content2");
+			stateStore.records.set("A/f1.md", {
+				path: "A/f1.md", hash: "h1", localMtime: 1000, remoteMtime: 1000,
+				localSize: 8, remoteSize: 8, syncedAt: 900,
+			});
+			stateStore.records.set("A/f2.md", {
+				path: "A/f2.md", hash: "h2", localMtime: 1000, remoteMtime: 1000,
+				localSize: 8, remoteSize: 8, syncedAt: 900,
+			});
+
+			const plan = makePlan([{
+				path: "B",
+				action: "rename_remote",
+				oldPath: "A",
+				isFolder: true,
+				descendants: [
+					{ oldPath: "A/f1.md", newPath: "B/f1.md" },
+					{ oldPath: "A/f2.md", newPath: "B/f2.md" },
+				],
+			}]);
+
+			const result = await executePlan(plan, ctx);
+
+			expect(result.succeeded).toHaveLength(1);
+			expect(result.failed).toHaveLength(0);
+			// Remote folder was renamed
+			expect(remoteFs.files.has("B/f1.md")).toBe(true);
+			expect(remoteFs.files.has("B/f2.md")).toBe(true);
+			expect(remoteFs.files.has("A/f1.md")).toBe(false);
+			expect(remoteFs.files.has("A/f2.md")).toBe(false);
+			// Descendant sync records were rewritten
+			expect(stateStore.records.has("A/f1.md")).toBe(false);
+			expect(stateStore.records.has("A/f2.md")).toBe(false);
+			expect(stateStore.records.has("B/f1.md")).toBe(true);
+			expect(stateStore.records.has("B/f2.md")).toBe(true);
+		});
+	});
+
 	describe("cleanup", () => {
 		it("removes state record without file I/O", async () => {
 			const ctx = makeCtx();

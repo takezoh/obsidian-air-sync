@@ -1,4 +1,4 @@
-import { debounce } from "obsidian";
+import { debounce, TFolder } from "obsidian";
 import type { EventRef, Workspace, Vault, TAbstractFile, TFile } from "obsidian";
 import type { IFileSystem } from "../fs/interface";
 import type { SyncStateStore } from "./state";
@@ -76,7 +76,11 @@ export class SyncScheduler {
 
 		const onRename = (file: TAbstractFile, oldPath: string) => {
 			if (!isExcluded(file.path) && !isExcluded(oldPath)) {
-				localTracker.markRenamed(file.path, oldPath);
+				if (file instanceof TFolder) {
+					localTracker.markFolderRenamed(file.path, oldPath);
+				} else {
+					localTracker.markRenamed(file.path, oldPath);
+				}
 			} else {
 				if (!isExcluded(file.path)) localTracker.markDirty(file.path);
 				if (!isExcluded(oldPath)) localTracker.markDirty(oldPath);

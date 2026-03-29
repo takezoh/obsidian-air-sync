@@ -1,6 +1,6 @@
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
-import type { SyncRecord } from "../sync/types";
+import type { RenamePair, SyncRecord } from "../sync/types";
 import type { SyncStateStore } from "../sync/state";
 
 /** In-memory mock IFileSystem for unit tests (no hash computation) */
@@ -80,9 +80,20 @@ export function createMockFs(name: string): IFileSystem & {
 			const entry = files.get(oldPath);
 			if (!entry) throw new Error(`File not found: ${oldPath}`);
 			if (files.has(newPath)) throw new Error(`Destination already exists: ${newPath}`);
+			// Move the entry itself
 			files.delete(oldPath);
 			entry.entity.path = newPath;
 			files.set(newPath, entry);
+			// Move descendants (folder rename)
+			const prefix = oldPath + "/";
+			for (const [p, f] of [...files.entries()]) {
+				if (p.startsWith(prefix)) {
+					const childNewPath = newPath + "/" + p.substring(prefix.length);
+					files.delete(p);
+					f.entity.path = childNewPath;
+					files.set(childNewPath, f);
+				}
+			}
 		},
 		getChangedPaths: () => Promise.resolve({ modified: [] as string[], deleted: [] as string[] }),
 	};
@@ -112,6 +123,20 @@ export function createMockStateStore(): {
 		async getAll() { return Array.from(records.values()); },
 		async put(record: SyncRecord) { records.set(record.path, record); },
 		async delete(path: string) { records.delete(path); contents.delete(path); },
+		async rewritePaths(renames: RenamePair[]) {
+			for (const { oldPath, newPath } of renames) {
+				const record = records.get(oldPath);
+				if (record) {
+					records.delete(oldPath);
+					records.set(newPath, { ...record, path: newPath, syncedAt: Date.now() });
+				}
+				const content = contents.get(oldPath);
+				if (content) {
+					contents.delete(oldPath);
+					contents.set(newPath, content);
+				}
+			}
+		},
 		async clear() { records.clear(); contents.clear(); },
 		async putContent(path: string, content: ArrayBuffer) { contents.set(path, content); },
 		async getContent(path: string) { return contents.get(path); },

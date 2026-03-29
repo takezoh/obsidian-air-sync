@@ -49,6 +49,8 @@ export interface ConflictRecord {
 export interface RenamePair {
 	oldPath: string;
 	newPath: string;
+	/** When true, this pair represents a folder rename (not a file rename) */
+	isFolder?: boolean;
 }
 
 /** Sync service status */
@@ -83,6 +85,10 @@ export interface StandardSyncAction extends SyncActionBase {
 export interface RenameAction extends SyncActionBase {
 	action: "rename_remote" | "rename_local";
 	oldPath: string;
+	/** When true, oldPath/path are folder paths and descendants lists affected children */
+	isFolder?: boolean;
+	/** Descendant path mappings consumed by this folder rename */
+	descendants?: RenamePair[];
 }
 
 /** A single planned action for a path */

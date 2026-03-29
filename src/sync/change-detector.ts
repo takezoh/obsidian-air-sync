@@ -145,6 +145,13 @@ async function collectWarm(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): 
 		changedPaths.add(p);
 	}
 
+	// Include rename pair paths so warm mode can optimize renames
+	const renamePairs = deps.localTracker.getRenamePairs();
+	for (const [newPath, oldPath] of renamePairs) {
+		changedPaths.add(newPath);
+		changedPaths.add(oldPath);
+	}
+
 	const pathArray = Array.from(changedPaths);
 	const remoteStats = await Promise.all(pathArray.map((p) => remoteFs.stat(p)));
 

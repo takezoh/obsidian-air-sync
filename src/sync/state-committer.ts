@@ -71,19 +71,23 @@ export async function commitAction(
 
 		case "rename_remote":
 		case "rename_local": {
-			await stateStore.delete(action.oldPath);
-			const renameRecord = buildSyncRecord(localEntity, remoteEntity, path);
-			await stateStore.put(renameRecord);
+			if (action.isFolder && action.descendants) {
+				await stateStore.rewritePaths(action.descendants);
+			} else {
+				await stateStore.delete(action.oldPath);
+				const renameRecord = buildSyncRecord(localEntity, remoteEntity, path);
+				await stateStore.put(renameRecord);
 
-			if (enableThreeWayMerge && localFs && localEntity && isMergeEligible(path, renameRecord.localSize)) {
-				try {
-					const content = await localFs.read(path);
-					await stateStore.putContent(path, content);
-				} catch (err) {
-					logger?.warn("Failed to store content for 3-way merge", {
-						path,
-						error: err instanceof Error ? err.message : String(err),
-					});
+				if (enableThreeWayMerge && localFs && localEntity && isMergeEligible(path, renameRecord.localSize)) {
+					try {
+						const content = await localFs.read(path);
+						await stateStore.putContent(path, content);
+					} catch (err) {
+						logger?.warn("Failed to store content for 3-way merge", {
+							path,
+							error: err instanceof Error ? err.message : String(err),
+						});
+					}
 				}
 			}
 			break;

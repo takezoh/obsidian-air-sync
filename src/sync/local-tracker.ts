@@ -1,6 +1,7 @@
 export class LocalChangeTracker {
 	private dirtyPaths = new Set<string>();
 	private renamePairs = new Map<string, string>(); // newPath → oldPath
+	private folderRenamePairs = new Map<string, string>(); // newFolder → oldFolder
 	private initialized = false;
 
 	markDirty(path: string): void {
@@ -17,8 +18,19 @@ export class LocalChangeTracker {
 		this.dirtyPaths.add(newPath);
 	}
 
+	markFolderRenamed(newPath: string, oldPath: string): void {
+		const resolved = this.folderRenamePairs.get(oldPath) ?? oldPath;
+		this.folderRenamePairs.delete(oldPath);
+		if (resolved === newPath) return;
+		this.folderRenamePairs.set(newPath, resolved);
+	}
+
 	getRenamePairs(): ReadonlyMap<string, string> {
 		return this.renamePairs;
+	}
+
+	getFolderRenamePairs(): ReadonlyMap<string, string> {
+		return this.folderRenamePairs;
 	}
 
 	getDirtyPaths(): ReadonlySet<string> {
@@ -30,6 +42,7 @@ export class LocalChangeTracker {
 			this.dirtyPaths.delete(p);
 			this.renamePairs.delete(p);
 		}
+		this.folderRenamePairs.clear();
 		this.initialized = true;
 	}
 

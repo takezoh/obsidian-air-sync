@@ -1,4 +1,4 @@
-import type { SyncRecord } from "./types";
+import type { RenamePair, SyncRecord } from "./types";
 import { IDBHelper, sanitizeDbName } from "../store/idb-helper";
 
 const DB_NAME_PREFIX = "air-sync";
@@ -86,6 +86,39 @@ export class SyncStateStore {
 		await this.helper.runTransaction([STORE_NAME, CONTENT_STORE_NAME], "readwrite", (tx) => {
 			tx.objectStore(STORE_NAME).delete(path);
 			tx.objectStore(CONTENT_STORE_NAME).delete(path);
+			return () => {};
+		});
+	}
+
+	/**
+	 * Batch-rewrite paths for multiple sync records in a single transaction.
+	 * Uses IDB onsuccess callbacks to chain get→delete→put within the same
+	 * transaction. runTransaction resolves on tx.oncomplete, which fires
+	 * after all queued operations (including onsuccess-issued ones) complete.
+	 */
+	async rewritePaths(renames: RenamePair[]): Promise<void> {
+		if (renames.length === 0) return;
+		await this.helper.runTransaction([STORE_NAME, CONTENT_STORE_NAME], "readwrite", (tx) => {
+			const store = tx.objectStore(STORE_NAME);
+			const contentStore = tx.objectStore(CONTENT_STORE_NAME);
+			for (const { oldPath, newPath } of renames) {
+				const recordReq = store.get(oldPath);
+				recordReq.onsuccess = () => {
+					const record = recordReq.result as SyncRecord | undefined;
+					if (record) {
+						store.delete(oldPath);
+						store.put({ ...record, path: newPath, syncedAt: Date.now() });
+					}
+				};
+				const contentReq = contentStore.get(oldPath);
+				contentReq.onsuccess = () => {
+					const content = contentReq.result as { path: string; content: ArrayBuffer } | undefined;
+					if (content) {
+						contentStore.delete(oldPath);
+						contentStore.put({ ...content, path: newPath });
+					}
+				};
+			}
 			return () => {};
 		});
 	}

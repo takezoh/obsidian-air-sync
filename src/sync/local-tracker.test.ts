@@ -129,6 +129,33 @@ describe("LocalChangeTracker", () => {
 		});
 	});
 
+	describe("markFolderRenamed", () => {
+		it("records folder rename pair", () => {
+			tracker.markFolderRenamed("B", "A");
+			expect(tracker.getFolderRenamePairs().get("B")).toBe("A");
+		});
+
+		it("collapses folder rename chain A→B→C into A→C", () => {
+			tracker.markFolderRenamed("B", "A");
+			tracker.markFolderRenamed("C", "B");
+			expect(tracker.getFolderRenamePairs().has("B")).toBe(false);
+			expect(tracker.getFolderRenamePairs().get("C")).toBe("A");
+		});
+
+		it("is no-op when folder renamed back to original (A→B→A)", () => {
+			tracker.markFolderRenamed("B", "A");
+			tracker.markFolderRenamed("A", "B");
+			expect(tracker.getFolderRenamePairs().size).toBe(0);
+		});
+
+		it("acknowledge clears all folder rename pairs", () => {
+			tracker.markFolderRenamed("B", "A");
+			tracker.markFolderRenamed("D", "C");
+			tracker.acknowledge([]);
+			expect(tracker.getFolderRenamePairs().size).toBe(0);
+		});
+	});
+
 	describe("isInitialized", () => {
 		it("returns false before any acknowledge call", () => {
 			expect(tracker.isInitialized()).toBe(false);

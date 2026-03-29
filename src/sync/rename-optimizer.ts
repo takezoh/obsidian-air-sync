@@ -113,17 +113,185 @@ export function optimizeRemoteRenames(
 }
 
 /**
+ * Coalesce individual file renames into a single folder rename action
+ * when a folder rename is detected from Obsidian events.
+ *
+ * Only coalesces when ALL descendant file renames have matching hashes
+ * (pure renames with no content changes).
+ */
+export function coalesceFolderRenames(
+	actions: SyncAction[],
+	folderRenamePairs: ReadonlyMap<string, string>,
+	fileRenamePairs: ReadonlyMap<string, string>,
+	logger?: Logger,
+): { actions: SyncAction[]; remainingFileRenames: ReadonlyMap<string, string> } {
+	if (folderRenamePairs.size === 0) return { actions, remainingFileRenames: fileRenamePairs };
+
+	const byPath = new Map<string, SyncAction>();
+	for (const a of actions) byPath.set(a.path, a);
+
+	const consumed = new Set<string>();
+	const consumedFileRenames = new Set<string>();
+	const folderRenames: SyncAction[] = [];
+
+	for (const [newFolder, oldFolder] of folderRenamePairs) {
+		const oldPrefix = oldFolder + "/";
+		const newPrefix = newFolder + "/";
+
+		const descendants: RenamePair[] = [];
+		let allHashesMatch = true;
+
+		for (const [newFile, oldFile] of fileRenamePairs) {
+			if (!oldFile.startsWith(oldPrefix) || !newFile.startsWith(newPrefix)) continue;
+			const suffix = oldFile.substring(oldPrefix.length);
+			if (newFile !== newPrefix + suffix) continue;
+
+			const del = byPath.get(oldFile);
+			const push = byPath.get(newFile);
+			if (del?.action !== "delete_remote" || push?.action !== "push") {
+				logger?.debug("Folder rename: action type mismatch", {
+					oldFile, newFile, delAction: del?.action, pushAction: push?.action,
+				});
+				allHashesMatch = false;
+				break;
+			}
+			if (!del.baseline?.hash || !push.local?.hash || push.local.hash !== del.baseline.hash) {
+				logger?.debug("Folder rename: hash mismatch", {
+					oldFile, newFile,
+					baselineHash: del.baseline?.hash ? `${del.baseline.hash.substring(0, 8)}...` : "(empty)",
+					localHash: push.local?.hash ? `${push.local.hash.substring(0, 8)}...` : "(empty)",
+				});
+				allHashesMatch = false;
+				break;
+			}
+			descendants.push({ oldPath: oldFile, newPath: newFile });
+		}
+
+		if (!allHashesMatch || descendants.length === 0) {
+			logger?.debug("Folder rename coalescing skipped", { oldFolder, newFolder, descendants: descendants.length, allHashesMatch });
+			continue;
+		}
+
+		for (const { oldPath, newPath } of descendants) {
+			consumed.add(oldPath);
+			consumed.add(newPath);
+			consumedFileRenames.add(newPath);
+		}
+
+		folderRenames.push({
+			path: newFolder,
+			action: "rename_remote",
+			oldPath: oldFolder,
+			isFolder: true,
+			descendants,
+		});
+		logger?.debug("Folder rename coalesced", { oldFolder, newFolder, descendants: descendants.length });
+	}
+
+	if (consumed.size === 0) return { actions, remainingFileRenames: fileRenamePairs };
+
+	const result: SyncAction[] = [];
+	for (const a of actions) {
+		if (!consumed.has(a.path)) result.push(a);
+	}
+
+	const remaining = new Map<string, string>();
+	for (const [newPath, oldPath] of fileRenamePairs) {
+		if (!consumedFileRenames.has(newPath)) remaining.set(newPath, oldPath);
+	}
+
+	return { actions: result.concat(folderRenames), remainingFileRenames: remaining };
+}
+
+/**
+ * Coalesce individual remote file renames into a single folder rename action
+ * when the remote rename pair is flagged as a folder rename.
+ *
+ * Remote rename info is authoritative — no hash verification needed.
+ */
+export function coalesceRemoteFolderRenames(
+	actions: SyncAction[],
+	remoteRenamePairs: RenamePair[],
+	logger?: Logger,
+): { actions: SyncAction[]; remainingPairs: RenamePair[] } {
+	const folderPairs = remoteRenamePairs.filter((p) => p.isFolder);
+	if (folderPairs.length === 0) return { actions, remainingPairs: remoteRenamePairs };
+
+	const filePairs = remoteRenamePairs.filter((p) => !p.isFolder);
+	const byPath = new Map<string, SyncAction>();
+	for (const a of actions) byPath.set(a.path, a);
+
+	const consumed = new Set<string>();
+	const consumedFilePairOldPaths = new Set<string>();
+	const folderRenames: SyncAction[] = [];
+
+	for (const { oldPath: oldFolder, newPath: newFolder } of folderPairs) {
+		const oldPrefix = oldFolder + "/";
+		const newPrefix = newFolder + "/";
+		const descendants: RenamePair[] = [];
+
+		for (const fp of filePairs) {
+			if (!fp.oldPath.startsWith(oldPrefix) || !fp.newPath.startsWith(newPrefix)) continue;
+			const del = byPath.get(fp.oldPath);
+			const pull = byPath.get(fp.newPath);
+			if (del?.action !== "delete_local" || pull?.action !== "pull") continue;
+			descendants.push({ oldPath: fp.oldPath, newPath: fp.newPath });
+		}
+
+		if (descendants.length === 0) continue;
+
+		for (const { oldPath, newPath } of descendants) {
+			consumed.add(oldPath);
+			consumed.add(newPath);
+			consumedFilePairOldPaths.add(oldPath);
+		}
+
+		folderRenames.push({
+			path: newFolder,
+			action: "rename_local",
+			oldPath: oldFolder,
+			isFolder: true,
+			descendants,
+		});
+		logger?.debug("Remote folder rename coalesced", { oldFolder, newFolder, descendants: descendants.length });
+	}
+
+	if (consumed.size === 0) return { actions, remainingPairs: remoteRenamePairs };
+
+	const result: SyncAction[] = [];
+	for (const a of actions) {
+		if (!consumed.has(a.path)) result.push(a);
+	}
+
+	const remainingPairs = filePairs.filter((p) => !consumedFilePairOldPaths.has(p.oldPath));
+	return { actions: result.concat(folderRenames), remainingPairs };
+}
+
+/**
  * Pure pipeline stage: apply rename optimizations and recompute safety check.
  */
 export function refinePlan(
 	plan: SyncPlan,
 	localRenamePairs: ReadonlyMap<string, string>,
+	localFolderRenamePairs: ReadonlyMap<string, string>,
 	remoteRenamePairs: RenamePair[],
 	logger?: Logger,
 ): SyncPlan {
 	let actions = plan.actions;
 
-	if (localRenamePairs.size > 0) {
+	if (localFolderRenamePairs.size > 0) {
+		logger?.debug("Local folder rename pairs", {
+			pairs: [...localFolderRenamePairs.entries()].map(([n, o]) => `${o} → ${n}`),
+		});
+		const result = coalesceFolderRenames(actions, localFolderRenamePairs, localRenamePairs, logger);
+		actions = result.actions;
+		if (result.remainingFileRenames.size > 0) {
+			logger?.debug("Local rename pairs (remaining)", {
+				pairs: [...result.remainingFileRenames.entries()].map(([n, o]) => `${o} → ${n}`),
+			});
+			actions = optimizeRenames(actions, result.remainingFileRenames, logger);
+		}
+	} else if (localRenamePairs.size > 0) {
 		logger?.debug("Local rename pairs", {
 			pairs: [...localRenamePairs.entries()].map(([n, o]) => `${o} → ${n}`),
 		});
@@ -134,7 +302,11 @@ export function refinePlan(
 		logger?.debug("Remote rename pairs", {
 			pairs: remoteRenamePairs.map(({ oldPath, newPath }) => `${oldPath} → ${newPath}`),
 		});
-		actions = optimizeRemoteRenames(actions, remoteRenamePairs, logger);
+		const result = coalesceRemoteFolderRenames(actions, remoteRenamePairs, logger);
+		actions = result.actions;
+		if (result.remainingPairs.length > 0) {
+			actions = optimizeRemoteRenames(actions, result.remainingPairs, logger);
+		}
 	}
 
 	if (actions === plan.actions) return plan;

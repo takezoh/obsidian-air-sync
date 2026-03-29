@@ -218,6 +218,57 @@ describe("commitAction", () => {
 		expect(stateStore.contents.has("image.png")).toBe(false);
 	});
 
+	it("rename_remote with isFolder: rewrites descendant sync records via rewritePaths", async () => {
+		stateStore.records.set("A/f1.md", {
+			path: "A/f1.md", hash: "h1", localMtime: 1000, remoteMtime: 1000,
+			localSize: 7, remoteSize: 7, syncedAt: 900,
+		});
+		stateStore.records.set("A/f2.md", {
+			path: "A/f2.md", hash: "h2", localMtime: 1000, remoteMtime: 1000,
+			localSize: 5, remoteSize: 5, syncedAt: 900,
+		});
+		const action: SyncAction = {
+			path: "B",
+			action: "rename_remote",
+			oldPath: "A",
+			isFolder: true,
+			descendants: [
+				{ oldPath: "A/f1.md", newPath: "B/f1.md" },
+				{ oldPath: "A/f2.md", newPath: "B/f2.md" },
+			],
+		};
+
+		await commitAction(action, undefined, undefined, makeCtx());
+
+		expect(stateStore.records.has("A/f1.md")).toBe(false);
+		expect(stateStore.records.has("A/f2.md")).toBe(false);
+		expect(stateStore.records.has("B/f1.md")).toBe(true);
+		expect(stateStore.records.has("B/f2.md")).toBe(true);
+		expect(stateStore.records.get("B/f1.md")!.hash).toBe("h1");
+		expect(stateStore.records.get("B/f2.md")!.hash).toBe("h2");
+	});
+
+	it("rename_local with isFolder: rewrites descendant sync records", async () => {
+		stateStore.records.set("A/f1.md", {
+			path: "A/f1.md", hash: "h1", localMtime: 1000, remoteMtime: 1000,
+			localSize: 7, remoteSize: 7, syncedAt: 900,
+		});
+		const action: SyncAction = {
+			path: "B",
+			action: "rename_local",
+			oldPath: "A",
+			isFolder: true,
+			descendants: [
+				{ oldPath: "A/f1.md", newPath: "B/f1.md" },
+			],
+		};
+
+		await commitAction(action, undefined, undefined, makeCtx());
+
+		expect(stateStore.records.has("A/f1.md")).toBe(false);
+		expect(stateStore.records.has("B/f1.md")).toBe(true);
+	});
+
 	// Note: there is no test for a "failed" action because "failed" is not a member of
 	// SyncActionType and therefore cannot be passed to commitAction. Failed execution is
 	// handled by the caller, which simply does not call commitAction for failed actions.
