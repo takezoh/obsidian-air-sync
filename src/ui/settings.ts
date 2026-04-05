@@ -116,8 +116,7 @@ export class AirSyncSettingTab extends PluginSettingTab {
 							.split("\n")
 							.map((line) => line.trim())
 							.filter((line) => line.length > 0)
-							.filter((line) => line.startsWith("."))
-							.filter((line) => line.replace(/\/+$/, "") !== ".airsync");
+							.filter((line) => line.startsWith("."));
 						this.plugin.settings.syncDotPaths = [...new Set(paths)];
 						await this.plugin.saveSettings();
 					})

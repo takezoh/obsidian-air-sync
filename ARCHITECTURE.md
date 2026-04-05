@@ -20,6 +20,7 @@ Sync should be invisible -- like air. When the user opens Obsidian, changes sinc
 src/
 ├── main.ts                          # Plugin entry point (lifecycle only)
 ├── settings.ts                      # AirSyncSettings type & defaults
+├── constants.ts                     # Shared constants (AIRSYNC_DIR)
 ├── sync/
 │   ├── types.ts                     # SyncRecord, MixedEntity, SyncAction, SyncPlan, SafetyCheckResult
 │   ├── local-tracker.ts             # LocalChangeTracker — in-memory dirty path set
@@ -54,8 +55,7 @@ src/
 │   ├── secret-store.ts              # ISecretStore — Obsidian SecretStorage wrapper
 │   ├── token-store.ts               # Token read/write/clear helpers for SecretStorage
 │   ├── local/
-│   │   ├── index.ts                 # LocalFs — Obsidian Vault API wrapper
-│   │   └── dot-path-adapter.ts      # DotPathAdapter — raw adapter for dot-prefixed paths
+│   │   └── index.ts                 # LocalFs — Vault API with raw adapter fallback for dot-prefixed paths
 │   ├── googledrive/
 │   │   ├── index.ts                 # GoogleDriveFs — IFileSystem with metadata cache
 │   │   ├── client.ts                # DriveClient — Drive REST API v3 client
@@ -271,6 +271,15 @@ Key design points:
 - `getChangedPaths()` is optional. When implemented (e.g. Google Drive changes.list), it enables the hot change-detection path. The `renamed` field allows backends to report file moves for native rename optimization.
 - `delete()` is idempotent. Backends may use soft deletion (trash).
 - `write()` auto-creates parent directories.
+
+## LocalFs (fs/local/index.ts)
+
+`LocalFs` implements `IFileSystem` backed by the Obsidian `Vault` API. Obsidian excludes dot-prefixed paths (`.templates/`, `.airsync/`, etc.) from its file index, so `LocalFs` applies a two-tier access strategy:
+
+- **Operations** (`stat`, `read`, `write`, `delete`, `rename`, `listDir`): vault API first; if the path is absent from the vault index, fall back to the raw `vault.adapter`. This covers both user-configured dot paths and the internal `.airsync/` directory without an explicit allowlist.
+- **Sync enumeration** (`list`): returns all vault-indexed files, then appends files from each directory in `syncDotPaths` (user setting) via `vault.adapter`. The `AIRSYNC_DIR` (`.airsync`) directory is intentionally **excluded** from enumeration — it is internal plugin storage and is never synced unless the user explicitly adds it to *dot-prefixed folders to sync* in settings.
+
+The `write()` path uses `path.startsWith(".")` to route new dot-prefixed files to `vault.adapter.writeBinary()`, since they cannot be created via the vault API.
 
 ## IBackendProvider / IAuthProvider
 
