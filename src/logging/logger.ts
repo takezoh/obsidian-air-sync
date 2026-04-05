@@ -1,4 +1,5 @@
 import type { AirSyncSettings } from "../settings";
+import { AIRSYNC_DIR } from "../constants";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -110,14 +111,14 @@ export class Logger {
 		this.buffer = [];
 
 		const date = new Date().toISOString().slice(0, 10);
-		const logsDir = ".airsync/logs";
+		const logsDir = `${AIRSYNC_DIR}/logs`;
 		const dir = `${logsDir}/${this._deviceName}`;
 		const filePath = `${dir}/${date}.log`;
 
 		try {
 			// Ensure directories exist
-			if (!(await this._adapter.exists(".airsync"))) {
-				await this._adapter.mkdir(".airsync");
+			if (!(await this._adapter.exists(AIRSYNC_DIR))) {
+				await this._adapter.mkdir(AIRSYNC_DIR);
 			}
 			if (!(await this._adapter.exists(logsDir))) {
 				await this._adapter.mkdir(logsDir);
