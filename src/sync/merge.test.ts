@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isMergeEligible, threeWayMerge } from "./merge";
+import { isMergeEligible, threeWayMerge, threeWayMergeOptimize } from "./merge";
 
 describe("isMergeEligible", () => {
 	it("returns true for markdown files within size limit", () => {
@@ -234,5 +234,92 @@ describe("threeWayMerge", () => {
 
 		expect(result.hasConflicts).toBe(true);
 		expect(result.content).not.toContain("||||||| BASE");
+	});
+
+	it("wraps entire local and remote content in one conflict block (baseline behavior)", () => {
+		// Even though only line 2 conflicts, current behavior wraps the entire
+		// file — including the common prefix 'header' and suffix 'footer' — in
+		// one pair of conflict markers.
+		const base   = "header\noriginal\nfooter";
+		const local  = "header\nlocal-edit\nfooter";
+		const remote = "header\nremote-edit\nfooter";
+
+		const result = threeWayMerge(base, local, remote);
+
+		expect(result.hasConflicts).toBe(true);
+		// The common lines appear inside the markers, not outside them.
+		const beforeLocal = result.content.indexOf("<<<<<<< LOCAL");
+		const afterRemote = result.content.indexOf(">>>>>>> REMOTE") + ">>>>>>> REMOTE".length;
+		const outsideMarkers = result.content.slice(0, beforeLocal) + result.content.slice(afterRemote);
+		expect(outsideMarkers.trim()).toBe(""); // nothing outside the single conflict block
+		// Both full versions are present inside the block
+		expect(result.content).toContain("header\nlocal-edit\nfooter");
+		expect(result.content).toContain("header\nremote-edit\nfooter");
+	});
+});
+
+describe("threeWayMergeOptimize", () => {
+	it("factors common prefix and suffix outside conflict markers", () => {
+		const base   = "header\noriginal\nfooter";
+		const local  = "header\nlocal-edit\nfooter";
+		const remote = "header\nremote-edit\nfooter";
+
+		const result = threeWayMergeOptimize(base, local, remote);
+
+		expect(result.hasConflicts).toBe(true);
+		// Common lines appear outside the markers.
+		expect(result.content).toBe(
+			"header\n<<<<<<< LOCAL\nlocal-edit\n=======\nremote-edit\n>>>>>>> REMOTE\nfooter"
+		);
+	});
+
+	it("produces multiple conflict blocks when changes are at different sites", () => {
+		const base   = "A\nB\nC\nD\nE";
+		const local  = "A\nX\nC\nY\nE";
+		const remote = "A\nB2\nC\nD2\nE";
+
+		const result = threeWayMergeOptimize(base, local, remote);
+
+		expect(result.hasConflicts).toBe(true);
+		// Two separate conflict blocks, with "A", "C", "E" outside markers.
+		expect(result.content).toBe(
+			"A\n<<<<<<< LOCAL\nX\n=======\nB2\n>>>>>>> REMOTE\nC\n<<<<<<< LOCAL\nY\n=======\nD2\n>>>>>>> REMOTE\nE"
+		);
+	});
+
+	it("merges non-overlapping changes cleanly (no false conflicts)", () => {
+		const base   = "A\nB\nC";
+		const local  = "A\nX\nC";
+		const remote = "A\nB\nZ";
+
+		const result = threeWayMergeOptimize(base, local, remote);
+
+		expect(result.success).toBe(true);
+		expect(result.hasConflicts).toBe(false);
+		expect(result.content).toBe("A\nX\nZ");
+	});
+
+	it("preserves CRLF line endings in optimized conflict output", () => {
+		const base   = "header\r\noriginal\r\nfooter";
+		const local  = "header\r\nlocal-edit\r\nfooter";
+		const remote = "header\r\nremote-edit\r\nfooter";
+
+		const result = threeWayMergeOptimize(base, local, remote);
+
+		expect(result.hasConflicts).toBe(true);
+		expect(result.content).toContain("\r\n");
+		expect(result.content).not.toMatch(/(?<!\r)\n/); // no bare LF
+	});
+
+	it("handles identical changes (no conflict) same as threeWayMerge", () => {
+		const base   = "A\nB\nC";
+		const local  = "A\nX\nC";
+		const remote = "A\nX\nC";
+
+		const result = threeWayMergeOptimize(base, local, remote);
+
+		expect(result.success).toBe(true);
+		expect(result.hasConflicts).toBe(false);
+		expect(result.content).toBe("A\nX\nC");
 	});
 });

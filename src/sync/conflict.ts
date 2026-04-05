@@ -4,14 +4,14 @@ import type { SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
 import type { Logger } from "../logging/logger";
 import { getFileExtension } from "../utils/path";
-import { isMergeEligible, threeWayMerge } from "./merge";
+import { isMergeEligible, threeWayMerge, threeWayMergeOptimize } from "./merge";
 
 /** Internal strategy used by the low-level conflict resolver */
-export type ResolverStrategy = "keep_newer" | "keep_local" | "keep_remote" | "duplicate" | "auto_merge";
+export type ResolverStrategy = "keep_newer" | "keep_local" | "keep_remote" | "duplicate" | "auto_merge" | "auto_merge_optimize";
 
 export interface ConflictResolutionResult {
 	/** The action that was taken */
-	action: "kept_local" | "kept_remote" | "duplicated" | "merged";
+	action: "kept_local" | "kept_remote" | "duplicated" | "merged" | "opti_merged";
 	/** If a duplicate was created, its path */
 	duplicatePath?: string;
 	/** True if the merged result contains unresolved conflict markers */
@@ -53,6 +53,9 @@ export async function resolveWithStrategy(
 
 		case "auto_merge":
 			return attemptThreeWayMerge(ctx, fallback ?? "keep_newer");
+
+		case "auto_merge_optimize":
+			return attemptThreeWayMerge(ctx, fallback ?? "keep_newer", true);
 	}
 }
 
@@ -198,6 +201,7 @@ function insertConflictSuffix(path: string, seq: number | string): string {
 async function attemptThreeWayMerge(
 	ctx: ConflictContext,
 	fallback: FallbackResolver = "keep_newer",
+	optimize = false,
 ): Promise<ConflictResolutionResult> {
 	const { path, localFs, remoteFs, local, remote, prevSync, stateStore, logger } = ctx;
 
@@ -234,7 +238,9 @@ async function attemptThreeWayMerge(
 
 	let mergeResult;
 	try {
-		mergeResult = threeWayMerge(baseText, localText, remoteText);
+		mergeResult = optimize
+			? threeWayMergeOptimize(baseText, localText, remoteText)
+			: threeWayMerge(baseText, localText, remoteText);
 	} catch (mergeErr) {
 		logger?.warn("3-way merge failed, falling back", { path, error: mergeErr instanceof Error ? mergeErr.message : String(mergeErr) });
 		const fb = await resolveFallback();
@@ -267,7 +273,7 @@ async function attemptThreeWayMerge(
 	}
 
 	return {
-		action: "merged",
+		action: optimize ? "opti_merged" : "merged",
 		hasConflictMarkers: mergeResult.hasConflicts,
 	};
 }

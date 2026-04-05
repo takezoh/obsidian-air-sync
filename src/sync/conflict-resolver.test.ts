@@ -204,6 +204,55 @@ describe("resolveConflict", () => {
 		});
 	});
 
+	describe("auto_merge_optimize strategy", () => {
+		it("reports opti_merged action and minimal conflict markers", async () => {
+			const base       = "header\noriginal\nfooter\n";
+			const localText  = "header\nlocal-edit\nfooter\n";
+			const remoteText = "header\nremote-edit\nfooter\n";
+
+			addFile(localFs, "file.md", localText, 2000);
+			addFile(remoteFs, "file.md", remoteText, 2000);
+
+			const stateStore = createMockStateStore();
+			stateStore.contents.set("file.md", new TextEncoder().encode(base).buffer.slice(0));
+
+			const baseline: SyncRecord = {
+				path: "file.md", hash: "", localMtime: 1000, remoteMtime: 1000,
+				localSize: base.length, remoteSize: base.length, syncedAt: 900,
+			};
+
+			const result = await resolveConflict(
+				{
+					path: "file.md", localFs, remoteFs,
+					local: localFs.files.get("file.md")!.entity,
+					remote: remoteFs.files.get("file.md")!.entity,
+					baseline, stateStore,
+				},
+				"auto_merge_optimize",
+			);
+
+			expect(result.action).toBe("opti_merged");
+			expect(result.hasConflictMarkers).toBe(true);
+			// Common lines are outside the conflict markers.
+			const merged = readText(localFs, "file.md");
+			expect(merged).toBe(
+				"header\n<<<<<<< LOCAL\nlocal-edit\n=======\nremote-edit\n>>>>>>> REMOTE\nfooter\n"
+			);
+		});
+
+		it("falls back to newer-wins when baseline is missing", async () => {
+			const local  = addFile(localFs, "file.md", "local content", 2000);
+			const remote = addFile(remoteFs, "file.md", "remote content", 1000);
+
+			const result = await resolveConflict(
+				{ path: "file.md", localFs, remoteFs, local, remote },
+				"auto_merge_optimize",
+			);
+
+			expect(result.action).toBe("kept_local");
+		});
+	});
+
 	describe("ask strategy", () => {
 		it("falls back to duplicate when no app is provided", async () => {
 			const local = addFile(localFs, "file.md", "local content", 2000);
