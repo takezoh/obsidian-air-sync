@@ -204,6 +204,9 @@ async function attemptThreeWayMerge(
 	optimize = false,
 ): Promise<ConflictResolutionResult> {
 	const { path, localFs, remoteFs, local, remote, prevSync, stateStore, logger } = ctx;
+	const tag = optimize ? "auto_merge_optimize" : "auto_merge";
+
+	logger?.debug(`${tag}: attempting 3-way merge`, { path });
 
 	const resolveFallback = async (): Promise<ResolverStrategy> => {
 		return typeof fallback === "function" ? await fallback() : fallback;
@@ -212,6 +215,13 @@ async function attemptThreeWayMerge(
 	// Must have both sides present and a previous sync record
 	if (!local || !remote || !prevSync) {
 		const fb = await resolveFallback();
+		logger?.debug(`${tag}: missing prerequisites, falling back`, {
+			path,
+			hasLocal: !!local,
+			hasRemote: !!remote,
+			hasPrevSync: !!prevSync,
+			fallback: fb,
+		});
 		return resolveWithStrategy(ctx, fb);
 	}
 
@@ -219,11 +229,22 @@ async function attemptThreeWayMerge(
 	const prevSyncContent = stateStore ? await stateStore.getContent(path) : undefined;
 	if (!prevSyncContent) {
 		const fb = await resolveFallback();
+		logger?.debug(`${tag}: no base content in state store, falling back`, {
+			path,
+			hasStateStore: !!stateStore,
+			fallback: fb,
+		});
 		return resolveWithStrategy(ctx, fb);
 	}
 
 	if (!isMergeEligible(path, Math.max(local.size, remote.size))) {
 		const fb = await resolveFallback();
+		logger?.debug(`${tag}: file not eligible for merge, falling back`, {
+			path,
+			localSize: local.size,
+			remoteSize: remote.size,
+			fallback: fb,
+		});
 		return resolveWithStrategy(ctx, fb);
 	}
 
@@ -242,15 +263,26 @@ async function attemptThreeWayMerge(
 			? threeWayMergeOptimize(baseText, localText, remoteText)
 			: threeWayMerge(baseText, localText, remoteText);
 	} catch (mergeErr) {
-		logger?.warn("3-way merge failed, falling back", { path, error: mergeErr instanceof Error ? mergeErr.message : String(mergeErr) });
+		logger?.warn(`${tag}: merge threw, falling back`, { path, error: mergeErr instanceof Error ? mergeErr.message : String(mergeErr) });
 		const fb = await resolveFallback();
 		return resolveWithStrategy(ctx, fb);
 	}
+
+	logger?.debug(`${tag}: merge complete`, {
+		path,
+		success: mergeResult.success,
+		hasConflicts: mergeResult.hasConflicts,
+		baseLines: baseText.split("\n").length,
+		localLines: localText.split("\n").length,
+		remoteLines: remoteText.split("\n").length,
+		mergedLines: mergeResult.content.split("\n").length,
+	});
 
 	// For JSON/Canvas files, validate the merge result
 	const ext = getFileExtension(path);
 	if (ext === ".json" || ext === ".canvas") {
 		if (mergeResult.hasConflicts || !isValidJson(mergeResult.content)) {
+			logger?.debug(`${tag}: JSON/Canvas merge invalid, falling back to duplicate`, { path });
 			return duplicate(path, localFs, remoteFs, local, remote);
 		}
 	}
