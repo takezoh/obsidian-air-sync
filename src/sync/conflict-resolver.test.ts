@@ -173,7 +173,7 @@ describe("resolveConflict", () => {
 			const remote = addFile(remoteFs, "file.md", "remote ver", 1000);
 			remote.hash = "bbb";
 
-			// No stateStore → skips 3-way merge path → newer-wins
+			// No stateStore → skips 3-way merge path → keep_newer → duplicate tie-break
 			const result = await resolveConflict(
 				{ path: "file.md", localFs, remoteFs, local, remote },
 				"auto_merge",
