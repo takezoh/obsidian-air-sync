@@ -29,14 +29,14 @@ export interface MixedEntity {
 }
 
 /** User-facing strategy for resolving conflicts */
-export type ConflictStrategy = "auto_merge" | "duplicate" | "ask";
+export type ConflictStrategy = "auto_merge" | "auto_merge_optimize" | "duplicate" | "ask";
 
 /** A record of a conflict resolution for audit/history purposes */
 export interface ConflictRecord {
 	path: string;
 	actionType: SyncActionType;
 	strategy: ConflictStrategy;
-	action: "kept_local" | "kept_remote" | "duplicated" | "merged";
+	action: "kept_local" | "kept_remote" | "duplicated" | "merged" | "opti_merged";
 	local?: FileEntity;
 	remote?: FileEntity;
 	duplicatePath?: string;
