@@ -61,7 +61,7 @@ describe("LocalFs", () => {
 
 	describe("delete (.airsync paths)", () => {
 		it("deletes a .airsync file via adapter.remove", async () => {
-			const { vault, fs } = createLocalFs();
+			const { vault, fs } = createLocalFs([".airsync"]);
 			await vault.adapter.writeBinary(".airsync/logs/test.log", new ArrayBuffer(8));
 			const removeSpy = vi.spyOn(vault.adapter, "remove");
 
@@ -71,7 +71,7 @@ describe("LocalFs", () => {
 		});
 
 		it("deletes a .airsync directory via adapter.rmdir", async () => {
-			const { vault, fs } = createLocalFs();
+			const { vault, fs } = createLocalFs([".airsync"]);
 			// Create a folder with children on the adapter
 			const vaultInternal = vault as unknown as { files: Map<string, unknown> };
 			vaultInternal.files.set(".airsync", { type: "folder" });
@@ -85,14 +85,14 @@ describe("LocalFs", () => {
 		});
 
 		it("is idempotent for non-existent .airsync path", async () => {
-			const { fs } = createLocalFs();
+			const { fs } = createLocalFs([".airsync"]);
 			await expect(fs.delete(".airsync/missing")).resolves.not.toThrow();
 		});
 	});
 
 	describe("stat (.airsync paths)", () => {
 		it("returns FileEntity with hash for a .airsync file", async () => {
-			const { vault, fs } = createLocalFs();
+			const { vault, fs } = createLocalFs([".airsync"]);
 			const content = new TextEncoder().encode("log data").buffer;
 			await vault.adapter.writeBinary(".airsync/logs/test.log", content);
 
@@ -105,7 +105,7 @@ describe("LocalFs", () => {
 		});
 
 		it("returns FileEntity for a .airsync directory", async () => {
-			const { vault, fs } = createLocalFs();
+			const { vault, fs } = createLocalFs([".airsync"]);
 			const vaultInternal = vault as unknown as { files: Map<string, unknown> };
 			vaultInternal.files.set(".airsync", { type: "folder" });
 
@@ -116,7 +116,7 @@ describe("LocalFs", () => {
 		});
 
 		it("returns null for non-existent .airsync path", async () => {
-			const { fs } = createLocalFs();
+			const { fs } = createLocalFs([".airsync"]);
 			const entity = await fs.stat(".airsync/missing");
 			expect(entity).toBeNull();
 		});
@@ -124,7 +124,7 @@ describe("LocalFs", () => {
 
 	describe("read (.airsync paths)", () => {
 		it("reads a .airsync file via adapter", async () => {
-			const { vault, fs } = createLocalFs();
+			const { vault, fs } = createLocalFs([".airsync"]);
 			const content = new TextEncoder().encode("log data").buffer;
 			await vault.adapter.writeBinary(".airsync/test.log", content);
 
@@ -133,14 +133,14 @@ describe("LocalFs", () => {
 		});
 
 		it("throws for non-existent .airsync file", async () => {
-			const { fs } = createLocalFs();
+			const { fs } = createLocalFs([".airsync"]);
 			await expect(fs.read(".airsync/missing")).rejects.toThrow("File not found: .airsync/missing");
 		});
 	});
 
 	describe("write (.airsync paths)", () => {
 		it("writes a .airsync file via adapter", async () => {
-			const { vault, fs } = createLocalFs();
+			const { vault, fs } = createLocalFs([".airsync"]);
 			const content = new TextEncoder().encode("data").buffer;
 
 			const entity = await fs.write(".airsync/test.log", content, 12345);
