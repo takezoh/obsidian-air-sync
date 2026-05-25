@@ -5,10 +5,10 @@ import { AuthError } from "../errors";
 
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
-const AUTH_SERVER_URL = "https://auth-smartsync.takezo.dev";
+const AUTH_SERVER_URL = "https://auth-airsync.takezo.dev";
 const SCOPES = "https://www.googleapis.com/auth/drive.file";
 export const DEFAULT_CUSTOM_SCOPE = SCOPES;
-export const DEFAULT_CUSTOM_REDIRECT_URI = "https://smartsync.takezo.dev/callback";
+export const DEFAULT_CUSTOM_REDIRECT_URI = "https://airsync.takezo.dev/callback";
 const REDIRECT_URI = `${AUTH_SERVER_URL}/google/callback`;
 
 const GOOGLE_CLIENT_ID = "135801498656-lfjor2ml3v26t9l63mkoka0bndgl9eue.apps.googleusercontent.com";
@@ -172,7 +172,7 @@ abstract class GoogleAuthBase implements IGoogleAuth {
 
 /**
  * Handles OAuth 2.0 authentication for Google Drive.
- * Token exchange is handled server-side by auth-smartsync.takezo.dev
+ * Token exchange is handled server-side by auth-airsync.takezo.dev
  * (confidential client with client_secret). The plugin only manages
  * CSRF state verification and token storage.
  */
