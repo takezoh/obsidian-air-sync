@@ -2,22 +2,16 @@
 
 Sync your Obsidian vault bidirectionally with cloud storage, resolving conflicts and concurrent edits automatically via 3-way merge.
 
-Currently supports Google Drive as a storage backend.
+Works on both desktop and mobile, and currently supports Google Drive as a storage backend.
 
-> **Requires a Google account.** This plugin communicates with Google Drive API (`googleapis.com`) for file sync and with an auth server (`auth-smartsync.takezo.dev`) for OAuth token exchange. No vault data is sent to the auth server — it only handles authentication tokens. Custom OAuth lets you manage authorization independently.
+> **Requires a Google account.** This plugin communicates with Google Drive API (`googleapis.com`) for file sync and with an auth server (`auth-airsync.takezo.dev`) for OAuth token exchange. No vault data is sent to the auth server — it only handles authentication tokens. Custom OAuth lets you manage authorization independently.
 
 ## Features
 
-- **Bidirectional sync**: Push local changes to remote, pull remote changes to local
-- **Auto-sync**: Triggers on vault file changes, app foreground/focus, and network restore — fully event-driven with no periodic timer
-- **Incremental sync**: After the initial full scan, only changed files are synced (hot/warm detection)
-- **Conflict detection**: 3-state comparison (local / remote / last sync record) accurately detects changes even when both sides are edited
-- **Conflict resolution**: 3 strategies — auto merge (3-way merge → keep newer fallback) / duplicate / ask
-- **3-way merge**: For concurrent edits on text files, automatically merges changes using the last-synced content as a base
-- **Active file priority sync**: When opening a file, immediately pulls the latest version if remote has changed
-- **Exclude patterns**: Specify files/folders to exclude via glob patterns (e.g. `*.zip`, `large-assets/**`)
-- **Status bar**: Real-time sync status display (synced / syncing / error / not connected)
-- **Ribbon icon**: One-click manual sync
+- **Invisible two-way sync**: Local and remote stay in sync automatically on file changes, app focus, and network restore — you never have to trigger it
+- **Always the latest version**: Opening a note immediately pulls the newest version if it changed on another device
+- **Safe conflict resolution**: Concurrent edits to text files are merged automatically via 3-way merge; for everything else, choose auto merge, keep both copies, or be asked each time — with a built-in bias toward keeping files over deleting them
+- **Control what syncs**: Exclude files and folders with glob patterns (e.g. `*.zip`, `large-assets/**`)
 
 ## Google Drive setup
 
