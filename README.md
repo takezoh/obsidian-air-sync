@@ -1,62 +1,59 @@
 # Air Sync
 
-Sync your Obsidian vault bidirectionally with cloud storage, resolving conflicts and concurrent edits automatically via 3-way merge.
+Your Obsidian notes, always up to date on every device — without ever thinking about sync. Edit on your laptop, pick up your phone, and the latest version is already there.
 
-Works on both desktop and mobile, and currently supports Google Drive as a storage backend.
+Works on desktop and mobile, powered by your own Google Drive.
 
-> **Requires a Google account.** This plugin communicates with Google Drive API (`googleapis.com`) for file sync and with an auth server (`auth-airsync.takezo.dev`) for OAuth token exchange. No vault data is sent to the auth server — it only handles authentication tokens. Custom OAuth lets you manage authorization independently.
+> **Requires a Google account.**
 
 ## Features
 
-- **Invisible two-way sync**: Local and remote stay in sync automatically on file changes, app focus, and network restore — you never have to trigger it
-- **Always the latest version**: Opening a note immediately pulls the newest version if it changed on another device
-- **Safe conflict resolution**: Concurrent edits to text files are merged automatically via 3-way merge; for everything else, choose auto merge, keep both copies, or be asked each time — with a built-in bias toward keeping files over deleting them
-- **Control what syncs**: Exclude files and folders with glob patterns (e.g. `*.zip`, `large-assets/**`)
+- **Sync that disappears**: Your vault stays in sync on its own — after every edit, when you switch back to Obsidian, and the moment your connection comes back. You never press a button.
+- **Always the latest version**: Open a note and you instantly see the newest version, even if you just changed it on another device.
+- **Never lose work to a conflict**: Edits made on two devices at once are merged for you. When they truly clash, Air Sync keeps every version safe instead of overwriting — you choose how, and it always errs toward keeping files rather than deleting them.
+- **Set up in a minute**: Connect your Google account once. There's almost nothing to configure.
+- **Control what syncs**: Keep large or private files out of sync with simple patterns (e.g. `*.zip`, `large-assets/**`).
 
-## Google Drive setup
+## Getting started
 
-1. Open the plugin settings (**Settings → Air Sync**)
-2. Click the **Connect to Google Drive** button
-3. Complete the Google account authorization in the browser
-4. The plugin automatically receives the callback via `obsidian://` protocol handler
-5. A remote vault folder is created automatically in your Google Drive
+> **Requires a Google account.**
 
-If the automatic callback fails, try disconnecting and reconnecting from the plugin settings.
+1. Open the plugin settings (**Settings → Air Sync**).
+2. Click **Connect to Google Drive**.
+3. Approve access in your browser.
 
-The first sync after connecting performs a full scan of the Drive folder. This may take some time depending on vault size. Subsequent syncs use incremental change detection and are much faster.
+That's it — Air Sync creates a folder in your Google Drive and starts syncing on its own.
 
-> **Syncing across devices**: The remote folder is matched by your Obsidian vault's name. To sync the same vault on another device, connect it to the same Google account and give the vault the same name — it will then link to the existing remote folder. A vault with a different name creates a separate remote vault that won't sync with the others.
+The first sync scans your Drive folder, so it may take a little while. After that, syncing is fast.
 
-### Custom OAuth (advanced)
-
-The built-in OAuth uses the `drive.file` scope, which only allows access to files created by the plugin itself. With custom OAuth, you can use your own Google Cloud OAuth client to manage authorization independently.
-
-The authorization code exchange is protected by PKCE — the code cannot be used without the verifier held only by the plugin.
-
-> **Note**: Tokens are stored in Obsidian's secret storage, which is accessible to other plugins. The built-in OAuth limits exposure with the `drive.file` scope. Custom OAuth may increase risk depending on the scope you configure.
-
-### Troubleshooting
-
-- **Authentication completes but sync doesn't start**: Restart the plugin (disable → enable in Community plugins settings), then try syncing manually
-- **Token error after successful authorization**: Check that the device has a stable network connection — token exchange requires connectivity immediately after authorization
-- **Protocol handler not triggered**: Try disconnecting and reconnecting from the plugin settings
+> **Using more than one device?** Air Sync links each device to the same Drive folder by your vault's name. Connect the other device to the same Google account and give the vault the same name, and they'll sync together. A different vault name creates a separate remote that won't sync with the others.
 
 ## Settings
+
+Air Sync works out of the box — most people never change these.
 
 | Setting | Description | Default |
 |---------|-------------|---------|
 | Backend | Storage backend for sync | Google Drive (or Google Drive custom OAuth) |
-| Conflict strategy | Resolution strategy for conflicts (see below) | Auto merge |
+| Conflict strategy | How conflicting edits are resolved (see [Conflict resolution strategies](#conflict-resolution-strategies)) | Auto merge |
 
-### Advanced
+## Commands
 
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Dot-prefixed paths to sync | Dot-prefixed folders to include in sync (e.g. `.templates`) | (none) |
-| Ignore patterns | Glob patterns to exclude (one per line) | Desktop: (none), Mobile: `.md`/`.canvas`/`.base` only |
-| Mobile max file size | Skip files larger than this on mobile | 10 MB |
-| Enable logging | Write sync logs to `.airsync/` in your vault | Off |
-| Log level | Minimum log level (debug / info / warn / error) | info |
+| Command | Description |
+|---------|-------------|
+| `Air Sync: Sync now` | Run a sync manually |
+
+---
+
+## Advanced
+
+### Custom OAuth
+
+By default, Air Sync uses the `drive.file` scope, which only allows access to files the plugin itself created. With custom OAuth, you can use your own Google Cloud OAuth client and manage authorization independently.
+
+The authorization code exchange is protected by PKCE — the code cannot be used without the verifier held only by the plugin.
+
+> **Note**: Tokens are stored in Obsidian's secret storage, which is accessible to other plugins. The built-in OAuth limits exposure with the `drive.file` scope. Custom OAuth may increase risk depending on the scope you configure.
 
 ### Conflict resolution strategies
 
@@ -84,11 +81,25 @@ Example:
 .obsidian/plugins/*/data.json
 ```
 
-## Commands
+### Advanced settings
 
-| Command | Description |
-|---------|-------------|
-| `Air Sync: Sync now` | Run sync manually |
+| Setting | Description | Default |
+|---------|-------------|---------|
+| Dot-prefixed paths to sync | Dot-prefixed folders to include in sync (e.g. `.templates`) | (none) |
+| Ignore patterns | Glob patterns to exclude (one per line) | Desktop: (none), Mobile: `.md`/`.canvas`/`.base` only |
+| Mobile max file size | Skip files larger than this on mobile | 10 MB |
+| Enable logging | Write sync logs to `.airsync/` in your vault | Off |
+| Log level | Minimum log level (debug / info / warn / error) | info |
+
+## Troubleshooting
+
+- **Authentication completes but sync doesn't start**: Restart the plugin (disable → enable in Community plugins settings), then try syncing manually.
+- **Token error after successful authorization**: Check that the device has a stable network connection — token exchange requires connectivity immediately after authorization.
+- **The browser callback didn't return to Obsidian**: Try disconnecting and reconnecting from the plugin settings.
+
+## Privacy & network use
+
+> Air Sync connects to Google Drive (`googleapis.com`) to sync your files, and to a small auth server (`auth-airsync.takezo.dev`) that handles sign-in only. Your vault data is never sent to the auth server.
 
 ## Disclaimer
 
