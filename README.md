@@ -1,6 +1,6 @@
 # Air Sync
 
-Your Obsidian notes, always up to date on every device — without ever thinking about sync. Edit on your laptop, pick up your phone, and the latest version is already there.
+Your Obsidian notes, always up to date on every device — without ever thinking about sync. Edit on your laptop, pick up your phone, and it's caught up before you start typing.
 
 Works on desktop and mobile, powered by your own Google Drive.
 
