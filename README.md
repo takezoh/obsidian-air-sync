@@ -8,11 +8,11 @@ Works on desktop and mobile, powered by your own Google Drive.
 
 ## Features
 
-- **Sync that disappears**: Your vault stays in sync on its own — after every edit, when you switch back to Obsidian, and the moment your connection comes back. You never press a button.
+- **Sync you never notice**: Your vault stays in sync on its own — after every edit, when you switch back to Obsidian, and the moment your connection comes back. You never press a button.
 - **Always the latest version**: Open a note and it pulls in the newest version if it changed on another device.
-- **Never lose work to a conflict**: Edits made on two devices at once are merged for you. When they truly clash, Air Sync keeps every version safe instead of overwriting — you choose how, and it always errs toward keeping files rather than deleting them.
+- **Never lose work to a conflict**: Edits made on two devices at once are merged for you. When they truly clash, Air Sync keeps every version safe instead of overwriting — you choose how, and it always keeps files rather than deleting them when in doubt.
 - **Set up in a minute**: Connect your Google account once. There's almost nothing to configure.
-- **Control what syncs**: Keep large or private files out of sync with simple patterns (e.g. `*.zip`, `large-assets/**`).
+- **Control what syncs**: Keep large or private files from syncing, using simple patterns (e.g. `*.zip`, `large-assets/**`).
 
 ## Getting started
 
@@ -26,11 +26,11 @@ That's it — Air Sync creates a folder in your Google Drive and starts syncing 
 
 The first sync scans your Drive folder, so it may take a little while. After that, syncing is fast.
 
-> **Using more than one device?** Air Sync links each device to the same Drive folder by your vault's name. Connect the other device to the same Google account and give the vault the same name, and they'll sync together. A different vault name creates a separate remote that won't sync with the others.
+> **Using more than one device?** Air Sync links each device to the same Drive folder by your vault's name. Connect the other device to the same Google account and give the vault the same name, and they'll sync together. A different vault name creates a separate folder in Drive that won't sync with the others.
 
 ## Settings
 
-Air Sync works out of the box — most people never change these.
+The defaults work for most people — you rarely need to change these.
 
 | Setting | Description | Default |
 |---------|-------------|---------|
