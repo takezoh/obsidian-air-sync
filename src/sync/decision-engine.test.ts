@@ -1,23 +1,60 @@
 import { describe, it, expect } from "vitest";
 import { planSync } from "./decision-engine";
 import type { FileEntity } from "../fs/types";
-import type { MixedEntity, SyncRecord } from "./types";
+import type { MixedEntity, SyncRecord, SyncActionType } from "./types";
 
-function makeFile(overrides: Partial<FileEntity> = {}): FileEntity {
+/**
+ * Decision table tests — the most safety-critical unit in the pipeline.
+ *
+ * `decideAction()` is a pure function of (prevSync, local, remote). The columns
+ * `localChanged` / `remoteChanged` are NOT raw inputs: they are computed by
+ * `hasChanged()` / `hasRemoteChanged()` (change-compare.ts), each of which can
+ * reach the same boolean via several mechanisms:
+ *   - mtime + size comparison       (fast path)
+ *   - same-size content edit        (mtime+size match but hash differs)
+ *   - backendMeta.contentChecksum   (remote only — Drive md5 / Dropbox content_hash)
+ *   - content hash                  (sha256)
+ *   - conservative fallback         (undeterminable → treated as "changed")
+ *
+ * This suite therefore covers two layers:
+ *   1. Every row of docs/sync-pipeline.md "Decision table" (1:1, canonical case).
+ *   2. Mechanism invariance — the chosen Action must be stable regardless of
+ *      WHICH predicate pathway makes localChanged / remoteChanged true or false.
+ *
+ * Note the predicate asymmetry exercised below: in the "mtime/size differ"
+ * branch, hasChanged() falls back to `hash`, but hasRemoteChanged() falls back
+ * to `backendMeta.contentChecksum` (not `hash`). Tests are constructed to honour
+ * this so the expectations match the real implementation.
+ */
+
+const BASE_HASH = "h-base";
+
+function local(overrides: Partial<FileEntity> = {}): FileEntity {
 	return {
-		path: "test.md",
+		path: "f.md",
 		isDirectory: false,
 		size: 100,
 		mtime: 1000,
-		hash: "abc",
+		hash: BASE_HASH,
 		...overrides,
 	};
 }
 
-function makeRecord(overrides: Partial<SyncRecord> = {}): SyncRecord {
+function remote(overrides: Partial<FileEntity> = {}): FileEntity {
 	return {
-		path: "test.md",
-		hash: "abc",
+		path: "f.md",
+		isDirectory: false,
+		size: 100,
+		mtime: 1000,
+		hash: BASE_HASH,
+		...overrides,
+	};
+}
+
+function baseline(overrides: Partial<SyncRecord> = {}): SyncRecord {
+	return {
+		path: "f.md",
+		hash: BASE_HASH,
 		localMtime: 1000,
 		remoteMtime: 1000,
 		localSize: 100,
@@ -27,217 +64,417 @@ function makeRecord(overrides: Partial<SyncRecord> = {}): SyncRecord {
 	};
 }
 
-describe("planSync", () => {
-	it("returns empty plan for empty input", () => {
+/** Decide the single action for one entry (null = skipped / no-op). */
+function decide(entry: MixedEntity): SyncActionType | null {
+	return planSync([entry]).actions[0]?.action ?? null;
+}
+
+interface RowCase {
+	doc: string;
+	name: string;
+	entry: MixedEntity;
+	expected: SyncActionType | null;
+}
+
+// One canonical case per row of docs/sync-pipeline.md "Decision table".
+const TABLE: RowCase[] = [
+	// --- prevSync present ---
+	{
+		doc: "yes | exists | exists | yes | yes",
+		name: "both changed → conflict",
+		entry: {
+			path: "f.md",
+			local: local({ mtime: 2000, hash: "h-local" }),
+			remote: remote({ mtime: 3000, hash: "h-remote" }),
+			prevSync: baseline(),
+		},
+		expected: "conflict",
+	},
+	{
+		doc: "yes | exists | exists | yes | no",
+		name: "local changed, remote unchanged → push",
+		entry: {
+			path: "f.md",
+			local: local({ mtime: 2000, hash: "h-local" }),
+			remote: remote(),
+			prevSync: baseline(),
+		},
+		expected: "push",
+	},
+	{
+		doc: "yes | exists | exists | no | yes",
+		name: "local unchanged, remote changed → pull",
+		entry: {
+			path: "f.md",
+			local: local(),
+			remote: remote({ mtime: 2000, hash: "h-remote" }),
+			prevSync: baseline(),
+		},
+		expected: "pull",
+	},
+	{
+		doc: "yes | exists | exists | no | no",
+		name: "neither changed → skip",
+		entry: {
+			path: "f.md",
+			local: local(),
+			remote: remote(),
+			prevSync: baseline(),
+		},
+		expected: null,
+	},
+	{
+		doc: "yes | exists | missing | yes | --",
+		name: "remote deleted, local changed → conflict",
+		entry: {
+			path: "f.md",
+			local: local({ mtime: 2000, hash: "h-local" }),
+			prevSync: baseline(),
+		},
+		expected: "conflict",
+	},
+	{
+		doc: "yes | exists | missing | no | --",
+		name: "remote deleted, local unchanged → delete_local",
+		entry: { path: "f.md", local: local(), prevSync: baseline() },
+		expected: "delete_local",
+	},
+	{
+		doc: "yes | missing | exists | -- | yes",
+		name: "local deleted, remote changed → conflict",
+		entry: {
+			path: "f.md",
+			remote: remote({ mtime: 2000, hash: "h-remote" }),
+			prevSync: baseline(),
+		},
+		expected: "conflict",
+	},
+	{
+		doc: "yes | missing | exists | -- | no",
+		name: "local deleted, remote unchanged → delete_remote",
+		entry: { path: "f.md", remote: remote(), prevSync: baseline() },
+		expected: "delete_remote",
+	},
+	{
+		doc: "yes | missing | missing | -- | --",
+		name: "both deleted → cleanup",
+		entry: { path: "f.md", prevSync: baseline() },
+		expected: "cleanup",
+	},
+	// --- no baseline ---
+	{
+		doc: "no | exists | missing | -- | --",
+		name: "local created → push",
+		entry: { path: "f.md", local: local() },
+		expected: "push",
+	},
+	{
+		doc: "no | missing | exists | -- | --",
+		name: "remote created → pull",
+		entry: { path: "f.md", remote: remote() },
+		expected: "pull",
+	},
+	{
+		doc: "no | exists | exists | same hash+size | same hash+size",
+		name: "both created identical → match",
+		entry: {
+			path: "f.md",
+			local: local({ hash: "h", size: 42 }),
+			remote: remote({ hash: "h", size: 42 }),
+		},
+		expected: "match",
+	},
+	{
+		doc: "no | exists | exists | (otherwise) | (otherwise)",
+		name: "both created divergent → conflict",
+		entry: {
+			path: "f.md",
+			local: local({ hash: "h1", size: 42 }),
+			remote: remote({ hash: "h2", size: 42 }),
+		},
+		expected: "conflict",
+	},
+	// --- branch present in code but absent from the doc table (see decision-engine.ts return null) ---
+	{
+		doc: "no | missing | missing | -- | -- (undocumented)",
+		name: "nothing exists, no baseline → skip",
+		entry: { path: "f.md" },
+		expected: null,
+	},
+];
+
+describe("planSync — decision table (docs/sync-pipeline.md)", () => {
+	it("returns an empty plan for empty input", () => {
 		const plan = planSync([]);
 		expect(plan.actions).toHaveLength(0);
 		expect(plan.safetyCheck.shouldAbort).toBe(false);
 	});
 
-	it("push: local created, no remote, no baseline", () => {
-		const entries: MixedEntity[] = [
-			{ path: "new.md", local: makeFile({ path: "new.md" }) },
-		];
-		const plan = planSync(entries);
-		expect(plan.actions).toHaveLength(1);
-		expect(plan.actions[0]!.action).toBe("push");
+	for (const c of TABLE) {
+		it(`[${c.doc}] ${c.name}`, () => {
+			expect(decide(c.entry)).toBe(c.expected);
+		});
+	}
+});
+
+describe("match condition — all four conjuncts (no baseline, both exist)", () => {
+	// match ⟺ local.hash && remote.hash && local.hash === remote.hash && local.size === remote.size
+	it("same hash + same size → match", () => {
+		expect(
+			decide({
+				path: "f.md",
+				local: local({ hash: "h", size: 42 }),
+				remote: remote({ hash: "h", size: 42 }),
+			}),
+		).toBe("match");
 	});
 
-	it("pull: remote created, no local, no baseline", () => {
-		const entries: MixedEntity[] = [
-			{ path: "new.md", remote: makeFile({ path: "new.md" }) },
-		];
-		const plan = planSync(entries);
-		expect(plan.actions).toHaveLength(1);
-		expect(plan.actions[0]!.action).toBe("pull");
+	it("same hash + different size → conflict (degenerate, but the size conjunct must hold)", () => {
+		expect(
+			decide({
+				path: "f.md",
+				local: local({ hash: "h", size: 42 }),
+				remote: remote({ hash: "h", size: 43 }),
+			}),
+		).toBe("conflict");
 	});
 
-	it("match: both created with identical hash and size, no baseline", () => {
+	it("different hash + same size → conflict", () => {
+		expect(
+			decide({
+				path: "f.md",
+				local: local({ hash: "h1", size: 42 }),
+				remote: remote({ hash: "h2", size: 42 }),
+			}),
+		).toBe("conflict");
+	});
+
+	it("empty local hash → conflict (cannot prove equality → keep both)", () => {
+		expect(
+			decide({
+				path: "f.md",
+				local: local({ hash: "", size: 42 }),
+				remote: remote({ hash: "h", size: 42 }),
+			}),
+		).toBe("conflict");
+	});
+
+	it("empty remote hash → conflict", () => {
+		expect(
+			decide({
+				path: "f.md",
+				local: local({ hash: "h", size: 42 }),
+				remote: remote({ hash: "", size: 42 }),
+			}),
+		).toBe("conflict");
+	});
+
+	it("both hashes empty → conflict (conservative)", () => {
+		expect(
+			decide({
+				path: "f.md",
+				local: local({ hash: "", size: 42 }),
+				remote: remote({ hash: "", size: 42 }),
+			}),
+		).toBe("conflict");
+	});
+});
+
+describe("mechanism invariance — the Action is stable regardless of how the predicate flips", () => {
+	describe("localChanged → true via different mechanisms (remote unchanged ⇒ push)", () => {
+		it("via mtime difference", () => {
+			expect(
+				decide({
+					path: "f.md",
+					local: local({ mtime: 2000, hash: "h-local" }),
+					remote: remote(),
+					prevSync: baseline(),
+				}),
+			).toBe("push");
+		});
+
+		it("via same-size content edit (mtime+size match, hash differs)", () => {
+			expect(
+				decide({
+					path: "f.md",
+					local: local({ mtime: 1000, size: 100, hash: "h-edited" }),
+					remote: remote(),
+					prevSync: baseline(),
+				}),
+			).toBe("push");
+		});
+
+		it("via conservative fallback (mtime=0 and no hash → undeterminable)", () => {
+			expect(
+				decide({
+					path: "f.md",
+					local: local({ mtime: 0, hash: "" }),
+					remote: remote(),
+					prevSync: baseline(),
+				}),
+			).toBe("push");
+		});
+	});
+
+	describe("remoteChanged → true via different mechanisms (local unchanged ⇒ pull)", () => {
+		it("via mtime difference", () => {
+			expect(
+				decide({
+					path: "f.md",
+					local: local(),
+					remote: remote({ mtime: 2000, hash: "h-remote" }),
+					prevSync: baseline(),
+				}),
+			).toBe("pull");
+		});
+
+		it("via size-only change", () => {
+			expect(
+				decide({
+					path: "f.md",
+					local: local(),
+					remote: remote({ mtime: 1000, size: 200, hash: BASE_HASH }),
+					prevSync: baseline(),
+				}),
+			).toBe("pull");
+		});
+
+		it("via backendMeta.contentChecksum (Drive md5) when mtime drifts", () => {
+			expect(
+				decide({
+					path: "f.md",
+					local: local(),
+					remote: remote({
+						mtime: 2000,
+						backendMeta: { contentChecksum: "md5-new" },
+					}),
+					prevSync: baseline({
+						backendMeta: { contentChecksum: "md5-old" },
+					}),
+				}),
+			).toBe("pull");
+		});
+	});
+
+	describe("both predicates false despite noisy metadata ⇒ skip", () => {
+		it("local proven unchanged by hash, remote by contentChecksum, even though mtimes drift", () => {
+			expect(
+				decide({
+					path: "f.md",
+					local: local({ mtime: 5000, hash: BASE_HASH }),
+					remote: remote({
+						mtime: 6000,
+						hash: BASE_HASH,
+						backendMeta: { contentChecksum: "md5-x" },
+					}),
+					prevSync: baseline({
+						backendMeta: { contentChecksum: "md5-x" },
+					}),
+				}),
+			).toBe(null);
+		});
+	});
+
+	describe("delete vs conflict hinges purely on the surviving side's predicate", () => {
+		it("remote gone, local unchanged via hash (mtime drift) → delete_local", () => {
+			expect(
+				decide({
+					path: "f.md",
+					local: local({ mtime: 9000, hash: BASE_HASH }),
+					prevSync: baseline(),
+				}),
+			).toBe("delete_local");
+		});
+
+		it("local gone, remote changed via contentChecksum → conflict", () => {
+			expect(
+				decide({
+					path: "f.md",
+					remote: remote({
+						mtime: 2000,
+						backendMeta: { contentChecksum: "md5-new" },
+					}),
+					prevSync: baseline({
+						backendMeta: { contentChecksum: "md5-old" },
+					}),
+				}),
+			).toBe("conflict");
+		});
+	});
+});
+
+describe("emitted SyncAction structure", () => {
+	it("carries the entry's path and the original local/remote/baseline object references", () => {
+		const l = local({
+			path: "notes/deep/x.md",
+			mtime: 2000,
+			hash: "h-local",
+		});
+		const r = remote({ path: "notes/deep/x.md" });
+		const b = baseline({ path: "notes/deep/x.md" });
+		const action = planSync([
+			{ path: "notes/deep/x.md", local: l, remote: r, prevSync: b },
+		]).actions[0]!;
+		expect(action.path).toBe("notes/deep/x.md");
+		expect(action.local).toBe(l);
+		expect(action.remote).toBe(r);
+		expect(action.baseline).toBe(b);
+	});
+
+	it("preserves input order and decides each entry independently (skips removed)", () => {
 		const entries: MixedEntity[] = [
+			{ path: "a-push.md", local: local({ path: "a-push.md" }) },
 			{
-				path: "same.md",
-				local: makeFile({ path: "same.md", hash: "samehash", size: 42 }),
-				remote: makeFile({ path: "same.md", hash: "samehash", size: 42 }),
+				path: "b-skip.md",
+				local: local({ path: "b-skip.md" }),
+				remote: remote({ path: "b-skip.md" }),
+				prevSync: baseline({ path: "b-skip.md" }),
+			},
+			{ path: "c-pull.md", remote: remote({ path: "c-pull.md" }) },
+			{
+				path: "d-del.md",
+				remote: remote({ path: "d-del.md" }),
+				prevSync: baseline({ path: "d-del.md" }),
 			},
 		];
-		const plan = planSync(entries);
-		expect(plan.actions[0]!.action).toBe("match");
+		const actions = planSync(entries).actions;
+		expect(actions.map((a) => [a.path, a.action])).toEqual([
+			["a-push.md", "push"],
+			["c-pull.md", "pull"],
+			["d-del.md", "delete_remote"],
+		]);
+	});
+});
+
+describe("safetyCheck integration", () => {
+	it("populates safetyCheck on every plan", () => {
+		const plan = planSync([{ path: "f.md", local: local() }]);
+		expect(plan.safetyCheck).toBeDefined();
+		expect(typeof plan.safetyCheck.shouldAbort).toBe("boolean");
 	});
 
-	it("conflict: both created with different hashes, no baseline", () => {
-		const entries: MixedEntity[] = [
-			{
-				path: "diff.md",
-				local: makeFile({ path: "diff.md", hash: "hash_a", size: 42 }),
-				remote: makeFile({ path: "diff.md", hash: "hash_b", size: 42 }),
-			},
-		];
-		const plan = planSync(entries);
-		expect(plan.actions[0]!.action).toBe("conflict");
-	});
-
-	it("conflict: both created with empty hashes (conservative), no baseline", () => {
-		const entries: MixedEntity[] = [
-			{
-				path: "nohash.md",
-				local: makeFile({ path: "nohash.md", hash: "", size: 42 }),
-				remote: makeFile({ path: "nohash.md", hash: "", size: 42 }),
-			},
-		];
-		const plan = planSync(entries);
-		expect(plan.actions[0]!.action).toBe("conflict");
-	});
-
-	it("push: local modified, remote unchanged, baseline exists", () => {
-		const entries: MixedEntity[] = [
-			{
-				path: "test.md",
-				local: makeFile({ mtime: 2000, hash: "new-local" }),
-				remote: makeFile({ mtime: 1000 }),
-				prevSync: makeRecord(),
-			},
-		];
-		const plan = planSync(entries);
-		expect(plan.actions[0]!.action).toBe("push");
-	});
-
-	it("pull: remote modified, local unchanged, baseline exists", () => {
-		const entries: MixedEntity[] = [
-			{
-				path: "test.md",
-				local: makeFile({ mtime: 1000 }),
-				remote: makeFile({ mtime: 2000, hash: "def" }),
-				prevSync: makeRecord(),
-			},
-		];
-		const plan = planSync(entries);
-		expect(plan.actions[0]!.action).toBe("pull");
-	});
-
-	it("conflict: both modified, baseline exists", () => {
-		const entries: MixedEntity[] = [
-			{
-				path: "test.md",
-				local: makeFile({ mtime: 2000, hash: "new-local" }),
-				remote: makeFile({ mtime: 3000, hash: "new-remote" }),
-				prevSync: makeRecord(),
-			},
-		];
-		const plan = planSync(entries);
-		expect(plan.actions[0]!.action).toBe("conflict");
-	});
-
-	it("delete_local: remote deleted, local unchanged", () => {
-		const entries: MixedEntity[] = [
-			{
-				path: "test.md",
-				local: makeFile({ mtime: 1000 }),
-				prevSync: makeRecord(),
-			},
-		];
-		const plan = planSync(entries);
-		expect(plan.actions[0]!.action).toBe("delete_local");
-	});
-
-	it("conflict: remote deleted, local modified", () => {
-		const entries: MixedEntity[] = [
-			{
-				path: "test.md",
-				local: makeFile({ mtime: 2000, hash: "new-local" }),
-				prevSync: makeRecord(),
-			},
-		];
-		const plan = planSync(entries);
-		expect(plan.actions[0]!.action).toBe("conflict");
-	});
-
-	it("delete_remote: local deleted, remote unchanged", () => {
-		const entries: MixedEntity[] = [
-			{
-				path: "test.md",
-				remote: makeFile({ mtime: 1000 }),
-				prevSync: makeRecord(),
-			},
-		];
-		const plan = planSync(entries);
-		expect(plan.actions[0]!.action).toBe("delete_remote");
-	});
-
-	it("conflict: local deleted, remote modified", () => {
-		const entries: MixedEntity[] = [
-			{
-				path: "test.md",
-				remote: makeFile({ mtime: 2000 }),
-				prevSync: makeRecord(),
-			},
-		];
-		const plan = planSync(entries);
-		expect(plan.actions[0]!.action).toBe("conflict");
-	});
-
-	it("cleanup: both deleted (only baseline exists)", () => {
-		const entries: MixedEntity[] = [
-			{ path: "test.md", prevSync: makeRecord() },
-		];
-		const plan = planSync(entries);
-		expect(plan.actions[0]!.action).toBe("cleanup");
-	});
-
-	it("no action: both exist unchanged, baseline exists", () => {
-		const entries: MixedEntity[] = [
-			{
-				path: "test.md",
-				local: makeFile({ mtime: 1000 }),
-				remote: makeFile({ mtime: 1000 }),
-				prevSync: makeRecord(),
-			},
-		];
-		const plan = planSync(entries);
-		expect(plan.actions).toHaveLength(0);
-	});
-
-	it("skips entry when neither local nor remote exist and no baseline", () => {
-		const entries: MixedEntity[] = [{ path: "ghost.md" }];
-		const plan = planSync(entries);
-		expect(plan.actions).toHaveLength(0);
-	});
-
-	it("populates safetyCheck via checkSafety", () => {
+	it("flags shouldAbort when 100% of meaningful actions are deletions", () => {
 		const entries: MixedEntity[] = Array.from({ length: 5 }, (_, i) => ({
 			path: `file-${i}.md`,
-			remote: makeFile({ path: `file-${i}.md`, mtime: 1000 }),
-			prevSync: makeRecord({ path: `file-${i}.md` }),
+			remote: remote({ path: `file-${i}.md` }),
+			prevSync: baseline({ path: `file-${i}.md` }),
 		}));
 		const plan = planSync(entries);
-		expect(plan.actions.every((a) => a.action === "delete_remote")).toBe(true);
+		expect(plan.actions.every((a) => a.action === "delete_remote")).toBe(
+			true,
+		);
 		expect(plan.safetyCheck.shouldAbort).toBe(true);
 	});
 
-	it("action includes local, remote and baseline references", () => {
-		const local = makeFile({ mtime: 2000, hash: "new" });
-		const remote = makeFile({ mtime: 1000 });
-		const baseline = makeRecord();
-		const plan = planSync([{ path: "test.md", local, remote, prevSync: baseline }]);
-		const action = plan.actions[0]!;
-		expect(action.local).toBe(local);
-		expect(action.remote).toBe(remote);
-		expect(action.baseline).toBe(baseline);
-	});
-
-	it("handles multiple entries in a batch", () => {
-		const entries: MixedEntity[] = [
-			{ path: "push.md", local: makeFile({ path: "push.md" }) },
-			{ path: "pull.md", remote: makeFile({ path: "pull.md" }) },
+	it("does not abort when deletions are mixed with transfers", () => {
+		const plan = planSync([
+			{ path: "keep.md", local: local({ path: "keep.md" }) },
 			{
-				path: "noop.md",
-				local: makeFile({ path: "noop.md" }),
-				remote: makeFile({ path: "noop.md" }),
-				prevSync: makeRecord({ path: "noop.md" }),
+				path: "drop.md",
+				remote: remote({ path: "drop.md" }),
+				prevSync: baseline({ path: "drop.md" }),
 			},
-		];
-		const plan = planSync(entries);
-		expect(plan.actions).toHaveLength(2);
-		expect(plan.actions[0]!.action).toBe("push");
-		expect(plan.actions[1]!.action).toBe("pull");
+		]);
+		expect(plan.safetyCheck.shouldAbort).toBe(false);
 	});
 });
