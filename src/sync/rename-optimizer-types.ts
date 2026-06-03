@@ -1,6 +1,11 @@
 import type { RenamePair, SyncAction } from "./types";
 
-export type SkipReason = "action_type_mismatch" | "hash_mismatch" | "hash_missing" | "no_descendants";
+export type SkipReason =
+	| "action_type_mismatch"
+	| "hash_mismatch"
+	| "hash_missing"
+	| "no_descendants"
+	| "destination_occupied";
 
 export interface SkippedRename {
 	pair: RenamePair;

@@ -1,7 +1,13 @@
 import type { RenamePair, SyncAction, SyncPlan } from "./types";
 import type { Logger } from "../logging/logger";
-import { optimizeLocalFileRenames, coalesceLocalFolderRenames } from "./optimize-local-renames";
-import { optimizeRemoteFileRenames, coalesceRemoteFolderRenames } from "./optimize-remote-renames";
+import {
+	optimizeLocalFileRenames,
+	coalesceLocalFolderRenames,
+} from "./optimize-local-renames";
+import {
+	optimizeRemoteFileRenames,
+	coalesceRemoteFolderRenames,
+} from "./optimize-remote-renames";
 
 /** Filter out consumed actions and append replacements. */
 export function replaceConsumed(
@@ -13,7 +19,7 @@ export function replaceConsumed(
 }
 
 /**
- * Pure pipeline stage: apply rename optimizations and recompute safety check.
+ * Pure pipeline stage: apply rename optimizations to a sync plan.
  *
  * Local renames are processed first — they require hash verification
  * to prove the rename is content-preserving.
@@ -31,31 +37,60 @@ export function refinePlan(
 
 	if (localFolderRenamePairs.size > 0) {
 		logger?.debug("Local folder rename pairs", {
-			pairs: [...localFolderRenamePairs.entries()].map(([n, o]) => `${o} → ${n}`),
+			pairs: [...localFolderRenamePairs.entries()].map(
+				([n, o]) => `${o} → ${n}`,
+			),
 		});
-		const result = coalesceLocalFolderRenames(actions, localFolderRenamePairs, localRenamePairs, logger);
+		const result = coalesceLocalFolderRenames(
+			actions,
+			localFolderRenamePairs,
+			localRenamePairs,
+			logger,
+		);
 		actions = result.actions;
 		if (result.remainingFileRenames.size > 0) {
 			logger?.debug("Local rename pairs (remaining)", {
-				pairs: [...result.remainingFileRenames.entries()].map(([n, o]) => `${o} → ${n}`),
+				pairs: [...result.remainingFileRenames.entries()].map(
+					([n, o]) => `${o} → ${n}`,
+				),
 			});
-			actions = optimizeLocalFileRenames(actions, result.remainingFileRenames, logger).actions;
+			actions = optimizeLocalFileRenames(
+				actions,
+				result.remainingFileRenames,
+				logger,
+			).actions;
 		}
 	} else if (localRenamePairs.size > 0) {
 		logger?.debug("Local rename pairs", {
-			pairs: [...localRenamePairs.entries()].map(([n, o]) => `${o} → ${n}`),
+			pairs: [...localRenamePairs.entries()].map(
+				([n, o]) => `${o} → ${n}`,
+			),
 		});
-		actions = optimizeLocalFileRenames(actions, localRenamePairs, logger).actions;
+		actions = optimizeLocalFileRenames(
+			actions,
+			localRenamePairs,
+			logger,
+		).actions;
 	}
 
 	if (remoteRenamePairs.length > 0) {
 		logger?.debug("Remote rename pairs", {
-			pairs: remoteRenamePairs.map(({ oldPath, newPath }) => `${oldPath} → ${newPath}`),
+			pairs: remoteRenamePairs.map(
+				({ oldPath, newPath }) => `${oldPath} → ${newPath}`,
+			),
 		});
-		const result = coalesceRemoteFolderRenames(actions, remoteRenamePairs, logger);
+		const result = coalesceRemoteFolderRenames(
+			actions,
+			remoteRenamePairs,
+			logger,
+		);
 		actions = result.actions;
 		if (result.remainingPairs.length > 0) {
-			actions = optimizeRemoteFileRenames(actions, result.remainingPairs, logger).actions;
+			actions = optimizeRemoteFileRenames(
+				actions,
+				result.remainingPairs,
+				logger,
+			).actions;
 		}
 	}
 
