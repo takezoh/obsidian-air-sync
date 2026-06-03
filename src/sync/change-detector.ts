@@ -20,24 +20,39 @@ export interface ChangeDetectorDeps {
 	localTracker: LocalChangeTracker;
 }
 
+export interface CollectChangesOptions {
+	/**
+	 * Force a COLD full join regardless of tracker/store state. Used for crash
+	 * recovery: after an interrupted or partial sync the delta-based hot/warm
+	 * path can't rediscover remote files that were reported but never baselined
+	 * (the cursor has moved past them). A full remote list vs records can.
+	 */
+	forceFullScan?: boolean;
+}
+
 /**
  * Collect changes using the appropriate temperature mode.
  *
  * hot  (O(delta)): tracker initialized + dirty paths → stat() + cache + getMany()
  * warm (O(n) local + O(delta) remote): list() + getAll() diff + remote delta
  * cold (O(n)): both list() + full join (equivalent to buildMixedEntities)
+ *
+ * `forceFullScan` overrides the hot/warm choice and always runs COLD.
  */
-export async function collectChanges(deps: ChangeDetectorDeps): Promise<ChangeSet> {
+export async function collectChanges(
+	deps: ChangeDetectorDeps,
+	opts: CollectChangesOptions = {},
+): Promise<ChangeSet> {
 	const { localTracker, stateStore } = deps;
 
 	let changeSet: ChangeSet;
 
 	// Determine temperature
-	if (localTracker.isInitialized() && localTracker.getDirtyPaths().size > 0) {
+	if (!opts.forceFullScan && localTracker.isInitialized() && localTracker.getDirtyPaths().size > 0) {
 		changeSet = await collectHot(deps);
 	} else {
 		const allRecords = await stateStore.getAll();
-		changeSet = allRecords.length === 0
+		changeSet = opts.forceFullScan || allRecords.length === 0
 			? await collectCold(deps, allRecords)
 			: await collectWarm(deps, allRecords);
 	}

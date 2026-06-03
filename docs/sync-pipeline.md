@@ -13,9 +13,17 @@ The orchestrator (`SyncOrchestrator.executeSyncOnce()`) drives this pipeline, ap
 
 `runSync()` is gated on a connected remote (`remoteFs` present), layout-ready, and not-connecting; it serializes via an `AsyncMutex`. A call arriving while a sync runs sets `syncPending` and returns; the lock holder re-runs in a `do/while (syncPending)` loop, acknowledging the dirty set at the end of each non-fatal cycle (coalescing). Each cycle (`executeSyncOnce`) is wrapped by `executeWithRetry`, which retries up to `MAX_RETRIES = 3` with exponential backoff plus jitter (`2^(attempt-1) * 1000 * (0.5 + Math.random())` ms), honoring `Retry-After` (×1000) on 429/403. `AuthError`, a non-rate-limit 403, and 404 abort without retry; a fatal abort returns early and leaves the dirty set un-acknowledged so it is retried next run.
 
+## Crash recovery
+
+The remote delta cursor (Google Drive's `changesStartPageToken`) is the engine's "synced up to here" checkpoint. It lives in `settings.backendData` and is committed by the orchestrator **only after a fully-successful cycle** — `executeSyncOnce` calls `readBackendState(fs, commitCheckpoint)` with `commitCheckpoint = (result.failed.length === 0)`, so a partial or interrupted cycle keeps the prior committed value (the backend omits the cursor from its returned state).
+
+At the start of each cycle the orchestrator asks `provider.hasCheckpoint(settings)`. When it is false — first sync, an interrupted/partial sync that never committed a checkpoint, or after a manual rescan — `executeSyncOnce` passes `forceFullScan: true` to `collectChanges`, forcing a **cold** reconcile (full remote `list()` × baselines). Cold is the only mode that rediscovers remote files an interrupted sync pulled-but-never-baselined or never reached: the delta-based hot/warm path is blind to them because the cursor has already moved past them (or they predate any cursor, as in an interrupted first sync). When a checkpoint *is* committed, the next sync replays the delta from it, re-detecting any un-synced change.
+
+The **Rescan vault** action (settings → Advanced) clears the committed checkpoint (`provider.resetTargetState`) and triggers a sync, forcing one cold reconcile against the remote — a manual recovery for a vault that looks stuck or incomplete. It diffs against baselines (it does not re-download) and keeps sync history.
+
 ## Temperature modes
 
-The change detector selects a temperature based on the state of `LocalChangeTracker` and `SyncStateStore`:
+The change detector selects a temperature based on the state of `LocalChangeTracker` and `SyncStateStore` (or a forced cold reconcile during [crash recovery](#crash-recovery)):
 
 ### Hot -- O(delta)
 
@@ -40,7 +48,7 @@ Selected when the hot condition fails (tracker uninitialized, or initialized but
 
 ### Cold -- O(n)
 
-Selected when `stateStore.getAll()` returns an empty array (first sync or after state clear).
+Selected when `stateStore.getAll()` returns an empty array (first sync or after state clear), or forced via `forceFullScan` during [crash recovery](#crash-recovery) (no committed remote checkpoint).
 
 - Calls both `localFs.list()` and `remoteFs.list()`
 - Full outer join on path to build `MixedEntity[]` for every file on either side

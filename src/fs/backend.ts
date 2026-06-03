@@ -38,12 +38,25 @@ export interface IBackendProvider {
 	resetTargetState?(settings: AirSyncSettings): void;
 
 	/**
+	 * Whether a committed incremental checkpoint (delta cursor) exists for the
+	 * current target. When false, the sync engine cannot trust delta-based remote
+	 * detection — the last sync never completed, or was reset — so it forces a
+	 * full cold reconcile. Backends without incremental sync may omit this.
+	 */
+	hasCheckpoint?(settings: AirSyncSettings): boolean;
+
+	/**
 	 * Read updated internal state from the FS to persist in settings.backendData.
 	 * Called after each sync cycle so backends can save tokens, cursors, etc.
 	 * Returns an opaque record — the sync layer does not inspect its contents.
 	 * Tokens are stored in SecretStorage rather than returned in the record.
+	 *
+	 * `commitCheckpoint` is true only when the whole pipeline succeeded
+	 * (failed === 0). When false, the backend must NOT advance its persisted
+	 * delta cursor — the spread in the caller preserves the prior committed value
+	 * — so an interrupted/partial sync re-detects the un-synced work next time.
 	 */
-	readBackendState?(fs: IFileSystem): Record<string, unknown>;
+	readBackendState?(fs: IFileSystem, commitCheckpoint: boolean): Record<string, unknown>;
 
 	/**
 	 * Discover or create the remote vault for the given vault name.

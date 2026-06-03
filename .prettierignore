@@ -1,0 +1,9 @@
+# This project intentionally does not use Prettier.
+#
+# Formatting is governed by ESLint + .editorconfig (tabs, compact single-line
+# objects), and several modules are pinned by the eslint `max-lines` rule
+# (see eslint.config.mts). Prettier's default print width reflows the repo's
+# compact style across multiple lines, inflating those modules past their
+# pinned caps and breaking `npm run lint`. Opt out of Prettier entirely so any
+# editor/automation that auto-runs `prettier --write` leaves files untouched.
+**

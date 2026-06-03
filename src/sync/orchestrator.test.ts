@@ -575,6 +575,152 @@ describe("SyncOrchestrator", () => {
 		});
 	});
 
+	describe("crash recovery via hasCheckpoint", () => {
+		/** Minimal IBackendProvider double exposing only what the orchestrator uses. */
+		function mockProvider(
+			over: Partial<import("../fs/backend").IBackendProvider> & { type?: string },
+		): import("../fs/backend").IBackendProvider {
+			return {
+				type: "test",
+				...over,
+			} as unknown as import("../fs/backend").IBackendProvider;
+		}
+
+		/**
+		 * Reproduces the reported bug: a sync interrupted before pulling a remote
+		 * file leaves the vault half-synced. On restart, baselines exist (so the
+		 * default path is WARM) and the remote delta cursor has advanced past the
+		 * un-pulled file (mock getChangedPaths reports nothing), so WARM is blind.
+		 * `hasCheckpoint(settings) === false` (no committed cursor) must force a
+		 * COLD full reconcile that rediscovers and pulls the orphan.
+		 */
+		it("hasCheckpoint=false forces a cold reconcile that pulls the un-synced file", async () => {
+			const localFs = createMockFs("local");
+			const remoteFs = createMockFs("remote");
+			addFile(localFs, "synced.md", "kept", 1000);
+			addFile(remoteFs, "synced.md", "kept", 1000);
+			addFile(remoteFs, "orphan.md", "left behind", 1000);
+
+			const settings = baseMockSettings({
+				backendType: "test",
+				vaultId: `test-${Math.random()}`,
+			});
+			const deps = createDeps({
+				getSettings: () => settings,
+				localFs: () => localFs,
+				remoteFs: () => remoteFs,
+				backendProvider: () => mockProvider({ hasCheckpoint: () => false }),
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+
+			// synced.md has a committed baseline; orphan.md has none.
+			await orchestrator.state.put({
+				path: "synced.md",
+				hash: "",
+				localMtime: 1000,
+				remoteMtime: 1000,
+				localSize: 4,
+				remoteSize: 4,
+				syncedAt: 900,
+			});
+
+			await orchestrator.runSync();
+
+			expect(localFs.files.has("orphan.md")).toBe(true);
+			expect(await orchestrator.state.get("orphan.md")).toBeDefined();
+			await orchestrator.close();
+		});
+
+		/**
+		 * The cursor ("completed up to") must advance only when the whole pipeline
+		 * succeeds. A cycle with a failed action must NOT advance the committed
+		 * changesStartPageToken, so the next run still re-detects the un-pulled work.
+		 */
+		it("forces a cold reconcile on the cycle after a failure (in-memory cursor may have advanced past the committed one)", async () => {
+			const localFs = createMockFs("local");
+			const remoteFs = createMockFs("remote");
+			addFile(localFs, "synced.md", "kept", 1000);
+			addFile(localFs, "push.md", "body", 1000); // local-only → push, fails in cycle 1
+			addFile(remoteFs, "synced.md", "kept", 1000);
+			addFile(remoteFs, "orphan.md", "left behind", 1000); // remote-only → invisible to WARM
+
+			const settings = baseMockSettings({
+				backendType: "test",
+				vaultId: `test-${Math.random()}`,
+			});
+			// A committed checkpoint exists, so hasCheckpoint stays true throughout —
+			// the recovery must come from the post-failure cold flag, not from hasCheckpoint.
+			settings.backendData.test = { changesStartPageToken: "T1" };
+
+			const deps = createDeps({
+				getSettings: () => settings,
+				localFs: () => localFs,
+				remoteFs: () => remoteFs,
+				backendProvider: () => mockProvider({ hasCheckpoint: () => true }),
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			await orchestrator.state.put({
+				path: "synced.md",
+				hash: "",
+				localMtime: 1000,
+				remoteMtime: 1000,
+				localSize: 4,
+				remoteSize: 4,
+				syncedAt: 900,
+			});
+
+			// Cycle 1: WARM (hasCheckpoint true). push.md's push fails → partial_error;
+			// orphan.md is invisible to WARM (empty remote delta).
+			vi.spyOn(remoteFs, "write").mockRejectedValueOnce(new Error("network dropped"));
+			await orchestrator.runSync();
+			expect(localFs.files.has("orphan.md")).toBe(false);
+
+			// Cycle 2 (same long-lived orchestrator): the prior failure must force a cold
+			// reconcile that rediscovers orphan.md, even though hasCheckpoint is still true.
+			await orchestrator.runSync();
+			expect(localFs.files.has("orphan.md")).toBe(true);
+			expect(await orchestrator.state.get("orphan.md")).toBeDefined();
+			await orchestrator.close();
+		});
+
+		it("does not advance the committed cursor when a cycle has failures", async () => {
+			const localFs = createMockFs("local");
+			const remoteFs = createMockFs("remote");
+			addFile(localFs, "push.md", "body", 1000); // local-only → planned push
+
+			// Pull/scan succeed; the push write fails → result.failed.length === 1.
+			vi.spyOn(remoteFs, "write").mockRejectedValue(new Error("network dropped"));
+
+			const settings = baseMockSettings({
+				backendType: "test",
+				vaultId: `test-${Math.random()}`,
+			});
+			settings.backendData.test = { changesStartPageToken: "OLD" };
+
+			const deps = createDeps({
+				getSettings: () => settings,
+				localFs: () => localFs,
+				remoteFs: () => remoteFs,
+				backendProvider: () =>
+					mockProvider({
+						hasCheckpoint: () => true,
+						// New contract: omit the cursor unless the cycle fully succeeded.
+						readBackendState: ((_fs: unknown, commitCheckpoint?: boolean) =>
+							commitCheckpoint === false
+								? {}
+								: { changesStartPageToken: "NEW" }) as unknown as import("../fs/backend").IBackendProvider["readBackendState"],
+					}),
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+
+			await orchestrator.runSync();
+
+			// The failed push must leave the committed cursor untouched.
+			expect(settings.backendData.test.changesStartPageToken).toBe("OLD");
+			await orchestrator.close();
+		});
+	});
+
 	describe("phantom warm deletion is prevented (not recovered)", () => {
 		it("does not delete a file missing from the listing but present on disk", async () => {
 			const localFs = createMockFs("local");

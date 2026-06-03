@@ -657,3 +657,57 @@ describe("collectChanges — warm deletion confirmation", () => {
 		expect(entry?.local).toBeUndefined(); // genuine deletion preserved
 	});
 });
+
+/**
+ * forceFullScan recovery (ARCHITECTURE.md principle #5, "an interrupted sync
+ * converges by re-syncing"). WARM detects remote changes via the delta cursor
+ * alone. After an interrupted/partial sync the cursor has advanced past files
+ * that were *reported* but never pulled-and-baselined, so WARM is structurally
+ * blind to them: they exist remotely, have no baseline, and never reappear in
+ * the delta. forceFullScan forces a COLD full join (remote list vs records),
+ * which is the only mode that rediscovers such orphans.
+ */
+describe("collectChanges — forceFullScan rediscovers un-baselined remote files", () => {
+	let localFs: ReturnType<typeof createMockFs>;
+	let remoteFs: ReturnType<typeof createMockFs>;
+	let stateStore: ReturnType<typeof createMockStateStore>;
+	let localTracker: LocalChangeTracker;
+
+	function makeDeps(): ChangeDetectorDeps {
+		return { localFs, remoteFs, stateStore, localTracker };
+	}
+
+	beforeEach(async () => {
+		localFs = createMockFs("local");
+		remoteFs = createMockFs("remote");
+		stateStore = createMockStateStore();
+		localTracker = new LocalChangeTracker();
+		// Post-crash state: synced.md was pulled and its baseline committed;
+		// orphan.md was left un-pulled. The remote delta cursor has moved past
+		// orphan.md, so getChangedPaths() (the mock default) reports nothing.
+		addFile(localFs, "synced.md", "kept", 1000);
+		addFile(remoteFs, "synced.md", "kept", 1000);
+		addFile(remoteFs, "orphan.md", "left behind", 1000);
+		await stateStore.put(
+			makeRecord("synced.md", { localMtime: 1000, localSize: 4, remoteMtime: 1000, remoteSize: 4 }),
+		);
+		// Fresh tracker (dirty set lost on restart) + non-empty store routes to WARM.
+	});
+
+	it("WARM is blind to the un-baselined remote file (documents the gap)", async () => {
+		const result = await collectChanges(makeDeps());
+
+		expect(result.temperature).toBe("warm");
+		expect(result.entries.find((e) => e.path === "orphan.md")).toBeUndefined();
+	});
+
+	it("forceFullScan goes COLD and surfaces the orphan as a remote-only entry", async () => {
+		const result = await collectChanges(makeDeps(), { forceFullScan: true });
+
+		expect(result.temperature).toBe("cold");
+		const orphan = result.entries.find((e) => e.path === "orphan.md");
+		expect(orphan?.remote).toBeDefined();
+		expect(orphan?.local).toBeUndefined();
+		expect(orphan?.prevSync).toBeUndefined(); // no baseline → will be pulled
+	});
+});

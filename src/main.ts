@@ -208,6 +208,22 @@ export default class AirSyncPlugin extends Plugin {
 		}
 	}
 
+	/**
+	 * Discard the remote sync checkpoint and run a full reconcile. The next sync
+	 * sees no checkpoint (hasCheckpoint === false) and does a cold remote list ×
+	 * baseline join, recovering anything a previous interrupted sync left behind.
+	 *
+	 * Routes through the orchestrator (not runSync's is-syncing early-return) so
+	 * that, if a sync is already in flight, the request coalesces via syncPending
+	 * and a cold cycle still runs once the current one finishes — rather than
+	 * being silently dropped while the in-flight sync re-commits a checkpoint.
+	 */
+	async rescan(): Promise<void> {
+		this.backendManager.getBackendProvider()?.resetTargetState?.(this.settings);
+		await this.saveSettings();
+		await this.orchestrator.runSync();
+	}
+
 	private updateStatusBar(): void {
 		if (!this.statusBarEl) return;
 		switch (this.syncStatus) {

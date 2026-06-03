@@ -448,17 +448,108 @@ describe("GoogleDriveFs cache persistence", () => {
 			listChanges: vi.fn().mockResolvedValue({ changes: [], newStartPageToken: "token-abc" }),
 		} as never;
 		const fs2 = new GoogleDriveFs(mockClient2, "root", undefined, store);
+		// createFs seeds the cursor from settings.backendData (#3, the committed value).
+		fs2.changesPageToken = "token-abc";
 		const files2 = await fs2.list();
 
 		expect(files2).toHaveLength(2);
 		expect(files2.map((f) => f.path).sort()).toEqual(["docs", "docs/note.md"]);
 		// listAllFiles should NOT have been called (loaded from cache)
 		expect(listAllFilesSpy).not.toHaveBeenCalled();
+		// The #3 cursor is the single source of truth — never clobbered by #2.
+		expect(fs2.changesPageToken).toBe("token-abc");
 
 		await store.close();
 	});
 
 
+});
+
+/**
+ * Cursor crash-safety (ARCHITECTURE.md principle #5). The remote cursor is a
+ * single source of truth in settings.backendData (#3), committed only after a
+ * fully-successful pipeline. The metadata store (#2) caches only the file map.
+ * After an interrupted sync, a fresh FS seeded with the last *committed* cursor
+ * must re-report the un-pulled change (delta replay), and must not be polluted
+ * by an eagerly-advanced #2 token.
+ */
+describe("GoogleDriveFs cursor consolidation (crash safety)", () => {
+	const FOLDER = "application/vnd.google-apps.folder";
+
+	it("re-reports an un-pulled remote change after a crash (cursor from #3)", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const { MetadataStore } = await import("../../store/metadata-store");
+		const store = new MetadataStore<DriveFile>("crash-consol", { dbNamePrefix: "air-sync-drive", version: 1 });
+
+		const change = {
+			type: "file",
+			fileId: "file1",
+			removed: false,
+			file: { id: "file1", name: "a.md", mimeType: "text/plain", parents: ["f1"], modifiedTime: "2024-06-01T00:00:00.000Z" },
+		};
+
+		// Session 1: initial scan at "token-A"; an incremental change advances the
+		// FS cursor to "token-B" — but the pull is "lost" (process killed before the
+		// orchestrator commits the new cursor to #3).
+		const client1 = {
+			listAllFiles: vi.fn().mockResolvedValue([
+				{ id: "f1", name: "notes", mimeType: FOLDER, parents: ["root"] },
+				{ id: "file1", name: "a.md", mimeType: "text/plain", parents: ["f1"], modifiedTime: "2024-05-01T00:00:00.000Z" },
+			]),
+			getChangesStartToken: vi.fn().mockResolvedValue("token-A"),
+			listChanges: vi.fn().mockResolvedValue({ changes: [change], newStartPageToken: "token-B" }),
+		} as never;
+		const fs1 = new GoogleDriveFs(client1, "root", undefined, store);
+		await fs1.list();
+		const delta1 = await fs1.getChangedPaths();
+		expect(delta1!.modified).toContain("notes/a.md"); // detected in-memory (cursor now token-B)
+		await new Promise((r) => setTimeout(r, 30)); // let persistCache flush the file map
+
+		// Session 2 (restart): a fresh FS seeded with the last COMMITTED cursor "token-A".
+		const listChanges2 = vi.fn().mockResolvedValue({ changes: [change], newStartPageToken: "token-B" });
+		const listAllFiles2 = vi.fn().mockResolvedValue([
+			{ id: "f1", name: "notes", mimeType: FOLDER, parents: ["root"] },
+			{ id: "file1", name: "a.md", mimeType: "text/plain", parents: ["f1"], modifiedTime: "2024-05-01T00:00:00.000Z" },
+		]);
+		const client2 = {
+			listAllFiles: listAllFiles2,
+			getChangesStartToken: vi.fn(),
+			listChanges: listChanges2,
+		} as never;
+		const fs2 = new GoogleDriveFs(client2, "root", undefined, store);
+		fs2.changesPageToken = "token-A"; // seeded from #3 (pre-crash committed value)
+
+		const delta2 = await fs2.getChangedPaths();
+		expect(delta2!.modified).toContain("notes/a.md"); // RED today: change is re-reported
+		expect(listChanges2).toHaveBeenCalledWith("token-A", undefined); // incremental FROM #3, not #2's token-B
+		expect(listAllFiles2).not.toHaveBeenCalled(); // file map restored from #2 cache, no network re-list
+
+		await store.close();
+	});
+
+	it("rebuilds the file map but preserves the #3 cursor when the cache is empty", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const { MetadataStore } = await import("../../store/metadata-store");
+		const store = new MetadataStore<DriveFile>("edge-empty-cache", { dbNamePrefix: "air-sync-drive", version: 1 });
+
+		const listAllFiles = vi.fn().mockResolvedValue([
+			{ id: "f1", name: "notes", mimeType: FOLDER, parents: ["root"] },
+		]);
+		const client = {
+			listAllFiles,
+			getChangesStartToken: vi.fn().mockResolvedValue("token-fresh"),
+			listChanges: vi.fn().mockResolvedValue({ changes: [] }),
+		} as never;
+
+		const fs = new GoogleDriveFs(client, "root", undefined, store);
+		fs.changesPageToken = "token-X"; // #3 cursor present, but #2 cache is empty
+		await fs.list();
+
+		expect(listAllFiles).toHaveBeenCalledOnce(); // had to rebuild the file map
+		expect(fs.changesPageToken).toBe("token-X"); // RED if fullScan clobbers it to a fresh token
+
+		await store.close();
+	});
 });
 
 describe("GoogleDriveFs.getChangedPaths", () => {

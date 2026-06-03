@@ -94,31 +94,41 @@ export class GoogleDriveFs implements IFileSystem {
 		void this.persistCache();
 	}
 
-	/** Ensure the metadata cache is initialized (load from IDB or full scan) */
-	private async ensureInitialized(): Promise<void> {
-		if (!this.initialized) {
-			const loaded = await this.loadFromCache();
-			if (!loaded) {
-				await this.fullScan();
-			}
+	/**
+	 * Ensure the metadata cache is initialized. Returns true when the cursor is a
+	 * prior checkpoint that warrants an incremental replay (loaded from cache, or
+	 * restored after rebuilding an empty cache); false after a fresh full scan
+	 * (the cursor was just acquired, so there is nothing newer to fetch yet).
+	 */
+	private async ensureInitialized(): Promise<boolean> {
+		if (this.initialized) return true;
+		if (this._changesPageToken) {
+			if (await this.loadFromCache()) return true;
+			// Cursor present but cache empty/missing: rebuild the file map without
+			// moving the cursor, so the next changes.list spans any un-synced gap.
+			const keep = this._changesPageToken;
+			await this.fullScan();
+			this._changesPageToken = keep;
+			return true;
 		}
+		await this.fullScan();
+		return false;
 	}
 
-	/** Try to restore cache from IndexedDB. Returns true if successful. */
+	/**
+	 * Restore the file map from IndexedDB. Returns false when there is no cursor
+	 * to continue from, or the cache is empty (the caller then full-scans). Never
+	 * overwrites _changesPageToken — the committed cursor (settings) is authoritative.
+	 */
 	private async loadFromCache(): Promise<boolean> {
-		if (!this.metadataStore) return false;
+		if (!this.metadataStore || !this._changesPageToken) return false;
 		try {
 			await this.metadataStore.open();
-			const { files, meta } = await this.metadataStore.loadAll();
-			const storedToken = meta.get("changesStartPageToken");
-			if (!storedToken) {
-				return false;
-			}
+			const { files } = await this.metadataStore.loadAll();
+			if (files.length === 0) return false;
 
 			this.cache.clear();
 			this.cache.bulkLoad(files.map((r) => [r.path, r.file]));
-
-			this._changesPageToken = storedToken;
 			this.initialized = true;
 			this.logger?.info("Cache loaded from IndexedDB", { fileCount: files.length });
 			return true;
@@ -130,17 +140,15 @@ export class GoogleDriveFs implements IFileSystem {
 		}
 	}
 
-	/** Persist the current cache to IndexedDB */
+	/**
+	 * Persist the file map to IndexedDB. The delta cursor is NOT stored here — it
+	 * lives in settings.backendData and is committed only on a fully-successful sync.
+	 */
 	private async persistCache(): Promise<void> {
 		if (!this.metadataStore) return;
 		try {
 			await this.metadataStore.open();
-			const records = this.cache.exportRecords();
-			const meta = new Map<string, string>();
-			if (this._changesPageToken) {
-				meta.set("changesStartPageToken", this._changesPageToken);
-			}
-			await this.metadataStore.saveAll(records, meta);
+			await this.metadataStore.saveAll(this.cache.exportRecords(), new Map());
 		} catch (err) {
 			this.logger?.warn("Failed to persist cache to IndexedDB", {
 				message: err instanceof Error ? err.message : String(err),
@@ -153,12 +161,9 @@ export class GoogleDriveFs implements IFileSystem {
 		return this.getChangedPaths();
 	}
 
-	/** Internal implementation of applyIncrementalChanges (caller must hold mutex) */
+	/** Apply incremental changes from the current cursor (caller ensured init + holds mutex). */
 	private async _applyIncrementalChanges(): Promise<RemoteDelta | null> {
-		if (!this.initialized || !this._changesPageToken) {
-			const delta = await this.fullScanWithDelta();
-			return delta;
-		}
+		if (!this._changesPageToken) return null;
 
 		const result = await applyIncrementalChanges(
 			{
@@ -171,9 +176,8 @@ export class GoogleDriveFs implements IFileSystem {
 		);
 
 		if (result.needsFullScan) {
-			this.initialized = false;
-			const delta = await this.fullScanWithDelta();
-			return delta;
+			// Cursor expired (410): snapshot-diff a fresh full scan for the delta.
+			return this.fullScanWithDelta();
 		}
 
 		this._changesPageToken = result.newToken;
@@ -203,12 +207,8 @@ export class GoogleDriveFs implements IFileSystem {
 	 * incremental sync or by WARM mode's local-vs-record comparison.
 	 */
 	private async fullScanWithDelta(): Promise<RemoteDelta | null> {
-		// Snapshot old paths by ID before full scan overwrites cache.
-		// After restart, cache is empty — restore from persisted metadata.
-		if (this.cache.size === 0 && this.metadataStore) {
-			await this.loadFromCache();
-		}
-
+		// Snapshot old paths by ID before the full scan overwrites the cache.
+		// (Only reached on 410 expiry, when the cache is already populated.)
 		const oldPathById = new Map<string, string>();
 		for (const [path, file] of this.cache.entries()) {
 			oldPathById.set(file.id, path);
@@ -253,23 +253,20 @@ export class GoogleDriveFs implements IFileSystem {
 	}
 
 	/**
-	 * Return paths changed since the last sync by applying incremental changes.
-	 * Should be called before list(). Returns null only on initial sync (no prior cache).
+	 * Return paths changed since the last committed cursor. Returns null on the
+	 * initial sync (a fresh full scan just captured "now", so there is no delta).
 	 */
 	async getChangedPaths(): Promise<{ modified: string[]; deleted: string[]; renamed?: { oldPath: string; newPath: string }[] } | null> {
-		return this.cacheMutex.run(() => this._applyIncrementalChanges());
+		return this.cacheMutex.run(async () => {
+			const replay = await this.ensureInitialized();
+			return replay ? this._applyIncrementalChanges() : null;
+		});
 	}
 
 	async list(): Promise<FileEntity[]> {
 		return this.cacheMutex.run(async () => {
-			if (!this.initialized) {
-				const loaded = await this.loadFromCache();
-				if (loaded) {
-					await this._applyIncrementalChanges();
-				} else {
-					await this.fullScan();
-				}
-			} else if (this._changesPageToken) {
+			// A fresh full scan captures "now"; a restored cursor warrants a replay.
+			if (await this.ensureInitialized()) {
 				await this._applyIncrementalChanges();
 			}
 

@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type AirSyncPlugin from "../main";
 import type { ConflictStrategy } from "../sync/types";
 import { getAllBackendProviders, getBackendProvider } from "../fs/registry";
@@ -99,6 +99,18 @@ export class AirSyncSettingTab extends PluginSettingTab {
 
 		// --- Advanced settings ---
 		new Setting(containerEl).setName("Advanced").setHeading();
+
+		new Setting(containerEl)
+			.setName("Rescan vault")
+			.setDesc(
+				"Discard the remote sync checkpoint and fully reconcile against the remote on the next sync. Use this if sync seems stuck or incomplete after an interrupted sync. It compares files rather than re-downloading them, and keeps your sync history."
+			)
+			.addButton((button) =>
+				button.setButtonText("Rescan").onClick(() => {
+					new Notice("Starting a full rescan");
+					void this.plugin.rescan();
+				})
+			);
 
 		new Setting(containerEl)
 			.setName("Dot-prefixed paths to sync")

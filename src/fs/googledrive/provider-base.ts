@@ -211,12 +211,18 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 		}
 	}
 
-	readBackendState(fs: IFileSystem): Record<string, unknown> {
+	hasCheckpoint(settings: AirSyncSettings): boolean {
+		return !!this.getData(settings).changesStartPageToken;
+	}
+
+	readBackendState(fs: IFileSystem, commitCheckpoint: boolean): Record<string, unknown> {
 		if (!(fs instanceof GoogleDriveFs)) return {};
 		const result: Record<string, unknown> = {};
 
+		// Advance the persisted cursor only on full success; on a partial/interrupted
+		// cycle leave it at the last committed value so the next run re-detects the gap.
 		const pageToken = fs.changesPageToken;
-		if (pageToken) result.changesStartPageToken = pageToken;
+		if (commitCheckpoint && pageToken) result.changesStartPageToken = pageToken;
 
 		// Store refreshed tokens in SecretStorage (not in backendData)
 		const tokens = this.auth.getTokenState();

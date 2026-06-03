@@ -4,9 +4,9 @@
 
 1. **3-state sync** -- Compare local, remote, and last-sync-record to detect changes. Text conflicts use 3-way merge.
 2. **Swappable backends** -- All remote I/O goes through `IFileSystem` + `IBackendProvider`. Adding a backend requires no changes outside `fs/`.
-3. **Delta-first** -- Only process files that changed. O(n) full scans are allowed only on cold start.
+3. **Delta-first** -- Only process files that changed. O(n) full scans are allowed only on cold start and crash recovery (when no committed remote checkpoint exists).
 4. **Pipeline as data** -- Each sync phase is a pure transformation: `ChangeSet → SyncPlan → Result`. I/O is isolated at boundaries; all intermediate states are testable.
-5. **Crash-safe by construction** -- State is updated only *after* an action succeeds (per-action commit). An interrupted sync converges by simply re-syncing.
+5. **Crash-safe by construction** -- State is committed only *after* success: per-file baselines after each action, and the remote delta checkpoint only when the whole cycle succeeds (`failed === 0`). An interrupted sync converges by re-syncing — delta-replay from the last committed checkpoint, or a full cold reconcile when none is committed.
 6. **Duplicate over delete** -- When in doubt, keep the file. Deleting an unwanted copy is easy; recovering a lost file is impossible.
 7. **Single responsibility per module** -- Each file owns one concept. Target 200-300 lines; split when exceeded.
 
@@ -244,11 +244,14 @@ interface IBackendProvider {
   isConnected(settings): boolean;
   getIdentity(settings): string | null;
   resetTargetState?(settings): void;
-  readBackendState?(fs): Record<string, unknown>;
+  hasCheckpoint?(settings): boolean;       // is a committed delta cursor present? false ⇒ force a cold reconcile
+  readBackendState?(fs, commitCheckpoint): Record<string, unknown>;  // advance the cursor only when commitCheckpoint (failed === 0)
   resolveRemoteVault?(app, settings, vaultName, logger?): Promise<RemoteVaultResolution>;
   disconnect(settings): Promise<Record<string, unknown>>;
 }
 ```
+
+`hasCheckpoint`/`readBackendState` together make the remote delta cursor crash-safe: the cursor is committed to `settings.backendData` only after a fully-successful cycle, and when no checkpoint is committed (`hasCheckpoint === false`: first sync, an interrupted/partial sync, or after a manual rescan) the orchestrator forces a full cold reconcile — delta detection alone can't surface remote files an interrupted sync left un-baselined.
 
 ### IAuthProvider (fs/auth.ts)
 

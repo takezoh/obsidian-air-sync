@@ -129,7 +129,7 @@ export async function applyIncrementalChanges(
 
 		if (totalChanges > 0) {
 			ctx.logger?.info("Incremental changes applied", { changeCount: totalChanges });
-			await persistIncrementalChanges(ctx, updatedRecords, deletedPaths, currentToken);
+			await persistIncrementalChanges(ctx, updatedRecords, deletedPaths);
 		}
 
 		return { newToken: currentToken, needsFullScan: false, changedPaths, renamedPaths };
@@ -143,18 +143,20 @@ export async function applyIncrementalChanges(
 	}
 }
 
-/** Persist incremental changes to IndexedDB */
+/**
+ * Persist the incremental file-map changes to IndexedDB. The delta cursor is NOT
+ * stored here — it lives in settings.backendData and is committed only after a
+ * fully-successful sync, so an interrupted cycle re-detects the gap next time.
+ */
 async function persistIncrementalChanges(
 	ctx: IncrementalSyncContext,
 	updated: { path: string; file: DriveFile; isFolder: boolean }[],
 	deleted: string[],
-	changesPageToken: string,
 ): Promise<void> {
 	if (!ctx.metadataStore) return;
 	try {
 		if (updated.length > 0) await ctx.metadataStore.putFiles(updated);
 		if (deleted.length > 0) await ctx.metadataStore.deleteFiles(deleted);
-		await ctx.metadataStore.putMeta("changesStartPageToken", changesPageToken);
 	} catch (err) {
 		ctx.logger?.warn("Failed to persist incremental changes to IndexedDB", {
 			message: err instanceof Error ? err.message : String(err),

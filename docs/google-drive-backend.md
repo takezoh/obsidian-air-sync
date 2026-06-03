@@ -6,22 +6,24 @@
 
 ### Initialization lifecycle
 
-1. On first `list()`, `stat()`, `read()`, or `write()`, `ensureInitialized()` is called
-2. Try to restore cache from IndexedDB (`MetadataStore`, keyed by `{vaultId}-{remoteVaultFolderId}`) -- checks presence of a stored `changesStartPageToken`
-3. If cache is restored, apply incremental changes via `_applyIncrementalChanges()` to catch up with Drive
-4. If IndexedDB restore fails, `fullScan()` clears the cache, fetches the changes start token BEFORE listing (so changes that land during the scan are not missed), runs `listAllFiles()` recursively with `AsyncPool(3)` concurrency, builds the `DriveMetadataCache` from the flat file list, marks the FS initialized, and fire-and-forgets `persistCache()`
+The remote delta cursor (`changesPageToken`) has a single source of truth: `settings.backendData.changesStartPageToken`, seeded onto the FS by `createFs()`. The `MetadataStore` (IndexedDB, keyed `{vaultId}-{remoteVaultFolderId}`) caches **only the file map** — never the cursor. The cursor is committed (to settings) only on a fully-successful sync; see [Crash recovery](sync-pipeline.md#crash-recovery).
 
-The cache is scoped to `vaultId` so that plugin reinstall (which regenerates `vaultId`) starts with a fresh cache, preventing stale entries.
+On first `list()`, `stat()`, `read()`, or `write()`, `ensureInitialized()` runs:
+
+1. **Cursor present** (seeded from settings): restore the file map from IndexedDB via `loadFromCache()` — files only; it never overwrites the cursor. If the cache is empty/missing, rebuild it with `fullScan()` but **restore** the seeded cursor afterward, so the next `changes.list` spans any un-synced gap. Either way an incremental replay is warranted.
+2. **No cursor** (genuine first sync, or after a rescan / state clear): `fullScan()` clears the cache, fetches a fresh changes start token BEFORE listing (so changes that land during the scan are not missed), runs `listAllFiles()` recursively with `AsyncPool(3)` concurrency, builds the `DriveMetadataCache` from the flat file list, marks the FS initialized, and fire-and-forgets `persistCache()` (files only). No replay is warranted — the token is "now".
+
+`list()` and `getChangedPaths()` apply an incremental `changes.list` only when a replay is warranted (cursor restored, or the FS was already initialized); a fresh full scan reports no delta. The cache is scoped to `vaultId` so a plugin reinstall (which regenerates `vaultId`) starts with a fresh cache, preventing stale entries.
 
 ### Cache invalidation
 
-`getChangedPaths()` is the sole entry point for remote change detection (`IFileSystem` contract). It runs under the cache mutex (`cacheMutex.run`) and applies incremental changes before the sync cycle, returning `{ modified, deleted, renamed }`.
+`getChangedPaths()` is the sole entry point for remote change detection (`IFileSystem` contract). It runs under the cache mutex (`cacheMutex.run`), calls `ensureInitialized()`, and:
 
-- If the changes page token is missing or the cache is uninitialized, it runs a full scan (`fullScanWithDelta()`) instead of an incremental update.
-- Otherwise it calls `applyIncrementalChanges()` (see [Incremental sync](#incremental-sync)). The collected `changedPaths` are then split into `modified`/`deleted` by checking whether each path still exists in the cache (`cache.hasFile(path)`).
-- A 410 from `changes.list` (expired token) is converted to `needsFullScan`, which sets the FS uninitialized (`initialized = false`) and falls back to `fullScanWithDelta()`.
+- Returns `null` when no replay is warranted — a fresh full scan just captured "now", so there is no delta (initial sync).
+- Otherwise calls `applyIncrementalChanges()` from the current cursor (see [Incremental sync](#incremental-sync)). The collected `changedPaths` are split into `modified`/`deleted` by checking whether each path still exists in the cache (`cache.hasFile(path)`).
+- A 410 from `changes.list` (expired token) is converted to `needsFullScan` and falls back to `fullScanWithDelta()`.
 
-`fullScanWithDelta()` snapshots the old paths-by-Drive-ID, performs a full scan, then diffs old vs new **by Drive file ID only**: a new ID is `modified` (added), a moved ID (different path) is a `renamed`+`modified`+`deleted`, and an ID present before but absent after is `deleted`. Because it keys on file ID, it **cannot see in-place content edits** (same path + same ID) -- those surface on the next incremental sync or via warm mode's local-vs-record check. It returns `null` when there is no prior snapshot (initial sync, including restoring an empty cache from persisted metadata that turns out empty).
+`fullScanWithDelta()` is reached only on the 410 path (the cache is already populated). It snapshots the old paths-by-Drive-ID, performs a full scan, then diffs old vs new **by Drive file ID only**: a new ID is `modified` (added), a moved ID (different path) is a `renamed`+`modified`+`deleted`, and an ID present before but absent after is `deleted`. Because it keys on file ID, it **cannot see in-place content edits** (same path + same ID) -- those surface on the next incremental sync or via warm mode's local-vs-record check. It returns `null` only when there is no prior snapshot.
 
 ### Mutex protection
 
@@ -66,7 +68,7 @@ Key operations:
    - **Modified/created**: call `cache.applyFileChangeDetectMove()`, add resolved path to `changedPaths`. If a move is detected (oldPath ≠ newPath), add oldPath to `deletedPaths` and record in `renamedPaths`
    - If a tracked item moves out of the sync root (old path known, new path unresolvable), its old path -- and, if it was a folder, its old descendant paths -- are reported as deleted
    - When a folder is moved or renamed (it was a folder and oldPath ≠ newPath), all of its new descendant paths are additionally re-emitted as modified/updated, because their resolved paths shifted
-4. If any changes were seen (`totalChanges > 0`), persist updated records via `putFiles`, removals via `deleteFiles`, and set meta `changesStartPageToken` to the last page's `newStartPageToken`. With zero changes returned nothing is persisted (the token still advances in memory)
+4. If any changes were seen (`totalChanges > 0`), persist updated records via `putFiles` and removals via `deleteFiles`. The cursor is **not** persisted here — it advances in memory only (`IncrementalChangesResult.newToken`) and is committed to `settings.backendData` by the orchestrator after a fully-successful cycle (see [Crash recovery](sync-pipeline.md#crash-recovery)). With zero changes nothing is persisted
 5. Return `{ newToken, changedPaths, renamedPaths }` or `{ needsFullScan: true }` on 410
 
 The 410 fallback triggers `fullScanWithDelta()` which compares persisted metadata against the fresh cache to compute renames, additions, and deletions.
@@ -124,7 +126,7 @@ Two OAuth implementations share a common base class (`GoogleAuthBase`):
 
 ### Token storage
 
-Tokens (`refreshToken`, `accessToken`) are stored in Obsidian's `SecretStorage` via `token-store.ts`, never in `settings.backendData`. Only non-secret data lives in `settings.backendData`: `remoteVaultFolderId`, `lastKnownVaultName`, `accessTokenExpiry`, `changesStartPageToken`, and `pendingAuthState`/`pendingCodeVerifier` (transient, to survive a plugin reload mid-flow), plus the custom-OAuth fields (`customClientId`/`customClientSecret` are SecretStorage secret-name references, `customScope`, `customRedirectUri`, `customIncludeGrantedScopes`).
+Tokens (`refreshToken`, `accessToken`) are stored in Obsidian's `SecretStorage` via `token-store.ts`, never in `settings.backendData`. Only non-secret data lives in `settings.backendData`: `remoteVaultFolderId`, `lastKnownVaultName`, `accessTokenExpiry`, `changesStartPageToken` (the single committed delta checkpoint), and `pendingAuthState`/`pendingCodeVerifier` (transient, to survive a plugin reload mid-flow), plus the custom-OAuth fields (`customClientId`/`customClientSecret` are SecretStorage secret-name references, `customScope`, `customRedirectUri`, `customIncludeGrantedScopes`).
 
 ## Resumable upload
 
@@ -152,7 +154,7 @@ Tokens (`refreshToken`, `accessToken`) are stored in Obsidian's `SecretStorage` 
 - Requires `remoteVaultFolderId` to be set manually in settings; its `resolveRemoteVault()` override throws (`"Remote vault folder id is required for custom OAuth"`) when it is unset, so it never auto-creates
 - On disconnect, preserves custom credential references and folder ID
 
-Both extend `GoogleDriveProviderBase` which handles `createFs()`, `readBackendState()`, `resetTargetState()`, and `disconnect()`.
+Both extend `GoogleDriveProviderBase` which handles `createFs()`, `hasCheckpoint(settings)` (true iff `changesStartPageToken` is set), `readBackendState(fs, commitCheckpoint)` (returns the cursor only when `commitCheckpoint` is true, i.e. the cycle fully succeeded), `resetTargetState()` (clears the cursor — used by both a backend identity change and the **Rescan vault** action), and `disconnect()`.
 
 ### Remote vault resolution
 
@@ -163,4 +165,4 @@ Layout: `<Drive root>/obsidian-air-sync/<uuid>/.airsync/metadata.json`. `resolve
 
 ### createFs() contract
 
-`createFs()` returns null unless both a refresh token (SecretStorage) and `remoteVaultFolderId` exist. It instantiates a `MetadataStore` keyed `${vaultId}-${remoteVaultFolderId}` (`dbNamePrefix` `air-sync-drive`, version 1), seeds the auth with the stored tokens and `accessTokenExpiry`, and restores `changesStartPageToken` onto the FS.
+`createFs()` returns null unless both a refresh token (SecretStorage) and `remoteVaultFolderId` exist. It instantiates a `MetadataStore` keyed `${vaultId}-${remoteVaultFolderId}` (`dbNamePrefix` `air-sync-drive`, version 1), seeds the auth with the stored tokens and `accessTokenExpiry`, and restores `changesStartPageToken` onto the FS as its authoritative delta cursor (the `MetadataStore` caches only the file map).

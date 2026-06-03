@@ -15,35 +15,10 @@ import { AuthError } from "../fs/errors";
 import { getErrorInfo, isRateLimitError, sleep } from "./error";
 import type { SyncStatus } from "./types";
 import { buildSyncRecord } from "./state-committer";
+import { buildNotificationMessage } from "./sync-notification";
+import type { SyncCycleResult } from "./sync-notification";
 
 export type { SyncStatus };
-
-interface SyncCycleResult {
-	result: ExecutionResult;
-	succeeded: number;
-	failed: number;
-	conflicts: number;
-}
-
-function buildNotificationMessage(cycle: SyncCycleResult): string {
-	const counts = { pushed: 0, pulled: 0, matched: 0, deleted: 0, renamed: 0 };
-	for (const a of cycle.result.succeeded) {
-		if (a.action.action === "push") counts.pushed++;
-		else if (a.action.action === "pull") counts.pulled++;
-		else if (a.action.action === "match") counts.matched++;
-		else if (a.action.action === "delete_local" || a.action.action === "delete_remote") counts.deleted++;
-		else if (a.action.action === "rename_remote" || a.action.action === "rename_local") counts.renamed++;
-	}
-	const parts: string[] = [];
-	if (counts.pushed > 0) parts.push(`${counts.pushed} pushed`);
-	if (counts.pulled > 0) parts.push(`${counts.pulled} pulled`);
-	if (counts.matched > 0) parts.push(`${counts.matched} matched`);
-	if (counts.deleted > 0) parts.push(`${counts.deleted} deleted`);
-	if (counts.renamed > 0) parts.push(`${counts.renamed} renamed`);
-	if (cycle.conflicts > 0) parts.push(`${cycle.conflicts} conflicts`);
-	if (cycle.failed > 0) parts.push(`${cycle.failed} errors`);
-	return parts.length === 0 ? "Everything up to date" : `Sync: ${parts.join(", ")}`;
-}
 
 export interface SyncOrchestratorDeps {
 	getSettings: () => AirSyncSettings;
@@ -70,6 +45,13 @@ export class SyncOrchestrator {
 	private syncMutex = new AsyncMutex();
 	private stateStore: SyncStateStore;
 	private syncPending = false;
+	/**
+	 * A cycle that ended with failures may have advanced the backend's in-memory
+	 * delta cursor past work it never committed (the committed checkpoint is held
+	 * back, but the live FS cursor is not re-seeded same-process). Force the next
+	 * cycle cold — a full list × baseline join recovers it regardless of cursor.
+	 */
+	private recoverViaColdScan = false;
 	private deps: SyncOrchestratorDeps;
 
 	constructor(deps: SyncOrchestratorDeps) {
@@ -141,12 +123,26 @@ export class SyncOrchestrator {
 			do {
 				this.syncPending = false;
 				this.deps.onStatusChange("syncing");
-				this.deps.logger?.info("Sync started");
 
-				const result = await this.executeWithRetry();
+				// Force a full cold reconcile when delta-based detection can't be
+				// trusted: no committed remote checkpoint (last sync never completed
+				// or was reset), or the previous cycle failed (its in-memory cursor
+				// may have advanced past un-committed work). Cold recovers either via
+				// a full list × baseline join.
+				const provider = this.deps.backendProvider();
+				const noCheckpoint = provider?.hasCheckpoint
+					? !provider.hasCheckpoint(this.deps.getSettings())
+					: false;
+				const forceFullScan = noCheckpoint || this.recoverViaColdScan;
+				this.deps.logger?.info("Sync started", { forceFullScan });
+
+				const result = await this.executeWithRetry(forceFullScan);
 				if (!result) return; // Fatal error already handled
 
 				const { succeeded, failed, conflicts } = result;
+				// A failed cycle leaves the cursor possibly ahead of committed state →
+				// next cycle must cold-reconcile; a clean cycle clears the flag.
+				this.recoverViaColdScan = failed > 0;
 				if (failed > 0) {
 					this.deps.onStatusChange("partial_error");
 					this.deps.logger?.warn("Sync completed with errors", { succeeded, conflicts, failed });
@@ -169,13 +165,13 @@ export class SyncOrchestrator {
 	/**
 	 * Execute sync with retry logic. Returns null on fatal error (already reported).
 	 */
-	private async executeWithRetry(): Promise<SyncCycleResult | null> {
+	private async executeWithRetry(forceFullScan: boolean): Promise<SyncCycleResult | null> {
 		let lastError: unknown = null;
 		let lastResult: ExecutionResult | null = null;
 
 		for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
 			try {
-				lastResult = await this.executeSyncOnce();
+				lastResult = await this.executeSyncOnce(forceFullScan);
 				return {
 					result: lastResult,
 					succeeded: lastResult.succeeded.length,
@@ -261,7 +257,7 @@ export class SyncOrchestrator {
 		return this.syncMutex.isLocked ? "syncing" : "idle";
 	}
 
-	private async executeSyncOnce() {
+	private async executeSyncOnce(forceFullScan: boolean) {
 		const localFs = this.deps.localFs();
 		const remoteFs = this.deps.remoteFs();
 		if (!localFs || !remoteFs) {
@@ -274,7 +270,7 @@ export class SyncOrchestrator {
 			remoteFs,
 			stateStore: this.stateStore,
 			localTracker: this.deps.localTracker,
-		});
+		}, { forceFullScan });
 
 		const renamePairs = this.deps.localTracker.getRenamePairs();
 		const remoteOnlyPaths = changeSet.entries.filter((e) => !e.local && e.remote).map((e) => e.path);
@@ -369,13 +365,15 @@ export class SyncOrchestrator {
 
 		const result = await executePlan(plan, ctx);
 
-		// Persist backend state
+		// Persist backend state. Advance the delta cursor only on a fully clean
+		// cycle (failed === 0) — a partial/interrupted sync must keep the prior
+		// committed cursor so the next run re-detects the un-synced work.
 		const provider = this.deps.backendProvider();
 		if (provider?.readBackendState && remoteFs) {
 			const current = settings.backendData[provider.type] ?? {};
 			settings.backendData[provider.type] = {
 				...current,
-				...provider.readBackendState(remoteFs),
+				...provider.readBackendState(remoteFs, result.failed.length === 0),
 			};
 		}
 		await this.deps.saveSettings();
