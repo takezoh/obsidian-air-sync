@@ -97,7 +97,6 @@ export type SyncAction = StandardSyncAction | RenameAction;
 /** Result of safety checks before execution */
 export interface SafetyCheckResult {
 	shouldAbort: boolean;
-	requiresConfirmation: boolean;
 	deletionRatio?: number;
 	deletionCount?: number;
 }

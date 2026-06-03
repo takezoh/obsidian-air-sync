@@ -235,7 +235,6 @@ interface SyncPlan {
 ```typescript
 interface SafetyCheckResult {
   shouldAbort: boolean;
-  requiresConfirmation: boolean;
   deletionRatio?: number;
   deletionCount?: number;
 }

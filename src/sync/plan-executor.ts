@@ -38,7 +38,6 @@ export interface ExecutionContext {
 	remoteFs: IFileSystem;
 	committer: StateCommitterContext;
 	conflictStrategy: ConflictStrategy;
-	onConfirmation?: () => Promise<boolean>;
 	onProgress?: (completed: number, total: number) => void;
 	logger?: Logger;
 }
@@ -61,18 +60,6 @@ export async function executePlan(
 			deletionCount: plan.safetyCheck.deletionCount,
 		});
 		return result;
-	}
-
-	if (plan.safetyCheck.requiresConfirmation && !ctx.onConfirmation) {
-		ctx.logger?.warn("executePlan: requiresConfirmation is true but no onConfirmation callback provided — proceeding without confirmation");
-	}
-
-	if (plan.safetyCheck.requiresConfirmation && ctx.onConfirmation) {
-		const confirmed = await ctx.onConfirmation();
-		if (!confirmed) {
-			ctx.logger?.info("executePlan: aborted by user confirmation");
-			return result;
-		}
 	}
 
 	const groupA: SyncAction[] = [];

@@ -110,7 +110,6 @@ After initial-match enrichment, `enrichHashesForRenames()` runs for entries that
 `checkSafety()` in `safety-check.ts` evaluates the plan before execution:
 
 - **Abort** (`shouldAbort: true`): deletion ratio is 100% (all meaningful actions are deletions)
-- **Confirm** (`requiresConfirmation: true`): deletion ratio > 50% AND deletion count > 10
 - **Proceed**: all other cases
 
 `match` and `cleanup` actions are excluded from the ratio denominator (they are state-only).

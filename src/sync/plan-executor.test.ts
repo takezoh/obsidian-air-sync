@@ -28,7 +28,6 @@ function makePlan(actions: SyncAction[], overrides: Partial<SyncPlan["safetyChec
 		actions,
 		safetyCheck: {
 			shouldAbort: false,
-			requiresConfirmation: false,
 			...overrides,
 		},
 	};
@@ -47,48 +46,6 @@ describe("executePlan", () => {
 
 			expect(result.succeeded).toHaveLength(0);
 			expect(result.failed).toHaveLength(0);
-		});
-
-		it("proceeds when requiresConfirmation is true and user confirms", async () => {
-			const ctx = makeCtx({
-				onConfirmation: () => Promise.resolve(true),
-			});
-			addFile(ctx.localFs as ReturnType<typeof createMockFs>, "a.md", "hello");
-			const plan = makePlan(
-				[{ path: "a.md", action: "push", local: { path: "a.md", isDirectory: false, size: 5, mtime: 1000, hash: "" } }],
-				{ requiresConfirmation: true },
-			);
-
-			const result = await executePlan(plan, ctx);
-
-			expect(result.succeeded).toHaveLength(1);
-		});
-
-		it("aborts when requiresConfirmation is true and user rejects", async () => {
-			const ctx = makeCtx({
-				onConfirmation: () => Promise.resolve(false),
-			});
-			const plan = makePlan(
-				[{ path: "a.md", action: "push" }],
-				{ requiresConfirmation: true },
-			);
-
-			const result = await executePlan(plan, ctx);
-
-			expect(result.succeeded).toHaveLength(0);
-		});
-
-		it("proceeds without confirmation callback even when requiresConfirmation is true", async () => {
-			const ctx = makeCtx();
-			addFile(ctx.localFs as ReturnType<typeof createMockFs>, "a.md", "hello");
-			const plan = makePlan(
-				[{ path: "a.md", action: "push", local: { path: "a.md", isDirectory: false, size: 5, mtime: 1000, hash: "" } }],
-				{ requiresConfirmation: true },
-			);
-
-			const result = await executePlan(plan, ctx);
-
-			expect(result.succeeded).toHaveLength(1);
 		});
 	});
 

@@ -12,7 +12,7 @@ function baseline(path: string, hash: string): SyncRecord {
 }
 
 function plan(actions: SyncAction[]): SyncPlan {
-	return { actions, safetyCheck: { shouldAbort: false, requiresConfirmation: false } };
+	return { actions, safetyCheck: { shouldAbort: false } };
 }
 
 describe("refinePlan", () => {
