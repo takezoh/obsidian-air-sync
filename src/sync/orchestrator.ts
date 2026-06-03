@@ -58,6 +58,8 @@ export interface SyncOrchestratorDeps {
 	isMobile: () => boolean;
 	/** Returns true when the backend is in the process of connecting */
 	isBackendConnecting?: () => boolean;
+	/** Returns true when the Obsidian workspace layout is ready (vault index loaded) */
+	isLayoutReady?: () => boolean;
 	localTracker: LocalChangeTracker;
 	logger?: Logger;
 }
@@ -101,10 +103,11 @@ export class SyncOrchestrator {
 		const hasRemote = !!this.deps.remoteFs();
 		const isLocked = this.syncMutex.isLocked;
 		const isConnecting = this.deps.isBackendConnecting?.() ?? false;
-		if (!hasRemote || isLocked || isConnecting) {
-			this.deps.logger?.debug("shouldSync: skipped", { hasRemote, isLocked, isConnecting });
+		const isLayoutReady = this.deps.isLayoutReady?.() ?? true;
+		if (!hasRemote || isLocked || isConnecting || !isLayoutReady) {
+			this.deps.logger?.debug("shouldSync: skipped", { hasRemote, isLocked, isConnecting, isLayoutReady });
 		}
-		return hasRemote && !isLocked && !isConnecting;
+		return hasRemote && !isLocked && !isConnecting && isLayoutReady;
 	}
 
 	isExcluded(path: string): boolean {
@@ -121,6 +124,11 @@ export class SyncOrchestrator {
 
 		if (this.deps.isBackendConnecting?.()) {
 			this.deps.logger?.debug("runSync: skipped — backend connecting");
+			return;
+		}
+
+		if (!(this.deps.isLayoutReady?.() ?? true)) {
+			this.deps.logger?.debug("runSync: skipped — layout not ready");
 			return;
 		}
 
@@ -337,7 +345,6 @@ export class SyncOrchestrator {
 		this.deps.logger?.info("Sync plan created", {
 			total: plan.actions.length,
 			...actionBreakdown,
-			safetyCheck: plan.safetyCheck,
 		});
 
 		const total = plan.actions.length;

@@ -12,7 +12,7 @@ function baseline(path: string, hash: string): SyncRecord {
 }
 
 function plan(actions: SyncAction[]): SyncPlan {
-	return { actions, safetyCheck: { shouldAbort: false } };
+	return { actions };
 }
 
 describe("refinePlan", () => {
@@ -105,7 +105,5 @@ describe("refinePlan", () => {
 		const result = refinePlan(p, localPairs, new Map(), []);
 
 		expect(result).not.toBe(p);
-		expect(result.safetyCheck).toBeDefined();
-		expect(result.safetyCheck.shouldAbort).toBe(false);
 	});
 });

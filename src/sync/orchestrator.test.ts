@@ -482,4 +482,80 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.close();
 		});
 	});
+
+	describe("layoutReady gate", () => {
+		it("runSync is a no-op while the vault layout is not ready", async () => {
+			const localFs = createMockFs("local");
+			const remoteFs = createMockFs("remote");
+			const listSpy = vi.spyOn(localFs, "list");
+			const deps = createDeps({
+				localFs: () => localFs,
+				remoteFs: () => remoteFs,
+				isLayoutReady: () => false,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+
+			await orchestrator.runSync();
+
+			expect(listSpy).not.toHaveBeenCalled();
+			expect(deps.onStatusChange).not.toHaveBeenCalledWith("syncing");
+			await orchestrator.close();
+		});
+
+		it("runs once the layout becomes ready", async () => {
+			let ready = false;
+			const localFs = createMockFs("local");
+			const remoteFs = createMockFs("remote");
+			const deps = createDeps({
+				localFs: () => localFs,
+				remoteFs: () => remoteFs,
+				isLayoutReady: () => ready,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+
+			await orchestrator.runSync();
+			expect(deps.onStatusChange).not.toHaveBeenCalledWith("syncing");
+			expect(deps.onStatusChange).not.toHaveBeenCalledWith("idle");
+
+			ready = true;
+			await orchestrator.runSync();
+			expect(deps.onStatusChange).toHaveBeenCalledWith("idle");
+			await orchestrator.close();
+		});
+
+		it("shouldSync is false until the layout is ready", () => {
+			let ready = false;
+			const deps = createDeps({ isLayoutReady: () => ready });
+			const orchestrator = new SyncOrchestrator(deps);
+			expect(orchestrator.shouldSync()).toBe(false);
+			ready = true;
+			expect(orchestrator.shouldSync()).toBe(true);
+		});
+	});
+
+	describe("phantom warm deletion is prevented (not recovered)", () => {
+		it("does not delete a file missing from the listing but present on disk", async () => {
+			const localFs = createMockFs("local");
+			const remoteFs = createMockFs("remote");
+			const deps = createDeps({ localFs: () => localFs, remoteFs: () => remoteFs });
+			const orchestrator = new SyncOrchestrator(deps);
+
+			// Steady state: a.md synced on both sides with a matching baseline.
+			addFile(remoteFs, "a.md", "hello", 1000);
+			addFile(localFs, "a.md", "hello", 1000); // present on disk (stat finds it)
+			await orchestrator.state.put({
+				path: "a.md", hash: "", localMtime: 1000, remoteMtime: 1000,
+				localSize: 5, remoteSize: 5, syncedAt: 900,
+			});
+
+			// Incomplete listing (index not fully loaded) — but stat() still finds
+			// a.md, so the warm confirm pass cancels the would-be deletion.
+			vi.spyOn(localFs, "list").mockResolvedValueOnce([]);
+			await orchestrator.runSync();
+
+			expect(remoteFs.files.has("a.md")).toBe(true); // NOT deleted
+			expect(await orchestrator.state.get("a.md")).toBeDefined(); // baseline intact
+			await orchestrator.close();
+		});
+	});
 });

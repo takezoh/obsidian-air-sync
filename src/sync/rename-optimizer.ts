@@ -1,6 +1,5 @@
 import type { RenamePair, SyncAction, SyncPlan } from "./types";
 import type { Logger } from "../logging/logger";
-import { checkSafety } from "./safety-check";
 import { optimizeLocalFileRenames, coalesceLocalFolderRenames } from "./optimize-local-renames";
 import { optimizeRemoteFileRenames, coalesceRemoteFolderRenames } from "./optimize-remote-renames";
 
@@ -61,5 +60,5 @@ export function refinePlan(
 	}
 
 	if (actions === plan.actions) return plan;
-	return { actions, safetyCheck: checkSafety(actions) };
+	return { actions };
 }

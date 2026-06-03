@@ -5,7 +5,7 @@
 Each sync cycle runs a 4-phase pipeline:
 
 1. **Collect** -- `collectChanges()` gathers `MixedEntity[]` using the appropriate temperature mode
-2. **Decide** -- `planSync()` maps each `MixedEntity` to a `SyncAction` and runs `checkSafety()`
+2. **Decide** -- `planSync()` maps each `MixedEntity` to a `SyncAction`
 3. **Execute** -- `executePlan()` runs I/O in grouped batches (A/B/C/D)
 4. **Commit** -- `commitAction()` persists each successful action's `SyncRecord` to IndexedDB
 
@@ -105,18 +105,17 @@ After initial-match enrichment, `enrichHashesForRenames()` runs for entries that
 | no | exists | exists | same hash+size | same hash+size | `match` |
 | no | exists | exists | (otherwise) | (otherwise) | `conflict` |
 
-## Safety check
+## Deletion safety
 
-`checkSafety()` in `safety-check.ts` evaluates the plan before execution:
+There is no volume-based abort gate. Deletion safety rests on three independent layers:
 
-- **Abort** (`shouldAbort: true`): deletion ratio is 100% (all meaningful actions are deletions)
-- **Proceed**: all other cases
-
-`match` and `cleanup` actions are excluded from the ratio denominator (they are state-only).
+1. **Decision rules** -- an ambiguous case (a file gone on one side while the surviving side changed since baseline) is routed to `conflict` (keep both), never to a deletion; a missing baseline never yields a deletion.
+2. **layoutReady gate** -- sync does not run before the Obsidian vault index is loaded. `SyncScheduler` defers its event wiring, and `runSync()` is gated on `app.workspace.layoutReady`, so a `list()` that under-reports during startup cannot be mistaken for mass local deletions.
+3. **Soft-delete + self-heal** -- both backends delete to trash, and a file deleted from an incomplete listing is re-pushed on the next full sync (its local copy persists on disk), so an erroneous deletion is recoverable.
 
 ## Rename optimization
 
-`refinePlan()` in `rename-optimizer.ts` runs after `planSync()` + `checkSafety()`. It replaces redundant delete+transfer pairs with native rename operations. The optimizer is split by trust boundary into two modules:
+`refinePlan()` in `rename-optimizer.ts` runs after `planSync()`. It replaces redundant delete+transfer pairs with native rename operations. The optimizer is split by trust boundary into two modules:
 
 ### Local renames — hash-verified (`optimize-local-renames.ts`)
 
@@ -134,7 +133,7 @@ When `getChangedPaths()` reports a rename pair, the optimizer matches `delete_lo
 
 ### Observability
 
-Each optimization step returns `RenameOptResult` with `applied` (successful renames) and `skipped` (with structured `reason`: `action_type_mismatch`, `hash_mismatch`, `hash_missing`, `no_descendants`). `refinePlan()` logs these via the debug logger and recomputes `checkSafety()` on the resulting actions.
+Each optimization step returns `RenameOptResult` with `applied` (successful renames) and `skipped` (with structured `reason`: `action_type_mismatch`, `hash_mismatch`, `hash_missing`, `no_descendants`). `refinePlan()` logs these via the debug logger.
 
 ## Execution groups
 

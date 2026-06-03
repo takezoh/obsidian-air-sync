@@ -21,12 +21,11 @@ src/
 ├── main.ts                          # Plugin entry point (lifecycle only)
 ├── settings.ts                      # AirSyncSettings type & defaults
 ├── sync/
-│   ├── types.ts                     # SyncRecord, MixedEntity, SyncAction, SyncPlan, SafetyCheckResult
+│   ├── types.ts                     # SyncRecord, MixedEntity, SyncAction, SyncPlan
 │   ├── local-tracker.ts             # LocalChangeTracker — in-memory dirty path set
 │   ├── change-compare.ts            # hasChanged(), hasRemoteChanged() — diff against baseline
 │   ├── change-detector.ts           # collectChanges() — hot/warm/cold temperature modes
 │   ├── decision-engine.ts           # planSync() — builds SyncPlan from MixedEntity[]
-│   ├── safety-check.ts              # checkSafety() — mass-deletion guard
 │   ├── plan-executor.ts             # executePlan() — grouped execution (A/B/C/D)
 │   ├── state-committer.ts           # commitAction() — per-action SyncRecord upsert/delete
 │   ├── conflict-resolver.ts         # resolveConflict() — 3-strategy conflict resolver
@@ -127,9 +126,6 @@ src/
      │  planSync()                        │  DecisionEngine
      │        │                           │    9 action types
      │        ▼                           │
-     │  checkSafety()                     │  SafetyCheck
-     │        │                           │    deletion ratio guard
-     │        ▼                           │
      │  refinePlan()                      │  RenameOptimizer
      │    optimizeLocalFileRenames         │    → rename_remote (hash-verified)
      │    optimizeRemoteFileRenames        │    → rename_local  (trusted)
@@ -226,19 +222,9 @@ interface RenameAction {
 
 interface SyncPlan {
   actions: SyncAction[];
-  safetyCheck: SafetyCheckResult;
 }
 ```
 
-### SafetyCheckResult (sync/types.ts)
-
-```typescript
-interface SafetyCheckResult {
-  shouldAbort: boolean;
-  deletionRatio?: number;
-  deletionCount?: number;
-}
-```
 
 ## IFileSystem interface
 

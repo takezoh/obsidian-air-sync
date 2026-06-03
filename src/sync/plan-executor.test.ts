@@ -23,32 +23,11 @@ function makeCtx(
 	};
 }
 
-function makePlan(actions: SyncAction[], overrides: Partial<SyncPlan["safetyCheck"]> = {}): SyncPlan {
-	return {
-		actions,
-		safetyCheck: {
-			shouldAbort: false,
-			...overrides,
-		},
-	};
+function makePlan(actions: SyncAction[]): SyncPlan {
+	return { actions };
 }
 
 describe("executePlan", () => {
-	describe("safety checks", () => {
-		it("returns empty result immediately when shouldAbort is true", async () => {
-			const ctx = makeCtx();
-			const plan = makePlan(
-				[{ path: "a.md", action: "push" }],
-				{ shouldAbort: true },
-			);
-
-			const result = await executePlan(plan, ctx);
-
-			expect(result.succeeded).toHaveLength(0);
-			expect(result.failed).toHaveLength(0);
-		});
-	});
-
 	describe("push", () => {
 		it("uploads local file to remote and commits state", async () => {
 			const ctx = makeCtx();

@@ -207,7 +207,6 @@ describe("planSync — decision table (docs/sync-pipeline.md)", () => {
 	it("returns an empty plan for empty input", () => {
 		const plan = planSync([]);
 		expect(plan.actions).toHaveLength(0);
-		expect(plan.safetyCheck.shouldAbort).toBe(false);
 	});
 
 	for (const c of TABLE) {
@@ -446,35 +445,23 @@ describe("emitted SyncAction structure", () => {
 	});
 });
 
-describe("safetyCheck integration", () => {
-	it("populates safetyCheck on every plan", () => {
-		const plan = planSync([{ path: "f.md", local: local() }]);
-		expect(plan.safetyCheck).toBeDefined();
-		expect(typeof plan.safetyCheck.shouldAbort).toBe("boolean");
-	});
-
-	it("flags shouldAbort when 100% of meaningful actions are deletions", () => {
-		const entries: MixedEntity[] = Array.from({ length: 5 }, (_, i) => ({
-			path: `file-${i}.md`,
-			remote: remote({ path: `file-${i}.md` }),
-			prevSync: baseline({ path: `file-${i}.md` }),
-		}));
-		const plan = planSync(entries);
-		expect(plan.actions.every((a) => a.action === "delete_remote")).toBe(
-			true,
-		);
-		expect(plan.safetyCheck.shouldAbort).toBe(true);
-	});
-
-	it("does not abort when deletions are mixed with transfers", () => {
-		const plan = planSync([
-			{ path: "keep.md", local: local({ path: "keep.md" }) },
-			{
-				path: "drop.md",
-				remote: remote({ path: "drop.md" }),
-				prevSync: baseline({ path: "drop.md" }),
-			},
-		]);
-		expect(plan.safetyCheck.shouldAbort).toBe(false);
+describe("cold safety: no baseline never deletes", () => {
+	// The volume-based safety-check was removed (it caused §2-1 data loss by
+	// aborting legitimate all-deletion batches). The decision rules are now the
+	// sole guard against data loss, so pin the cold-start invariant explicitly:
+	// a missing baseline must never produce a deletion — an empty/incomplete
+	// baseline reconciles via push/pull/match/conflict, never delete_*/cleanup.
+	it("no prevSync never yields delete_* or cleanup for any local/remote combo", () => {
+		const combos: MixedEntity[] = [
+			{ path: "f.md", local: local() },
+			{ path: "f.md", remote: remote() },
+			{ path: "f.md", local: local(), remote: remote() },
+			{ path: "f.md", local: local({ hash: "x" }), remote: remote({ hash: "y", size: 200 }) },
+			{ path: "f.md" },
+		];
+		for (const entry of combos) {
+			const action = decide(entry);
+			expect(["delete_local", "delete_remote", "cleanup"]).not.toContain(action);
+		}
 	});
 });

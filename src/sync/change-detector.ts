@@ -48,6 +48,13 @@ export async function collectChanges(deps: ChangeDetectorDeps): Promise<ChangeSe
 	// Ensure rename-related local entries have hashes (WARM/COLD use list() → hash:"")
 	await enrichHashesForRenames(changeSet.entries, deps.localFs, localTracker.getRenamePairs());
 
+	// Warm mode infers local deletions from absence in list() (the in-memory vault
+	// index), which can under-report. Confirm each candidate against the authoritative
+	// filesystem so an unindexed-but-on-disk file is never deleted.
+	if (changeSet.temperature === "warm") {
+		await confirmLocalDeletions(changeSet.entries, deps.localFs);
+	}
+
 	return changeSet;
 }
 
@@ -274,6 +281,38 @@ export async function enrichHashesForRenames(
 				// Skip — rename optimizer falls back to push+delete
 			}
 		})
+	);
+}
+
+/**
+ * Confirm warm-mode local deletions against the authoritative filesystem.
+ * A baseline path absent from localFs.list() (the in-memory vault index) but
+ * present on disk was simply not indexed — it was NOT deleted. Re-stat each such
+ * candidate; if it exists, set entry.local so an incomplete listing cannot drive
+ * an erroneous delete_remote. (When the remote is also gone, the file is then
+ * compared as a genuine remote deletion rather than a no-op cleanup.)
+ */
+async function confirmLocalDeletions(
+	entries: MixedEntity[],
+	localFs: IFileSystem,
+): Promise<void> {
+	const candidates = entries.filter((e) => !e.local && e.prevSync);
+	if (candidates.length === 0) return;
+
+	const pool = new AsyncPool(10);
+	await Promise.all(
+		candidates.map((entry) =>
+			pool.run(async () => {
+				try {
+					const stat = await localFs.stat(entry.path);
+					if (stat && !stat.isDirectory) {
+						entry.local = stat;
+					}
+				} catch {
+					// Skip — a genuinely missing file returns null/throws → stays a deletion
+				}
+			})
+		)
 	);
 }
 

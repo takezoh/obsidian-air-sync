@@ -61,7 +61,14 @@ export class LocalFs implements IFileSystem {
 		if (!file && this.dotPath.isDotPath(path)) {
 			return this.dotPath.stat(path);
 		}
-		if (!file) return null;
+		if (!file) {
+			// A dot-prefixed path that isn't a registered syncDotPath (handled above)
+			// is out of sync scope — leave it absent. For a normal path the index may
+			// just not have loaded it yet, so confirm against the adapter (absence is
+			// what drives deletions).
+			const isDotPrefixed = path.startsWith(".") || path.includes("/.");
+			return isDotPrefixed ? null : this.statViaAdapter(path);
+		}
 
 		if (file instanceof TFile) {
 			const content = await this.vault.readBinary(file);
@@ -84,6 +91,17 @@ export class LocalFs implements IFileSystem {
 		}
 
 		return null;
+	}
+
+	private async statViaAdapter(path: string): Promise<FileEntity | null> {
+		const s = await this.vault.adapter.stat(path);
+		if (!s) return null;
+		if (s.type === "folder") {
+			return { path, isDirectory: true, size: 0, mtime: 0, hash: "" };
+		}
+		const content = await this.vault.adapter.readBinary(path);
+		const hash = await sha256(content);
+		return { path, isDirectory: false, size: s.size, mtime: s.mtime, hash };
 	}
 
 	async read(path: string): Promise<ArrayBuffer> {

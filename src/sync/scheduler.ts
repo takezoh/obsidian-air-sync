@@ -29,6 +29,7 @@ export interface SyncSchedulerDeps {
 export class SyncScheduler {
 	private deps: SyncSchedulerDeps;
 	private debouncedSync: ReturnType<typeof debounce>;
+	private destroyed = false;
 
 	constructor(deps: SyncSchedulerDeps) {
 		this.deps = deps;
@@ -43,6 +44,19 @@ export class SyncScheduler {
 	}
 
 	start(): void {
+		if (this.deps.workspace.layoutReady) {
+			this.wireAll();
+		} else {
+			// Defer event wiring until the vault index is loaded, so an early
+			// focus/visibility/online/vault event cannot trigger a sync against
+			// an incomplete local listing (getAllLoadedFiles under-reports).
+			this.deps.workspace.onLayoutReady(() => this.wireAll());
+		}
+	}
+
+	private wireAll(): void {
+		// onLayoutReady may fire after the plugin unloads; do not wire then.
+		if (this.destroyed) return;
 		this.wireVaultEvents();
 		this.wireOnlineEvent();
 		this.wireVisibilityEvent();
@@ -51,6 +65,7 @@ export class SyncScheduler {
 	}
 
 	destroy(): void {
+		this.destroyed = true;
 		this.debouncedSync.cancel();
 	}
 

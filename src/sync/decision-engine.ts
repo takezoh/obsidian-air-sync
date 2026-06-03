@@ -1,6 +1,5 @@
 import type { MixedEntity, SyncAction, SyncPlan } from "./types";
 import { hasChanged, hasRemoteChanged } from "./change-compare";
-import { checkSafety } from "./safety-check";
 
 export function planSync(entries: MixedEntity[]): SyncPlan {
 	const actions: SyncAction[] = [];
@@ -12,7 +11,7 @@ export function planSync(entries: MixedEntity[]): SyncPlan {
 		}
 	}
 
-	return { actions, safetyCheck: checkSafety(actions) };
+	return { actions };
 }
 
 function decideAction(entry: MixedEntity): SyncAction | null {

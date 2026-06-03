@@ -122,6 +122,36 @@ describe("LocalFs", () => {
 		});
 	});
 
+	describe("stat (adapter fallback for unindexed files)", () => {
+		it("finds an on-disk file missing from the vault index", async () => {
+			const { vault, fs } = createLocalFs();
+			const content = new TextEncoder().encode("hi").buffer;
+			await vault.adapter.writeBinary("notes/a.md", content);
+			// Simulate the vault index not yet listing the on-disk file.
+			vi.spyOn(vault, "getAbstractFileByPath").mockReturnValue(null);
+
+			const entity = await fs.stat("notes/a.md");
+
+			expect(entity).not.toBeNull();
+			expect(entity!.isDirectory).toBe(false);
+			expect(entity!.size).toBe(2);
+			expect(entity!.hash).not.toBe("");
+		});
+
+		it("returns null for a path absent from both the index and disk", async () => {
+			const { vault, fs } = createLocalFs();
+			vi.spyOn(vault, "getAbstractFileByPath").mockReturnValue(null);
+			expect(await fs.stat("notes/missing.md")).toBeNull();
+		});
+
+		it("does not resurrect an unregistered dot-path via the adapter", async () => {
+			const { vault, fs } = createLocalFs(); // .obsidian not in syncDotPaths
+			const content = new TextEncoder().encode("x").buffer;
+			await vault.adapter.writeBinary(".hidden/data.json", content);
+			expect(await fs.stat(".hidden/data.json")).toBeNull();
+		});
+	});
+
 	describe("read (.airsync paths)", () => {
 		it("reads a .airsync file via adapter", async () => {
 			const { vault, fs } = createLocalFs([".airsync"]);

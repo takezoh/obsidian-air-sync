@@ -94,15 +94,7 @@ export interface RenameAction extends SyncActionBase {
 /** A single planned action for a path */
 export type SyncAction = StandardSyncAction | RenameAction;
 
-/** Result of safety checks before execution */
-export interface SafetyCheckResult {
-	shouldAbort: boolean;
-	deletionRatio?: number;
-	deletionCount?: number;
-}
-
 /** The full sync plan */
 export interface SyncPlan {
 	actions: SyncAction[];
-	safetyCheck: SafetyCheckResult;
 }

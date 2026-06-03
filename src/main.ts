@@ -90,6 +90,7 @@ export default class AirSyncPlugin extends Plugin {
 			localTracker: this.localTracker,
 			logger: this.logger,
 			isBackendConnecting: () => this.backendManager.isConnecting(),
+			isLayoutReady: () => this.app.workspace.layoutReady,
 		});
 
 		this.scheduler = new SyncScheduler({
@@ -144,6 +145,11 @@ export default class AirSyncPlugin extends Plugin {
 		this.updateStatusBar();
 
 		this.scheduler.start();
+
+		// Run one sync once the vault index is loaded. The scheduler defers its
+		// event wiring until then, and runSync() is gated on layoutReady, so this
+		// is the first sync of the session ("caught up on open").
+		this.app.workspace.onLayoutReady(() => void this.runSync());
 	}
 
 	onunload() {

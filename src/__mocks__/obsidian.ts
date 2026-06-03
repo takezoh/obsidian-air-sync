@@ -178,13 +178,23 @@ export class Vault {
 	}
 }
 
+export class Workspace {
+	layoutReady = true;
+
+	onLayoutReady(cb: () => void): void {
+		if (this.layoutReady) cb();
+	}
+}
+
 export class App {
 	vault: Vault;
+	workspace: Workspace;
 	fileManager = {
 		trashFile: async (_file: TFile | TFolder) => {},
 	};
 	constructor() {
 		this.vault = new Vault();
+		this.workspace = new Workspace();
 	}
 }
 

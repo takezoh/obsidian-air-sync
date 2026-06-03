@@ -54,14 +54,6 @@ export async function executePlan(
 		conflicts: [],
 	};
 
-	if (plan.safetyCheck.shouldAbort) {
-		ctx.logger?.warn("executePlan: aborting — safety check triggered", {
-			deletionRatio: plan.safetyCheck.deletionRatio,
-			deletionCount: plan.safetyCheck.deletionCount,
-		});
-		return result;
-	}
-
 	const groupA: SyncAction[] = [];
 	const groupB: SyncAction[] = [];
 	const groupC: SyncAction[] = [];

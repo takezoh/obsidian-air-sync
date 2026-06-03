@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { collectChanges, enrichHashesForRenames } from "./change-detector";
 import type { ChangeDetectorDeps } from "./change-detector";
 import { LocalChangeTracker } from "./local-tracker";
@@ -610,5 +610,50 @@ describe("collectChanges — temperature selection", () => {
 
 			expect(entries[0]!.local!.hash).toBe("");
 		});
+	});
+});
+
+describe("collectChanges — warm deletion confirmation", () => {
+	let localFs: ReturnType<typeof createMockFs>;
+	let remoteFs: ReturnType<typeof createMockFs>;
+	let stateStore: ReturnType<typeof createMockStateStore>;
+	let localTracker: LocalChangeTracker;
+
+	function makeDeps(): ChangeDetectorDeps {
+		return { localFs, remoteFs, stateStore, localTracker };
+	}
+
+	beforeEach(() => {
+		localFs = createMockFs("local");
+		remoteFs = createMockFs("remote");
+		stateStore = createMockStateStore();
+		localTracker = new LocalChangeTracker();
+	});
+
+	it("keeps a baseline path present on disk but missing from list() (no deletion)", async () => {
+		await stateStore.put(
+			makeRecord("a.md", { localMtime: 1000, localSize: 5, remoteMtime: 1000, remoteSize: 5 }),
+		);
+		addFile(remoteFs, "a.md", "hello", 1000);
+		addFile(localFs, "a.md", "hello", 1000); // on disk → stat finds it
+		vi.spyOn(localFs, "list").mockResolvedValueOnce([]); // incomplete listing
+
+		const result = await collectChanges(makeDeps());
+
+		const entry = result.entries.find((e) => e.path === "a.md");
+		expect(entry?.local).toBeDefined(); // confirmed present → not a deletion
+	});
+
+	it("treats a baseline path absent on disk (stat null) as a deletion", async () => {
+		await stateStore.put(
+			makeRecord("gone.md", { localMtime: 1000, localSize: 5, remoteMtime: 1000, remoteSize: 5 }),
+		);
+		addFile(remoteFs, "gone.md", "hello", 1000);
+		// gone.md not in localFs → stat returns null
+
+		const result = await collectChanges(makeDeps());
+
+		const entry = result.entries.find((e) => e.path === "gone.md");
+		expect(entry?.local).toBeUndefined(); // genuine deletion preserved
 	});
 });

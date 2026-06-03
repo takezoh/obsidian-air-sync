@@ -26,10 +26,20 @@ type VaultHandler = (file: TAbstractFile) => void;
 type RenameHandler = (file: TAbstractFile, oldPath: string) => void;
 type WorkspaceHandler = (...args: unknown[]) => Promise<void> | void;
 
-function createDeps(overrides: Partial<SyncSchedulerDeps> = {}) {
+function createDeps(
+	overrides: Partial<SyncSchedulerDeps> = {},
+	opts: { layoutReady?: boolean } = {},
+) {
 	const vaultHandlers = new Map<string, WorkspaceHandler>();
 	const workspaceHandlers = new Map<string, WorkspaceHandler>();
 	const cleanups: (() => void)[] = [];
+	let layoutReady = opts.layoutReady ?? true;
+	const layoutReadyCbs: (() => void)[] = [];
+	const fireLayoutReady = () => {
+		layoutReady = true;
+		const cbs = layoutReadyCbs.splice(0);
+		for (const cb of cbs) cb();
+	};
 
 	const runSync = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
 	const pullSingle = vi.fn<(path: string) => Promise<void>>().mockResolvedValue(undefined);
@@ -40,12 +50,20 @@ function createDeps(overrides: Partial<SyncSchedulerDeps> = {}) {
 		cleanups: (() => void)[];
 		runSync: typeof runSync;
 		pullSingle: typeof pullSingle;
+		fireLayoutReady: () => void;
 	} = {
 		workspace: {
 			on: vi.fn((event: string, handler: WorkspaceHandler) => {
 				workspaceHandlers.set(event, handler);
 				return {} as EventRef;
 			}),
+			get layoutReady() {
+				return layoutReady;
+			},
+			onLayoutReady: (cb: () => void) => {
+				if (layoutReady) cb();
+				else layoutReadyCbs.push(cb);
+			},
 		} as unknown as SyncSchedulerDeps["workspace"],
 		vault: {
 			on: vi.fn((event: string, handler: WorkspaceHandler) => {
@@ -66,6 +84,7 @@ function createDeps(overrides: Partial<SyncSchedulerDeps> = {}) {
 		cleanups,
 		runSync,
 		pullSingle,
+		fireLayoutReady,
 		...overrides,
 	};
 	return deps;
@@ -84,6 +103,25 @@ describe("SyncScheduler", () => {
 		deps = createDeps();
 		scheduler = new SyncScheduler(deps);
 		scheduler.start();
+	});
+
+	describe("layout-ready gate", () => {
+		it("defers event wiring until the vault layout is ready", () => {
+			const d = createDeps({}, { layoutReady: false });
+			const s = new SyncScheduler(d);
+			s.start();
+
+			// Not ready: no events wired, so nothing can trigger a sync.
+			expect(d.vaultHandlers.size).toBe(0);
+
+			// Layout becomes ready → events wire and now drive sync.
+			d.fireLayoutReady();
+			const handler = d.vaultHandlers.get("modify") as VaultHandler;
+			expect(handler).toBeDefined();
+			handler(makeFile("note.md"));
+			vi.advanceTimersByTime(5000);
+			expect(d.runSync).toHaveBeenCalled();
+		});
 	});
 
 	describe("vault events", () => {

@@ -56,7 +56,7 @@ Both are retried with the `Retry-After` header value when available, falling bac
 | IndexedDB eviction | `GoogleDriveFs` falls back to cold path (full scan). `SyncStateStore` returns empty `getAll()`, triggering cold change detection which does a full outer join. `resolveEmptyHashes` is implicit: cold mode treats all paths as candidates. |
 | Auth error | `AuthError` causes immediate abort. `GoogleAuthBase` sets `authFailed = true`; subsequent API calls throw without attempting refresh. User must reconnect in settings. |
 | Individual file error | Caught per-action in `executeAction()`. The failed action is recorded in `result.failed`; other actions continue. Status set to `"partial_error"`. |
-| Mass deletion | `checkSafety()` evaluates the plan before execution. A 100% deletion ratio aborts silently. All other cases proceed. |
+| Mass deletion | No volume-based abort. Erroneous mass deletions are prevented at the source by the layoutReady gate (sync does not run before the vault index is loaded) and recovered by soft-delete (trash) + self-heal re-push on the next full sync; ambiguous deletions are routed to `conflict` by the decision rules. |
 | Stale cache (Drive) | `withCacheMutex()` verifies the file ID hasn't changed during I/O. If stale, the cache update is skipped with a warning. |
 
 ## Per-file error isolation
