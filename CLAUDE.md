@@ -24,6 +24,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for details.
 - Split files at ~200-300 lines
 - Register listeners via `this.register*` (prevent leaks)
 - The in-memory vault index can under-report before layout-ready: read it only via `LocalFs.list()` (lint-enforced — `getAllLoadedFiles()` is restricted outside `src/fs/local/`), and never derive a deletion from listing-absence alone — confirm against the authoritative `LocalFs.stat()` (falls back to the adapter)
+- Dot-prefixed/hidden paths (`.airsync`, `.obsidian`, nested `foo/.bar`) are excluded from the vault index: `vault.createBinary()` returns `null` or throws `File already exists` for them. `LocalFs` routes any `isDotPrefixed()` path through the raw adapter (`DotPathAdapter`) — this is mechanism, not policy. Whether a hidden path *syncs* is separate policy (`syncDotPaths` + `ignorePatterns`, both must pass), enforced in `SyncOrchestrator.isExcluded()`
 - Prefer `async/await`
 - Mobile compatible (`isDesktopOnly: false`) — no Node/Electron APIs
 - Minimize network calls; require explicit disclosure

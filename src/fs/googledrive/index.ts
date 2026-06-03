@@ -7,6 +7,7 @@ import type { MetadataStore } from "../../store/metadata-store";
 import type { Logger } from "../../logging/logger";
 import { DriveMetadataCache } from "./metadata-cache";
 import { applyIncrementalChanges } from "./incremental-sync";
+import { INTERNAL_METADATA_PATH } from "../../sync/remote-vault";
 import { sha256 } from "../../utils/hash";
 import { AsyncMutex } from "../../queue/async-queue";
 
@@ -323,6 +324,12 @@ export class GoogleDriveFs implements IFileSystem {
 		content: ArrayBuffer,
 		mtime: number
 	): Promise<FileEntity> {
+		if (path === INTERNAL_METADATA_PATH) {
+			// The backend manages its metadata out-of-band; it must never be pushed
+			// through the sync engine (the orchestrator excludes it too). Fail loudly
+			// rather than fabricating a baseline for a file that never reached Drive.
+			throw new Error(`Refusing to write reserved backend path: ${path}`);
+		}
 		const { result: driveFile } = await this.withCacheMutex({
 			operationName: "write",
 			resolve: async () => {

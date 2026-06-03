@@ -203,6 +203,10 @@ export class Vault {
 			this.files.delete(path);
 			return Promise.resolve();
 		},
+		mkdir: (path: string): Promise<void> => {
+			this.files.set(path, { type: "folder" });
+			return Promise.resolve();
+		},
 		rmdir: (path: string, _recursive?: boolean): Promise<void> => {
 			const prefix = path + "/";
 			const toDelete: string[] = [];

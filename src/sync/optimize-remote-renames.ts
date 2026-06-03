@@ -5,6 +5,7 @@ import type {
 } from "./rename-optimizer-types";
 import type { Logger } from "../logging/logger";
 import { replaceConsumed } from "./rename-optimizer";
+import { isDotPrefixed } from "../utils/path";
 
 /**
  * Replace matching `delete_local(oldPath) + pull(newPath)` pairs
@@ -161,6 +162,22 @@ export function coalesceRemoteFolderRenames(
 	const skipped: RemoteFolderRenameOptResult["skipped"] = [];
 
 	for (const { oldPath: oldFolder, newPath: newFolder } of folderPairs) {
+		// A folder rename that crosses the hidden/normal boundary can't be a single
+		// localFs.rename: the two regimes use different APIs and LocalFs rejects a
+		// cross-regime directory rename. Skip coalescing and let the per-file
+		// delete_local/pull actions converge file-by-file (like the occupied case).
+		if (isDotPrefixed(oldFolder) !== isDotPrefixed(newFolder)) {
+			skipped.push({
+				pair: { oldPath: oldFolder, newPath: newFolder, isFolder: true },
+				reason: "cross_regime",
+			});
+			logger?.debug("Remote folder coalesce: cross-regime boundary", {
+				oldFolder,
+				newFolder,
+			});
+			continue;
+		}
+
 		const oldPrefix = oldFolder + "/";
 		const newPrefix = newFolder + "/";
 
@@ -245,7 +262,10 @@ export function coalesceRemoteFolderRenames(
 	}
 
 	if (consumed.size === 0) {
-		return { actions, remainingPairs: remoteRenamePairs, applied, skipped };
+		// Nothing coalesced (every folder pair was skipped). Only file pairs remain
+		// for the downstream file optimizer — skipped folder pairs must NOT leak
+		// through (consistent with the consumed>0 return below).
+		return { actions, remainingPairs: filePairs, applied, skipped };
 	}
 
 	const remainingPairs = filePairs.filter(

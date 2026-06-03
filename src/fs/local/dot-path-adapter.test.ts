@@ -17,31 +17,6 @@ function createAdapter(dotRoots: string[] = [".airsync"]): {
 }
 
 describe("DotPathAdapter", () => {
-	describe("isDotPath", () => {
-		it("matches a single root", () => {
-			const { adapter } = createAdapter([".airsync"]);
-			expect(adapter.isDotPath(".airsync")).toBe(true);
-			expect(adapter.isDotPath(".airsync/logs")).toBe(true);
-			expect(adapter.isDotPath("notes")).toBe(false);
-		});
-
-		it("matches multiple roots", () => {
-			const { adapter } = createAdapter([".airsync", ".templates"]);
-			expect(adapter.isDotPath(".airsync")).toBe(true);
-			expect(adapter.isDotPath(".airsync/logs")).toBe(true);
-			expect(adapter.isDotPath(".templates")).toBe(true);
-			expect(adapter.isDotPath(".templates/daily.md")).toBe(true);
-			expect(adapter.isDotPath(".other")).toBe(false);
-		});
-
-		it("does not match partial prefix", () => {
-			const { adapter } = createAdapter([".smart"]);
-			expect(adapter.isDotPath(".airsync")).toBe(false);
-			expect(adapter.isDotPath(".smart")).toBe(true);
-			expect(adapter.isDotPath(".smart/file")).toBe(true);
-		});
-	});
-
 	describe("listAll", () => {
 		it("lists files from all dot roots", async () => {
 			const { vault, adapter } = createAdapter([".airsync", ".templates"]);

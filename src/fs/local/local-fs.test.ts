@@ -57,6 +57,20 @@ describe("LocalFs", () => {
 
 			expect(createSpy).toHaveBeenCalledWith("a");
 		});
+
+		it("creates hidden parent dirs via the adapter, not the indexed createFolder", async () => {
+			// vault.createFolder (indexed) can't reliably create hidden dirs — same
+			// failure class as createBinary — so nested hidden parents use adapter.mkdir.
+			const { vault, fs } = createLocalFs([".templates"]);
+			const mkdirSpy = vi.spyOn(vault.adapter, "mkdir");
+			const createFolderSpy = vi.spyOn(vault, "createFolder");
+
+			await fs.write(".templates/sub/x.md", new TextEncoder().encode("x").buffer, 1);
+
+			expect(mkdirSpy).toHaveBeenCalledWith(".templates/sub");
+			expect(createFolderSpy).not.toHaveBeenCalled();
+			expect(await vault.adapter.exists(".templates/sub/x.md")).toBe(true);
+		});
 	});
 
 	describe("delete (.airsync paths)", () => {
@@ -144,11 +158,16 @@ describe("LocalFs", () => {
 			expect(await fs.stat("notes/missing.md")).toBeNull();
 		});
 
-		it("does not resurrect an unregistered dot-path via the adapter", async () => {
-			const { vault, fs } = createLocalFs(); // .obsidian not in syncDotPaths
+		it("reads an unindexed dot-path via the adapter regardless of syncDotPaths", async () => {
+			// Routing is a mechanism decision (hidden → adapter), not a policy one.
+			// Scope (whether to sync it) is enforced separately by orchestrator.isExcluded.
+			const { vault, fs } = createLocalFs(); // .hidden not in syncDotPaths
 			const content = new TextEncoder().encode("x").buffer;
 			await vault.adapter.writeBinary(".hidden/data.json", content);
-			expect(await fs.stat(".hidden/data.json")).toBeNull();
+			const entity = await fs.stat(".hidden/data.json");
+			expect(entity).not.toBeNull();
+			expect(entity!.isDirectory).toBe(false);
+			expect(entity!.hash).not.toBe("");
 		});
 	});
 
@@ -179,6 +198,56 @@ describe("LocalFs", () => {
 			expect(entity.path).toBe(".airsync/test.log");
 			expect(entity.hash).not.toBe("");
 			expect(await vault.adapter.exists(".airsync/test.log")).toBe(true);
+		});
+	});
+
+	describe("write routing (mechanism: dot-prefixed → adapter, not vault API)", () => {
+		// Real Obsidian's vault.createBinary can't create files in hidden dirs —
+		// it returns null (→ NPE on written.stat) or throws "File already exists".
+		// Any dot-prefixed path must use adapter.writeBinary, even when it is not a
+		// registered syncDotPath (scope is enforced elsewhere).
+		it("routes a dot-prefixed path via adapter.writeBinary, never vault.createBinary", async () => {
+			const { vault, fs } = createLocalFs(); // empty syncDotPaths
+			const writeBinarySpy = vi.spyOn(vault.adapter, "writeBinary");
+			const createBinarySpy = vi.spyOn(vault, "createBinary");
+
+			const content = new TextEncoder().encode("log").buffer;
+			const entity = await fs.write(".airsync/logs/d/x.log", content, 123);
+
+			expect(writeBinarySpy).toHaveBeenCalled();
+			expect(createBinarySpy).not.toHaveBeenCalled();
+			expect(entity.path).toBe(".airsync/logs/d/x.log");
+			expect(entity.isDirectory).toBe(false);
+			expect(await vault.adapter.exists(".airsync/logs/d/x.log")).toBe(true);
+		});
+
+		it("overwrites an existing on-disk dot-path without collision", async () => {
+			const { vault, fs } = createLocalFs();
+			await vault.adapter.writeBinary(
+				".airsync/logs/d/x.log",
+				new TextEncoder().encode("old").buffer,
+			);
+
+			const entity = await fs.write(
+				".airsync/logs/d/x.log",
+				new TextEncoder().encode("new").buffer,
+				5,
+			);
+
+			expect(entity.size).toBe(3);
+			const onDisk = await vault.adapter.readBinary(".airsync/logs/d/x.log");
+			expect(new TextDecoder().decode(onDisk)).toBe("new");
+		});
+
+		it("routes a normal path through the indexed vault API", async () => {
+			const { vault, fs } = createLocalFs();
+			const writeBinarySpy = vi.spyOn(vault.adapter, "writeBinary");
+			const createBinarySpy = vi.spyOn(vault, "createBinary");
+
+			await fs.write("notes/a.md", new TextEncoder().encode("hi").buffer, 1);
+
+			expect(createBinarySpy).toHaveBeenCalled();
+			expect(writeBinarySpy).not.toHaveBeenCalled();
 		});
 	});
 
@@ -261,7 +330,6 @@ describe("LocalFs", () => {
 			expect(await vault.adapter.exists(".templates/new.md")).toBe(true);
 			expect(await vault.adapter.exists(".templates/old.md")).toBe(false);
 		});
-
 		it("does not include dot paths when syncDotPaths is empty", async () => {
 			const { vault, fs } = createLocalFs();
 			const vaultInternal = vault as unknown as { files: Map<string, unknown> };
@@ -276,6 +344,61 @@ describe("LocalFs", () => {
 			const paths = entities.map((e) => e.path);
 			expect(paths).not.toContain(".templates");
 			expect(paths).not.toContain(".templates/daily.md");
+		});
+	});
+
+	describe("rename across the hidden/normal boundary", () => {
+		// A cross-regime rename must keep the indexed (normal) side coherent — it is
+		// decomposed into regime-aware read/write/delete rather than a single
+		// adapter move that would leave the vault index stale.
+		it("moves a hidden file to a normal path (new path becomes index-visible)", async () => {
+			const { vault, fs } = createLocalFs([".templates"]);
+			await vault.adapter.writeBinary(
+				".templates/a.md",
+				new TextEncoder().encode("x").buffer,
+			);
+
+			await fs.rename(".templates/a.md", "notes/a.md");
+
+			expect(vault.getAbstractFileByPath("notes/a.md")).toBeInstanceOf(TFile);
+			expect(await vault.adapter.exists(".templates/a.md")).toBe(false);
+		});
+
+		it("moves a normal file to a hidden path and removes the source", async () => {
+			const { app, vault, fs } = createLocalFs([".templates"]);
+			await fs.write("notes/a.md", new TextEncoder().encode("y").buffer, 1);
+			const trashSpy = vi.spyOn(app.fileManager, "trashFile");
+
+			await fs.rename("notes/a.md", ".templates/a.md");
+
+			expect(await vault.adapter.exists(".templates/a.md")).toBe(true);
+			// Source removal goes through the index-aware trashFile (no-op in the mock,
+			// so assert the call rather than disk absence).
+			expect(trashSpy).toHaveBeenCalled();
+		});
+
+		it("rejects a cross-regime rename when the destination already exists", async () => {
+			const { vault, fs } = createLocalFs([".templates"]);
+			await vault.adapter.writeBinary(
+				".templates/a.md",
+				new TextEncoder().encode("x").buffer,
+			);
+			// Occupied normal destination.
+			await fs.write("notes/a.md", new TextEncoder().encode("existing").buffer, 1);
+
+			await expect(fs.rename(".templates/a.md", "notes/a.md")).rejects.toThrow(
+				/Destination already exists/,
+			);
+		});
+
+		it("rejects a directory rename across the boundary instead of corrupting the index", async () => {
+			const { vault, fs } = createLocalFs([".templates"]);
+			const vaultInternal = vault as unknown as { files: Map<string, unknown> };
+			vaultInternal.files.set(".templates/sub", { type: "folder" });
+
+			await expect(fs.rename(".templates/sub", "notes/sub")).rejects.toThrow(
+				/across the hidden\/normal boundary/,
+			);
 		});
 	});
 });

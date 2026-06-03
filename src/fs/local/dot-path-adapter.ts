@@ -13,12 +13,6 @@ export class DotPathAdapter {
 		private getDotRoots: () => string[],
 	) {}
 
-	isDotPath(path: string): boolean {
-		return this.getDotRoots().some(
-			(root) => path === root || path.startsWith(root + "/"),
-		);
-	}
-
 	async listAll(entities: FileEntity[]): Promise<void> {
 		for (const root of this.getDotRoots()) {
 			await this.list(root, entities);

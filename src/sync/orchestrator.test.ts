@@ -250,6 +250,27 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.close();
 		});
 
+		it("does not pull a remote-only hidden path outside syncDotPaths", async () => {
+			const settings = mockSettings();
+			settings.syncDotPaths = [];
+			const deps = createDeps({ getSettings: () => settings });
+			const localFs = createMockFs("local");
+			const remoteFs = createMockFs("remote");
+			deps.localFs = () => localFs;
+			deps.remoteFs = () => remoteFs;
+			// A hidden path present only on the remote (e.g. another device's logs).
+			addFile(remoteFs, ".airsync/logs/d/x.log", "log");
+
+			const orchestrator = new SyncOrchestrator(deps);
+			await orchestrator.runSync();
+
+			// Out of scope → never pulled locally, and not deleted from the remote.
+			expect(localFs.files.has(".airsync/logs/d/x.log")).toBe(false);
+			expect(remoteFs.files.has(".airsync/logs/d/x.log")).toBe(true);
+			expect(deps.onStatusChange).toHaveBeenCalledWith("idle");
+			await orchestrator.close();
+		});
+
 		it("skips when backend is connecting", async () => {
 			const deps = createDeps({ isBackendConnecting: () => true });
 			const orchestrator = new SyncOrchestrator(deps);
@@ -493,6 +514,51 @@ describe("SyncOrchestrator", () => {
 
 			expect(orchestrator.isExcluded(".config/settings")).toBe(true);
 			expect(orchestrator.isExcluded("notes/hello.md")).toBe(false);
+		});
+
+		it("excludes hidden paths not opted into syncDotPaths (scope gate)", () => {
+			const settings = mockSettings();
+			settings.syncDotPaths = [];
+			settings.ignorePatterns = [];
+			const deps = createDeps({ getSettings: () => settings });
+			const orchestrator = new SyncOrchestrator(deps);
+
+			expect(orchestrator.isExcluded(".airsync/logs/x.log")).toBe(true);
+			expect(orchestrator.isExcluded("notes/hello.md")).toBe(false);
+		});
+
+		it("includes a hidden path once opted into syncDotPaths", () => {
+			const settings = mockSettings();
+			settings.syncDotPaths = [".airsync"];
+			settings.ignorePatterns = [];
+			const deps = createDeps({ getSettings: () => settings });
+			const orchestrator = new SyncOrchestrator(deps);
+
+			expect(orchestrator.isExcluded(".airsync/logs/x.log")).toBe(false);
+		});
+
+		it("requires passing BOTH gates: opted-in dot path still excluded if ignored", () => {
+			const settings = mockSettings();
+			settings.syncDotPaths = [".airsync"];
+			settings.ignorePatterns = ["**/*.log"];
+			const deps = createDeps({ getSettings: () => settings });
+			const orchestrator = new SyncOrchestrator(deps);
+
+			expect(orchestrator.isExcluded(".airsync/logs/x.log")).toBe(true);
+		});
+
+		it("always excludes the reserved backend metadata path, even when .airsync is opted in", () => {
+			const settings = mockSettings();
+			settings.syncDotPaths = [".airsync"]; // opted in — logs would sync
+			settings.ignorePatterns = [];
+			const deps = createDeps({ getSettings: () => settings });
+			const orchestrator = new SyncOrchestrator(deps);
+
+			// Reserved: never synced from either side (prevents the push→delete_local
+			// data-loss path, since the remote FS hides this file).
+			expect(orchestrator.isExcluded(".airsync/metadata.json")).toBe(true);
+			// Sibling content under the same opted-in root still syncs.
+			expect(orchestrator.isExcluded(".airsync/logs/x.log")).toBe(false);
 		});
 	});
 

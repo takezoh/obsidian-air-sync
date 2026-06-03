@@ -9,7 +9,16 @@ Each sync cycle runs a 4-phase pipeline:
 3. **Execute** -- `executePlan()` runs I/O in grouped batches (A/B/C/D)
 4. **Commit** -- `commitAction()` persists each successful action's `SyncRecord` to IndexedDB
 
-The orchestrator (`SyncOrchestrator.executeSyncOnce()`) drives this pipeline, applying ignore-pattern filtering and mobile size limits between Collect and Decide.
+The orchestrator (`SyncOrchestrator.executeSyncOnce()`) drives this pipeline, applying scope filtering and mobile size limits between Collect and Decide.
+
+**Scope filter (`SyncOrchestrator.isExcluded()`)** — a path is synced only if it passes **both** gates:
+
+1. **Dot-path scope** (`isDotPathOutOfScope`): a dot-prefixed/hidden path (`.airsync`, `.obsidian`, `.git`, …) is in scope only when it sits under a configured `syncDotPaths` root. Normal paths always pass. This is applied symmetrically to local and remote entries, so an out-of-scope hidden path on the remote (e.g. another device's `.airsync/logs/`) is never pulled, and never produces a `delete_remote` (the gate runs before `planSync`).
+2. **Ignore patterns** (`isIgnored`): gitignore-style `ignorePatterns`.
+
+`isExcluded()` also reserves the backend's own metadata path (`INTERNAL_METADATA_PATH` = `.airsync/metadata.json`, `sync/remote-vault.ts`): it is never synced from either side, even when `.airsync` is opted into `syncDotPaths`. The remote FS hides it too; excluding it here keeps the exclusion symmetric (otherwise a local copy would be pushed, then deleted as a phantom remote deletion).
+
+The same `isExcluded()` gates the vault-event dirty tracking (scheduler), so push and pull use one scope rule across hot and cold paths.
 
 `runSync()` is gated on a connected remote (`remoteFs` present), layout-ready, and not-connecting; it serializes via an `AsyncMutex`. A call arriving while a sync runs sets `syncPending` and returns; the lock holder re-runs in a `do/while (syncPending)` loop, acknowledging the dirty set at the end of each non-fatal cycle (coalescing). Each cycle (`executeSyncOnce`) is wrapped by `executeWithRetry`, which retries up to `MAX_RETRIES = 3` with exponential backoff plus jitter (`2^(attempt-1) * 1000 * (0.5 + Math.random())` ms), honoring `Retry-After` (×1000) on 429/403. `AuthError`, a non-rate-limit 403, and 404 abort without retry; a fatal abort returns early and leaves the dirty set un-acknowledged so it is retried next run.
 
@@ -189,7 +198,7 @@ Failed actions are not committed; they will be re-detected on the next sync cycl
 | Online | `window.online` | Immediately calls `runSync()` when the network connection is restored. |
 | File open | `workspace.on("file-open")` | Priority pull for the opened file (see below). |
 
-All triggers are event-driven — there is no periodic timer. All triggers except file-open run a full sync cycle through the pipeline. Ignored paths (from `ignorePatterns`) are excluded at the vault-event level — dirty marks and debounce are skipped entirely.
+All triggers are event-driven — there is no periodic timer. All triggers except file-open run a full sync cycle through the pipeline. Out-of-scope paths (failing either gate of `isExcluded()` — dot-path scope or `ignorePatterns`) are excluded at the vault-event level — dirty marks and debounce are skipped entirely. The file-open priority pull also skips out-of-scope paths.
 
 ## Active file priority sync
 

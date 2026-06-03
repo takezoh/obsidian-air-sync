@@ -2,6 +2,7 @@ import type { FileEntity } from "../types";
 import type { DriveFile } from "./types";
 import { FOLDER_MIME } from "./types";
 import type { Logger } from "../../logging/logger";
+import { INTERNAL_METADATA_PATH } from "../../sync/remote-vault";
 
 export interface FileChangeResult {
 	oldPath: string | undefined;
@@ -45,8 +46,18 @@ export class DriveMetadataCache {
 
 	// ── Mutation methods ──
 
+	/**
+	 * Reserved backend paths (e.g. the metadata file) are never tracked by the
+	 * cache, so they stay invisible to every cache-backed reader
+	 * (list/stat/read/listDir/getChangedPaths). See sync/remote-vault.ts.
+	 */
+	private isReserved(path: string): boolean {
+		return path === INTERNAL_METADATA_PATH;
+	}
+
 	/** Add or update a file in the cache with full index maintenance */
 	setFile(path: string, file: DriveFile): void {
+		if (this.isReserved(path)) return;
 		const isNew = !this.pathToFile.has(path);
 		this.pathToFile.set(path, file);
 		this.idToPath.set(file.id, path);
@@ -68,6 +79,7 @@ export class DriveMetadataCache {
 	/** Bulk-load files from a fullScan (clears existing data first) */
 	bulkLoad(items: Iterable<[string, DriveFile]>): void {
 		for (const [path, file] of items) {
+			if (this.isReserved(path)) continue;
 			this.pathToFile.set(path, file);
 			this.idToPath.set(file.id, path);
 			if (file.mimeType === FOLDER_MIME) {
@@ -320,6 +332,13 @@ export class DriveMetadataCache {
 			if (oldPath) {
 				this.removeTree(oldPath);
 			}
+			return;
+		}
+
+		// The backend's own metadata file is never tracked. If a previously-tracked
+		// file was moved onto this reserved path, drop its stale entry too.
+		if (this.isReserved(path)) {
+			if (oldPath) this.removeTree(oldPath);
 			return;
 		}
 

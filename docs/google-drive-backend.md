@@ -38,6 +38,12 @@ All cache reads and writes are protected by `cacheMutex` (an `AsyncMutex`). Writ
 
 `stat()` and `read()` deliberately do NOT apply incremental changes -- `list()` is always called first in the sync cycle and refreshes the cache, so these only read it. For folders, the returned entity is `{ isDirectory:true, size:0, mtime:0, hash:"" }` with no `backendMeta`.
 
+### Hiding `.airsync/metadata.json`
+
+`.airsync/metadata.json` is backend-internal bookkeeping written **out of band via the raw `DriveClient`** (`resolveRemoteVault` / `updateMetadataIfNeeded`, below), never through the `IFileSystem` surface. `GoogleDriveFs` keeps it out of the sync engine by **never ingesting it into the metadata cache** (`INTERNAL_METADATA_PATH`, defined in `sync/remote-vault.ts`; skipped in `DriveMetadataCache.bulkLoad` and `applyFileChange`). Because every read path is cache-backed, that one exclusion covers `list()`, `stat()`, `read()`, `delete()`, `listDir()`, and `getChangedPaths()` uniformly. The single write path that doesn't consult the cache — `write()` (upload) — `throws` for this path rather than fabricating a baseline.
+
+The sync engine also reserves the same path symmetrically in `SyncOrchestrator.isExcluded()`, so it is never pushed/pulled/deleted from the local side either — even when the user opts `.airsync` into `syncDotPaths`. (Remote-side hiding alone would be unsafe: a local copy could be pushed, a synthetic write would commit a baseline, and the next cycle would `delete_local` it as a phantom remote deletion. The orchestrator exclusion is the authoritative guarantee; the cache-level skip is enumeration hygiene.)
+
 ## DriveMetadataCache
 
 `DriveMetadataCache` (`metadata-cache.ts`) maintains 4 indexes:

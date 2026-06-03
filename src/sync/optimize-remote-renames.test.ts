@@ -229,6 +229,41 @@ describe("coalesceRemoteFolderRenames", () => {
 		]);
 	});
 
+	it("skips a cross-regime folder rename and keeps the per-file actions", () => {
+		// `.templates` (hidden, opted into syncDotPaths) renamed to `templates`
+		// (normal) on the remote. LocalFs can't rename a directory across the
+		// hidden/normal boundary, so this must NOT coalesce into one rename_local.
+		const actions: SyncAction[] = [
+			{
+				path: ".templates/f1.md",
+				action: "delete_local",
+				local: entity(".templates/f1.md", "h1"),
+				baseline: baseline(".templates/f1.md", "h1"),
+			},
+			{
+				path: "templates/f1.md",
+				action: "pull",
+				remote: entity("templates/f1.md", "h1"),
+			},
+		];
+		const pairs = [
+			{ oldPath: ".templates", newPath: "templates", isFolder: true },
+		];
+		const result = coalesceRemoteFolderRenames(actions, pairs);
+
+		expect(result.actions.some((a) => a.action === "rename_local")).toBe(false);
+		expect(result.actions).toHaveLength(2); // per-file actions preserved
+		expect(result.applied).toHaveLength(0);
+		expect(result.skipped).toEqual([
+			{
+				pair: { oldPath: ".templates", newPath: "templates", isFolder: true },
+				reason: "cross_regime",
+			},
+		]);
+		// The skipped folder pair must not leak into remainingPairs (no file pairs here).
+		expect(result.remainingPairs).toHaveLength(0);
+	});
+
 	it("passes through when no folder rename pairs exist", () => {
 		const actions: SyncAction[] = [
 			{

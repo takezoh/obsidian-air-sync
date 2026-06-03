@@ -2,7 +2,7 @@ import { App, TFile, TFolder, Vault } from "obsidian";
 import type { IFileSystem } from "../interface";
 import type { FileEntity } from "../types";
 import { sha256 } from "../../utils/hash";
-import { normalizeSyncPath, validateRename } from "../../utils/path";
+import { normalizeSyncPath, validateRename, isDotPrefixed } from "../../utils/path";
 import { DotPathAdapter } from "./dot-path-adapter";
 
 /** IFileSystem implementation backed by an Obsidian Vault */
@@ -58,16 +58,14 @@ export class LocalFs implements IFileSystem {
 	async stat(path: string): Promise<FileEntity | null> {
 		path = normalizeSyncPath(path);
 		const file = this.vault.getAbstractFileByPath(path);
-		if (!file && this.dotPath.isDotPath(path)) {
+		if (!file && isDotPrefixed(path)) {
+			// Hidden paths are never in the vault index — read via the adapter.
 			return this.dotPath.stat(path);
 		}
 		if (!file) {
-			// A dot-prefixed path that isn't a registered syncDotPath (handled above)
-			// is out of sync scope — leave it absent. For a normal path the index may
-			// just not have loaded it yet, so confirm against the adapter (absence is
-			// what drives deletions).
-			const isDotPrefixed = path.startsWith(".") || path.includes("/.");
-			return isDotPrefixed ? null : this.statViaAdapter(path);
+			// A normal path may simply not be loaded into the index yet, so confirm
+			// against the adapter (absence is what drives deletions).
+			return this.statViaAdapter(path);
 		}
 
 		if (file instanceof TFile) {
@@ -107,7 +105,7 @@ export class LocalFs implements IFileSystem {
 	async read(path: string): Promise<ArrayBuffer> {
 		path = normalizeSyncPath(path);
 		const file = this.vault.getAbstractFileByPath(path);
-		if (!file && this.dotPath.isDotPath(path)) {
+		if (!file && isDotPrefixed(path)) {
 			return this.dotPath.read(path);
 		}
 		if (!file) throw new Error(`File not found: ${path}`);
@@ -117,7 +115,10 @@ export class LocalFs implements IFileSystem {
 
 	async write(path: string, content: ArrayBuffer, mtime: number): Promise<FileEntity> {
 		path = normalizeSyncPath(path);
-		if (this.dotPath.isDotPath(path)) {
+		if (isDotPrefixed(path)) {
+			// Hidden paths can't go through the indexed Vault API: createBinary
+			// returns null (no TFile in the index) or throws "File already exists".
+			// Write via the adapter, which overwrites and is index-independent.
 			return this.dotPath.write(path, content, mtime);
 		}
 		const existing = this.vault.getAbstractFileByPath(path);
@@ -154,7 +155,7 @@ export class LocalFs implements IFileSystem {
 
 	async listDir(path: string): Promise<FileEntity[]> {
 		path = normalizeSyncPath(path);
-		if (this.dotPath.isDotPath(path)) {
+		if (isDotPrefixed(path)) {
 			return this.dotPath.listDir(path);
 		}
 		const folder = this.vault.getAbstractFileByPath(path);
@@ -175,7 +176,7 @@ export class LocalFs implements IFileSystem {
 
 	async delete(path: string): Promise<void> {
 		path = normalizeSyncPath(path);
-		if (this.dotPath.isDotPath(path)) {
+		if (isDotPrefixed(path)) {
 			return this.dotPath.delete(path);
 		}
 		const file = this.vault.getAbstractFileByPath(path);
@@ -188,9 +189,19 @@ export class LocalFs implements IFileSystem {
 		oldPath = normalizeSyncPath(oldPath);
 		newPath = normalizeSyncPath(newPath);
 		validateRename(oldPath, newPath);
-		if (this.dotPath.isDotPath(oldPath) || this.dotPath.isDotPath(newPath)) {
+		const oldHidden = isDotPrefixed(oldPath);
+		const newHidden = isDotPrefixed(newPath);
+		if (oldHidden && newHidden) {
+			// Both hidden: the adapter moves them natively (index-independent).
 			return this.dotPath.rename(oldPath, newPath);
 		}
+		if (oldHidden !== newHidden) {
+			// Cross-regime move (hidden ↔ normal). Routing the whole rename through
+			// one API leaves the other side's vault index stale, so decompose into
+			// regime-aware read/write/delete (each routes by isDotPrefixed).
+			return this.renameAcrossRegime(oldPath, newPath);
+		}
+		// Both normal: native, index-aware Vault rename.
 		const file = this.vault.getAbstractFileByPath(oldPath);
 		if (!file) {
 			throw new Error(`File not found: ${oldPath}`);
@@ -204,6 +215,30 @@ export class LocalFs implements IFileSystem {
 			await this.mkdirRecursive(parentPath);
 		}
 		await this.vault.rename(file, newPath);
+	}
+
+	/**
+	 * Move a file across the hidden/normal boundary via regime-aware ops so the
+	 * Vault index stays coherent on the non-hidden side (read/write/delete each
+	 * route by isDotPrefixed). Directories don't move across this boundary in
+	 * practice and are rejected rather than left half-applied with a stale index.
+	 */
+	private async renameAcrossRegime(oldPath: string, newPath: string): Promise<void> {
+		const stat = await this.stat(oldPath);
+		if (!stat) throw new Error(`File not found: ${oldPath}`);
+		if (stat.isDirectory) {
+			throw new Error(
+				`Cannot rename a directory across the hidden/normal boundary: ${oldPath} -> ${newPath}`,
+			);
+		}
+		// Match the contract enforced by the other rename branches (and relied on by
+		// the rename optimizer): never clobber an existing destination.
+		if (await this.stat(newPath)) {
+			throw new Error(`Destination already exists: ${newPath}`);
+		}
+		const content = await this.read(oldPath);
+		await this.write(newPath, content, stat.mtime);
+		await this.delete(oldPath);
 	}
 
 	private async mkdirRecursive(path: string): Promise<void> {
@@ -222,7 +257,14 @@ export class LocalFs implements IFileSystem {
 				// Folder may exist on disk but not in vault index (e.g. dot-prefixed dirs
 				// created by other plugins). Check disk before creating.
 				if (!(await this.vault.adapter.exists(current))) {
-					await this.vault.createFolder(current);
+					// Hidden dirs are excluded from the vault index; the indexed
+					// createFolder can't reliably create them (same class as createBinary),
+					// so use the raw adapter — matching how every hidden-path op is routed.
+					if (isDotPrefixed(current)) {
+						await this.vault.adapter.mkdir(current);
+					} else {
+						await this.vault.createFolder(current);
+					}
 				}
 			}
 		}

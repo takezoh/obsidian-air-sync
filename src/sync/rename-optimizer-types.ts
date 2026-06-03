@@ -5,7 +5,8 @@ export type SkipReason =
 	| "hash_mismatch"
 	| "hash_missing"
 	| "no_descendants"
-	| "destination_occupied";
+	| "destination_occupied"
+	| "cross_regime";
 
 export interface SkippedRename {
 	pair: RenamePair;

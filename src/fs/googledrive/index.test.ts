@@ -655,3 +655,85 @@ describe("GoogleDriveFs.getChangedPaths", () => {
 		await expect(fs.getChangedPaths()).rejects.toEqual(authError);
 	});
 });
+
+describe("GoogleDriveFs ignores .airsync/metadata.json (backend-internal)", () => {
+	const FOLDER = "application/vnd.google-apps.folder";
+
+	function makeFs() {
+		const uploadFile = vi.fn();
+		const deleteFile = vi.fn();
+		const mockClient = {
+			listAllFiles: vi.fn().mockResolvedValue([
+				{ id: "n", name: "note.md", mimeType: "text/plain", parents: ["root"] },
+				{ id: "airsync", name: ".airsync", mimeType: FOLDER, parents: ["root"] },
+				{ id: "meta", name: "metadata.json", mimeType: "application/json", parents: ["airsync"] },
+				{ id: "logs", name: "logs", mimeType: FOLDER, parents: ["airsync"] },
+				{ id: "log1", name: "d.log", mimeType: "text/plain", parents: ["logs"] },
+			]),
+			getChangesStartToken: vi.fn().mockResolvedValue("token1"),
+			uploadFile,
+			deleteFile,
+		} as never;
+		return { mockClient, uploadFile, deleteFile };
+	}
+
+	it("hides metadata.json from list() but keeps logs and user files", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const { mockClient } = makeFs();
+		const fs = new GoogleDriveFs(mockClient, "root");
+
+		const paths = (await fs.list()).map((e) => e.path);
+
+		expect(paths).not.toContain(".airsync/metadata.json");
+		expect(paths).toContain("note.md");
+		expect(paths).toContain(".airsync/logs/d.log");
+	});
+
+	it("returns null from stat() for metadata.json but resolves logs", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const { mockClient } = makeFs();
+		const fs = new GoogleDriveFs(mockClient, "root");
+
+		expect(await fs.stat(".airsync/metadata.json")).toBeNull();
+		expect(await fs.stat(".airsync/logs/d.log")).not.toBeNull();
+	});
+
+	it("throws from read() for metadata.json (never pulled)", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const { mockClient } = makeFs();
+		const fs = new GoogleDriveFs(mockClient, "root");
+
+		await expect(fs.read(".airsync/metadata.json")).rejects.toThrow();
+	});
+
+	it("refuses to write metadata.json (never pushed through the FS layer)", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const { mockClient, uploadFile } = makeFs();
+		const fs = new GoogleDriveFs(mockClient, "root");
+
+		const content = new TextEncoder().encode("{}").buffer.slice(0);
+		await expect(fs.write(".airsync/metadata.json", content, 123)).rejects.toThrow();
+		expect(uploadFile).not.toHaveBeenCalled();
+	});
+
+	it("ignores delete: delete() does not call the Drive API", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const { mockClient, deleteFile } = makeFs();
+		const fs = new GoogleDriveFs(mockClient, "root");
+
+		await fs.delete(".airsync/metadata.json");
+
+		expect(deleteFile).not.toHaveBeenCalled();
+	});
+
+	it("omits metadata.json from listDir of .airsync (cache never ingests it)", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const { mockClient } = makeFs();
+		const fs = new GoogleDriveFs(mockClient, "root");
+		await fs.list(); // populate cache
+
+		const children = (await fs.listDir(".airsync")).map((e) => e.path);
+		expect(children).not.toContain(".airsync/metadata.json");
+		expect(children).toContain(".airsync/logs");
+	});
+});

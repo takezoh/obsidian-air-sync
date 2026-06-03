@@ -4,6 +4,8 @@ import type { IBackendProvider } from "../fs/backend";
 import type { Logger } from "../logging/logger";
 import { AsyncMutex } from "../queue/async-queue";
 import { isIgnored } from "../utils/ignore";
+import { isDotPathOutOfScope } from "../utils/path";
+import { INTERNAL_METADATA_PATH } from "./remote-vault";
 import { SyncStateStore } from "./state";
 import { LocalChangeTracker } from "./local-tracker";
 import { collectChanges } from "./change-detector";
@@ -93,7 +95,17 @@ export class SyncOrchestrator {
 	}
 
 	isExcluded(path: string): boolean {
-		return isIgnored(path, this.deps.getSettings().ignorePatterns);
+		const settings = this.deps.getSettings();
+		// The backend's own metadata file is reserved: never sync it from either
+		// side, even when `.airsync` is opted into syncDotPaths. The remote FS also
+		// hides it; excluding it here keeps the exclusion symmetric (otherwise a
+		// local copy would be pushed, then deleted as a phantom remote deletion).
+		if (path === INTERNAL_METADATA_PATH) return true;
+		// A path syncs only if it passes BOTH gates: the dot-path scope
+		// (hidden paths are in scope only when opted into syncDotPaths) AND
+		// the user's ignore patterns.
+		if (isDotPathOutOfScope(path, settings.syncDotPaths)) return true;
+		return isIgnored(path, settings.ignorePatterns);
 	}
 
 	async runSync(): Promise<void> {
@@ -219,6 +231,10 @@ export class SyncOrchestrator {
 	}
 
 	async pullSingle(path: string): Promise<void> {
+		if (this.isExcluded(path)) {
+			this.deps.logger?.debug("pullSingle: skipped — out of sync scope", { path });
+			return;
+		}
 		await this.syncMutex.run(async () => {
 			const localFs = this.deps.localFs();
 			const remoteFs = this.deps.remoteFs();
