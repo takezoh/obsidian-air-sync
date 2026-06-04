@@ -88,4 +88,18 @@ Principles that can't be expressed as a static rule are pinned by tests instead 
 
 ## Releases
 
-Update `version` in `manifest.json` (SemVer, no `v` prefix) and `versions.json`. GitHub release tag must match the version exactly.
+Releases are tag-driven: pushing a tag that matches the version triggers `.github/workflows/release.yml`, which builds and publishes a GitHub release with `main.js`, `manifest.json`, `styles.css` attached (with build provenance). The workflow creates the release with an **empty body** — release notes are added afterward.
+
+Steps:
+
+1. Bump the version (SemVer, no `v` prefix) in every file that carries it:
+   - `manifest.json` → `version`
+   - `package.json` → `version`
+   - `package-lock.json` → both `version` fields (root and `packages.""`)
+   - `versions.json` → add a `"x.y.z": "<minAppVersion>"` entry by hand (the `npm version` / `version-bump.mjs` script only adds it when `minAppVersion` changes, so it won't for a same-minAppVersion bump)
+2. Gate: `npm run lint && npm run build && npm test` must all pass before tagging.
+3. Commit as `Bump version to x.y.z`, push to `main`.
+4. Tag `x.y.z` (must match the version exactly, no `v` prefix) and push the tag — this fires the release workflow.
+5. After the run finishes (`gh run watch <id>`), attach notes: `gh release edit x.y.z --notes-file <file>`.
+
+Release notes are public and user-facing (English): lead with what changed for the user, group under Fixed / Added, keep mechanism detail brief.
