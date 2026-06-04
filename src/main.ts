@@ -1,4 +1,4 @@
-import { Notice, Platform, Plugin } from "obsidian";
+import { Notice, Platform, Plugin, setIcon, setTooltip } from "obsidian";
 import { DEFAULT_SETTINGS, AirSyncSettings } from "./settings";
 import { AirSyncSettingTab } from "./ui/settings";
 import { LocalFs } from "./fs/local/index";
@@ -144,12 +144,17 @@ export default class AirSyncPlugin extends Plugin {
 			},
 		});
 
-		// Ribbon icon
-		this.addRibbonIcon("cloud", "Sync now", () => {
+		// Status bar: a clickable cloud icon triggers a manual sync, with the
+		// sync status shown as text beside it.
+		const syncTriggerEl = this.addStatusBarItem();
+		syncTriggerEl.addClass("mod-clickable");
+		setIcon(syncTriggerEl, "cloud");
+		// `top` so the tooltip clears the status bar at the bottom edge.
+		setTooltip(syncTriggerEl, "Sync now", { placement: "top" });
+		this.registerDomEvent(syncTriggerEl, "click", () => {
 			void this.runSync();
 		});
 
-		// Status bar
 		this.statusBarEl = this.addStatusBarItem();
 		this.updateStatusBar();
 
