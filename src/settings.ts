@@ -15,6 +15,8 @@ export interface AirSyncSettings {
 	syncDotPaths: string[];
 	/** Maximum file size in MB to sync on mobile */
 	mobileMaxFileSizeMB: number;
+	/** Hold a screen wake lock while syncing so mobile devices don't sleep mid-sync */
+	screenWakeLockOnSync: boolean;
 
 	/** Write sync logs to .airsync/logs/{device}/{date}.log */
 	enableLogging: boolean;
@@ -33,6 +35,7 @@ export const DEFAULT_SETTINGS: AirSyncSettings = {
 	syncDotPaths: [],
 	enableThreeWayMerge: true,
 	mobileMaxFileSizeMB: 10,
+	screenWakeLockOnSync: false,
 	enableLogging: false,
 	logLevel: "info",
 	backendData: {},

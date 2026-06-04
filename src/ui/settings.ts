@@ -1,4 +1,4 @@
-import { App, Notice, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, Platform, PluginSettingTab, Setting } from "obsidian";
 import type AirSyncPlugin from "../main";
 import type { ConflictStrategy } from "../sync/types";
 import { getAllBackendProviders, getBackendProvider } from "../fs/registry";
@@ -168,6 +168,22 @@ export class AirSyncSettingTab extends PluginSettingTab {
 						}
 					})
 			);
+
+		if (Platform.isMobile) {
+			new Setting(containerEl)
+				.setName("Keep screen awake during sync")
+				.setDesc(
+					"On mobile, prevent the screen from sleeping while a sync is running, so long syncs are not interrupted by the device locking."
+				)
+				.addToggle((toggle) =>
+					toggle
+						.setValue(this.plugin.settings.screenWakeLockOnSync)
+						.onChange(async (value) => {
+							this.plugin.settings.screenWakeLockOnSync = value;
+							await this.plugin.saveSettings();
+						})
+				);
+		}
 
 		new Setting(containerEl)
 			.setName("Enable logging")

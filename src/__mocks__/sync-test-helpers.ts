@@ -340,6 +340,7 @@ export function mockSettings(
 		// don't run under a configuration real users never have.
 		enableThreeWayMerge: true,
 		mobileMaxFileSizeMB: 10,
+		screenWakeLockOnSync: false,
 		enableLogging: false,
 		logLevel: "info",
 		backendData: {},

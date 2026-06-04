@@ -8,6 +8,7 @@ import type { ISecretStore } from "./fs/secret-store";
 import type { SyncStatus } from "./sync/orchestrator";
 import { SyncOrchestrator } from "./sync/orchestrator";
 import { SyncScheduler } from "./sync/scheduler";
+import { ScreenWakeLockManager } from "./sync/wake-lock";
 import { LocalChangeTracker } from "./sync/local-tracker";
 import { Logger, getDeviceName } from "./logging/logger";
 import type { LoggerAdapter } from "./logging/logger";
@@ -20,6 +21,7 @@ export default class AirSyncPlugin extends Plugin {
 	private syncStatus: SyncStatus = "not_connected";
 	private orchestrator!: SyncOrchestrator;
 	private scheduler!: SyncScheduler;
+	private wakeLock!: ScreenWakeLockManager;
 	private localTracker!: LocalChangeTracker;
 	private settingTab: AirSyncSettingTab | null = null;
 	private logger!: Logger;
@@ -70,6 +72,12 @@ export default class AirSyncPlugin extends Plugin {
 
 		this.localTracker = new LocalChangeTracker();
 
+		this.wakeLock = new ScreenWakeLockManager({
+			isEnabled: () => Platform.isMobile && this.settings.screenWakeLockOnSync,
+			register: (cb) => this.register(cb),
+			logger: this.logger,
+		});
+
 		this.orchestrator = new SyncOrchestrator({
 			getSettings: () => this.settings,
 			saveSettings: () => this.saveSettings(),
@@ -80,6 +88,7 @@ export default class AirSyncPlugin extends Plugin {
 			onStatusChange: (status) => {
 				this.syncStatus = status;
 				this.updateStatusBar();
+				this.wakeLock.setActive(status === "syncing");
 			},
 			onProgress: (text) => {
 				this.statusBarEl?.setText(text);
