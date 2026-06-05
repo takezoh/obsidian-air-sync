@@ -75,6 +75,7 @@ export default class AirSyncPlugin extends Plugin {
 		this.wakeLock = new ScreenWakeLockManager({
 			isEnabled: () => Platform.isMobile && this.settings.screenWakeLockOnSync,
 			register: (cb) => this.register(cb),
+			registerDocumentEvent: (type, cb) => this.registerDomEvent(document, type, cb),
 			logger: this.logger,
 		});
 
@@ -112,7 +113,8 @@ export default class AirSyncPlugin extends Plugin {
 			orchestrator: this.orchestrator,
 			isExcluded: (path) => this.orchestrator.isExcluded(path),
 			registerEvent: (ref) => this.registerEvent(ref),
-			register: (cb) => this.register(cb),
+			registerWindowEvent: (type, cb) => this.registerDomEvent(window, type, cb),
+			registerDocumentEvent: (type, cb) => this.registerDomEvent(document, type, cb),
 		});
 
 		this.settingTab = new AirSyncSettingTab(this.app, this);

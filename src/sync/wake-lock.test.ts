@@ -1,18 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// Minimal document/navigator stubs for the wake-lock manager's event wiring and
-// the Screen Wake Lock API. Mirrors the global-stub approach in scheduler.test.ts.
+// The manager reads document.visibilityState; the visibilitychange listener is
+// wired via the registerDocumentEvent dep (Component#registerDomEvent in prod),
+// which captures handlers into documentListeners below.
 const documentListeners = new Map<string, EventListener>();
 const wakeLockRequest = vi.fn<(type: "screen") => Promise<WakeLockSentinel>>();
 
 const documentStub = {
 	visibilityState: "visible" as DocumentVisibilityState,
-	addEventListener: (event: string, handler: EventListener) => {
-		documentListeners.set(event, handler);
-	},
-	removeEventListener: (event: string, _handler: EventListener) => {
-		documentListeners.delete(event);
-	},
 };
 
 vi.stubGlobal("document", documentStub);
@@ -49,6 +44,12 @@ function createDeps(overrides: Partial<WakeLockDeps> = {}) {
 	const deps: WakeLockDeps = {
 		isEnabled: () => true,
 		register: (cb: () => void) => cleanups.push(cb),
+		// Mimic Component#registerDomEvent: capture the handler and register an
+		// unload cleanup that removes it.
+		registerDocumentEvent: (type: keyof DocumentEventMap, cb: () => void) => {
+			documentListeners.set(type, cb);
+			cleanups.push(() => documentListeners.delete(type));
+		},
 		logger: logger as unknown as Logger,
 		...overrides,
 	};

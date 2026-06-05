@@ -1,27 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// Minimal window/document stubs for scheduler's event wiring
+// DOM-event handlers captured via the registerWindowEvent / registerDocumentEvent
+// deps below (in production the plugin wires these through Component#registerDomEvent).
 const windowListeners = new Map<string, EventListener>();
 const documentListeners = new Map<string, EventListener>();
 
-vi.stubGlobal("window", {
-	addEventListener: (event: string, handler: EventListener) => {
-		windowListeners.set(event, handler);
-	},
-	removeEventListener: (event: string, _handler: EventListener) => {
-		windowListeners.delete(event);
-	},
-});
-
-vi.stubGlobal("document", {
-	visibilityState: "visible" as string,
-	addEventListener: (event: string, handler: EventListener) => {
-		documentListeners.set(event, handler);
-	},
-	removeEventListener: (event: string, _handler: EventListener) => {
-		documentListeners.delete(event);
-	},
-});
+// The visibility handler reads document.visibilityState; stub a visible document.
+vi.stubGlobal("document", { visibilityState: "visible" as string });
 
 import { SyncScheduler } from "./scheduler";
 import type { SyncSchedulerDeps } from "./scheduler";
@@ -44,7 +29,6 @@ function createDeps(
 ) {
 	const vaultHandlers = new Map<string, WorkspaceHandler>();
 	const workspaceHandlers = new Map<string, WorkspaceHandler>();
-	const cleanups: (() => void)[] = [];
 	let layoutReady = opts.layoutReady ?? true;
 	const layoutReadyCbs: (() => void)[] = [];
 	const fireLayoutReady = () => {
@@ -61,7 +45,6 @@ function createDeps(
 	const deps: SyncSchedulerDeps & {
 		vaultHandlers: Map<string, WorkspaceHandler>;
 		workspaceHandlers: Map<string, WorkspaceHandler>;
-		cleanups: (() => void)[];
 		runSync: typeof runSync;
 		pullSingle: typeof pullSingle;
 		fireLayoutReady: () => void;
@@ -92,12 +75,14 @@ function createDeps(
 		orchestrator: { runSync, pullSingle, isSyncing: () => false },
 		isExcluded: () => false,
 		registerEvent: vi.fn(),
-		register: vi.fn((cb: () => void) => {
-			cleanups.push(cb);
-		}),
+		registerWindowEvent: (type: keyof WindowEventMap, cb: () => void) => {
+			windowListeners.set(type, cb);
+		},
+		registerDocumentEvent: (type: keyof DocumentEventMap, cb: () => void) => {
+			documentListeners.set(type, cb);
+		},
 		vaultHandlers,
 		workspaceHandlers,
-		cleanups,
 		runSync,
 		pullSingle,
 		fireLayoutReady,
@@ -116,6 +101,9 @@ describe("SyncScheduler", () => {
 
 	beforeEach(() => {
 		vi.useFakeTimers();
+		// Reset captured handlers so a stale closure from a prior test can't leak.
+		windowListeners.clear();
+		documentListeners.clear();
 		deps = createDeps();
 		scheduler = new SyncScheduler(deps);
 		scheduler.start();

@@ -23,7 +23,8 @@ export interface SyncSchedulerDeps {
 	orchestrator: SyncOrchestrator;
 	isExcluded: (path: string) => boolean;
 	registerEvent: (ref: EventRef) => void;
-	register: (cb: () => void) => void;
+	registerWindowEvent: (type: keyof WindowEventMap, cb: () => void) => void;
+	registerDocumentEvent: (type: keyof DocumentEventMap, cb: () => void) => void;
 }
 
 export class SyncScheduler {
@@ -69,14 +70,15 @@ export class SyncScheduler {
 		this.debouncedSync.cancel();
 	}
 
+	/** Trigger a full sync now, unless no backend is configured or one is already running. */
+	private triggerSync(): void {
+		if (!this.deps.remoteFs()) return;
+		if (this.deps.orchestrator.isSyncing()) return;
+		void this.deps.orchestrator.runSync();
+	}
+
 	private wireFocusEvent(): void {
-		const onFocus = () => {
-			if (!this.deps.remoteFs()) return;
-			if (this.deps.orchestrator.isSyncing()) return;
-			void this.deps.orchestrator.runSync();
-		};
-		window.addEventListener("focus", onFocus);
-		this.deps.register(() => window.removeEventListener("focus", onFocus));
+		this.deps.registerWindowEvent("focus", () => this.triggerSync());
 	}
 
 	private wireVaultEvents(): void {
@@ -112,24 +114,17 @@ export class SyncScheduler {
 	}
 
 	private wireOnlineEvent(): void {
-		const onOnline = () => {
-			if (!this.deps.remoteFs()) return;
-			if (this.deps.orchestrator.isSyncing()) return;
-			void this.deps.orchestrator.runSync();
-		};
-		window.addEventListener("online", onOnline);
-		this.deps.register(() => window.removeEventListener("online", onOnline));
+		this.deps.registerWindowEvent("online", () => this.triggerSync());
 	}
 
 	private wireVisibilityEvent(): void {
-		const onVisibilityChange = () => {
-			if (!this.deps.remoteFs()) return;
+		this.deps.registerDocumentEvent("visibilitychange", () => {
+			// App-level visibility: read the main document (matching the focus/
+			// online listeners), not activeDocument — we want "Obsidian is
+			// foreground", not whichever popout happens to be focused.
 			if (document.visibilityState !== "visible") return;
-			if (this.deps.orchestrator.isSyncing()) return;
-			void this.deps.orchestrator.runSync();
-		};
-		document.addEventListener("visibilitychange", onVisibilityChange);
-		this.deps.register(() => document.removeEventListener("visibilitychange", onVisibilityChange));
+			this.triggerSync();
+		});
 	}
 
 	private wireFileOpenEvent(): void {

@@ -9,6 +9,12 @@ export interface WakeLockDeps {
 	isEnabled: () => boolean;
 	/** Register a cleanup callback fired on plugin unload. */
 	register: (cb: () => void) => void;
+	/**
+	 * Register a document event whose listener is auto-removed on plugin unload
+	 * (Obsidian's Component#registerDomEvent). The element is captured once at
+	 * registration, so add/remove can never target different documents.
+	 */
+	registerDocumentEvent: (type: keyof DocumentEventMap, cb: () => void) => void;
 	logger?: Logger;
 }
 
@@ -32,10 +38,9 @@ export class ScreenWakeLockManager {
 
 	constructor(deps: WakeLockDeps) {
 		this.deps = deps;
-		const onVisibilityChange = () => this.onVisible();
-		document.addEventListener("visibilitychange", onVisibilityChange);
+		// registerDocumentEvent auto-removes the listener on unload.
+		deps.registerDocumentEvent("visibilitychange", () => this.onVisible());
 		deps.register(() => {
-			document.removeEventListener("visibilitychange", onVisibilityChange);
 			// Clear `want` first so any acquire() still awaiting its request
 			// releases the lock at the post-await check instead of storing it.
 			this.want = false;
