@@ -272,3 +272,4 @@ The provider registry (`fs/registry.ts`) maps backend types to provider instance
 - [Conflict resolution](docs/conflict-resolution.md) -- strategies, 3-way merge, conflict history
 - [Google Drive backend](docs/google-drive-backend.md) -- metadata cache, authentication, and the sole owner of incremental sync / cache invalidation
 - [Error handling](docs/error-handling.md) -- resilience: error classification, retry, rate limiting (recovery scenarios cross-reference the sync pipeline)
+- [OAuth worker](docs/oauth-worker.md) -- server-side Google token exchange (`oauth-worker/`) plus the GitHub Pages site (`pages/`): privacy/terms and the custom-OAuth callback

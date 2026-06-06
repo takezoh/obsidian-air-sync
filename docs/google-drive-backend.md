@@ -104,7 +104,7 @@ Key methods:
 
 ## Authentication
 
-Two OAuth implementations share a common base class (`GoogleAuthBase`):
+Two OAuth implementations share a common base class (`GoogleAuthBase`). The server side of the built-in flow — the `auth-airsync.takezo.dev` endpoints — is documented in [oauth-worker.md](oauth-worker.md).
 
 ### GoogleAuth (server-side, built-in)
 
