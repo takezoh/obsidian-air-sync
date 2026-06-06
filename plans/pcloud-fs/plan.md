@@ -1,5 +1,35 @@
 # pCloud バックエンド実装計画
 
+## 進捗状況
+
+- **Phase 0（共有抽象の正直化）— 完了・`main` へマージ済み**（commits 8bb9326 / 6339a0b / 4276119、
+  `pcloud-fs` ブランチに取り込み済み）。token-store の不透明シークレット化、`FileEntity.remoteChecksum`
+  昇格、algo-aware checksum 比較が反映済み。
+- **Phase 1（pCloud 実装）— コード実装完了・ゲート green・未コミット（`pcloud-fs` ブランチ）**
+  （2026-06-06）。`npm run lint && npm run build && npm test` 全 green（778 テスト、うち pcloud 63）。
+  ワーカー単体も `tsc -noEmit` green。
+  - 実装: `src/fs/pcloud/{types,client,metadata-cache,incremental-sync,index,auth,provider}.ts`（+各 `*.test.ts`）、
+    `src/ui/pcloud-settings.ts`、`registry.ts`/`backend-settings.ts` 登録、
+    `oauth-worker/src/pcloud.ts`（`/pcloud/callback` + `Env`/`wrangler.toml` 変数）。
+    `index.ts` は行数上限 300 内に収めるため delta 計算ヘルパを `incremental-sync.ts` へ分離。
+  - 公式ドキュメントで確定し反映済み: 手組み multipart `uploadfile`（filename=part・mtime 秒）、
+    `diff`（`entries[]`+top-level `diffid`、baseline=`last=0`、rename 専用イベント無し→`modify*` の
+    `parentfolderid`/`name` 差分、delete は id 逆引き）、長寿命 access token（refresh/expiry 無し）。
+  - **コードレビュー実施（xhigh・9 angle）**: 確定バグ1件を修正 — `metadata-cache.ts setEntry` が
+    別 id による同一パス上書きで旧 id を `idToPath` に残し、後続 delete イベント（id 逆引き）が生きてる
+    エントリを削除しうる問題（旧 id を evict・RED テスト追加）。diff ループの cursor 整理＋時系列順
+    （並べ替え禁止）コメント、`read()` の `numericIdOf` 統一、64bit hash の JSON 精度欠落（~2⁻⁵³・受容）
+    を明記。「`id` 未設定」「folders-first ソート欠落」等の重大候補は公式ドキュメント/設計で棄却。
+    フォローアップ: `AbstractMetadataCache`/`withCacheMutex`/nonce ヘルパの Drive 共通化、worker callback
+    共通化、`resolveRemoteVault` の folder liveness 検証。
+  - **go-live 前に残（ユーザー作業・ライブでのみ確定）**:
+    1. 実 `PCLOUD_CLIENT_ID` を `src/fs/pcloud/auth.ts` と `oauth-worker/wrangler.toml` の
+       `REPLACE_WITH_PCLOUD_CLIENT_ID` に設定 → `wrangler secret put PCLOUD_CLIENT_SECRET` → ワーカー deploy。
+    2. 未検証点（テストは documented 契約を pin 済み・下記「検証」で確定）: 手組み multipart が実 API に
+       通るか／認証失敗の正確な `result` コード（`assertOk` の集合を実値で調整）／`diff` のイベント形。
+    3. README/プライバシーへの全アカウント scope 開示は **go-live 時に追加**（placeholder client_id の現状は
+       接続不可のため先出しは誤誘導と判断し保留。開示要件は `docs/oauth-worker.md` に記載済み）。
+
 ## Context（なぜ作るか）
 
 Air Sync は「差し替え可能なバックエンド」設計で、リモート I/O はすべて `IFileSystem` +

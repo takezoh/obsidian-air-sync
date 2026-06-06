@@ -1,7 +1,7 @@
 # OAuth Worker
 
-The **server side** of Google authentication for Air Sync. Performs server-side
-Google OAuth token exchange so the Client Secret stays off the client. For the
+The **server side** of Google and pCloud authentication for Air Sync. Performs
+server-side OAuth token exchange so the Client Secret stays off the client. For the
 **plugin side** (`GoogleAuth` / `GoogleAuthDirect`, token storage, refresh), see
 [google-drive-backend.md → Authentication](google-drive-backend.md#authentication).
 
@@ -31,6 +31,24 @@ Client Secret, and redirects to `obsidian://` with the tokens.
 |--------|------|-------------|
 | GET | `/google/callback` | Google OAuth redirect → token exchange → `obsidian://` redirect |
 | POST | `/google/token/refresh` | Refresh token → new access token (JSON) |
+| GET | `/pcloud/callback` | pCloud OAuth redirect → token exchange → `obsidian://` redirect |
+
+### pCloud callback
+
+pCloud redirects here with `code`, `state`, `hostname` (and `locationid`). The Worker
+exchanges the code at `https://{hostname}/oauth2_token` (the `hostname` is region-pinned
+— `api.pcloud.com` US / `eapi.pcloud.com` EU — and whitelisted to avoid SSRF) using the
+server-held `PCLOUD_CLIENT_SECRET`, then redirects to
+`obsidian://air-sync-auth?access_token=...&hostname=...&state=...`.
+
+Unlike Google, pCloud issues a **long-lived access token with no refresh token and no
+expiry**, so there is no `/pcloud/token/refresh` endpoint. The plugin stores only the
+access token and re-pins the API host from `hostname`. The pCloud OAuth scope grants
+access to the **whole account** (its `diff` feed is account-wide), which the plugin
+filters to the vault subtree client-side — disclose this in the privacy policy.
+
+Required worker config: `PCLOUD_CLIENT_ID` / `PCLOUD_REDIRECT_URI` as `[vars]` in
+`wrangler.toml`, and `PCLOUD_CLIENT_SECRET` via `wrangler secret put`.
 
 ## `pages/callback/`
 

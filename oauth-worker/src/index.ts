@@ -1,5 +1,6 @@
 import { Env } from './types';
 import { handleCallback, handleTokenRefresh } from './oauth';
+import { handlePCloudCallback } from './pcloud';
 
 const SECURITY_HEADERS = {
   'Cache-Control': 'no-store, no-cache',
@@ -33,6 +34,11 @@ export default {
 
     if (path === '/google/callback' && request.method === 'GET') {
       const res = await handleCallback(request, env);
+      return withHeaders(res);
+    }
+
+    if (path === '/pcloud/callback' && request.method === 'GET') {
+      const res = await handlePCloudCallback(request, env);
       return withHeaders(res);
     }
 

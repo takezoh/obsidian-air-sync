@@ -22,7 +22,8 @@ One row per directory; see the layer diagram and per-doc references for module d
 | `fs/` | Backend-agnostic contracts and lifecycle: `IFileSystem`, `IAuthProvider`, `IBackendProvider`, `FileEntity`, the provider registry, `AuthError`, `BackendManager`, and the `ISecretStore`/token-store wrappers over Obsidian SecretStorage. |
 | `fs/local/` | `LocalFs` (Obsidian Vault API wrapper) plus the raw adapter for dot-prefixed paths. |
 | `fs/googledrive/` | The Google Drive backend: `GoogleDriveFs` with metadata cache, the REST v3 `DriveClient`, server + PKCE auth, the path↔ID `DriveMetadataCache`, incremental sync (changes.list), resumable upload, remote-vault resolution, the Drive types, and the built-in / custom OAuth providers. |
-| `ui/` | Settings UI: the main settings tab, the backend-connection section, and Google Drive-specific settings. |
+| `fs/pcloud/` | The pCloud backend: `PCloudFs` with metadata cache, the JSON `PCloudClient` (hand-built multipart upload), code-flow OAuth (long-lived token, no refresh), the path↔id `PCloudMetadataCache`, incremental sync (account-wide `diff`), and the provider. Content change detection uses pCloud's opaque content hash (`remoteChecksum.algo === "opaque"`). |
+| `ui/` | Settings UI: the main settings tab, the backend-connection section, and the Google Drive / pCloud backend settings. |
 | `store/` | IndexedDB plumbing: the `IDBHelper` transaction wrapper and the generic `MetadataStore<T>` file-metadata cache. |
 | `logging/` | `Logger` — structured log writer (`.airsync/logs/`). |
 | `queue/` | Concurrency primitives: `AsyncPool` (bounded concurrency) and `AsyncMutex`. |
@@ -264,7 +265,7 @@ interface IAuthProvider {
 }
 ```
 
-The provider registry (`fs/registry.ts`) maps backend types to provider instances. New backends register here; no changes needed elsewhere. `initRegistry(secretStore)` must be called once during plugin load (`main.ts` onload) before any `getBackendProvider` call; it injects `ISecretStore` into the provider constructors. Until then the registry is empty and `getBackendProvider` returns undefined. Built-in providers: `GoogleDriveProvider` (type `googledrive`) and `GoogleDriveCustomProvider` (type `googledrive-custom`). On a duplicate `type`, the first registration wins (later ones are skipped in the type lookup).
+The provider registry (`fs/registry.ts`) maps backend types to provider instances. New backends register here; no changes needed elsewhere. `initRegistry(secretStore)` must be called once during plugin load (`main.ts` onload) before any `getBackendProvider` call; it injects `ISecretStore` into the provider constructors. Until then the registry is empty and `getBackendProvider` returns undefined. Built-in providers: `GoogleDriveProvider` (type `googledrive`), `GoogleDriveCustomProvider` (type `googledrive-custom`), and `PCloudProvider` (type `pcloud`). On a duplicate `type`, the first registration wins (later ones are skipped in the type lookup).
 
 ## Detailed documentation
 

@@ -2,6 +2,7 @@ import type { IBackendProvider } from "./backend";
 import type { ISecretStore } from "./secret-store";
 import { GoogleDriveProvider } from "./googledrive/provider";
 import { GoogleDriveCustomProvider } from "./googledrive/provider-custom";
+import { PCloudProvider } from "./pcloud/provider";
 
 /**
  * Registry of available backend providers.
@@ -16,6 +17,7 @@ export function initRegistry(secretStore: ISecretStore): void {
 	providers = [
 		new GoogleDriveProvider(secretStore),
 		new GoogleDriveCustomProvider(secretStore),
+		new PCloudProvider(secretStore),
 	];
 	providerMap = new Map<string, IBackendProvider>();
 	for (const p of providers) {

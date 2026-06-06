@@ -3,12 +3,12 @@ import { redirectPage, errorPage } from './html';
 
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 
-interface AppConfig {
+export interface AppConfig {
   redirectBase: string;
   displayName: string;
 }
 
-const ALLOWED_APPS: Record<string, AppConfig> = {
+export const ALLOWED_APPS: Record<string, AppConfig> = {
   'obsidian-plugin': {
     redirectBase: 'obsidian://air-sync-auth',
     displayName: 'Obsidian',
@@ -27,14 +27,14 @@ interface StatePayload {
   nonce: string;
 }
 
-function htmlResponse(body: string, status = 200): Response {
+export function htmlResponse(body: string, status = 200): Response {
   return new Response(body, {
     status,
     headers: { 'Content-Type': 'text/html;charset=UTF-8' },
   });
 }
 
-function parseState(raw: string): StatePayload | null {
+export function parseState(raw: string): StatePayload | null {
   try {
     const json = JSON.parse(atob(raw));
     if (typeof json.app === 'string' && typeof json.nonce === 'string') {

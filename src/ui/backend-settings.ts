@@ -1,6 +1,7 @@
 import type { App } from "obsidian";
 import type { AirSyncSettings } from "../settings";
 import { GoogleDriveSettingsRenderer, GoogleDriveCustomSettingsRenderer } from "./googledrive-settings";
+import { PCloudSettingsRenderer } from "./pcloud-settings";
 
 /** Actions that settings renderers can invoke for connection flow UI */
 export interface BackendConnectionActions {
@@ -33,6 +34,7 @@ export interface IBackendSettingsRenderer {
 const renderers: IBackendSettingsRenderer[] = [
 	new GoogleDriveSettingsRenderer(),
 	new GoogleDriveCustomSettingsRenderer(),
+	new PCloudSettingsRenderer(),
 ];
 
 const rendererMap = new Map<string, IBackendSettingsRenderer>();

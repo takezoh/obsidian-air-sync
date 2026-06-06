@@ -8,3 +8,6 @@ routes = [
 [vars]
 GOOGLE_CLIENT_ID = "135801498656-lfjor2ml3v26t9l63mkoka0bndgl9eue.apps.googleusercontent.com"
 GOOGLE_REDIRECT_URI = "https://auth-airsync.takezo.dev/google/callback"
+# PCLOUD_CLIENT_ID is public; PCLOUD_CLIENT_SECRET is set via `wrangler secret put`.
+PCLOUD_CLIENT_ID = "REPLACE_WITH_PCLOUD_CLIENT_ID"
+PCLOUD_REDIRECT_URI = "https://auth-airsync.takezo.dev/pcloud/callback"
