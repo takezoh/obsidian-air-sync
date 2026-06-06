@@ -1,5 +1,5 @@
 import type { IFileSystem } from "../fs/interface";
-import type { FileEntity } from "../fs/types";
+import type { FileEntity, RemoteChecksum } from "../fs/types";
 import type { SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
 import type { Logger } from "../logging/logger";
@@ -115,7 +115,7 @@ async function keepNewer(
 	}
 	// Same mtime or unknown mtime: compare by content hash — if identical, keep local; otherwise tieBreak.
 	// Remote FileEntity.hash is "" for backends that don't compute it on list/stat (e.g. Google Drive);
-	// fall back to backendMeta.contentChecksum in that case.
+	// fall back to remoteChecksum in that case.
 	if (sameContent(local!, remote!)) {
 		return keepLocal(path, localFs, remoteFs, local); // content identical
 	}
@@ -317,15 +317,26 @@ async function attemptThreeWayMerge(
 }
 
 /**
- * Returns true when two FileEntity objects represent identical content.
- * Uses `hash` when available; falls back to `backendMeta.contentChecksum`
- * for backends (e.g. Google Drive) that return `hash: ""` from stat/list.
- * Returns false when neither side has a usable checksum.
+ * Reduce an entity to a comparable {algo, value} content key, or null if it has
+ * none. A local `hash` is SHA-256; a remote backend that returns `hash: ""`
+ * exposes its `remoteChecksum` (e.g. Drive md5) instead.
+ */
+function contentKey(e: FileEntity): RemoteChecksum | null {
+	if (e.hash) return { algo: "sha256", value: e.hash };
+	if (e.remoteChecksum) return e.remoteChecksum;
+	return null;
+}
+
+/**
+ * Returns true when two FileEntity objects provably represent identical content.
+ * Only compares checksums of the SAME algorithm — a local SHA-256 hash and a
+ * remote md5 are not comparable, so this returns false (the caller then
+ * tie-breaks) rather than risk a cross-algorithm verdict.
  */
 function sameContent(a: FileEntity, b: FileEntity): boolean {
-	const hashA = a.hash || (a.backendMeta?.contentChecksum as string | undefined) || "";
-	const hashB = b.hash || (b.backendMeta?.contentChecksum as string | undefined) || "";
-	return hashA !== "" && hashB !== "" && hashA === hashB;
+	const ka = contentKey(a);
+	const kb = contentKey(b);
+	return ka !== null && kb !== null && ka.algo === kb.algo && ka.value === kb.value;
 }
 
 function isValidJson(content: string): boolean {

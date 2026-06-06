@@ -22,7 +22,7 @@ export async function statOrThrow(
  * Shared change-detection contract for any remote `IFileSystem` backend.
  *
  * `remote` is the only Decision-table column whose correctness is backend-specific:
- * `hasRemoteChanged()` consumes `mtime`, `size` and `backendMeta.contentChecksum`,
+ * `hasRemoteChanged()` consumes `mtime`, `size` and `remoteChecksum`,
  * each of which every backend populates differently (Drive uses md5Checksum and a
  * server-assigned modifiedTime; a mock uses local mtime + sha256). A backend that
  * gets this wrong causes either an infinite re-sync loop (always "changed") or
@@ -30,7 +30,7 @@ export async function statOrThrow(
  *
  * The `checksumBased` opt is important: the write→unchanged and write→edit cases
  * are decided by mtime+size alone (they move in lockstep with content), so on their
- * own they do NOT prove the contentChecksum plumbing works. For checksum-based
+ * own they do NOT prove the remoteChecksum plumbing works. For checksum-based
  * backends the `metadata-only touch` case makes the checksum load-bearing — it is
  * the ONLY signal that distinguishes "unchanged" from "changed" when mtime drifts
  * but content is identical. Without it a dropped/garbled md5 ships undetected.
@@ -97,7 +97,7 @@ export function runRemoteChangeDetectionContract(
 				const touched = await harness.observeTouchedSameContent();
 
 				// mtime drifts but content/checksum are identical → the only way this is
-				// "unchanged" is if hasRemoteChanged compares contentChecksum. If the md5
+				// "unchanged" is if hasRemoteChanged compares remoteChecksum. If the md5
 				// plumbing regresses, this flips to true (infinite re-sync) and fails.
 				expect(hasRemoteChanged(touched, baseline)).toBe(false);
 			});

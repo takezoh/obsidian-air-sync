@@ -76,8 +76,8 @@ describe("GoogleDriveFs.ensureFolder file collision", () => {
 	});
 });
 
-describe("GoogleDriveFs.write contentChecksum", () => {
-	it("includes contentChecksum in backendMeta when returned by Drive API", async () => {
+describe("GoogleDriveFs.write remoteChecksum", () => {
+	it("includes remoteChecksum (md5) when returned by Drive API", async () => {
 		const uploadResult = {
 			id: "file1",
 			name: "test.md",
@@ -100,13 +100,13 @@ describe("GoogleDriveFs.write contentChecksum", () => {
 		const content = new TextEncoder().encode("hello").buffer.slice(0);
 		const result = await fs.write("test.md", content, Date.now());
 
-		expect(result.backendMeta?.contentChecksum).toBe("abc123hash");
+		expect(result.remoteChecksum).toEqual({ algo: "md5", value: "abc123hash" });
 		expect(result.backendMeta?.driveId).toBe("file1");
 
 		mockRequestUrl.mockRestore();
 	});
 
-	it("handles missing contentChecksum (Google Docs) gracefully", async () => {
+	it("handles missing remoteChecksum (Google Docs) gracefully", async () => {
 		const uploadResult = {
 			id: "doc1",
 			name: "doc.gdoc",
@@ -131,7 +131,7 @@ describe("GoogleDriveFs.write contentChecksum", () => {
 		const content = new TextEncoder().encode("hello").buffer.slice(0);
 		const result = await fs.write("doc.gdoc", content, Date.now());
 
-		expect(result.backendMeta?.contentChecksum).toBeUndefined();
+		expect(result.remoteChecksum).toBeUndefined();
 		expect(result.backendMeta?.driveId).toBe("doc1");
 
 		mockRequestUrl.mockRestore();

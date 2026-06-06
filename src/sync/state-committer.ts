@@ -23,6 +23,7 @@ export function buildSyncRecord(local: FileEntity | undefined, remote: FileEntit
 		remoteMtime: remote?.mtime ?? 0,
 		localSize: local?.size ?? 0,
 		remoteSize: remote?.size ?? 0,
+		remoteChecksum: remote?.remoteChecksum,
 		backendMeta: remote?.backendMeta,
 		syncedAt: Date.now(),
 	};

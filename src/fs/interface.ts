@@ -25,8 +25,8 @@ export interface IFileSystem {
 	 * Get metadata for a single path, or `null` if it doesn't exist.
 	 *
 	 * Implementations should compute `hash` here when feasible.
-	 * Remote backends may return `hash: ""` if they provide equivalent
-	 * metadata (e.g. `backendMeta.contentChecksum`) for change detection.
+	 * Remote backends may return `hash: ""` if they provide an equivalent
+	 * `remoteChecksum` for change detection.
 	 */
 	stat(path: string): Promise<FileEntity | null>;
 

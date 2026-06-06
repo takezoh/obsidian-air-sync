@@ -31,14 +31,19 @@ export function hasChanged(file: FileEntity, record: SyncRecord): boolean {
 
 /**
  * Check if a remote file has changed since the last sync.
- * Priority: mtime+size (fast) → backendMeta.contentChecksum (backend-provided
- * checksum, reliable when mtime is missing or unreliable) → content hash → conservative.
+ * Priority: mtime+size (fast) → remoteChecksum (backend-provided checksum,
+ * reliable when mtime is missing or unreliable) → content hash → conservative.
  */
 export function hasRemoteChanged(file: FileEntity, record: SyncRecord): boolean {
-	const rawFileMd5 = file.backendMeta?.contentChecksum;
-	const rawRecordMd5 = record.backendMeta?.contentChecksum;
-	const fileMd5 = typeof rawFileMd5 === "string" ? rawFileMd5 : undefined;
-	const recordMd5 = typeof rawRecordMd5 === "string" ? rawRecordMd5 : undefined;
+	// Only compare checksums of the same algorithm. A backend uses one algo per
+	// vault, so an algo mismatch (or a missing side) means "not comparable" and we
+	// fall through to hash/conservative rather than risk a cross-algorithm verdict.
+	const fc = file.remoteChecksum;
+	const rc = record.remoteChecksum;
+	const checksumChanged =
+		fc !== undefined && rc !== undefined && fc.algo === rc.algo
+			? fc.value !== rc.value
+			: undefined;
 
 	if (file.mtime > 0 && record.remoteMtime > 0) {
 		if (file.mtime === record.remoteMtime && file.size === record.remoteSize) {
@@ -48,15 +53,15 @@ export function hasRemoteChanged(file: FileEntity, record: SyncRecord): boolean 
 			}
 			return false;
 		}
-		// mtime/size differ — check md5 before concluding changed
-		if (fileMd5 && recordMd5) {
-			return fileMd5 !== recordMd5;
+		// mtime/size differ — trust the checksum if comparable, else conservative
+		if (checksumChanged !== undefined) {
+			return checksumChanged;
 		}
 		return true;
 	}
-	// Use backend-provided contentChecksum when available (e.g. Drive md5, Dropbox content_hash)
-	if (fileMd5 && recordMd5) {
-		return fileMd5 !== recordMd5;
+	// Use backend-provided checksum when comparable (e.g. Drive md5, pCloud content hash)
+	if (checksumChanged !== undefined) {
+		return checksumChanged;
 	}
 	if (file.hash && record.hash) {
 		return file.hash !== record.hash;

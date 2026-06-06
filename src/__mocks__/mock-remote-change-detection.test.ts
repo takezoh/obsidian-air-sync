@@ -8,7 +8,7 @@ import {
 // createMockFs is the canonical in-memory test double: hash-based (sha256), mtime
 // round-trips through write → stat. It must satisfy the same remote change-
 // detection contract as every real backend. It is NOT checksumBased (no
-// backendMeta.contentChecksum), so the metadata-touch case does not apply.
+// remoteChecksum), so the metadata-touch case does not apply.
 runRemoteChangeDetectionContract("createMockFs", () => {
 	const fs = createMockFs("remote");
 	const path = "note.md";

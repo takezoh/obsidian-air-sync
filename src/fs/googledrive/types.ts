@@ -1,7 +1,16 @@
 import type { FileRecord } from "../../store/metadata-store";
+import type { RemoteChecksum } from "../types";
 
 /** Google Drive folder MIME type */
 export const FOLDER_MIME = "application/vnd.google-apps.folder";
+
+/**
+ * Map a Drive file's md5Checksum to a typed RemoteChecksum.
+ * Returns undefined when absent (e.g. Google Docs have no md5Checksum).
+ */
+export function toRemoteChecksum(file: DriveFile): RemoteChecksum | undefined {
+	return file.md5Checksum ? { algo: "md5", value: file.md5Checksum } : undefined;
+}
 
 /** Drive-specific file record type alias */
 export type DriveFileRecord = FileRecord<DriveFile>;

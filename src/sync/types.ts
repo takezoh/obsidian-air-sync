@@ -1,4 +1,4 @@
-import type { FileEntity } from "../fs/types";
+import type { FileEntity, RemoteChecksum } from "../fs/types";
 
 /** A stored record of the last-known synced state for a file */
 export interface SyncRecord {
@@ -14,7 +14,9 @@ export interface SyncRecord {
 	localSize: number;
 	/** Remote file size at last successful sync */
 	remoteSize: number;
-	/** Backend-specific metadata snapshot (e.g. Drive contentChecksum) */
+	/** Remote-provided content checksum at last successful sync (for change detection) */
+	remoteChecksum?: RemoteChecksum;
+	/** Backend-specific metadata snapshot the sync engine does not interpret (e.g. Drive/pCloud file ID) */
 	backendMeta?: Record<string, unknown>;
 	/** Timestamp when this sync completed (Unix epoch ms) */
 	syncedAt: number;

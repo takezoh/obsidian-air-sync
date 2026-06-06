@@ -1,3 +1,16 @@
+/**
+ * Algorithm of a remote-provided content checksum.
+ * `"opaque"` is a backend-internal value (e.g. pCloud's content hash) that
+ * cannot be reproduced from local content.
+ */
+export type ChecksumAlgo = "md5" | "sha1" | "sha256" | "opaque";
+
+/** A content checksum provided by a remote backend, tagged with its algorithm. */
+export interface RemoteChecksum {
+	algo: ChecksumAlgo;
+	value: string;
+}
+
 /** Represents a file or folder entity from any filesystem */
 export interface FileEntity {
 	/** Relative path from the sync root (e.g. "notes/hello.md") */
@@ -22,6 +35,15 @@ export interface FileEntity {
 	 * accurate hash is needed. Always `""` for directories.
 	 */
 	hash: string;
-	/** Backend-specific metadata (e.g. Drive file ID, contentChecksum) */
+	/**
+	 * Remote-provided content checksum, tagged with its algorithm.
+	 *
+	 * Remote backends that return `hash: ""` expose a stable checksum here
+	 * instead (e.g. Drive md5, pCloud's opaque content hash). The sync engine
+	 * uses it for temporal change detection (remote-now vs last-sync) and, when
+	 * the algo is locally computable (not `"opaque"`), for cross-side dedup.
+	 */
+	remoteChecksum?: RemoteChecksum;
+	/** Backend-specific metadata the sync engine does not interpret (e.g. Drive/pCloud file ID) */
 	backendMeta?: Record<string, unknown>;
 }

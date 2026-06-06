@@ -1,6 +1,6 @@
 import type { IFileSystem } from "../interface";
 import type { FileEntity } from "../types";
-import { FOLDER_MIME } from "./types";
+import { FOLDER_MIME, toRemoteChecksum } from "./types";
 import type { DriveFile } from "./types";
 import type { DriveClient } from "./client";
 import type { MetadataStore } from "../../store/metadata-store";
@@ -281,7 +281,7 @@ export class GoogleDriveFs implements IFileSystem {
 
 	/**
 	 * Return cached metadata for a path.
-	 * hash is always "" — the sync engine should use backendMeta.contentChecksum
+	 * hash is always "" — the sync engine should use remoteChecksum
 	 * for content-change detection rather than relying on hash.
 	 *
 	 * Does not call applyIncrementalChanges here because list() already
@@ -358,7 +358,8 @@ export class GoogleDriveFs implements IFileSystem {
 				? new Date(driveFile.modifiedTime).getTime()
 				: 0,
 			hash,
-			backendMeta: { driveId: driveFile.id, contentChecksum: driveFile.md5Checksum },
+			remoteChecksum: toRemoteChecksum(driveFile),
+			backendMeta: { driveId: driveFile.id },
 		};
 	}
 

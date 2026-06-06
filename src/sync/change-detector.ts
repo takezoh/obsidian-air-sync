@@ -3,8 +3,7 @@ import type { MixedEntity, RenamePair, SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
 import type { LocalChangeTracker } from "./local-tracker";
 import { hasChanged, hasRemoteChanged } from "./change-compare";
-import { md5 } from "../utils/md5";
-import { sha256 } from "../utils/hash";
+import { sha256, digest, isLocallyComputable } from "../utils/hash";
 import { AsyncPool } from "../queue/async-queue";
 
 export interface ChangeSet {
@@ -230,9 +229,14 @@ async function collectCold(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): 
 }
 
 /**
- * Enrich empty hashes for entries without baseline by comparing local MD5
- * with remote's backend-provided contentChecksum. Runs for all temperature
+ * Enrich empty hashes for entries without baseline by comparing the local
+ * digest with the remote's backend-provided checksum. Runs for all temperature
  * modes to handle partial initial syncs and simultaneous file creation.
+ *
+ * Only fires when the remote checksum's algorithm is locally computable
+ * (md5/sha1/sha256). Backends whose checksum is "opaque" (e.g. pCloud's
+ * internal content hash) cannot be matched against local content, so their
+ * entries are skipped here and left to the normal conflict path.
  */
 async function enrichHashesForInitialMatch(
 	entries: MixedEntity[],
@@ -242,7 +246,8 @@ async function enrichHashesForInitialMatch(
 		(e) => e.local && e.remote && !e.prevSync &&
 			!e.local.hash && !e.remote.hash &&
 			e.local.size === e.remote.size &&
-			typeof e.remote.backendMeta?.contentChecksum === "string"
+			e.remote.remoteChecksum !== undefined &&
+			isLocallyComputable(e.remote.remoteChecksum.algo)
 	);
 	if (candidates.length === 0) return;
 
@@ -251,10 +256,10 @@ async function enrichHashesForInitialMatch(
 		candidates.map((entry) =>
 			pool.run(async () => {
 				try {
+					const remoteChecksum = entry.remote!.remoteChecksum!;
 					const content = await localFs.read(entry.path);
-					const localMd5 = md5(content);
-					const remoteMd5 = entry.remote!.backendMeta!.contentChecksum as string;
-					if (localMd5 === remoteMd5) {
+					const localDigest = await digest(content, remoteChecksum.algo);
+					if (localDigest === remoteChecksum.value) {
 						const contentHash = await sha256(content);
 						entry.local = { ...entry.local!, hash: contentHash };
 						entry.remote = { ...entry.remote!, hash: contentHash };

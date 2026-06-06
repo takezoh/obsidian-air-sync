@@ -14,7 +14,26 @@ import { MetadataStore } from "../../store/metadata-store";
 import { resolveGDriveRemoteVault } from "./remote-vault";
 import type { DriveFile } from "./types";
 import type { GoogleDriveBackendData } from "./provider";
-import { storeTokens, readTokens, hasRefreshToken, clearTokens } from "../token-store";
+import { setBackendSecret, getBackendSecret, hasBackendSecret, clearBackendSecrets } from "../token-store";
+
+interface DriveTokens {
+	refreshToken: string;
+	accessToken: string;
+}
+
+/** Read the Drive refresh+access tokens from SecretStorage. */
+function readDriveTokens(store: ISecretStore, type: string): DriveTokens {
+	return {
+		refreshToken: getBackendSecret(store, type, "refresh"),
+		accessToken: getBackendSecret(store, type, "access"),
+	};
+}
+
+/** Persist the Drive refresh+access tokens to SecretStorage (empty values are skipped). */
+function storeDriveTokens(store: ISecretStore, type: string, tokens: DriveTokens): void {
+	setBackendSecret(store, type, "refresh", tokens.refreshToken);
+	setBackendSecret(store, type, "access", tokens.accessToken);
+}
 
 /**
  * Parse auth callback input (URL from auth server containing tokens or code).
@@ -70,7 +89,7 @@ export abstract class GoogleDriveAuthProviderBase implements IAuthProvider {
 	}
 
 	isAuthenticated(_backendData: Record<string, unknown>): boolean {
-		return hasRefreshToken(this.secretStore, this.backendType);
+		return hasBackendSecret(this.secretStore, this.backendType, "refresh");
 	}
 
 	async startAuth(_backendData: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -118,10 +137,7 @@ export abstract class GoogleDriveAuthProviderBase implements IAuthProvider {
 		const tokens = auth.getTokenState();
 
 		// Store tokens in SecretStorage instead of returning them for backendData
-		storeTokens(this.secretStore, this.backendType, {
-			refreshToken: tokens.refreshToken,
-			accessToken: tokens.accessToken,
-		});
+		storeDriveTokens(this.secretStore, this.backendType, tokens);
 
 		return {
 			accessTokenExpiry: tokens.accessTokenExpiry,
@@ -175,7 +191,7 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 
 	createFs(app: App, settings: AirSyncSettings, logger?: Logger): IFileSystem | null {
 		const data = this.getData(settings);
-		const tokens = readTokens(this.secretStore, this.type);
+		const tokens = readDriveTokens(this.secretStore, this.type);
 		if (!tokens.refreshToken || !data.remoteVaultFolderId) return null;
 
 		const googleAuth = this.auth.getOrCreateGoogleAuth(data, logger);
@@ -195,7 +211,7 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 	}
 
 	isConnected(settings: AirSyncSettings): boolean {
-		return hasRefreshToken(this.secretStore, this.type) && !!this.getData(settings).remoteVaultFolderId;
+		return hasBackendSecret(this.secretStore, this.type, "refresh") && !!this.getData(settings).remoteVaultFolderId;
 	}
 
 	getIdentity(settings: AirSyncSettings): string | null {
@@ -227,10 +243,7 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 		// Store refreshed tokens in SecretStorage (not in backendData)
 		const tokens = this.auth.getTokenState();
 		if (tokens && tokens.refreshToken) {
-			storeTokens(this.secretStore, this.type, {
-				refreshToken: tokens.refreshToken,
-				accessToken: tokens.accessToken,
-			});
+			storeDriveTokens(this.secretStore, this.type, tokens);
 			result.accessTokenExpiry = tokens.accessTokenExpiry;
 		}
 
@@ -244,7 +257,7 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 		logger?: Logger,
 	): Promise<RemoteVaultResolution> {
 		const data = this.getData(settings);
-		const tokens = readTokens(this.secretStore, this.type);
+		const tokens = readDriveTokens(this.secretStore, this.type);
 		const googleAuth = this.auth.getOrCreateGoogleAuth(data, logger);
 		googleAuth.setTokens(tokens.refreshToken, tokens.accessToken, data.accessTokenExpiry);
 		const client = new DriveClient((force) => googleAuth.getAccessToken(force), logger);
@@ -254,7 +267,7 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 
 	async disconnect(_settings: AirSyncSettings): Promise<Record<string, unknown>> {
 		await this.auth.revokeAuth();
-		clearTokens(this.secretStore, this.type);
+		clearBackendSecrets(this.secretStore, this.type, ["refresh", "access"]);
 		return { ...this.getDefaultData() };
 	}
 

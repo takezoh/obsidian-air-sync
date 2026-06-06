@@ -1,6 +1,6 @@
 import type { FileEntity } from "../types";
 import type { DriveFile } from "./types";
-import { FOLDER_MIME } from "./types";
+import { FOLDER_MIME, toRemoteChecksum } from "./types";
 import type { Logger } from "../../logging/logger";
 import { INTERNAL_METADATA_PATH } from "../../sync/remote-vault";
 
@@ -285,7 +285,7 @@ export class DriveMetadataCache {
 	/**
 	 * Build a FileEntity from cached DriveFile metadata (no download).
 	 * hash is always "" because computing it would require downloading the
-	 * file content. The sync engine uses backendMeta.contentChecksum instead.
+	 * file content. The sync engine uses remoteChecksum instead.
 	 */
 	driveFileToEntity(path: string, driveFile: DriveFile): FileEntity {
 		if (this.folders.has(path)) {
@@ -300,10 +300,8 @@ export class DriveMetadataCache {
 			size: parseInt(driveFile.size || "0", 10),
 			mtime: Number.isNaN(parsedMtime) ? 0 : parsedMtime,
 			hash: "",
-			backendMeta: {
-				driveId: driveFile.id,
-				contentChecksum: driveFile.md5Checksum,
-			},
+			remoteChecksum: toRemoteChecksum(driveFile),
+			backendMeta: { driveId: driveFile.id },
 		};
 	}
 
