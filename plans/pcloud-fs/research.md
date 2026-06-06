@@ -125,15 +125,26 @@ backendData へ反映（`commitCheckpoint = (failed===0)`）。
   以降の全 API で使う。
   出典: https://docs.pcloud.com/methods/oauth_2.0/authorize.html
 
-### OAuth2（code フロー）
-- authorize: `https://my.pcloud.com/oauth2/authorize?client_id=...&response_type=code&redirect_uri=...&state=...`
-  → リダイレクトで `code`/`state`/`locationid`/`hostname`。
-- token 交換: `POST https://{hostname}/oauth2_token`（`client_id`,`client_secret`,`code`）→
-  `{ result:0, access_token, token_type:"bearer", uid }`。
-- **refresh token 無し・`expires_in` 無し**＝長寿命 access token（無効化されるまで有効）。
-  → リフレッシュ機構は実装しない。失効はリアクティブに扱う。
-  出典: https://docs.pcloud.com/methods/oauth_2.0/oauth2_token.html ,
-  https://docs.pcloud.com/methods/intro/authentication.html
+### OAuth2（2 フロー: code / token-implicit）— PKCE は無い（2026-06-06 再調査・Playwright）
+pCloud は OAuth で 2 フローを提供する。**PKCE は非対応**（authorize / oauth2_token / authentication の
+いずれにも `code_challenge`/`code_verifier` が無いことを一次情報で確認）。
+- **Code フロー**（現行実装）: authorize `?response_type=code` → リダイレクトで
+  `code`/`state`/`locationid`/`hostname`（query）→ `POST https://{hostname}/oauth2_token`
+  （**`client_id`+`client_secret`+`code` が必須**）→ `{ result:0, access_token, token_type:"bearer", uid }`。
+  secret が要るので **worker 等のサーバ側交換が前提**。
+- **Token(implicit) フロー**: authorize `?response_type=token` → bearer token を **URI フラグメント**
+  (`#access_token=…&token_type=bearer&uid=…&state=…&locationid=…&hostname=…`) で直接返す。
+  **secret も二次呼び出しも不要**だが、フラグメントはサーバに送られず OS のプロトコルハンドラも確実に
+  渡さないため、**client-side の中継ページ（`pages/`）でフラグメント→`obsidian://` 変換が事実上必須**。
+- **refresh token 無し・access token は時間失効しない**（pCloud 公式 SDK の oauth.md が「OAuth 発行トークンは
+  expire しない」と明記。一般トークンモデルの `expire`/`expire_inactive` は持つが OAuth では実質非失効）。
+  → リフレッシュ機構は不要。失効はリアクティブに扱う。
+- **scope は常に全アカウント**（縮小不可。`permissions` の追加は `manageshares` のみ）。Dropbox の
+  App Folder のような限定は無い。
+- redirect_uri は **アプリ設定で事前登録必須**（未登録は "redirect_uri not authorized"）。カスタムスキームは
+  ネイティブ向けに許容（Swift SDK 等が登録）だが、上記フラグメント問題のため `obsidian://` 直接受けは非推奨。
+  出典: docs.pcloud.com の authorize / oauth2_token / intro-authentication、pCloud 公式 SDK
+  https://github.com/pCloud/pcloud-sdk-js/blob/master/docs/oauth.md 。
 
 ### 認証付き呼び出し
 - 全メソッドで **`auth=<access_token>` クエリ**（Bearer ヘッダではない）。root は `folderid=0`。
@@ -193,6 +204,23 @@ pCloud を Drive 形状の抽象へ載せると 2 箇所で「無理やり合わ
   時系列比較は `value`（algo 非依存）、cross-side dedup は `algo` がローカル計算可能なときのみ。
   pCloud=`opaque`（明示的にスキップ）。将来 `checksumfile` の SHA-1 を `algo:"sha1"` で出せば
   dedup も自動で有効化（受け皿だけ先に用意）。
+
+### (C) 認証フローの選択 — worker/secret は要るか（再検討・2026-06-06）
+Dropbox 計画で「PKCE により secret を持たず token も履歴に出さない」を両立できたため、pCloud も
+同様に secretless 化できるか再検討した。**結論: pCloud では両立できない**（PKCE が無いため）。
+
+- pCloud で secretless にできるのは **implicit フロー一択**。それは強力なトークンを
+  **pages ドメインのブラウザ履歴（フラグメント）に乗せる**（`history.replaceState` で初回後はスクラブ可だが、
+  初回ナビゲーション時点では URL に載る）。
+- pCloud のトークンは **非失効・全アカウント権限**と特に強力。これを履歴に出す implicit のコストは、
+  Dropbox の App Folder・短命トークンより**重い**。
+- 現行 **Code フロー**は、履歴に乗るのは使い捨ての `code` のみで、強力トークンは worker のサーバ側交換に
+  閉じ最終 `obsidian://` href にしか現れない（履歴に残らない）。secret 1 個の管理コストと引き換えに
+  トークン取り扱いが堅い。
+- **評価（推奨）: pCloud は Code フロー＋worker secret を維持**。secret を 1 個消すために非失効・全アカウント
+  トークンの取り扱いを緩めるのは割に合わない。Dropbox(=PKCE 無シークレット) とは**バックエンドごとに最適が
+  異なる**という結論。役割分担は worker=「confidential 経路（Google 組込の refresh + pCloud の code 交換）」、
+  pages/callback=「無シークレット経路（Google custom / Dropbox PKCE）」。
 
 ### 軽微（opportunistic）
 - `IAuthProvider.isAuthenticated(backendData)` の `backendData` は Drive/pCloud とも未使用
