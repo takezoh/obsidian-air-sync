@@ -31,14 +31,12 @@ export function hasChanged(file: FileEntity, record: SyncRecord): boolean {
 
 /**
  * Check if a remote file has changed since the last sync.
- * Priority: mtime+size (fast) → backendMeta.contentChecksum (backend-provided
- * checksum, reliable when mtime is missing or unreliable) → content hash → conservative.
+ * Priority: mtime+size (fast) → remoteChecksum (backend-provided checksum,
+ * reliable when mtime is missing or unreliable) → content hash → conservative.
  */
 export function hasRemoteChanged(file: FileEntity, record: SyncRecord): boolean {
-	const rawFileMd5 = file.backendMeta?.contentChecksum;
-	const rawRecordMd5 = record.backendMeta?.contentChecksum;
-	const fileMd5 = typeof rawFileMd5 === "string" ? rawFileMd5 : undefined;
-	const recordMd5 = typeof rawRecordMd5 === "string" ? rawRecordMd5 : undefined;
+	const fileChecksum = file.remoteChecksum?.value;
+	const recordChecksum = record.remoteChecksum?.value;
 
 	if (file.mtime > 0 && record.remoteMtime > 0) {
 		if (file.mtime === record.remoteMtime && file.size === record.remoteSize) {
@@ -48,15 +46,15 @@ export function hasRemoteChanged(file: FileEntity, record: SyncRecord): boolean 
 			}
 			return false;
 		}
-		// mtime/size differ — check md5 before concluding changed
-		if (fileMd5 && recordMd5) {
-			return fileMd5 !== recordMd5;
+		// mtime/size differ — check checksum before concluding changed
+		if (fileChecksum && recordChecksum) {
+			return fileChecksum !== recordChecksum;
 		}
 		return true;
 	}
-	// Use backend-provided contentChecksum when available (e.g. Drive md5, Dropbox content_hash)
-	if (fileMd5 && recordMd5) {
-		return fileMd5 !== recordMd5;
+	// Use backend-provided checksum when available (e.g. Drive md5, pCloud content hash)
+	if (fileChecksum && recordChecksum) {
+		return fileChecksum !== recordChecksum;
 	}
 	if (file.hash && record.hash) {
 		return file.hash !== record.hash;

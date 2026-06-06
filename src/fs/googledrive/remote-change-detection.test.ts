@@ -19,9 +19,9 @@ interface DriveUploadResult {
 }
 
 // GoogleDriveFs returns hash:"" from stat() and relies entirely on
-// backendMeta.contentChecksum (Drive md5) + modifiedTime for change detection.
+// remoteChecksum (Drive md5) + modifiedTime for change detection.
 // checksumBased: the metadata-touch case (mtime bumped, identical md5) makes the
-// contentChecksum plumbing load-bearing — mtime+size alone cannot decide it.
+// remoteChecksum plumbing load-bearing — mtime+size alone cannot decide it.
 runRemoteChangeDetectionContract(
 	"GoogleDriveFs",
 	async () => {

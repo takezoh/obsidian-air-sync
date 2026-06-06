@@ -115,7 +115,7 @@ async function keepNewer(
 	}
 	// Same mtime or unknown mtime: compare by content hash — if identical, keep local; otherwise tieBreak.
 	// Remote FileEntity.hash is "" for backends that don't compute it on list/stat (e.g. Google Drive);
-	// fall back to backendMeta.contentChecksum in that case.
+	// fall back to remoteChecksum in that case.
 	if (sameContent(local!, remote!)) {
 		return keepLocal(path, localFs, remoteFs, local); // content identical
 	}
@@ -318,13 +318,13 @@ async function attemptThreeWayMerge(
 
 /**
  * Returns true when two FileEntity objects represent identical content.
- * Uses `hash` when available; falls back to `backendMeta.contentChecksum`
- * for backends (e.g. Google Drive) that return `hash: ""` from stat/list.
+ * Uses `hash` when available; falls back to `remoteChecksum.value` for
+ * backends (e.g. Google Drive) that return `hash: ""` from stat/list.
  * Returns false when neither side has a usable checksum.
  */
 function sameContent(a: FileEntity, b: FileEntity): boolean {
-	const hashA = a.hash || (a.backendMeta?.contentChecksum as string | undefined) || "";
-	const hashB = b.hash || (b.backendMeta?.contentChecksum as string | undefined) || "";
+	const hashA = a.hash || a.remoteChecksum?.value || "";
+	const hashB = b.hash || b.remoteChecksum?.value || "";
 	return hashA !== "" && hashB !== "" && hashA === hashB;
 }
 

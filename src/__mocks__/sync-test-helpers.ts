@@ -15,7 +15,7 @@ import { normalizeSyncPath, validateRename } from "../utils/path";
  * are exercised through the pipeline; `list()` keeps `hash: ""` per the
  * IFileSystem contract (list may skip hashing for performance — callers stat()
  * when an accurate hash is needed). The `.files` map is exposed so tests can
- * seed/inspect state directly (e.g. attach `backendMeta.contentChecksum`).
+ * seed/inspect state directly (e.g. attach a `remoteChecksum`).
  */
 export function createMockFs(name: string): IFileSystem & {
 	files: Map<string, { content: ArrayBuffer; entity: FileEntity }>;

@@ -3,10 +3,10 @@ import { collectChanges, enrichHashesForRenames } from "./change-detector";
 import type { ChangeDetectorDeps } from "./change-detector";
 import { LocalChangeTracker } from "./local-tracker";
 import { createMockFs, createMockStateStore, addFile } from "../__mocks__/sync-test-helpers";
-import type { FileEntity } from "../fs/types";
+import type { FileEntity, RemoteChecksum } from "../fs/types";
 import type { MixedEntity, SyncRecord } from "./types";
 import { md5 } from "../utils/md5";
-import { sha256 } from "../utils/hash";
+import { sha256, sha1 } from "../utils/hash";
 
 function makeRecord(path: string, overrides: Partial<SyncRecord> = {}): SyncRecord {
 	return {
@@ -38,16 +38,16 @@ describe("collectChanges — temperature selection", () => {
 		localTracker = new LocalChangeTracker();
 	});
 
-	/** Add a file to mock FS with backendMeta (e.g. contentChecksum) */
-	function addFileWithMeta(
+	/** Add a file to mock FS with a remote-provided checksum (e.g. Drive md5). */
+	function addFileWithChecksum(
 		fs: ReturnType<typeof createMockFs>,
 		path: string,
 		text: string,
 		mtime: number,
-		backendMeta: Record<string, unknown>,
+		checksum: RemoteChecksum,
 	): FileEntity {
 		const entity = addFile(fs, path, text, mtime);
-		entity.backendMeta = backendMeta;
+		entity.remoteChecksum = checksum;
 		return entity;
 	}
 
@@ -89,16 +89,14 @@ describe("collectChanges — temperature selection", () => {
 			expect(result.entries).toHaveLength(0);
 		});
 
-		it("enriches hashes with SHA-256 when local MD5 matches remote contentChecksum", async () => {
+		it("enriches hashes with SHA-256 when local MD5 matches remote checksum", async () => {
 			const content = "identical content";
 			const contentBuf = new TextEncoder().encode(content);
 			const expectedMd5 = md5(contentBuf.buffer);
 			const expectedSha256 = await sha256(contentBuf.buffer);
 
 			addFile(localFs, "a.md", content, 1000);
-			addFileWithMeta(remoteFs, "a.md", content, 2000, {
-				contentChecksum: expectedMd5,
-			});
+			addFileWithChecksum(remoteFs, "a.md", content, 2000, { algo: "md5", value: expectedMd5 });
 
 			const result = await collectChanges(makeDeps());
 
@@ -107,11 +105,42 @@ describe("collectChanges — temperature selection", () => {
 			expect(entry?.remote?.hash).toBe(expectedSha256);
 		});
 
+		it("enriches when remote checksum is SHA-1 and local SHA-1 matches", async () => {
+			const content = "identical content";
+			const contentBuf = new TextEncoder().encode(content);
+			const expectedSha1 = await sha1(contentBuf.buffer);
+			const expectedSha256 = await sha256(contentBuf.buffer);
+
+			addFile(localFs, "a.md", content, 1000);
+			addFileWithChecksum(remoteFs, "a.md", content, 2000, { algo: "sha1", value: expectedSha1 });
+
+			const result = await collectChanges(makeDeps());
+
+			const entry = result.entries.find((e) => e.path === "a.md");
+			expect(entry?.local?.hash).toBe(expectedSha256);
+			expect(entry?.remote?.hash).toBe(expectedSha256);
+		});
+
+		it("skips enrichment when the remote checksum is opaque (not locally computable)", async () => {
+			// Identical content + size, but an opaque (e.g. pCloud) checksum cannot be
+			// reproduced locally, so cross-side dedup must not fire here.
+			const content = "identical content";
+			addFile(localFs, "a.md", content, 1000);
+			addFileWithChecksum(remoteFs, "a.md", content, 2000, { algo: "opaque", value: "pcloud-hash" });
+			const localEntity = localFs.files.get("a.md")!.entity;
+			const remoteEntity = remoteFs.files.get("a.md")!.entity;
+			remoteEntity.size = localEntity.size;
+
+			const result = await collectChanges(makeDeps());
+
+			const entry = result.entries.find((e) => e.path === "a.md");
+			expect(entry?.local?.hash).toBe("");
+			expect(entry?.remote?.hash).toBe("");
+		});
+
 		it("does not enrich hashes when MD5 differs", async () => {
 			addFile(localFs, "a.md", "local version", 1000);
-			addFileWithMeta(remoteFs, "a.md", "remote version", 2000, {
-				contentChecksum: "differentmd5hash",
-			});
+			addFileWithChecksum(remoteFs, "a.md", "remote version", 2000, { algo: "md5", value: "differentmd5hash" });
 			// Force same size so enrichment is attempted
 			const localEntity = localFs.files.get("a.md")!.entity;
 			const remoteEntity = remoteFs.files.get("a.md")!.entity;
@@ -129,9 +158,7 @@ describe("collectChanges — temperature selection", () => {
 			const expectedMd5 = md5(new TextEncoder().encode(content).buffer);
 
 			addFile(localFs, "a.md", content, 1000);
-			addFileWithMeta(remoteFs, "a.md", "different length content here", 2000, {
-				contentChecksum: expectedMd5,
-			});
+			addFileWithChecksum(remoteFs, "a.md", "different length content here", 2000, { algo: "md5", value: expectedMd5 });
 
 			const result = await collectChanges(makeDeps());
 
@@ -140,7 +167,7 @@ describe("collectChanges — temperature selection", () => {
 			expect(entry?.remote?.hash).toBe("");
 		});
 
-		it("skips enrichment when remote has no contentChecksum", async () => {
+		it("skips enrichment when remote has no checksum", async () => {
 			addFile(localFs, "a.md", "content", 1000);
 			addFile(remoteFs, "a.md", "content", 2000);
 

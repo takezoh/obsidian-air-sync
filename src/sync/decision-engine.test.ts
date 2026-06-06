@@ -12,7 +12,7 @@ import type { MixedEntity, SyncRecord, SyncActionType } from "./types";
  * reach the same boolean via several mechanisms:
  *   - mtime + size comparison       (fast path)
  *   - same-size content edit        (mtime+size match but hash differs)
- *   - backendMeta.contentChecksum   (remote only — Drive md5 / Dropbox content_hash)
+ *   - remoteChecksum                (remote only — Drive md5 / pCloud content hash)
  *   - content hash                  (sha256)
  *   - conservative fallback         (undeterminable → treated as "changed")
  *
@@ -23,7 +23,7 @@ import type { MixedEntity, SyncRecord, SyncActionType } from "./types";
  *
  * Note the predicate asymmetry exercised below: in the "mtime/size differ"
  * branch, hasChanged() falls back to `hash`, but hasRemoteChanged() falls back
- * to `backendMeta.contentChecksum` (not `hash`). Tests are constructed to honour
+ * to `remoteChecksum` (not `hash`). Tests are constructed to honour
  * this so the expectations match the real implementation.
  */
 
@@ -338,17 +338,17 @@ describe("mechanism invariance — the Action is stable regardless of how the pr
 			).toBe("pull");
 		});
 
-		it("via backendMeta.contentChecksum (Drive md5) when mtime drifts", () => {
+		it("via remoteChecksum (Drive md5) when mtime drifts", () => {
 			expect(
 				decide({
 					path: "f.md",
 					local: local(),
 					remote: remote({
 						mtime: 2000,
-						backendMeta: { contentChecksum: "md5-new" },
+						remoteChecksum: { algo: "md5", value: "md5-new" },
 					}),
 					prevSync: baseline({
-						backendMeta: { contentChecksum: "md5-old" },
+						remoteChecksum: { algo: "md5", value: "md5-old" },
 					}),
 				}),
 			).toBe("pull");
@@ -356,7 +356,7 @@ describe("mechanism invariance — the Action is stable regardless of how the pr
 	});
 
 	describe("both predicates false despite noisy metadata ⇒ skip", () => {
-		it("local proven unchanged by hash, remote by contentChecksum, even though mtimes drift", () => {
+		it("local proven unchanged by hash, remote by remoteChecksum, even though mtimes drift", () => {
 			expect(
 				decide({
 					path: "f.md",
@@ -364,10 +364,10 @@ describe("mechanism invariance — the Action is stable regardless of how the pr
 					remote: remote({
 						mtime: 6000,
 						hash: BASE_HASH,
-						backendMeta: { contentChecksum: "md5-x" },
+						remoteChecksum: { algo: "md5", value: "md5-x" },
 					}),
 					prevSync: baseline({
-						backendMeta: { contentChecksum: "md5-x" },
+						remoteChecksum: { algo: "md5", value: "md5-x" },
 					}),
 				}),
 			).toBe(null);
@@ -385,16 +385,16 @@ describe("mechanism invariance — the Action is stable regardless of how the pr
 			).toBe("delete_local");
 		});
 
-		it("local gone, remote changed via contentChecksum → conflict", () => {
+		it("local gone, remote changed via remoteChecksum → conflict", () => {
 			expect(
 				decide({
 					path: "f.md",
 					remote: remote({
 						mtime: 2000,
-						backendMeta: { contentChecksum: "md5-new" },
+						remoteChecksum: { algo: "md5", value: "md5-new" },
 					}),
 					prevSync: baseline({
-						backendMeta: { contentChecksum: "md5-old" },
+						remoteChecksum: { algo: "md5", value: "md5-old" },
 					}),
 				}),
 			).toBe("conflict");

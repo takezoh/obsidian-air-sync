@@ -109,14 +109,14 @@ describe("hasRemoteChanged", () => {
 	});
 
 	it("returns true when mtime differs and md5 differs", () => {
-		const file = makeFile({ mtime: 2000, backendMeta: { contentChecksum: "bbb" } });
-		const record = makeRecord({ remoteMtime: 1000, backendMeta: { contentChecksum: "aaa" } });
+		const file = makeFile({ mtime: 2000, remoteChecksum: { algo: "md5", value: "bbb" } });
+		const record = makeRecord({ remoteMtime: 1000, remoteChecksum: { algo: "md5", value: "aaa" } });
 		expect(hasRemoteChanged(file, record)).toBe(true);
 	});
 
 	it("returns false when mtime differs but md5 matches (Drive mtime jitter)", () => {
-		const file = makeFile({ mtime: 1001, backendMeta: { contentChecksum: "aaa" } });
-		const record = makeRecord({ remoteMtime: 1000, backendMeta: { contentChecksum: "aaa" } });
+		const file = makeFile({ mtime: 1001, remoteChecksum: { algo: "md5", value: "aaa" } });
+		const record = makeRecord({ remoteMtime: 1000, remoteChecksum: { algo: "md5", value: "aaa" } });
 		expect(hasRemoteChanged(file, record)).toBe(false);
 	});
 
@@ -133,14 +133,14 @@ describe("hasRemoteChanged", () => {
 	});
 
 	it("falls back to md5 when mtime is 0 and md5 matches", () => {
-		const file = makeFile({ mtime: 0, hash: "", backendMeta: { contentChecksum: "aaa" } });
-		const record = makeRecord({ remoteMtime: 0, hash: "", backendMeta: { contentChecksum: "aaa" } });
+		const file = makeFile({ mtime: 0, hash: "", remoteChecksum: { algo: "md5", value: "aaa" } });
+		const record = makeRecord({ remoteMtime: 0, hash: "", remoteChecksum: { algo: "md5", value: "aaa" } });
 		expect(hasRemoteChanged(file, record)).toBe(false);
 	});
 
 	it("returns true when mtime is 0 and md5 differs", () => {
-		const file = makeFile({ mtime: 0, hash: "", backendMeta: { contentChecksum: "bbb" } });
-		const record = makeRecord({ remoteMtime: 0, hash: "", backendMeta: { contentChecksum: "aaa" } });
+		const file = makeFile({ mtime: 0, hash: "", remoteChecksum: { algo: "md5", value: "bbb" } });
+		const record = makeRecord({ remoteMtime: 0, hash: "", remoteChecksum: { algo: "md5", value: "aaa" } });
 		expect(hasRemoteChanged(file, record)).toBe(true);
 	});
 
@@ -162,27 +162,27 @@ describe("hasRemoteChanged", () => {
 		expect(hasRemoteChanged(file, record)).toBe(true);
 	});
 
-	it("treats non-string contentChecksum as unavailable (falls through to hash)", () => {
-		const file = makeFile({ mtime: 0, hash: "abc", backendMeta: { contentChecksum: 12345 } });
-		const record = makeRecord({ remoteMtime: 0, hash: "abc", backendMeta: { contentChecksum: null } });
+	it("checksum present on only one side falls through to hash (unchanged)", () => {
+		const file = makeFile({ mtime: 0, hash: "abc", remoteChecksum: { algo: "md5", value: "aaa" } });
+		const record = makeRecord({ remoteMtime: 0, hash: "abc" });
 		expect(hasRemoteChanged(file, record)).toBe(false);
 	});
 
-	it("treats undefined contentChecksum as unavailable", () => {
-		const file = makeFile({ mtime: 0, hash: "different", backendMeta: { contentChecksum: undefined } });
-		const record = makeRecord({ remoteMtime: 0, hash: "abc", backendMeta: { contentChecksum: undefined } });
+	it("checksum present on only one side falls through to hash (changed)", () => {
+		const file = makeFile({ mtime: 0, hash: "different" });
+		const record = makeRecord({ remoteMtime: 0, hash: "abc", remoteChecksum: { algo: "md5", value: "aaa" } });
 		expect(hasRemoteChanged(file, record)).toBe(true);
 	});
 
 	it("mtime differs, md5 present only on file side → conservative changed", () => {
-		const file = makeFile({ mtime: 2000, backendMeta: { contentChecksum: "aaa" } });
+		const file = makeFile({ mtime: 2000, remoteChecksum: { algo: "md5", value: "aaa" } });
 		const record = makeRecord({ remoteMtime: 1000 });
 		expect(hasRemoteChanged(file, record)).toBe(true);
 	});
 
 	it("mtime differs, md5 present only on record side → conservative changed", () => {
 		const file = makeFile({ mtime: 2000 });
-		const record = makeRecord({ remoteMtime: 1000, backendMeta: { contentChecksum: "aaa" } });
+		const record = makeRecord({ remoteMtime: 1000, remoteChecksum: { algo: "md5", value: "aaa" } });
 		expect(hasRemoteChanged(file, record)).toBe(true);
 	});
 });

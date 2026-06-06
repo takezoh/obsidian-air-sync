@@ -395,7 +395,8 @@ describe("driveFileToEntity", () => {
 		expect(entity.size).toBe(100);
 		expect(entity.mtime).toBe(new Date("2024-01-01T00:00:00.000Z").getTime());
 		expect(entity.hash).toBe("");
-		expect(entity.backendMeta?.contentChecksum).toBe("abc");
+		expect(entity.remoteChecksum).toEqual({ algo: "md5", value: "abc" });
+		expect(entity.backendMeta?.driveId).toBe("f1");
 	});
 
 	it("converts folder to entity", () => {

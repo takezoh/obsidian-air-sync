@@ -285,7 +285,7 @@ export class DriveMetadataCache {
 	/**
 	 * Build a FileEntity from cached DriveFile metadata (no download).
 	 * hash is always "" because computing it would require downloading the
-	 * file content. The sync engine uses backendMeta.contentChecksum instead.
+	 * file content. The sync engine uses remoteChecksum instead.
 	 */
 	driveFileToEntity(path: string, driveFile: DriveFile): FileEntity {
 		if (this.folders.has(path)) {
@@ -300,10 +300,10 @@ export class DriveMetadataCache {
 			size: parseInt(driveFile.size || "0", 10),
 			mtime: Number.isNaN(parsedMtime) ? 0 : parsedMtime,
 			hash: "",
-			backendMeta: {
-				driveId: driveFile.id,
-				contentChecksum: driveFile.md5Checksum,
-			},
+			remoteChecksum: driveFile.md5Checksum
+				? { algo: "md5", value: driveFile.md5Checksum }
+				: undefined,
+			backendMeta: { driveId: driveFile.id },
 		};
 	}
 
