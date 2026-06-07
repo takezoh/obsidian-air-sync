@@ -31,7 +31,6 @@ export interface DropboxBackendData {
 	 * no migration.
 	 */
 	remoteVaultFolderId: string;
-	lastKnownVaultName: string;
 	/** Incremental `list_folder` cursor. */
 	cursor: string;
 	accessTokenExpiry: number;
@@ -43,7 +42,6 @@ export interface DropboxBackendData {
 
 const DEFAULT_DROPBOX_DATA: DropboxBackendData = {
 	remoteVaultFolderId: "",
-	lastKnownVaultName: "",
 	cursor: "",
 	accessTokenExpiry: 0,
 	pendingCodeVerifier: "",
@@ -194,11 +192,10 @@ export class DropboxProvider implements IBackendProvider {
 			folderId = vault.id ?? "";
 		}
 		// Already bound: the folder is tracked by its stable id, so a LOCAL vault rename
-		// does NOT rename/move the remote folder. We only refresh lastKnownVaultName so
-		// BackendManager's name-equality short-circuit keeps skipping this call.
+		// does NOT rename/move the remote folder — the existing binding is kept as-is.
 
 		return {
-			backendUpdates: { remoteVaultFolderId: folderId, lastKnownVaultName: vaultName },
+			backendUpdates: { remoteVaultFolderId: folderId },
 		};
 	}
 
@@ -286,7 +283,11 @@ export class DropboxProvider implements IBackendProvider {
 
 	async disconnect(_settings: AirSyncSettings): Promise<Record<string, unknown>> {
 		await this.auth.revokeAuth();
-		clearBackendSecrets(this.secretStore, BACKEND_TYPE, ["access", "refresh"]);
+		this.clearPluginSecrets();
 		return { ...DEFAULT_DROPBOX_DATA };
+	}
+
+	clearPluginSecrets(): void {
+		clearBackendSecrets(this.secretStore, BACKEND_TYPE, ["access", "refresh"]);
 	}
 }

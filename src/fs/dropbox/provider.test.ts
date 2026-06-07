@@ -55,9 +55,8 @@ describe("DropboxProvider.resolveRemoteVault", () => {
 
 		expect(res.backendUpdates).toMatchObject({
 			remoteVaultFolderId: "id:vault",
-			lastKnownVaultName: "v",
 		});
-		// The path is not persisted — only the id + name.
+		// The path is not persisted — only the id.
 		expect(res.backendUpdates).not.toHaveProperty("remoteVaultRootPath");
 		// Only the vault folder is created — no wrapper-root folder call.
 		const createCalls = spy.mock.calls.filter((c) => String((c[0] as RequestUrlParam).url).includes("create_folder_v2"));
@@ -70,15 +69,13 @@ describe("DropboxProvider.resolveRemoteVault", () => {
 		const { provider } = await makeProvider(CONNECTED);
 		const res = await provider.resolveRemoteVault(
 			{} as never,
-			settingsWith({ remoteVaultFolderId: "id:vault", lastKnownVaultName: "old" }),
+			settingsWith({ remoteVaultFolderId: "id:vault" }),
 			"new",
 		);
 
-		// The remote folder is bound by id, so it's kept as-is; only the last-known
-		// name advances so BackendManager's short-circuit resumes.
+		// The remote folder is bound by id, so it's kept as-is on a local vault rename.
 		expect(res.backendUpdates).toMatchObject({
 			remoteVaultFolderId: "id:vault",
-			lastKnownVaultName: "new",
 		});
 		expect(spy).not.toHaveBeenCalled(); // no move_v2 / createFolder
 	});
@@ -216,5 +213,17 @@ describe("DropboxProvider.disconnect", () => {
 		expect(store.getSecret("air-sync-dropbox-refresh-token")).toBe("");
 		expect(store.getSecret("air-sync-dropbox-access-token")).toBe("");
 		expect(data).toMatchObject({ remoteVaultFolderId: "", cursor: "" });
+	});
+});
+
+describe("DropboxProvider.clearPluginSecrets", () => {
+	it("sweeps both token secrets without a network call (used by the backend-switch reset)", async () => {
+		const { provider, store } = await makeProvider(CONNECTED);
+		// switchBackend calls clearPluginSecrets on EVERY registered backend, including
+		// one that was authed but never bound (so disconnect's revoke never ran). Without
+		// this, a leftover Dropbox token would linger under air-sync-dropbox-* keys.
+		provider.clearPluginSecrets();
+		expect(store.getSecret("air-sync-dropbox-refresh-token")).toBe("");
+		expect(store.getSecret("air-sync-dropbox-access-token")).toBe("");
 	});
 });
