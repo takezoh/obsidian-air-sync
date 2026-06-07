@@ -12,7 +12,7 @@ const TOKEN_URL = "https://api.dropboxapi.com/oauth2/token";
 const REVOKE_URL = "https://api.dropboxapi.com/2/auth/token/revoke";
 /** Existing no-secret client-side relay (airsync.takezo.dev/callback → obsidian://). */
 const REDIRECT_URI = "https://airsync.takezo.dev/callback";
-const SCOPES = "files.metadata.read files.content.read files.content.write account_info.read";
+const SCOPES = "files.metadata.read files.content.read files.content.write";
 const BACKEND_TYPE = "dropbox";
 
 /**
