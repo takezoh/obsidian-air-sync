@@ -117,3 +117,41 @@ describe("DropboxAuthProvider.completeAuth", () => {
 		).rejects.toThrow("Missing code");
 	});
 });
+
+describe("DropboxAuthProvider detached auth refresh-token rotation", () => {
+	const CONNECTED = {
+		"air-sync-dropbox-refresh-token": "RT",
+		"air-sync-dropbox-access-token": "AT",
+	};
+
+	it("persists a rotated refresh token from a detached refresh to SecretStorage", async () => {
+		const { auth, store } = await makeProvider(CONNECTED);
+		const detached = auth.createDetachedAuth();
+		detached.setTokens("RT", "AT", 0); // expired → the detached auth must refresh
+
+		// The refresh endpoint rotates the refresh token (returns a NEW one).
+		(await spyRequestUrl()).mockResolvedValue(
+			mockRes({ access_token: "AT2", refresh_token: "RT2", expires_in: 14400 }),
+		);
+
+		const token = await detached.getAccessToken(false);
+
+		expect(token).toBe("AT2");
+		// Rotated token persisted — not discarded with the throwaway instance.
+		expect(store.getSecret("air-sync-dropbox-refresh-token")).toBe("RT2");
+	});
+
+	it("leaves the stored refresh token untouched when the provider does not rotate it", async () => {
+		const { auth, store } = await makeProvider(CONNECTED);
+		const detached = auth.createDetachedAuth();
+		detached.setTokens("RT", "AT", 0);
+
+		(await spyRequestUrl()).mockResolvedValue(
+			mockRes({ access_token: "AT2", expires_in: 14400 }),
+		);
+
+		await detached.getAccessToken(false);
+
+		expect(store.getSecret("air-sync-dropbox-refresh-token")).toBe("RT");
+	});
+});

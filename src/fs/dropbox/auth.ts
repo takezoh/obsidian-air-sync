@@ -170,7 +170,13 @@ export class DropboxAuthProvider implements IAuthProvider {
 	 * so they don't clobber the live sync's in-memory tokens / failure cooldown.
 	 */
 	createDetachedAuth(logger?: Logger): DropboxAuth {
-		return new DropboxAuth(this.clientId, logger ?? this.logger);
+		const auth = new DropboxAuth(this.clientId, logger ?? this.logger);
+		// Persist a rotated refresh token from a detached refresh to SecretStorage —
+		// otherwise it would be discarded with this throwaway instance, leaving the
+		// stored (and shared) token stale so the next real sync's refresh fails. The
+		// shared instance instead persists via the provider's readBackendState.
+		auth.setRefreshTokenRotatedHook((rt) => setBackendSecret(this.secretStore, BACKEND_TYPE, "refresh", rt));
+		return auth;
 	}
 
 	getTokenState(): { refreshToken: string; accessToken: string; accessTokenExpiry: number } | null {
