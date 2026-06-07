@@ -344,6 +344,7 @@ export function mockSettings(
 		enableLogging: false,
 		logLevel: "info",
 		backendData: {},
+		lastSyncedIdentity: "",
 		...overrides,
 	};
 }

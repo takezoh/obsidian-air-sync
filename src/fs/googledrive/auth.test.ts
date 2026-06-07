@@ -279,9 +279,9 @@ describe("GoogleDriveAuthProvider.getOrCreateGoogleAuth", () => {
 		const data = {
 			accessTokenExpiry: 0,
 			remoteVaultFolderId: "folder",
-			lastKnownVaultName: "",
 			changesStartPageToken: "",
 			pendingAuthState: "",
+			pendingFolderPickState: "",
 		};
 
 		const auth = provider.auth.getOrCreateGoogleAuth(data);
@@ -296,9 +296,9 @@ describe("GoogleDriveAuthProvider.getOrCreateGoogleAuth", () => {
 		const data = {
 			accessTokenExpiry: 0,
 			remoteVaultFolderId: "folder",
-			lastKnownVaultName: "",
 			changesStartPageToken: "",
 			pendingAuthState: "",
+			pendingFolderPickState: "",
 		};
 
 		const auth = provider.auth.getOrCreateGoogleAuth(data);

@@ -21,7 +21,7 @@ import { getBackendSecret, setBackendSecret, hasBackendSecret, clearBackendSecre
 
 const BACKEND_TYPE = "dropbox";
 
-/** All data stored in backendData["dropbox"] (tokens live in SecretStorage). */
+/** Dropbox's slice of the active-backend `backendData` bag (tokens live in SecretStorage). */
 export interface DropboxBackendData {
 	/**
 	 * Stable folder id (`id:…`) of the remote vault — the SOLE remote address.
@@ -87,7 +87,7 @@ export class DropboxProvider implements IBackendProvider {
 	}
 
 	private getData(settings: AirSyncSettings): DropboxBackendData {
-		return { ...DEFAULT_DROPBOX_DATA, ...getBackendData<DropboxBackendData>(settings, BACKEND_TYPE) };
+		return { ...DEFAULT_DROPBOX_DATA, ...getBackendData<DropboxBackendData>(settings) };
 	}
 
 	/** Build a token-bearing client from the stored secrets + expiry. */
@@ -145,8 +145,8 @@ export class DropboxProvider implements IBackendProvider {
 	}
 
 	resetTargetState(settings: AirSyncSettings): void {
-		const data = settings.backendData[BACKEND_TYPE];
-		if (data) delete data.cursor;
+		// backendData is the active backend's single bag, so its cursor lives at the top level.
+		delete settings.backendData.cursor;
 	}
 
 	hasCheckpoint(settings: AirSyncSettings): boolean {
@@ -228,7 +228,6 @@ export class DropboxProvider implements IBackendProvider {
 	async completeWebFolderPick(
 		params: Record<string, string | undefined>,
 		settings: AirSyncSettings,
-		vaultName: string,
 		logger?: Logger,
 	): Promise<RemoteVaultResolution> {
 		const data = this.getData(settings);
@@ -261,10 +260,11 @@ export class DropboxProvider implements IBackendProvider {
 			throw new Error("Please select a folder, not a file.");
 		}
 
+		// Bind by id only — the id is the sole remote address and the sync engine
+		// addresses everything by it, so a picked folder needs no name recorded.
 		return {
 			backendUpdates: {
 				remoteVaultFolderId: entry.id ?? id,
-				lastKnownVaultName: vaultName,
 				pendingFolderPickState: "",
 			},
 		};

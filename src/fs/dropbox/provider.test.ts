@@ -16,7 +16,9 @@ async function makeProvider(secrets: Record<string, string> = {}) {
 }
 
 function settingsWith(dropbox: Record<string, unknown> = {}): AirSyncSettings {
-	return { vaultId: "vault-1", backendData: { dropbox } } as unknown as AirSyncSettings;
+	// backendData is the active backend's single flat bag — Dropbox's params live at
+	// the top level, not under a "dropbox" key.
+	return { vaultId: "vault-1", backendData: dropbox } as unknown as AirSyncSettings;
 }
 
 const CONNECTED = { "air-sync-dropbox-refresh-token": "RT", "air-sync-dropbox-access-token": "AT" };
@@ -105,12 +107,10 @@ describe("DropboxProvider.completeWebFolderPick", () => {
 		const res = await provider.completeWebFolderPick(
 			{ id: "vault", name: "MyVault", state: "STATE-1" }, // bare id (no "id:" prefix)
 			settingsWith(PENDING),
-			"LocalVault",
 		);
 
 		expect(res.backendUpdates).toMatchObject({
 			remoteVaultFolderId: "id:vault",
-			lastKnownVaultName: "LocalVault",
 			pendingFolderPickState: "",
 		});
 		// The path is not persisted — only the id is bound.
@@ -124,7 +124,7 @@ describe("DropboxProvider.completeWebFolderPick", () => {
 		const spy = await spyRequestUrl();
 		const { provider } = await makeProvider(CONNECTED);
 		await expect(
-			provider.completeWebFolderPick({ id: "id:x", state: "WRONG" }, settingsWith(PENDING), "V"),
+			provider.completeWebFolderPick({ id: "id:x", state: "WRONG" }, settingsWith(PENDING)),
 		).rejects.toThrow(/State mismatch/);
 		expect(spy).not.toHaveBeenCalled();
 	});
@@ -135,7 +135,7 @@ describe("DropboxProvider.completeWebFolderPick", () => {
 		);
 		const { provider } = await makeProvider(CONNECTED);
 		await expect(
-			provider.completeWebFolderPick({ id: "id:outside", state: "STATE-1" }, settingsWith(PENDING), "V"),
+			provider.completeWebFolderPick({ id: "id:outside", state: "STATE-1" }, settingsWith(PENDING)),
 		).rejects.toThrow(/Apps\/Air Sync/);
 	});
 
@@ -145,7 +145,7 @@ describe("DropboxProvider.completeWebFolderPick", () => {
 		// non-existent scope problem). 500 does not trigger the client's 429 retry.
 		(await spyRequestUrl()).mockResolvedValue(mockRes({ error_summary: "internal_error/.." }, { status: 500 }));
 		const { provider } = await makeProvider(CONNECTED);
-		const call = provider.completeWebFolderPick({ id: "id:x", state: "STATE-1" }, settingsWith(PENDING), "V");
+		const call = provider.completeWebFolderPick({ id: "id:x", state: "STATE-1" }, settingsWith(PENDING));
 		await expect(call).rejects.toThrow(/500|internal_error/);
 		await expect(call).rejects.not.toThrow(/Apps\/Air Sync/);
 	});
@@ -154,14 +154,14 @@ describe("DropboxProvider.completeWebFolderPick", () => {
 		(await spyRequestUrl()).mockResolvedValue(mockRes(dbxFile("f", "/note.md")));
 		const { provider } = await makeProvider(CONNECTED);
 		await expect(
-			provider.completeWebFolderPick({ id: "id:f", state: "STATE-1" }, settingsWith(PENDING), "V"),
+			provider.completeWebFolderPick({ id: "id:f", state: "STATE-1" }, settingsWith(PENDING)),
 		).rejects.toThrow(/select a folder/);
 	});
 
 	it("rejects when no folder id is provided", async () => {
 		const { provider } = await makeProvider(CONNECTED);
 		await expect(
-			provider.completeWebFolderPick({ state: "STATE-1" }, settingsWith(PENDING), "V"),
+			provider.completeWebFolderPick({ state: "STATE-1" }, settingsWith(PENDING)),
 		).rejects.toThrow(/No folder/);
 	});
 });
@@ -205,7 +205,7 @@ describe("DropboxProvider checkpoint state", () => {
 		expect(provider.hasCheckpoint(settingsWith({ cursor: "C" }))).toBe(true);
 		const settings = settingsWith({ cursor: "C" });
 		provider.resetTargetState(settings);
-		expect(settings.backendData.dropbox?.cursor).toBeUndefined();
+		expect(settings.backendData.cursor).toBeUndefined();
 	});
 });
 

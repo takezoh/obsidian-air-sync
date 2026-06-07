@@ -391,9 +391,8 @@ export class SyncOrchestrator {
 		// committed cursor so the next run re-detects the un-synced work.
 		const provider = this.deps.backendProvider();
 		if (provider?.readBackendState && remoteFs) {
-			const current = settings.backendData[provider.type] ?? {};
-			settings.backendData[provider.type] = {
-				...current,
+			settings.backendData = {
+				...settings.backendData,
 				...provider.readBackendState(remoteFs, result.failed.length === 0),
 			};
 		}

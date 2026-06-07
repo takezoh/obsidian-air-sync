@@ -23,8 +23,22 @@ export interface AirSyncSettings {
 	/** Minimum log level to write */
 	logLevel: "debug" | "info" | "warn" | "error";
 
-	/** Backend-specific data, keyed by backend type (e.g. "googledrive") */
-	backendData: Record<string, Record<string, unknown>>;
+	/**
+	 * Parameters of the currently-selected backend ONLY (a single flat bag),
+	 * not a per-type map. Switching backends clears this; an older per-type map
+	 * is normalized on load (see `liftActiveBackendData`). Keeping only the active
+	 * backend's params here means another backend's data can never structurally linger.
+	 */
+	backendData: Record<string, unknown>;
+
+	/**
+	 * Identity (`<type>:<remoteVaultFolderId>`) of the backend the sync-state store
+	 * was last reconciled against. Persisted so a backend/target change made across
+	 * a reload is detected on the next `initBackend` and the stale baselines are
+	 * cleared — the state store is keyed by vaultId alone, so without this the new
+	 * target would reuse the previous one's baselines. `""` until the first sync.
+	 */
+	lastSyncedIdentity: string;
 }
 
 export const DEFAULT_SETTINGS: AirSyncSettings = {
@@ -39,6 +53,7 @@ export const DEFAULT_SETTINGS: AirSyncSettings = {
 	enableLogging: false,
 	logLevel: "info",
 	backendData: {},
+	lastSyncedIdentity: "",
 };
 
 

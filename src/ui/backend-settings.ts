@@ -9,8 +9,10 @@ export interface BackendConnectionActions {
 	completeAuth(code: string): Promise<void>;
 	disconnect(): Promise<void>;
 	refreshDisplay(): void;
-	/** Open the backend's web folder picker (e.g. Dropbox Chooser), if it has one. */
+	/** Open the backend's web folder picker (e.g. the Google Picker or Dropbox Chooser), if it has one. */
 	startFolderPick(): Promise<void>;
+	/** Bind the backend's default remote folder (Google Drive: obsidian-air-sync/<Vault Name>; Dropbox: /<Vault Name>). */
+	bindDefaultFolder(): Promise<void>;
 }
 
 /**

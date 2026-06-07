@@ -53,6 +53,57 @@ describe("GoogleDriveFs folder rename child path rewrite", () => {
 	});
 });
 
+describe("GoogleDriveFs fullScan empty-listing safety", () => {
+	it("proceeds with an empty cache when a genuinely empty root still exists", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const getFile = vi.fn().mockResolvedValue({
+			id: "root", name: "vault", mimeType: "application/vnd.google-apps.folder",
+		});
+		const mockClient = {
+			listAllFiles: vi.fn().mockResolvedValue([]),
+			getChangesStartToken: vi.fn().mockResolvedValue("token1"),
+			getFile,
+		} as never;
+
+		const fs = new GoogleDriveFs(mockClient, "root");
+		const entries = await fs.list();
+
+		expect(entries).toEqual([]);
+		// An empty listing is confirmed against the live folder, not trusted blindly.
+		expect(getFile).toHaveBeenCalledWith("root");
+	});
+
+	it("aborts (throws) instead of reporting an empty remote when the root is gone (404)", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const getFile = vi.fn().mockRejectedValue(Object.assign(new Error("Not Found"), { status: 404 }));
+		const mockClient = {
+			listAllFiles: vi.fn().mockResolvedValue([]),
+			getChangesStartToken: vi.fn().mockResolvedValue("token1"),
+			getFile,
+		} as never;
+
+		const fs = new GoogleDriveFs(mockClient, "root");
+		// A deleted/trashed root must NOT surface as an empty remote — that would make
+		// the cold reconcile mass-delete every local file. The scan throws so sync aborts.
+		await expect(fs.list()).rejects.toThrow(/Not Found/);
+	});
+
+	it("aborts when the root has been moved to Trash (getFile returns trashed:true)", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const getFile = vi.fn().mockResolvedValue({
+			id: "root", name: "vault", mimeType: "application/vnd.google-apps.folder", trashed: true,
+		});
+		const mockClient = {
+			listAllFiles: vi.fn().mockResolvedValue([]),
+			getChangesStartToken: vi.fn().mockResolvedValue("token1"),
+			getFile,
+		} as never;
+
+		const fs = new GoogleDriveFs(mockClient, "root");
+		await expect(fs.list()).rejects.toThrow(/Trash/);
+	});
+});
+
 describe("GoogleDriveFs.ensureFolder file collision", () => {
 	it("throws when a path segment is a file not a folder", async () => {
 		const { GoogleDriveFs } = await import("./index");

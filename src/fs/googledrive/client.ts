@@ -15,7 +15,7 @@ import { ResumableUploader, RESUMABLE_THRESHOLD } from "./resumable-upload";
 
 const DRIVE_API = "https://www.googleapis.com/drive/v3";
 const UPLOAD_API = "https://www.googleapis.com/upload/drive/v3";
-const FILE_FIELDS = "id,name,mimeType,size,modifiedTime,parents,md5Checksum";
+const FILE_FIELDS = "id,name,mimeType,size,modifiedTime,parents,md5Checksum,trashed";
 
 /**
  * Low-level Google Drive REST API v3 client.

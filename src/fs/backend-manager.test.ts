@@ -11,11 +11,14 @@ import { mockSettings } from "../__mocks__/sync-test-helpers";
 vi.mock("./registry", () => ({
 	getBackendProvider: (type: string) => {
 		if (type === "test") return fakeProvider;
+		if (type === "other") return otherProvider;
 		return undefined;
 	},
+	getAllBackendProviders: () => [fakeProvider, otherProvider].filter(Boolean),
 }));
 
 let fakeProvider: IBackendProvider;
+let otherProvider: IBackendProvider;
 let fakeFs: IFileSystem;
 
 function createDeps(
@@ -70,6 +73,17 @@ beforeEach(() => {
 		getIdentity: () => "test:folder-A",
 		resetTargetState: vi.fn(),
 		disconnect: vi.fn().mockResolvedValue({}),
+		clearPluginSecrets: vi.fn(),
+	};
+	otherProvider = {
+		type: "other",
+		displayName: "Other",
+		auth: { isAuthenticated: () => false, startAuth: vi.fn(), completeAuth: vi.fn() },
+		createFs: () => null,
+		isConnected: () => false,
+		getIdentity: () => null,
+		disconnect: vi.fn().mockResolvedValue({}),
+		clearPluginSecrets: vi.fn(),
 	};
 });
 
@@ -132,9 +146,7 @@ describe("BackendManager — identity change triggers onIdentityChanged", () => 
 		fakeProvider.resetTargetState = resetSpy;
 
 		const settings = mockSettings({
-			backendData: {
-				test: { changesStartPageToken: "old-token", other: "keep" },
-			},
+			backendData: { changesStartPageToken: "old-token", other: "keep" },
 		});
 		const deps = createDeps(settings);
 		const mgr = new BackendManager(deps);
@@ -147,11 +159,53 @@ describe("BackendManager — identity change triggers onIdentityChanged", () => 
 		expect(resetSpy).toHaveBeenCalledTimes(1);
 		expect(resetSpy).toHaveBeenCalledWith(settings);
 	});
+
+	it("clears stale baselines on the first init after a cross-reload backend switch", async () => {
+		// A fresh manager == a plugin reload: the in-memory identity is gone, but the
+		// identity the state was last reconciled against survives in settings. So a
+		// custom→built-in switch must still be detected on this first init — otherwise
+		// the new target silently reuses the old backend's baselines (nothing uploads).
+		const resetSpy = vi.fn();
+		fakeProvider.resetTargetState = resetSpy;
+		fakeProvider.getIdentity = () => "test:folder-NEW";
+		const settings = mockSettings({ lastSyncedIdentity: "other:folder-OLD" });
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+
+		await mgr.initBackend(); // first init of this instance
+
+		expect(deps.onIdentityChanged).toHaveBeenCalledTimes(1);
+		expect(resetSpy).toHaveBeenCalledTimes(1);
+		expect(settings.lastSyncedIdentity).toBe("test:folder-NEW");
+	});
+
+	it("persists the synced identity on first init when none was stored", async () => {
+		const settings = mockSettings(); // lastSyncedIdentity == ""
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+
+		await mgr.initBackend();
+
+		expect(deps.onIdentityChanged).not.toHaveBeenCalled();
+		expect(settings.lastSyncedIdentity).toBe("test:folder-A");
+	});
+
+	it("forgets the persisted identity on disconnect", async () => {
+		const settings = mockSettings();
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+
+		await mgr.initBackend();
+		expect(settings.lastSyncedIdentity).toBe("test:folder-A");
+
+		await mgr.disconnectBackend();
+		expect(settings.lastSyncedIdentity).toBe("");
+	});
 });
 
 describe("BackendManager — auth error notification on initBackend", () => {
 	it("notifies user when initBackend fails with AuthError", async () => {
-		fakeProvider.resolveRemoteVault = () => {
+		fakeProvider.createFs = () => {
 			throw new AuthError("Token refresh failed", 400);
 		};
 
@@ -167,7 +221,7 @@ describe("BackendManager — auth error notification on initBackend", () => {
 	});
 
 	it("does not notify for non-auth errors", async () => {
-		fakeProvider.resolveRemoteVault = () => {
+		fakeProvider.createFs = () => {
 			const err = new Error("Network error");
 			(err as Error & { status: number }).status = 503;
 			throw err;
@@ -183,12 +237,123 @@ describe("BackendManager — auth error notification on initBackend", () => {
 	});
 });
 
+describe("BackendManager — switchBackend (hard reset)", () => {
+	it("is a no-op when the new type equals the current", async () => {
+		const clearSpy = vi.fn();
+		fakeProvider.clearPluginSecrets = clearSpy;
+		const settings = mockSettings(); // backendType "test"
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend();
+
+		await mgr.switchBackend("test");
+
+		expect(clearSpy).not.toHaveBeenCalled();
+		expect(settings.backendType).toBe("test");
+	});
+
+	it("wipes backendData, clears identity, and clears sync state", async () => {
+		const onIdentityChanged = vi.fn().mockResolvedValue(undefined);
+		const settings = mockSettings({
+			backendData: { remoteVaultFolderId: "FID", customClientId: "ref" },
+		});
+		const deps = createDeps(settings, { onIdentityChanged });
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend();
+		onIdentityChanged.mockClear();
+
+		await mgr.switchBackend("other");
+
+		expect(settings.backendData).toEqual({});
+		expect(settings.lastSyncedIdentity).toBe("");
+		expect(settings.backendType).toBe("other");
+		expect(onIdentityChanged).toHaveBeenCalledTimes(1);
+	});
+
+	it("sweeps plugin-owned tokens for every registered backend", async () => {
+		const clearSpy = vi.fn();
+		const otherClearSpy = vi.fn();
+		fakeProvider.clearPluginSecrets = clearSpy;
+		otherProvider.clearPluginSecrets = otherClearSpy;
+		const settings = mockSettings();
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend();
+
+		await mgr.switchBackend("other");
+
+		expect(clearSpy).toHaveBeenCalled();
+		expect(otherClearSpy).toHaveBeenCalled();
+	});
+
+	it("best-effort revokes the old backend only when it was connected", async () => {
+		const disconnectSpy = vi.fn().mockResolvedValue({});
+		fakeProvider.disconnect = disconnectSpy;
+		const settings = mockSettings({ backendData: { remoteVaultFolderId: "FID" } });
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend();
+
+		await mgr.switchBackend("other"); // fakeProvider.isConnected → true
+		expect(disconnectSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not revoke the old backend when it was not connected", async () => {
+		const disconnectSpy = vi.fn().mockResolvedValue({});
+		fakeProvider.disconnect = disconnectSpy;
+		fakeProvider.isConnected = () => false;
+		const settings = mockSettings();
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend();
+
+		await mgr.switchBackend("other");
+		expect(disconnectSpy).not.toHaveBeenCalled();
+	});
+
+	it("leaves the new backend disconnected (must reconnect)", async () => {
+		const onDisconnected = vi.fn();
+		const settings = mockSettings();
+		const deps = createDeps(settings, { onDisconnected });
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend();
+
+		await mgr.switchBackend("other"); // otherProvider.isConnected → false
+
+		expect(mgr.getRemoteFs()).toBeNull();
+		expect(onDisconnected).toHaveBeenCalled();
+	});
+
+	it("holds the connecting flag across the reset (gates concurrent syncs)", async () => {
+		// isConnected=false skips the revoke so onIdentityChanged is the first suspension.
+		fakeProvider.isConnected = () => false;
+		let connectingDuringReset = false;
+		let release!: () => void;
+		const blocker = new Promise<void>((r) => { release = r; });
+		const onIdentityChanged = vi.fn().mockImplementation(async () => {
+			connectingDuringReset = mgr.isConnecting();
+			await blocker;
+		});
+		const settings = mockSettings();
+		const deps = createDeps(settings, { onIdentityChanged });
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend();
+
+		const done = mgr.switchBackend("other");
+		await Promise.resolve();
+		expect(connectingDuringReset).toBe(true); // sync gated out during the reset
+		release();
+		await done;
+		expect(mgr.isConnecting()).toBe(false);
+	});
+});
+
 describe("BackendManager — isConnected false with prior connection", () => {
 	it("notifies when isConnected is false but remoteVaultFolderId exists", async () => {
 		fakeProvider.isConnected = () => false;
 
 		const settings = mockSettings({
-			backendData: { test: { remoteVaultFolderId: "folder-123" } },
+			backendData: { remoteVaultFolderId: "folder-123" },
 		});
 		const deps = createDeps(settings);
 		const mgr = new BackendManager(deps);
@@ -227,7 +392,7 @@ describe("BackendManager — web folder pick", () => {
 		await mgr.startBackendFolderPick();
 
 		expect(startSpy).toHaveBeenCalled();
-		expect(settings.backendData.test).toMatchObject({ pendingFolderPickState: "S" });
+		expect(settings.backendData).toMatchObject({ pendingFolderPickState: "S" });
 	});
 
 	it("notifies when the backend has no folder picker", async () => {
@@ -244,13 +409,13 @@ describe("BackendManager — web folder pick", () => {
 
 	it("completeBackendFolderPick binds the result, drops the checkpoint (→ cold sync), and re-inits", async () => {
 		// Seed a committed delta checkpoint from the previous folder.
-		const settings = mockSettings({ backendData: { test: { cursor: "OLD-CURSOR" } } });
+		const settings = mockSettings({ backendData: { changesStartPageToken: "OLD" } });
 		const completeSpy = vi.fn().mockResolvedValue({
 			backendUpdates: { remoteVaultFolderId: "id:new", pendingFolderPickState: "" },
 		});
 		fakeProvider.completeWebFolderPick = completeSpy;
 		// Real reset behaviour: clear the checkpoint so the next sync is a full cold reconcile.
-		fakeProvider.resetTargetState = (s) => { delete (s.backendData.test as Record<string, unknown>).cursor; };
+		fakeProvider.resetTargetState = (s) => { delete s.backendData.changesStartPageToken; };
 		const deps = createDeps(settings);
 		const onConnected = deps.onConnected as ReturnType<typeof vi.fn>;
 		const refreshSettingsDisplay = deps.refreshSettingsDisplay as ReturnType<typeof vi.fn>;
@@ -262,12 +427,12 @@ describe("BackendManager — web folder pick", () => {
 		await mgr.completeBackendFolderPick({ id: "id:new", state: "S" });
 
 		expect(completeSpy).toHaveBeenCalledWith(
-			{ id: "id:new", state: "S" }, settings, "Test Vault", expect.anything(),
+			{ id: "id:new", state: "S" }, settings, expect.anything(),
 		);
-		expect(settings.backendData.test).toMatchObject({ remoteVaultFolderId: "id:new" });
+		expect(settings.backendData).toMatchObject({ remoteVaultFolderId: "id:new" });
 		// Changing folders drops the prior folder's delta cursor and persists it, so
 		// hasCheckpoint() is false and the next sync runs cold (full reconcile).
-		expect(settings.backendData.test?.cursor).toBeUndefined();
+		expect(settings.backendData.changesStartPageToken).toBeUndefined();
 		expect(saveSettings).toHaveBeenCalled();
 		expect(onConnected).toHaveBeenCalled(); // re-init created a fresh FS
 		expect(refreshSettingsDisplay).toHaveBeenCalled();
@@ -294,9 +459,30 @@ describe("BackendManager — web folder pick", () => {
 		expect(mgr.isConnecting()).toBe(false);
 	});
 
+	it("completeBackendFolderPick notifies and drops the pick when a connect/rebind is in flight", async () => {
+		const settings = mockSettings();
+		let release!: () => void;
+		const blocker = new Promise<void>((r) => { release = r; });
+		const completeSpy = vi.fn();
+		fakeProvider.completeWebFolderPick = completeSpy;
+		const deps = createDeps(settings);
+		// Hold initBackend mid-flight on its first-time saveSettings so `connecting`
+		// stays true while we fire the folder pick.
+		vi.mocked(deps.saveSettings).mockImplementation(async () => { await blocker; });
+		const mgr = new BackendManager(deps);
+		const initPromise = mgr.initBackend(); // connecting = true while saveSettings blocks
+
+		await mgr.completeBackendFolderPick({ id: "id:new", state: "S" });
+
+		expect(deps.notify).toHaveBeenCalledWith("Busy connecting — reopen the folder picker in a moment.");
+		expect(completeSpy).not.toHaveBeenCalled();
+		release();
+		await initPromise;
+	});
+
 	it("completeBackendFolderPick notifies and does not re-init on a rejected selection", async () => {
 		const settings = mockSettings();
-		fakeProvider.completeWebFolderPick = vi.fn().mockRejectedValue(new Error("outside app folder"));
+		fakeProvider.completeWebFolderPick = vi.fn().mockRejectedValue(new Error("inaccessible folder"));
 		const deps = createDeps(settings);
 		const notify = deps.notify as ReturnType<typeof vi.fn>;
 		const onConnected = deps.onConnected as ReturnType<typeof vi.fn>;
@@ -306,7 +492,49 @@ describe("BackendManager — web folder pick", () => {
 
 		await mgr.completeBackendFolderPick({ id: "id:bad", state: "S" });
 
-		expect(notify).toHaveBeenCalledWith("Folder selection failed: outside app folder");
+		expect(notify).toHaveBeenCalledWith("Folder selection failed: inaccessible folder");
+		expect(onConnected).not.toHaveBeenCalled();
+	});
+});
+
+describe("BackendManager — bind default remote vault", () => {
+	it("resolves the default folder, drops the checkpoint (→ cold sync), and re-inits", async () => {
+		const settings = mockSettings({ backendData: { changesStartPageToken: "OLD" } });
+		const resolveSpy = vi.fn().mockResolvedValue({
+			backendUpdates: { remoteVaultFolderId: "id:default" },
+		});
+		fakeProvider.resolveRemoteVault = resolveSpy;
+		fakeProvider.resetTargetState = (s) => { delete s.backendData.changesStartPageToken; };
+		const deps = createDeps(settings);
+		const onConnected = deps.onConnected as ReturnType<typeof vi.fn>;
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend();
+		onConnected.mockClear();
+
+		await mgr.bindDefaultRemoteVault();
+
+		expect(resolveSpy).toHaveBeenCalledWith(
+			expect.anything(), settings, "Test Vault", expect.anything(),
+		);
+		expect(settings.backendData).toMatchObject({ remoteVaultFolderId: "id:default" });
+		expect(settings.backendData.changesStartPageToken).toBeUndefined();
+		expect(deps.notify).toHaveBeenCalledWith("Remote folder updated");
+		expect(onConnected).toHaveBeenCalled(); // re-init created a fresh FS
+		expect(deps.refreshSettingsDisplay).toHaveBeenCalled();
+	});
+
+	it("notifies and does not re-init on a failed resolve", async () => {
+		const settings = mockSettings();
+		fakeProvider.resolveRemoteVault = vi.fn().mockRejectedValue(new Error("drive down"));
+		const deps = createDeps(settings);
+		const onConnected = deps.onConnected as ReturnType<typeof vi.fn>;
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend();
+		onConnected.mockClear();
+
+		await mgr.bindDefaultRemoteVault();
+
+		expect(deps.notify).toHaveBeenCalledWith("Folder selection failed: drive down");
 		expect(onConnected).not.toHaveBeenCalled();
 	});
 });
@@ -331,11 +559,12 @@ describe("BackendManager — isConnecting flag", () => {
 			resolve = r;
 		});
 
-		fakeProvider.resolveRemoteVault = async () => {
+		// saveSettings is awaited during initBackend (first-time identity persist), so it
+		// observes the connecting flag mid-flight.
+		vi.mocked(deps.saveSettings).mockImplementation(async () => {
 			connectingDuringInit = mgr.isConnecting();
 			await blocker;
-			return { backendUpdates: {} };
-		};
+		});
 
 		const initPromise = mgr.initBackend();
 
@@ -358,7 +587,7 @@ describe("BackendManager — isConnecting flag", () => {
 	});
 
 	it("returns false after initBackend fails", async () => {
-		fakeProvider.resolveRemoteVault = () => {
+		fakeProvider.createFs = () => {
 			throw new Error("network error");
 		};
 
@@ -381,10 +610,9 @@ describe("BackendManager — isConnecting flag", () => {
 			resolve = r;
 		});
 
-		fakeProvider.resolveRemoteVault = async () => {
+		vi.mocked(deps.saveSettings).mockImplementation(async () => {
 			await blocker;
-			return { backendUpdates: {} };
-		};
+		});
 
 		const first = mgr.initBackend();
 		const second = mgr.initBackend(); // should be ignored
@@ -439,6 +667,19 @@ describe("BackendManager — isConnecting flag", () => {
 		expect(mgr.isConnecting()).toBe(false);
 	});
 
+	it("records the synced identity after a successful connect", async () => {
+		const settings = mockSettings();
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend(); // sets backendProvider
+		settings.lastSyncedIdentity = ""; // pretend not yet recorded
+		fakeProvider.auth.completeAuth = () => Promise.resolve({});
+
+		await mgr.completeBackendConnect("auth-code");
+
+		expect(settings.lastSyncedIdentity).toBe("test:folder-A");
+	});
+
 	it("returns false after completeBackendConnect fails", async () => {
 		const settings = mockSettings();
 		const deps = createDeps(settings);
@@ -465,10 +706,9 @@ describe("BackendManager — isConnecting flag", () => {
 			resolve = r;
 		});
 
-		fakeProvider.resolveRemoteVault = async () => {
-			await blocker;
-			return { backendUpdates: {} };
-		};
+		// Hold initBackend mid-flight on its first-time saveSettings so `connecting`
+		// stays true while completeBackendConnect is attempted.
+		vi.mocked(deps.saveSettings).mockImplementation(async () => { await blocker; });
 
 		const initPromise = mgr.initBackend();
 

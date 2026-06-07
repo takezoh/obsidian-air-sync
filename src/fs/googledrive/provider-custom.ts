@@ -9,7 +9,6 @@ import { GoogleAuthDirect } from "./auth";
 import type { IGoogleAuth } from "./auth";
 import { GoogleDriveAuthProviderBase, GoogleDriveProviderBase } from "./provider-base";
 import type { GoogleDriveBackendData } from "./provider";
-import { clearBackendSecrets } from "../token-store";
 
 /** Backend data for custom OAuth — extends the standard Google Drive data with secret references */
 export interface GoogleDriveCustomBackendData extends GoogleDriveBackendData {
@@ -24,10 +23,10 @@ export interface GoogleDriveCustomBackendData extends GoogleDriveBackendData {
 
 const DEFAULT_GDRIVE_CUSTOM_DATA: GoogleDriveCustomBackendData = {
 	remoteVaultFolderId: "",
-	lastKnownVaultName: "",
 	accessTokenExpiry: 0,
 	changesStartPageToken: "",
 	pendingAuthState: "",
+	pendingFolderPickState: "",
 	customClientId: "",
 	customClientSecret: "",
 	customScope: "",
@@ -38,7 +37,7 @@ const DEFAULT_GDRIVE_CUSTOM_DATA: GoogleDriveCustomBackendData = {
 function getGDriveCustomData(settings: AirSyncSettings): GoogleDriveCustomBackendData {
 	return {
 		...DEFAULT_GDRIVE_CUSTOM_DATA,
-		...getBackendData<GoogleDriveCustomBackendData>(settings, "googledrive-custom"),
+		...getBackendData<GoogleDriveCustomBackendData>(settings),
 	};
 }
 
@@ -107,6 +106,18 @@ export class GoogleDriveCustomAuthProvider extends GoogleDriveAuthProviderBase {
 		return this.googleAuth;
 	}
 
+	createDetachedGoogleAuth(data: GoogleDriveBackendData, logger?: Logger): IGoogleAuth {
+		const customData = data as unknown as GoogleDriveCustomBackendData;
+		return new GoogleAuthDirect({
+			clientId: this.resolveSecret(customData.customClientId),
+			clientSecret: this.resolveSecret(customData.customClientSecret),
+			logger,
+			scope: customData.customScope || undefined,
+			redirectUri: customData.customRedirectUri || undefined,
+			includeGrantedScopes: customData.customIncludeGrantedScopes,
+		});
+	}
+
 	/** Resolve a secret name to its actual value via ISecretStore */
 	private resolveSecret(secretName: string): string {
 		if (!secretName) return "";
@@ -143,7 +154,7 @@ export class GoogleDriveCustomProvider extends GoogleDriveProviderBase {
 
 	async disconnect(settings: AirSyncSettings): Promise<Record<string, unknown>> {
 		await this.auth.revokeAuth();
-		clearBackendSecrets(this.secretStore, this.type, ["refresh", "access"]);
+		this.clearPluginSecrets();
 		const data = getGDriveCustomData(settings);
 		return {
 			...DEFAULT_GDRIVE_CUSTOM_DATA,

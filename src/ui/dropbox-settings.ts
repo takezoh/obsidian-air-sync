@@ -5,11 +5,12 @@ import type {
 	BackendConnectionActions,
 	IBackendSettingsRenderer,
 } from "./backend-settings";
+import type { DropboxBackendData } from "../fs/dropbox/provider";
 import { getBackendProvider } from "../fs/registry";
 
 /**
- * Renders Dropbox-specific settings UI: connection status and the in-plugin
- * PKCE OAuth flow.
+ * Renders Dropbox-specific settings UI: connection status, the in-plugin PKCE
+ * OAuth flow, and remote-folder selection.
  *
  * Note: the Dropbox app uses App folder scope, so access is confined to
  * `/Apps/<App>/<vault>` — Air Sync cannot see the rest of the user's Dropbox.
@@ -22,22 +23,24 @@ export class DropboxSettingsRenderer implements IBackendSettingsRenderer {
 		settings: AirSyncSettings,
 		_onSave: (updates: Record<string, unknown>) => Promise<void>,
 		actions: BackendConnectionActions,
-		_app: App,
+		app: App,
 	): void {
 		const provider = getBackendProvider("dropbox");
-		const isConnected = provider?.isConnected(settings) ?? false;
+		// Gate on auth alone (not isConnected): after auth but before a folder is bound,
+		// the user still needs the connected UI to choose a remote folder.
+		const authed = provider?.auth.isAuthenticated(settings.backendData ?? {}) ?? false;
 
-		const statusDesc = isConnected ? "● Connected" : "● Not connected";
-		const statusClass = isConnected ? "air-sync-status-connected" : "air-sync-status-disconnected";
+		const statusDesc = authed ? "● Connected" : "● Not connected";
+		const statusClass = authed ? "air-sync-status-connected" : "air-sync-status-disconnected";
 		const statusSetting = new Setting(containerEl)
 			.setName("Connection status")
 			.setDesc(statusDesc);
 		statusSetting.settingEl.addClass(statusClass);
 		statusSetting.addButton((button) =>
 			button
-				.setButtonText(isConnected ? "Disconnect" : "Connect to Dropbox")
+				.setButtonText(authed ? "Disconnect" : "Connect to Dropbox")
 				.onClick(async () => {
-					if (isConnected) {
+					if (authed) {
 						await actions.disconnect();
 					} else {
 						await actions.startAuth();
@@ -46,15 +49,19 @@ export class DropboxSettingsRenderer implements IBackendSettingsRenderer {
 				}),
 		);
 
-		// Remote vault folder (read-only). The path is NOT stored — resolve it live
-		// from the folder id so it reflects the folder's current location.
-		if (isConnected) {
+		if (!authed) return;
+
+		const data = (settings.backendData ?? {}) as Partial<DropboxBackendData>;
+		const folderSetting = new Setting(containerEl).setName("Remote vault folder");
+
+		if (data.remoteVaultFolderId) {
+			// Bound: show the folder path (resolved live from its id, never stored) + a
+			// button to pick a different one. A slow/failed lookup just leaves a placeholder.
+			folderSetting.setDesc(
+				"The folder this vault syncs into, inside the app folder. Use the button to pick a different folder.",
+			);
 			let pathField: TextComponent | undefined;
-			new Setting(containerEl)
-				.setName("Remote vault folder")
-				.setDesc(
-					"The folder this vault syncs into, inside the app folder. Use the button to pick a different folder.",
-				)
+			folderSetting
 				.addText((text) => {
 					pathField = text.setValue("Resolving…").setDisabled(true);
 				})
@@ -65,9 +72,32 @@ export class DropboxSettingsRenderer implements IBackendSettingsRenderer {
 							await actions.startFolderPick();
 						}),
 				);
-			provider?.getRemoteVaultDisplayPath?.(settings)
+			void provider?.getRemoteVaultDisplayPath?.(settings)
 				.then((path) => pathField?.setValue(path ?? "(folder unavailable)"))
 				.catch(() => pathField?.setValue("(couldn't resolve path)"));
+		} else {
+			// Not bound yet: use the default folder (/<Vault Name> under the app folder),
+			// or pick an existing one. Binding only happens on an explicit choice here.
+			const defaultPath = `/${app.vault.getName()}`;
+			folderSetting.setDesc(
+				"Choose where this vault syncs: use the default folder, or pick an existing one inside the app folder.",
+			);
+			folderSetting
+				.addButton((button) =>
+					button
+						.setButtonText(defaultPath)
+						.setCta()
+						.onClick(async () => {
+							await actions.bindDefaultFolder();
+						}),
+				)
+				.addButton((button) =>
+					button
+						.setButtonText("Choose folder")
+						.onClick(async () => {
+							await actions.startFolderPick();
+						}),
+				);
 		}
 	}
 }

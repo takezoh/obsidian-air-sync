@@ -59,9 +59,10 @@ export interface IBackendProvider {
 	readBackendState?(fs: IFileSystem, commitCheckpoint: boolean): Record<string, unknown>;
 
 	/**
-	 * Discover or create the remote vault for the given vault name.
-	 * Called by BackendManager after auth, before createFs().
-	 * Returns backend-specific data to persist in settings.backendData.
+	 * Find or create this vault's default remote folder for the given vault name.
+	 * Invoked explicitly when the user binds the default folder (BackendManager
+	 * .bindDefaultRemoteVault) — NOT automatically on connect. Returns backend-specific
+	 * data to persist in settings.backendData.
 	 */
 	resolveRemoteVault?(
 		app: App,
@@ -71,7 +72,8 @@ export interface IBackendProvider {
 	): Promise<RemoteVaultResolution>;
 
 	/**
-	 * Open a web-hosted folder picker (e.g. the Dropbox Chooser on the OAuth relay)
+	 * Open a web-hosted folder picker (e.g. the Google Picker or Dropbox Chooser
+	 * on the OAuth relay)
 	 * in the browser. The selection returns asynchronously via an `obsidian://`
 	 * deep link and is bound by {@link completeWebFolderPick}. Returns backendData
 	 * to persist (e.g. a CSRF nonce). Optional: only backends with a web picker
@@ -88,7 +90,6 @@ export interface IBackendProvider {
 	completeWebFolderPick?(
 		params: Record<string, string | undefined>,
 		settings: AirSyncSettings,
-		vaultName: string,
 		logger?: Logger,
 	): Promise<RemoteVaultResolution>;
 
@@ -104,12 +105,19 @@ export interface IBackendProvider {
 	 * Returns the reset backendData to persist.
 	 */
 	disconnect(settings: AirSyncSettings): Promise<Record<string, unknown>>;
+
+	/**
+	 * Clear this backend's plugin-owned secrets (its `air-sync-<type>-*-token`
+	 * keys) from SecretStorage, without any network call or settings mutation.
+	 * Used by the backend-switch hard reset to sweep leftover tokens for every
+	 * registered backend — `ISecretStore` cannot be enumerated, so each backend
+	 * declares its own clear. New backends with plugin-owned secrets must implement
+	 * this; backends with none may omit it.
+	 */
+	clearPluginSecrets?(): void;
 }
 
-/** Type-safe helper to retrieve backend-specific data from settings */
-export function getBackendData<T>(
-	settings: AirSyncSettings,
-	type: string
-): T | undefined {
-	return settings.backendData[type] as T | undefined;
+/** Retrieve the active backend's parameters (the single flat bag) from settings. */
+export function getBackendData<T>(settings: AirSyncSettings): T | undefined {
+	return settings.backendData as T | undefined;
 }

@@ -88,6 +88,19 @@ export class GoogleDriveFs implements IFileSystem {
 		this._changesPageToken = await this.client.getChangesStartToken();
 
 		const allFiles = await this.client.listAllFiles(this.rootFolderId);
+		// A deleted/trashed remote root lists as empty (HTTP 200, not 404) — the same
+		// shape as a genuinely empty folder. Trusting that blindly would make the cold
+		// reconcile read "every synced file was remotely deleted" and plan a mass
+		// delete_local (the volume-based abort guard was removed). Before accepting an
+		// empty listing, confirm the root is still live: getFile throws (404) if it was
+		// permanently deleted, and trashed===true means it was moved to Trash. Either way
+		// abort this sync rather than nuking the local vault.
+		if (allFiles.length === 0) {
+			const root = await this.client.getFile(this.rootFolderId);
+			if (root.trashed) {
+				throw new Error(`Remote vault folder is in Trash (id: ${this.rootFolderId})`);
+			}
+		}
 		this.cache.buildFromFiles(allFiles);
 
 		this.initialized = true;
