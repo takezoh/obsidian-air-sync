@@ -48,14 +48,6 @@ The defaults work for most people — you rarely need to change these.
 
 ## Advanced
 
-### Custom OAuth
-
-By default, Air Sync uses the `drive.file` scope, which only allows access to files the plugin itself created. With custom OAuth, you can use your own Google Cloud OAuth client and manage authorization independently.
-
-The authorization code exchange is protected by PKCE — the code cannot be used without the verifier held only by the plugin.
-
-> **Note**: Tokens are stored in Obsidian's secret storage, which is accessible to other plugins. The built-in OAuth limits exposure with the `drive.file` scope. Custom OAuth may increase risk depending on the scope you configure.
-
 ### Conflict resolution strategies
 
 | Strategy | Behavior |
@@ -98,6 +90,14 @@ Example:
 - **Authentication completes but sync doesn't start**: Restart the plugin (disable → enable in Community plugins settings), then try syncing manually.
 - **Token error after successful authorization**: Check that the device has a stable network connection — token exchange requires connectivity immediately after authorization.
 - **The browser callback didn't return to Obsidian**: Try disconnecting and reconnecting from the plugin settings.
+
+## Custom OAuth
+
+By default, Air Sync uses the `drive.file` scope, which only allows access to files the plugin itself created. With custom OAuth, you can use your own Google Cloud OAuth client and manage authorization independently.
+
+The authorization code exchange is protected by PKCE — the code cannot be used without the verifier held only by the plugin.
+
+> **Note**: Tokens are stored in Obsidian's secret storage, which is accessible to other plugins. The built-in OAuth limits exposure with the `drive.file` scope. Custom OAuth may increase risk depending on the scope you configure.
 
 ## Privacy & network use
 
