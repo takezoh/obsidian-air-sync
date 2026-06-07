@@ -340,6 +340,16 @@ export class DriveMetadataCache {
 			return;
 		}
 
+		// A different entry already occupies this path with no preceding `deleted`
+		// tombstone (the provider didn't emit the delete first, or batched them out
+		// of order). Evict it — and, if it was a folder, its whole cached subtree —
+		// so stale descendants don't linger as phantom paths, and idToPath doesn't
+		// keep pointing the displaced id at this path.
+		const occupant = this.pathToFile.get(path);
+		if (occupant && occupant.id !== file.id) {
+			this.removeTree(path);
+		}
+
 		// Remove old mapping if ID was at a different path (rename/move)
 		if (oldPath && oldPath !== path) {
 			const wasFolder = this.folders.has(oldPath);
