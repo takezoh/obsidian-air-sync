@@ -59,9 +59,10 @@ export interface IBackendProvider {
 	readBackendState?(fs: IFileSystem, commitCheckpoint: boolean): Record<string, unknown>;
 
 	/**
-	 * Discover or create the remote vault for the given vault name.
-	 * Called by BackendManager after auth, before createFs().
-	 * Returns backend-specific data to persist in settings.backendData.
+	 * Find or create this vault's default remote folder for the given vault name.
+	 * Invoked explicitly when the user binds the default folder (BackendManager
+	 * .bindDefaultRemoteVault) — NOT automatically on connect. Returns backend-specific
+	 * data to persist in settings.backendData.
 	 */
 	resolveRemoteVault?(
 		app: App,
@@ -69,6 +70,34 @@ export interface IBackendProvider {
 		vaultName: string,
 		logger?: Logger,
 	): Promise<RemoteVaultResolution>;
+
+	/**
+	 * Open a web-hosted folder picker (e.g. the Google Picker on the OAuth relay)
+	 * in the browser. The selection returns asynchronously via an `obsidian://`
+	 * deep link and is bound by {@link completeWebFolderPick}. Returns backendData
+	 * to persist (e.g. a CSRF nonce). Optional: only backends with a web picker
+	 * implement it.
+	 */
+	startWebFolderPick?(settings: AirSyncSettings): Promise<Record<string, unknown>>;
+
+	/**
+	 * Bind the vault to the folder selected by {@link startWebFolderPick}, given the
+	 * deep-link params. Validates the selection (CSRF state, reachability with the
+	 * current token) and returns the backend data to persist. Throws on an invalid
+	 * or inaccessible selection.
+	 */
+	completeWebFolderPick?(
+		params: Record<string, string | undefined>,
+		settings: AirSyncSettings,
+		logger?: Logger,
+	): Promise<RemoteVaultResolution>;
+
+	/**
+	 * Resolve the bound remote vault's current path for display, from its stored id
+	 * (the path itself is not persisted). Optional: backends that don't address by
+	 * id, or that display the id directly, omit it. May make a network call.
+	 */
+	getRemoteVaultDisplayPath?(settings: AirSyncSettings, logger?: Logger): Promise<string | null>;
 
 	/**
 	 * Disconnect the backend: revoke auth and reset all backend state.

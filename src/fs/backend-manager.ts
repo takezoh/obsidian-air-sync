@@ -88,11 +88,6 @@ export class BackendManager {
 				return;
 			}
 
-			// Remote vault resolution
-			if (provider.resolveRemoteVault) {
-				await this.resolveRemoteVault(provider, settings);
-			}
-
 			this.remoteFs = provider.createFs(this.deps.getApp(), settings, this.deps.getLogger());
 			if (this.remoteFs) {
 				this.deps.onConnected(this.remoteFs);
@@ -109,25 +104,119 @@ export class BackendManager {
 		}
 	}
 
-	private async resolveRemoteVault(
-		provider: IBackendProvider,
-		settings: AirSyncSettings,
-	): Promise<void> {
-		const vaultName = this.deps.getVaultName();
-		const backendData = settings.backendData;
-		const cachedFolderId = backendData.remoteVaultFolderId as string | undefined;
-		const lastKnownName = backendData.lastKnownVaultName as string | undefined;
-
-		// Skip network call if already linked and name unchanged
-		if (cachedFolderId && lastKnownName === vaultName) {
+	/**
+	 * Bind this vault to its default remote folder (obsidian-air-sync/<Vault Name>),
+	 * creating it or migrating a legacy folder as needed, then re-init against it.
+	 * The counterpart to {@link completeBackendFolderPick} for the "use default folder"
+	 * button — same connecting-guard / reset / re-init shape.
+	 */
+	async bindDefaultRemoteVault(): Promise<void> {
+		if (this.connecting) {
+			this.deps.notify("Busy connecting — try again in a moment.");
+			return;
+		}
+		const settings = this.deps.getSettings();
+		const provider = this.backendProvider ?? getBackendProvider(settings.backendType) ?? null;
+		this.backendProvider = provider;
+		if (!provider?.resolveRemoteVault) {
+			this.deps.notify("This backend has no default folder.");
 			return;
 		}
 
-		const result = await provider.resolveRemoteVault!(
-			this.deps.getApp(), settings, vaultName, this.deps.getLogger()
-		);
-		settings.backendData = { ...settings.backendData, ...result.backendUpdates };
-		await this.deps.saveSettings();
+		// Hold `connecting` across the bind so a scheduled sync can't start mid-rebind.
+		this.connecting = true;
+		try {
+			const result = await provider.resolveRemoteVault(
+				this.deps.getApp(), settings, this.deps.getVaultName(), this.deps.getLogger(),
+			);
+			settings.backendData = { ...settings.backendData, ...result.backendUpdates };
+			// New target → drop the previous folder's delta cursor, persisted now so a
+			// reload before the next sync can't load a stale cursor against the new folder.
+			provider.resetTargetState?.(settings);
+			await this.deps.saveSettings();
+			this.deps.notify("Remote folder updated");
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			this.deps.getLogger().error("Failed to bind default folder", { message: msg });
+			this.deps.notify(`Folder selection failed: ${msg}`);
+			return;
+		} finally {
+			this.connecting = false;
+		}
+		// Re-init detects the new identity, clears sync state, and builds an FS.
+		await this.initBackend();
+		this.deps.refreshSettingsDisplay();
+	}
+
+	/**
+	 * Open the backend's web folder picker (e.g. the Google Picker). The selection
+	 * returns asynchronously via a deep link → {@link completeBackendFolderPick}.
+	 */
+	async startBackendFolderPick(): Promise<void> {
+		const settings = this.deps.getSettings();
+		const provider = this.backendProvider ?? getBackendProvider(settings.backendType) ?? null;
+		this.backendProvider = provider;
+		if (!provider?.startWebFolderPick) {
+			this.deps.notify("This backend has no folder picker.");
+			return;
+		}
+		try {
+			const updates = await provider.startWebFolderPick(settings);
+			// Re-read settings.backendData AFTER the await (a concurrent sync may have
+			// persisted an advanced delta cursor during startWebFolderPick's token fetch);
+			// a pre-await snapshot would clobber it. Matches completeBackendFolderPick.
+			settings.backendData = { ...settings.backendData, ...updates };
+			await this.deps.saveSettings();
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			this.deps.getLogger().error("Failed to start folder pick", { message: msg });
+			this.deps.notify(`Folder picker failed: ${msg}`);
+		}
+	}
+
+	/** Bind the folder selected via the web picker, then re-init against the new target. */
+	async completeBackendFolderPick(params: Record<string, string | undefined>): Promise<void> {
+		// The deep link is fire-and-forget; if a connect/rebind is in flight, surface
+		// that the selection was dropped so the user knows to retry (silent loss reads
+		// as "it worked"). pendingFolderPickState stays set, so a retry still validates.
+		if (this.connecting) {
+			this.deps.notify("Busy connecting — reopen the folder picker in a moment.");
+			return;
+		}
+		const settings = this.deps.getSettings();
+		const provider = this.backendProvider ?? getBackendProvider(settings.backendType) ?? null;
+		this.backendProvider = provider;
+		if (!provider?.completeWebFolderPick) {
+			this.deps.notify("This backend has no folder picker.");
+			return;
+		}
+
+		// Hold `connecting` across the bind so a scheduled sync can't start against the
+		// old target mid-rebind (the orchestrator gates on isConnecting()).
+		this.connecting = true;
+		try {
+			const result = await provider.completeWebFolderPick(
+				params, settings, this.deps.getLogger(),
+			);
+			settings.backendData = { ...settings.backendData, ...result.backendUpdates };
+			// New target → drop the previous folder's delta cursor, and persist it now
+			// (not just in-memory) so a reload before the next sync can't load a stale
+			// cursor against the newly-bound folder.
+			provider.resetTargetState?.(settings);
+			await this.deps.saveSettings();
+			this.deps.notify("Remote folder updated");
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			this.deps.getLogger().error("Failed to bind picked folder", { message: msg });
+			this.deps.notify(`Folder selection failed: ${msg}`);
+			return;
+		} finally {
+			this.connecting = false;
+		}
+		// Re-init detects the new identity, clears sync state, and builds an FS
+		// against the chosen folder.
+		await this.initBackend();
+		this.deps.refreshSettingsDisplay();
 	}
 
 	/** Start the backend's auth/connection flow */
@@ -173,11 +262,9 @@ export class BackendManager {
 			settings.backendData = { ...backendData, ...updates };
 			await this.deps.saveSettings();
 
-			// Resolve remote vault before creating FS
-			if (this.backendProvider.resolveRemoteVault) {
-				await this.resolveRemoteVault(this.backendProvider, settings);
-			}
-
+			// No remote-vault binding here: after auth the user picks the folder
+			// explicitly (default-folder button or the Picker). createFs returns null
+			// until a folder is bound, so the settings UI shows the folder-choice state.
 			this.remoteFs = this.backendProvider.createFs(
 				this.deps.getApp(),
 				settings,

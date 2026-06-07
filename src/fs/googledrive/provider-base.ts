@@ -12,6 +12,9 @@ import { DriveClient } from "./client";
 import { GoogleDriveFs } from "./index";
 import { MetadataStore } from "../../store/metadata-store";
 import { resolveGDriveRemoteVault } from "./remote-vault";
+import { resolveFolderPath } from "./folder-path";
+import { isHttpError } from "./incremental-sync";
+import { FOLDER_MIME } from "./types";
 import type { DriveFile } from "./types";
 import type { GoogleDriveBackendData } from "./provider";
 import { setBackendSecret, getBackendSecret, hasBackendSecret, clearBackendSecrets } from "../token-store";
@@ -37,6 +40,29 @@ function storeDriveTokens(store: ISecretStore, type: string, tokens: DriveTokens
 
 /** Plugin-owned secret names every Drive backend stores under air-sync-<type>-<name>-token. */
 const DRIVE_SECRET_NAMES = ["refresh", "access"];
+
+/**
+ * Web page (on the OAuth relay domain) that hosts the Google Picker. The plugin opens
+ * it in the browser (it can't load the remote Picker SDK inside Obsidian); the page
+ * bounces the selection back to `obsidian://air-sync-folder?id=…&name=…&state=…` (a
+ * backend-agnostic scheme, not the auth one), mirroring the auth relay. The plugin's
+ * current access token is passed in the URL fragment so the Picker can render the
+ * user's Drive — the fragment never reaches the relay host.
+ */
+const FOLDER_PICKER_URL = "https://airsync.takezo.dev/googledrive-folder";
+
+/** Random hex nonce for the folder-pick CSRF `state`. */
+function randomState(): string {
+	const arr = new Uint8Array(24);
+	crypto.getRandomValues(arr);
+	let out = "";
+	for (const b of arr) out += b.toString(16).padStart(2, "0");
+	return out;
+}
+
+/** A Drive file id is a URL-safe base64 token; reject anything else so a crafted
+ *  deep link can't inject path/query segments into the getFile URL. */
+const DRIVE_ID_RE = /^[A-Za-z0-9_-]+$/;
 
 /**
  * Parse auth callback input (URL from auth server containing tokens or code).
@@ -176,6 +202,12 @@ export abstract class GoogleDriveAuthProviderBase implements IAuthProvider {
 
 	/** Get or create a GoogleAuth instance for FS creation. */
 	abstract getOrCreateGoogleAuth(data: GoogleDriveBackendData, logger: Logger | undefined): IGoogleAuth;
+
+	/**
+	 * Create a fresh, UNSHARED auth instance for one-off reads (settings folder-path
+	 * display, folder pick) that must not reset the live sync's shared in-memory tokens.
+	 */
+	abstract createDetachedGoogleAuth(data: GoogleDriveBackendData, logger: Logger | undefined): IGoogleAuth;
 }
 
 /**
@@ -192,14 +224,33 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 		this.secretStore = secretStore;
 	}
 
+	/** Build a token-bearing DriveClient on the given auth, seeded from stored secrets. */
+	private clientFor(googleAuth: IGoogleAuth, data: GoogleDriveBackendData, logger?: Logger): DriveClient {
+		const tokens = readDriveTokens(this.secretStore, this.type);
+		googleAuth.setTokens(tokens.refreshToken, tokens.accessToken, data.accessTokenExpiry);
+		return new DriveClient((force) => googleAuth.getAccessToken(force), logger);
+	}
+
+	/** A client on the SHARED auth (persists refreshes). Safe during init/rebind, which
+	 *  BackendManager gates with `connecting` so no sync runs concurrently. */
+	protected makeClient(settings: AirSyncSettings, logger?: Logger): DriveClient {
+		const data = this.getData(settings);
+		return this.clientFor(this.auth.getOrCreateGoogleAuth(data, logger), data, logger);
+	}
+
+	/** A client on a FRESH, unshared auth — for one-off settings reads that must not
+	 *  reset the live sync's in-memory tokens. */
+	protected makeDetachedClient(settings: AirSyncSettings, logger?: Logger): DriveClient {
+		const data = this.getData(settings);
+		return this.clientFor(this.auth.createDetachedGoogleAuth(data, logger), data, logger);
+	}
+
 	createFs(app: App, settings: AirSyncSettings, logger?: Logger): IFileSystem | null {
 		const data = this.getData(settings);
 		const tokens = readDriveTokens(this.secretStore, this.type);
 		if (!tokens.refreshToken || !data.remoteVaultFolderId) return null;
 
-		const googleAuth = this.auth.getOrCreateGoogleAuth(data, logger);
-		googleAuth.setTokens(tokens.refreshToken, tokens.accessToken, data.accessTokenExpiry);
-		const client = new DriveClient((force) => googleAuth.getAccessToken(force), logger);
+		const client = this.makeClient(settings, logger);
 		const metadataStore = new MetadataStore<DriveFile>(`${settings.vaultId}-${data.remoteVaultFolderId}`, {
 			dbNamePrefix: "air-sync-drive",
 			version: 1,
@@ -251,6 +302,12 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 		return result;
 	}
 
+	/**
+	 * Find or create this vault's default remote folder (obsidian-air-sync/<Vault Name>),
+	 * migrating a legacy obsidian-air-sync/<uuid>/.airsync/metadata.json vault if one
+	 * matches. Invoked explicitly when the user binds the default folder — not
+	 * automatically on connect.
+	 */
 	async resolveRemoteVault(
 		app: App,
 		settings: AirSyncSettings,
@@ -258,12 +315,111 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 		logger?: Logger,
 	): Promise<RemoteVaultResolution> {
 		const data = this.getData(settings);
-		const tokens = readDriveTokens(this.secretStore, this.type);
-		const googleAuth = this.auth.getOrCreateGoogleAuth(data, logger);
-		googleAuth.setTokens(tokens.refreshToken, tokens.accessToken, data.accessTokenExpiry);
-		const client = new DriveClient((force) => googleAuth.getAccessToken(force), logger);
+		const client = this.makeClient(settings, logger);
 		const cachedFolderId = data.remoteVaultFolderId || undefined;
 		return resolveGDriveRemoteVault(client, vaultName, cachedFolderId, logger);
+	}
+
+	/**
+	 * Open the Google Picker (hosted on the relay domain) in the browser. The current
+	 * access token is passed in the URL fragment (never the query) so the Picker can
+	 * render the user's Drive without a second sign-in; the selection returns via
+	 * `obsidian://air-sync-folder` and is bound by {@link completeWebFolderPick}.
+	 * Returns the CSRF state to persist.
+	 */
+	async startWebFolderPick(settings: AirSyncSettings): Promise<Record<string, unknown>> {
+		// Auth-only gate (not isConnected): the picker needs a token, but it is also how
+		// a folder gets bound in the first place, so it must be openable before any
+		// remoteVaultFolderId exists.
+		if (!this.auth.isAuthenticated(settings.backendData ?? {})) {
+			throw new Error("Connect to Google Drive first.");
+		}
+		// Fetch the token on a DETACHED auth so a refresh for the picker doesn't reset
+		// the live sync's shared in-memory tokens.
+		const data = this.getData(settings);
+		const auth = this.auth.createDetachedGoogleAuth(data, undefined);
+		const tokens = readDriveTokens(this.secretStore, this.type);
+		auth.setTokens(tokens.refreshToken, tokens.accessToken, data.accessTokenExpiry);
+		const token = await auth.getAccessToken(false);
+
+		const state = randomState();
+		const url = `${FOLDER_PICKER_URL}?state=${encodeURIComponent(state)}#token=${encodeURIComponent(token)}`;
+		if (Platform.isMobile) {
+			window.location.href = url;
+		} else {
+			window.open(url);
+		}
+		return { pendingFolderPickState: state };
+	}
+
+	/**
+	 * Bind the vault to a folder picked via the Google Picker. Validates the CSRF
+	 * state, then confirms the chosen id is a folder reachable under the current scope
+	 * with `getFile`. Under `drive.file`, the Picker selection is what grants the app
+	 * access — so a successful `getFile` is the proof the grant landed; a 404 means the
+	 * grant didn't apply (re-pick), while auth/rate-limit/server errors surface as-is.
+	 */
+	async completeWebFolderPick(
+		params: Record<string, string | undefined>,
+		settings: AirSyncSettings,
+		logger?: Logger,
+	): Promise<RemoteVaultResolution> {
+		const data = this.getData(settings);
+		const expectedState = data.pendingFolderPickState;
+		if (!expectedState || params.state !== expectedState) {
+			throw new Error("State mismatch - possible CSRF attack");
+		}
+		const id = params.id?.trim();
+		if (!id) throw new Error("No folder was selected.");
+		if (!DRIVE_ID_RE.test(id)) throw new Error("Invalid folder id.");
+
+		// Detached client (like the other picker reads) so validating the selection
+		// can't reset a concurrently-running sync's in-memory tokens.
+		const client = this.makeDetachedClient(settings, logger);
+		let file: DriveFile;
+		try {
+			file = await client.getFile(id);
+		} catch (err) {
+			// A picked folder whose grant didn't land is unreadable: drive.file usually
+			// answers 404 (the app can't see it at all), but 403 (permission denied) is
+			// possible for some selections (e.g. shared drives). Both mean "re-pick";
+			// anything else (auth/rate-limit/server) surfaces as-is.
+			if (isHttpError(err, 404) || isHttpError(err, 403)) {
+				logger?.warn("Picked Drive folder is not accessible under the granted scope", { id });
+				throw new Error(
+					"That folder isn't accessible to Air Sync. Re-pick it in the Google Picker so access is granted.",
+				);
+			}
+			throw err;
+		}
+		if (file.mimeType !== FOLDER_MIME) {
+			throw new Error("Please select a folder, not a file.");
+		}
+
+		// Bind by id only — the id is the sole binding and the sync engine addresses
+		// everything by it, so a picked folder needs no name/metadata recorded.
+		return {
+			backendUpdates: {
+				remoteVaultFolderId: file.id,
+				pendingFolderPickState: "",
+			},
+		};
+	}
+
+	/**
+	 * Resolve the bound folder's current path from its id, for display in settings.
+	 * Nothing is stored — this reflects the folder's live location (so a remote
+	 * rename/move shows up). Walks the parent chain up to My Drive; under the
+	 * built-in `drive.file` scope ungranted ancestors are unreadable, so the path
+	 * may be truncated with a leading "…/" (see resolveFolderPath). Returns null
+	 * if not bound.
+	 */
+	async getRemoteVaultDisplayPath(settings: AirSyncSettings, logger?: Logger): Promise<string | null> {
+		const data = this.getData(settings);
+		if (!data.remoteVaultFolderId) return null;
+		// Detached client so this UI read can't reset the live sync's shared tokens.
+		const client = this.makeDetachedClient(settings, logger);
+		return resolveFolderPath(client, data.remoteVaultFolderId, logger);
 	}
 
 	async disconnect(_settings: AirSyncSettings): Promise<Record<string, unknown>> {

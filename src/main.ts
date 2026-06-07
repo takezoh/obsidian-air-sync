@@ -138,6 +138,13 @@ export default class AirSyncPlugin extends Plugin {
 			void this.backendManager.completeBackendConnect(url.toString());
 		});
 
+		// Web folder-picker result via obsidian://air-sync-folder. Backend-agnostic:
+		// BackendManager routes to the active backend's completeWebFolderPick. Kept
+		// separate from auth — distinct payload, no sniffing dispatch needed.
+		this.registerObsidianProtocolHandler("air-sync-folder", (params) => {
+			void this.backendManager.completeBackendFolderPick(params);
+		});
+
 		// Initialize backend if configured
 		await this.backendManager.initBackend();
 

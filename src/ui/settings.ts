@@ -85,6 +85,8 @@ export class AirSyncSettingTab extends PluginSettingTab {
 						this.plugin.backendManager.completeBackendConnect(code),
 					disconnect: () => this.plugin.backendManager.disconnectBackend(),
 					refreshDisplay: () => this.display(),
+					startFolderPick: () => this.plugin.backendManager.startBackendFolderPick(),
+					bindDefaultFolder: () => this.plugin.backendManager.bindDefaultRemoteVault(),
 				},
 				this.app,
 			);

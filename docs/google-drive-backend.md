@@ -40,7 +40,7 @@ All cache reads and writes are protected by `cacheMutex` (an `AsyncMutex`). Writ
 
 ### Hiding `.airsync/metadata.json`
 
-`.airsync/metadata.json` is backend-internal bookkeeping written **out of band via the raw `DriveClient`** (`resolveRemoteVault` / `updateMetadataIfNeeded`, below), never through the `IFileSystem` surface. `GoogleDriveFs` keeps it out of the sync engine by **never ingesting it into the metadata cache** (`INTERNAL_METADATA_PATH`, defined in `sync/remote-vault.ts`; skipped in `DriveMetadataCache.bulkLoad` and `applyFileChange`). Because every read path is cache-backed, that one exclusion covers `list()`, `stat()`, `read()`, `delete()`, `listDir()`, and `getChangedPaths()` uniformly. The single write path that doesn't consult the cache — `write()` (upload) — `throws` for this path rather than fabricating a baseline.
+`.airsync/metadata.json` is a **legacy** backend-internal file. New vaults never create it — the remote vault is now identified by its folder name (`obsidian-air-sync/<Vault Name>`, see below) — but older vaults may still have one, and a device still running an older plugin version could write one, so the exclusion guards are retained as belt-and-suspenders. `GoogleDriveFs` keeps any such file out of the sync engine by **never ingesting it into the metadata cache** (`INTERNAL_METADATA_PATH`, defined in `sync/remote-vault.ts`; skipped in `DriveMetadataCache.bulkLoad` and `applyFileChange`). Because every read path is cache-backed, that one exclusion covers `list()`, `stat()`, `read()`, `delete()`, `listDir()`, and `getChangedPaths()` uniformly. The single write path that doesn't consult the cache — `write()` (upload) — `throws` for this path rather than fabricating a baseline. (Migration reads/deletes a legacy `metadata.json` out of band via the raw `DriveClient`, never through the `IFileSystem` surface — see Remote vault resolution below.)
 
 The sync engine also reserves the same path symmetrically in `SyncOrchestrator.isExcluded()`, so it is never pushed/pulled/deleted from the local side either — even when the user opts `.airsync` into `syncDotPaths`. (Remote-side hiding alone would be unsafe: a local copy could be pushed, a synthetic write would commit a baseline, and the next cycle would `delete_local` it as a phantom remote deletion. The orchestrator exclusion is the authoritative guarantee; the cache-level skip is enumeration hygiene.)
 
@@ -132,7 +132,7 @@ Two OAuth implementations share a common base class (`GoogleAuthBase`). The serv
 
 ### Token storage
 
-Tokens (`refreshToken`, `accessToken`) are stored in Obsidian's `SecretStorage` via `token-store.ts`, never in `settings.backendData`. Only non-secret data lives in `settings.backendData`: `remoteVaultFolderId`, `lastKnownVaultName`, `accessTokenExpiry`, `changesStartPageToken` (the single committed delta checkpoint), and `pendingAuthState`/`pendingCodeVerifier` (transient, to survive a plugin reload mid-flow), plus the custom-OAuth fields (`customClientId`/`customClientSecret` are SecretStorage secret-name references, `customScope`, `customRedirectUri`, `customIncludeGrantedScopes`).
+Tokens (`refreshToken`, `accessToken`) are stored in Obsidian's `SecretStorage` via `token-store.ts`, never in `settings.backendData`. Only non-secret data lives in `settings.backendData`: `remoteVaultFolderId`, `accessTokenExpiry`, `changesStartPageToken` (the single committed delta checkpoint), and `pendingAuthState`/`pendingCodeVerifier` (transient, to survive a plugin reload mid-flow), plus the custom-OAuth fields (`customClientId`/`customClientSecret` are SecretStorage secret-name references, `customScope`, `customRedirectUri`, `customIncludeGrantedScopes`).
 
 ## Resumable upload
 
@@ -151,23 +151,27 @@ Tokens (`refreshToken`, `accessToken`) are stored in Obsidian's `SecretStorage` 
 
 - Type: `"googledrive"`
 - Uses `GoogleAuth` (server-side OAuth)
-- `resolveRemoteVault()`: finds or creates a vault folder under `obsidian-air-sync/` in Drive (auto-creates on first connect)
+- `resolveRemoteVault()`: finds or creates `obsidian-air-sync/<Vault Name>` in Drive. Invoked **explicitly** when the user binds the default folder (the "default folder" button → `BackendManager.bindDefaultRemoteVault()`), **not** automatically on connect
 
 ### GoogleDriveCustomProvider (user credentials)
 
 - Type: `"googledrive-custom"`
 - Uses `GoogleAuthDirect` (PKCE with user-provided `client_id` / `client_secret`)
-- Requires `remoteVaultFolderId` to be set manually in settings; its `resolveRemoteVault()` override throws (`"Remote vault folder id is required for custom OAuth"`) when it is unset, so it never auto-creates
+- Requires `remoteVaultFolderId` to be set manually in settings; its `resolveRemoteVault()` override throws (`"Remote vault folder id is required for custom OAuth"`) when it is unset
 - On disconnect, preserves custom credential references and folder ID
 
 Both extend `GoogleDriveProviderBase` which handles `createFs()`, `hasCheckpoint(settings)` (true iff `changesStartPageToken` is set), `readBackendState(fs, commitCheckpoint)` (returns the cursor only when `commitCheckpoint` is true, i.e. the cycle fully succeeded), `resetTargetState()` (clears the cursor — used by both a backend identity change and the **Rescan vault** action), and `disconnect()`.
 
 ### Remote vault resolution
 
-Layout: `<Drive root>/obsidian-air-sync/<uuid>/.airsync/metadata.json`. `resolveRemoteVault()` builds a `DriveClient` and calls `resolveGDriveRemoteVault()`:
+Layout: `<Drive root>/obsidian-air-sync/<Vault Name>` — the folder **name is the vault name**; there is no `.airsync/metadata.json`. Binding is always explicit (the user picks a folder in the Google Picker, or presses the default-folder button); nothing is auto-bound on connect. The default-folder button calls `resolveRemoteVault()`, which builds a `DriveClient` and calls `resolveGDriveRemoteVault()` (returns `{ remoteVaultFolderId }`):
 
-- If `remoteVaultFolderId` is cached, `resolveLinked()` confirms the folder is accessible via `getFile()` and, via `updateMetadataIfNeeded()`, rewrites (or recreates) `.airsync/metadata.json` if the vault name changed or the metadata file/folder is missing.
-- Otherwise it find-or-creates the root `obsidian-air-sync` folder, then `resolveNew()` lists that root's child folders, reads each `.airsync/metadata.json`, and matches on `vaultName`; on no match it creates a folder named `crypto.randomUUID()` with a child `.airsync` folder holding `metadata.json` `{ vaultName }`.
+- If `remoteVaultFolderId` is cached, `resolveLinked()` just confirms the folder is accessible via `getFile()`.
+- Otherwise it find-or-creates the root `obsidian-air-sync` folder, then:
+  1. **Migration:** lists the root's child folders and, for each, reads a legacy `.airsync/metadata.json`; if one's `vaultName` matches, it renames that folder to the vault name (`updateFileMetadata`), trashes the legacy `metadata.json` (`deleteFile`), and binds it — preserving the already-synced data while keeping the folder id stable for other devices.
+  2. **By name:** otherwise find-or-creates `obsidian-air-sync/<Vault Name>` (`findChildByName` / `createFolder`) and binds it.
+
+Bound folders picked via the Google Picker are addressed purely by id (`completeWebFolderPick`), independent of this layout.
 
 ### createFs() contract
 

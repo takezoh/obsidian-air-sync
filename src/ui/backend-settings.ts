@@ -8,6 +8,10 @@ export interface BackendConnectionActions {
 	completeAuth(code: string): Promise<void>;
 	disconnect(): Promise<void>;
 	refreshDisplay(): void;
+	/** Open the backend's web folder picker (e.g. the Google Picker), if it has one. */
+	startFolderPick(): Promise<void>;
+	/** Bind the backend's default remote folder (obsidian-air-sync/<Vault Name>). */
+	bindDefaultFolder(): Promise<void>;
 }
 
 /**
