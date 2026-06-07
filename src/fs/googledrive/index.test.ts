@@ -189,6 +189,69 @@ describe("GoogleDriveFs.write remoteChecksum", () => {
 	});
 });
 
+describe("GoogleDriveFs.write stale-cache guard for new paths", () => {
+	it("does not clobber a concurrent delta that created the same path during upload", async () => {
+		const uploadResult: DriveFile = {
+			id: "uploaded-id",
+			name: "new.md",
+			mimeType: "text/plain",
+			modifiedTime: "2024-01-01T00:00:00.000Z",
+			size: "5",
+		};
+
+		const { GoogleDriveFs } = await import("./index");
+		const { DriveClient } = await import("./client");
+		const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+
+		const client = new DriveClient(() => Promise.resolve("access"));
+		const fs = new GoogleDriveFs(
+			client,
+			"root",
+			mockLogger as unknown as import("../../logging/logger").Logger,
+		);
+		(fs as unknown as GoogleDriveFsInternal).initialized = true;
+
+		const cache = (fs as unknown as {
+			cache: {
+				setFile(p: string, f: DriveFile): void;
+				getFile(p: string): DriveFile | undefined;
+			};
+		}).cache;
+
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(
+			(opts: string | { url: string }) => {
+				const url = typeof opts === "string" ? opts : opts.url;
+				if (url.includes("uploadType=")) {
+					// Phase 2 (upload) runs outside the cache mutex. Simulate a concurrent
+					// delta landing a DIFFERENT file at the same path while it is in flight.
+					cache.setFile("new.md", {
+						id: "delta-id",
+						name: "new.md",
+						mimeType: "text/plain",
+						modifiedTime: "2024-02-02T00:00:00.000Z",
+					});
+					return Promise.resolve(mockRes(uploadResult));
+				}
+				return Promise.resolve(mockRes({ files: [] }));
+			},
+		);
+
+		const content = new TextEncoder().encode("hello").buffer.slice(0);
+		await fs.write("new.md", content, Date.now());
+
+		// The concurrent delta's entry survives — the upload did not overwrite it.
+		// (The in-memory cursor advanced past the delta, so the next cycle re-detects
+		// our write; no data is lost.)
+		expect(cache.getFile("new.md")?.id).toBe("delta-id");
+		expect(mockLogger.warn).toHaveBeenCalledWith(
+			"Skipping stale cache update for write",
+			{ path: "new.md" },
+		);
+
+		mockRequestUrl.mockRestore();
+	});
+});
+
 describe("GoogleDriveFs multi-parent resolution", () => {
 	it("resolves file with multiple parents to root when rootId is second", async () => {
 		const { GoogleDriveFs } = await import("./index");
