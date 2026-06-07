@@ -161,11 +161,16 @@ abstract class GoogleAuthBase implements IGoogleAuth {
 
 	/** Generate a state parameter with the given extra fields */
 	protected generateState(extra: Record<string, unknown> = {}): string {
-		this.authState = btoa(JSON.stringify({
+		const json = JSON.stringify({
 			app: "obsidian-plugin",
 			...extra,
 			nonce: generateRandomString(32),
-		}));
+		});
+		// base64url (URL-safe, unpadded) so the state survives every OAuth redirect
+		// hop without a `+`/`/`/`=` getting mangled (e.g. `+`→space by a form-decoder),
+		// which would fail the strict CSRF comparison on return. The relays decode it
+		// with both base64url and legacy base64 support.
+		this.authState = base64ToBase64Url(btoa(json));
 		return this.authState;
 	}
 }
@@ -386,17 +391,21 @@ function extractGoogleErrorDetail(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
 }
 
+/** Convert a standard base64 string to base64url (URL-safe, unpadded, RFC 7636 §A). */
+function base64ToBase64Url(b64: string): string {
+	return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
 /** Compute S256 code challenge: base64url(SHA-256(verifier)) */
 async function computeS256Challenge(verifier: string): Promise<string> {
 	const data = new TextEncoder().encode(verifier);
 	const hash = await crypto.subtle.digest("SHA-256", data);
-	// base64url encoding (RFC 7636 Appendix A)
 	let base64 = "";
 	const bytes = new Uint8Array(hash);
 	for (const b of bytes) {
 		base64 += String.fromCharCode(b);
 	}
-	return btoa(base64).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+	return base64ToBase64Url(btoa(base64));
 }
 
 const RANDOM_CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
