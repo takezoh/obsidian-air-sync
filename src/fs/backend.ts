@@ -59,6 +59,18 @@ export interface IBackendProvider {
 	readBackendState?(fs: IFileSystem, commitCheckpoint: boolean): Record<string, unknown>;
 
 	/**
+	 * Flush the backend's durable cache (e.g. the IndexedDB file-metadata map) to
+	 * its store. Called ONLY after a fully-successful cycle (failed === 0) and
+	 * BEFORE {@link readBackendState} commits the delta cursor — so the persisted
+	 * cache never runs ahead of the committed cursor. On a failed cycle this is NOT
+	 * called: the cache stays at the last committed state, so the next run's replay
+	 * from the committed cursor re-detects the un-synced work (a remote deletion in
+	 * particular, which a replay against an already-absorbed cache would silently
+	 * drop). Optional: backends without such a cache omit it.
+	 */
+	commitCheckpoint?(fs: IFileSystem): Promise<void>;
+
+	/**
 	 * Find or create this vault's default remote folder for the given vault name.
 	 * Invoked explicitly when the user binds the default folder (BackendManager
 	 * .bindDefaultRemoteVault) — NOT automatically on connect. Returns backend-specific

@@ -1,16 +1,20 @@
-import type { DriveFile } from "./types";
 import { FOLDER_MIME } from "./types";
+import type { DriveFile } from "./types";
 import type { DriveMetadataCache } from "./metadata-cache";
 import type { DriveClient } from "./client";
 import type { MetadataStore } from "../../store/metadata-store";
 import type { RenamePair } from "../../sync/types";
 import type { Logger } from "../../logging/logger";
 
-/** Context for incremental sync operations */
+/**
+ * Context for incremental sync operations. Note there is no metadataStore here:
+ * applying changes mutates only the in-memory cache. Persisting the cache to
+ * IndexedDB is deferred to the checkpoint commit (GoogleDriveFs.commitCheckpoint),
+ * so the persisted cache never runs ahead of the committed delta cursor.
+ */
 export interface IncrementalSyncContext {
 	cache: DriveMetadataCache;
 	client: DriveClient;
-	metadataStore?: MetadataStore<DriveFile>;
 	logger?: Logger;
 }
 
@@ -34,8 +38,6 @@ export async function applyIncrementalChanges(
 		let currentToken = changesPageToken;
 
 		let totalChanges = 0;
-		const updatedRecords: { path: string; file: DriveFile; isFolder: boolean }[] = [];
-		const deletedPaths: string[] = [];
 		const changedPaths = new Set<string>();
 		const renamedPaths: RenamePair[] = [];
 
@@ -68,7 +70,6 @@ export async function applyIncrementalChanges(
 					if (path) {
 						// Collect descendants before removing
 						const descendants = ctx.cache.collectDescendants(path);
-						deletedPaths.push(path, ...descendants);
 						changedPaths.add(path);
 						for (const d of descendants) changedPaths.add(d);
 						ctx.cache.removeTree(path);
@@ -78,11 +79,6 @@ export async function applyIncrementalChanges(
 						ctx.cache.applyFileChangeDetectMove(change.file);
 
 					if (updatedPath) {
-						updatedRecords.push({
-							path: updatedPath,
-							file: change.file,
-							isFolder: change.file.mimeType === FOLDER_MIME,
-						});
 						changedPaths.add(updatedPath);
 					}
 
@@ -91,10 +87,8 @@ export async function applyIncrementalChanges(
 					const movedOutOfRoot = oldPath && !updatedPath;
 					if (moved || movedOutOfRoot) {
 						changedPaths.add(oldPath);
-						deletedPaths.push(oldPath);
 						for (const d of oldDescendants) {
 							changedPaths.add(d);
-							deletedPaths.push(d);
 						}
 					}
 					if (moved) {
@@ -106,16 +100,6 @@ export async function applyIncrementalChanges(
 						const newDescendants = ctx.cache.collectDescendants(updatedPath);
 						for (const nd of newDescendants) {
 							changedPaths.add(nd);
-							const ndFile = ctx.cache.getFile(nd);
-							if (ndFile) {
-								updatedRecords.push({
-									path: nd,
-									file: ndFile,
-									isFolder: ndFile.mimeType === FOLDER_MIME,
-								});
-							} else {
-								ctx.logger?.warn("Descendant not found in cache after folder move", { path: nd });
-							}
 						}
 					}
 				}
@@ -129,9 +113,9 @@ export async function applyIncrementalChanges(
 
 		if (totalChanges > 0) {
 			ctx.logger?.info("Incremental changes applied", { changeCount: totalChanges });
-			await persistIncrementalChanges(ctx, updatedRecords, deletedPaths);
 		}
-
+		// The in-memory cache now reflects the changes; persistence to IndexedDB is
+		// the caller's job at checkpoint commit (see GoogleDriveFs.commitCheckpoint).
 		return { newToken: currentToken, needsFullScan: false, changedPaths, renamedPaths };
 	} catch (err) {
 		if (isHttpError(err, 410)) {
@@ -144,24 +128,32 @@ export async function applyIncrementalChanges(
 }
 
 /**
- * Persist the incremental file-map changes to IndexedDB. The delta cursor is NOT
- * stored here — it lives in settings.backendData and is committed only after a
- * fully-successful sync, so an interrupted cycle re-detects the gap next time.
+ * Flush the metadata cache to IndexedDB at a checkpoint commit. `fullPersist`
+ * rewrites the whole map (after a full scan); otherwise the touched paths are
+ * reconciled against the live cache — present → upsert, absent → delete. The
+ * reconcile reads the final cache state, so it is order-independent and correct
+ * even when `touched` spans several earlier failed cycles.
  */
-async function persistIncrementalChanges(
-	ctx: IncrementalSyncContext,
-	updated: { path: string; file: DriveFile; isFolder: boolean }[],
-	deleted: string[],
+export async function commitDriveCache(
+	store: MetadataStore<DriveFile>,
+	cache: DriveMetadataCache,
+	touched: Set<string>,
+	fullPersist: boolean,
 ): Promise<void> {
-	if (!ctx.metadataStore) return;
-	try {
-		if (updated.length > 0) await ctx.metadataStore.putFiles(updated);
-		if (deleted.length > 0) await ctx.metadataStore.deleteFiles(deleted);
-	} catch (err) {
-		ctx.logger?.warn("Failed to persist incremental changes to IndexedDB", {
-			message: err instanceof Error ? err.message : String(err),
-		});
+	await store.open();
+	if (fullPersist) {
+		await store.saveAll(cache.exportRecords(), new Map());
+		return;
 	}
+	const updated: { path: string; file: DriveFile; isFolder: boolean }[] = [];
+	const deleted: string[] = [];
+	for (const path of touched) {
+		const file = cache.getFile(path);
+		if (file) updated.push({ path, file, isFolder: cache.isFolder(path) });
+		else deleted.push(path);
+	}
+	if (updated.length > 0) await store.putFiles(updated);
+	if (deleted.length > 0) await store.deleteFiles(deleted);
 }
 
 /** Check if an error is an HTTP error with the given status code */

@@ -41,7 +41,7 @@ describe("GoogleDriveFs folder rename child path rewrite", () => {
 		]);
 
 		// Apply incremental change that renames oldFolder → newFolder
-		await fs.applyIncrementalChanges();
+		await fs.getChangedPaths();
 		const updated = await fs.list();
 		const paths = updated.map((e) => e.path).sort();
 
@@ -307,7 +307,7 @@ describe("GoogleDriveFs multi-parent resolution", () => {
 		await fs.list();
 
 		// Apply incremental change with multi-parent file
-		await fs.applyIncrementalChanges();
+		await fs.getChangedPaths();
 		const files = await fs.list();
 		const paths = files.map((f) => f.path).sort();
 
@@ -390,7 +390,7 @@ describe("GoogleDriveFs children index", () => {
 		expect(initial).toHaveLength(4);
 
 		// Delete folder "a" via incremental changes
-		await fs.applyIncrementalChanges();
+		await fs.getChangedPaths();
 		const after = await fs.list();
 
 		// All descendants should be removed
@@ -423,7 +423,7 @@ describe("GoogleDriveFs children index", () => {
 
 		const fs = new GoogleDriveFs(mockClient, "root");
 		await fs.list();
-		await fs.applyIncrementalChanges();
+		await fs.getChangedPaths();
 		const after = await fs.list();
 		const paths = after.map((e) => e.path).sort();
 
@@ -483,13 +483,12 @@ describe("GoogleDriveFs cache persistence", () => {
 
 		const store = new MetadataStore<DriveFile>("persist-test", { dbNamePrefix: "air-sync-drive", version: 1 });
 
-		// First instance: fullScan populates and persists
+		// First instance: fullScan populates the in-memory cache; persistence is
+		// deferred to the checkpoint commit (a clean cycle), not eager.
 		const fs1 = new GoogleDriveFs(mockClient, "root", undefined, store);
 		const files1 = await fs1.list();
 		expect(files1).toHaveLength(2);
-
-		// Wait for async persist to complete
-		await new Promise((r) => setTimeout(r, 50));
+		await fs1.commitCheckpoint();
 
 		// Second instance: should load from IDB, no fullScan needed
 		const listAllFilesSpy = vi.fn();
@@ -552,9 +551,11 @@ describe("GoogleDriveFs cursor consolidation (crash safety)", () => {
 		} as never;
 		const fs1 = new GoogleDriveFs(client1, "root", undefined, store);
 		await fs1.list();
+		await fs1.commitCheckpoint(); // initial scan is a clean cycle → baseline persisted at token-A
 		const delta1 = await fs1.getChangedPaths();
 		expect(delta1!.modified).toContain("notes/a.md"); // detected in-memory (cursor now token-B)
-		await new Promise((r) => setTimeout(r, 30)); // let persistCache flush the file map
+		// CRASH: the change is NOT committed (commitCheckpoint not called for this cycle),
+		// so the #2 cache stays at token-A's baseline.
 
 		// Session 2 (restart): a fresh FS seeded with the last COMMITTED cursor "token-A".
 		const listChanges2 = vi.fn().mockResolvedValue({ changes: [change], newStartPageToken: "token-B" });
@@ -571,9 +572,57 @@ describe("GoogleDriveFs cursor consolidation (crash safety)", () => {
 		fs2.changesPageToken = "token-A"; // seeded from #3 (pre-crash committed value)
 
 		const delta2 = await fs2.getChangedPaths();
-		expect(delta2!.modified).toContain("notes/a.md"); // RED today: change is re-reported
+		expect(delta2!.modified).toContain("notes/a.md"); // re-reported via replay from #3
 		expect(listChanges2).toHaveBeenCalledWith("token-A", undefined); // incremental FROM #3, not #2's token-B
 		expect(listAllFiles2).not.toHaveBeenCalled(); // file map restored from #2 cache, no network re-list
+
+		await store.close();
+	});
+
+	it("re-reports an un-pulled remote DELETION after a crash (cache must not absorb it early)", async () => {
+		// The hard case the modify test above doesn't cover: a remote deletion. If the
+		// cache is persisted the moment the delta is applied (eager), a crash before the
+		// cursor commits loads a cache that already dropped the file, and the replay from
+		// the committed cursor early-returns on the now-absent path — the deletion is lost
+		// forever. commit-last persistence keeps #2 at the committed cursor so the replay
+		// still sees the file and re-surfaces the delete.
+		const { GoogleDriveFs } = await import("./index");
+		const { MetadataStore } = await import("../../store/metadata-store");
+		const store = new MetadataStore<DriveFile>("crash-consol-del", { dbNamePrefix: "air-sync-drive", version: 1 });
+
+		const initialFiles = [
+			{ id: "f1", name: "notes", mimeType: FOLDER, parents: ["root"] },
+			{ id: "file1", name: "a.md", mimeType: "text/plain", parents: ["f1"], modifiedTime: "2024-05-01T00:00:00.000Z" },
+		];
+		const delChange = { type: "file", fileId: "file1", removed: true, file: undefined };
+
+		// Session 1: initial scan at token-A (committed), then a remote DELETE advances
+		// the cursor to token-B in memory — but the cycle is killed before it commits.
+		const client1 = {
+			listAllFiles: vi.fn().mockResolvedValue(initialFiles),
+			getChangesStartToken: vi.fn().mockResolvedValue("token-A"),
+			listChanges: vi.fn().mockResolvedValue({ changes: [delChange], newStartPageToken: "token-B" }),
+		} as never;
+		const fs1 = new GoogleDriveFs(client1, "root", undefined, store);
+		await fs1.list();
+		await fs1.commitCheckpoint(); // initial scan committed → #2 holds a.md at token-A
+		const delta1 = await fs1.getChangedPaths();
+		expect(delta1!.deleted).toContain("notes/a.md"); // detected in-memory
+		// CRASH: deletion NOT committed → #2 must still hold a.md.
+
+		// Session 2 (restart): fresh FS seeded with the committed cursor token-A.
+		const listAllFiles2 = vi.fn().mockResolvedValue(initialFiles);
+		const client2 = {
+			listAllFiles: listAllFiles2,
+			getChangesStartToken: vi.fn(),
+			listChanges: vi.fn().mockResolvedValue({ changes: [delChange], newStartPageToken: "token-B" }),
+		} as never;
+		const fs2 = new GoogleDriveFs(client2, "root", undefined, store);
+		fs2.changesPageToken = "token-A";
+
+		const delta2 = await fs2.getChangedPaths();
+		expect(delta2!.deleted).toContain("notes/a.md"); // re-detected via replay (would be lost under eager persist)
+		expect(listAllFiles2).not.toHaveBeenCalled(); // replayed from the #2 cache, no re-scan
 
 		await store.close();
 	});

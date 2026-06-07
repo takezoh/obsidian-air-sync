@@ -385,10 +385,18 @@ export class SyncOrchestrator {
 		// cycle (failed === 0) — a partial/interrupted sync must keep the prior
 		// committed cursor so the next run re-detects the un-synced work.
 		const provider = this.deps.backendProvider();
+		const cleanCycle = result.failed.length === 0;
+		// Flush the backend's durable cache BEFORE committing the cursor, and only on
+		// a clean cycle — so a crash mid-cycle can't leave the cache ahead of the
+		// committed cursor (which would drop a remote deletion the replay can't
+		// re-detect). On a failed cycle the cache stays at the committed state.
+		if (cleanCycle && provider?.commitCheckpoint && remoteFs) {
+			await provider.commitCheckpoint(remoteFs);
+		}
 		if (provider?.readBackendState && remoteFs) {
 			settings.backendData = {
 				...settings.backendData,
-				...provider.readBackendState(remoteFs, result.failed.length === 0),
+				...provider.readBackendState(remoteFs, cleanCycle),
 			};
 		}
 		await this.deps.saveSettings();
