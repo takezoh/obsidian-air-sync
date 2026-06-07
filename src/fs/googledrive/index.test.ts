@@ -252,6 +252,106 @@ describe("GoogleDriveFs.write stale-cache guard for new paths", () => {
 	});
 });
 
+describe("GoogleDriveFs.rename stale-cache guard for the destination", () => {
+	it("does not clobber a concurrent delta that occupied newPath during the move", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const { DriveClient } = await import("./client");
+		const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+
+		const client = new DriveClient(() => Promise.resolve("access"));
+		const fs = new GoogleDriveFs(
+			client,
+			"root",
+			mockLogger as unknown as import("../../logging/logger").Logger,
+		);
+		(fs as unknown as GoogleDriveFsInternal).initialized = true;
+
+		const cache = (fs as unknown as {
+			cache: {
+				setFile(p: string, f: DriveFile): void;
+				getFile(p: string): DriveFile | undefined;
+				getPathById(id: string): string | undefined;
+			};
+		}).cache;
+		cache.setFile("old.md", {
+			id: "f1", name: "old.md", mimeType: "text/plain", modifiedTime: "2024-01-01T00:00:00.000Z",
+		});
+
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(
+			(opts: string | { url: string }) => {
+				const url = typeof opts === "string" ? opts : opts.url;
+				if (url.includes("/files/f1")) {
+					// Phase 2 (the PATCH move) runs outside the cache mutex. Simulate a
+					// concurrent delta landing a DIFFERENT file at the destination path.
+					cache.setFile("new.md", {
+						id: "delta-id", name: "new.md", mimeType: "text/plain", modifiedTime: "2024-02-02T00:00:00.000Z",
+					});
+					return Promise.resolve(mockRes({
+						id: "f1", name: "new.md", mimeType: "text/plain", modifiedTime: "2024-01-01T00:00:00.000Z",
+					}));
+				}
+				return Promise.resolve(mockRes({ files: [] }));
+			},
+		);
+
+		await fs.rename("old.md", "new.md");
+
+		// The concurrent delta's entry survives and its id stays correctly mapped —
+		// the move did not overwrite it or strand "delta-id" in idToPath.
+		expect(cache.getFile("new.md")?.id).toBe("delta-id");
+		expect(cache.getPathById("delta-id")).toBe("new.md");
+		expect(mockLogger.warn).toHaveBeenCalledWith(
+			"Skipping stale cache update for rename",
+			{ path: "new.md" },
+		);
+
+		mockRequestUrl.mockRestore();
+	});
+});
+
+describe("GoogleDriveFs.commitCheckpoint persistence-failure safety", () => {
+	it("propagates a failed flush and keeps the buffer so the cursor is not committed ahead of the cache", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		type Store = import("../../store/metadata-store").MetadataStore<DriveFile>;
+
+		const allFiles = [
+			{ id: "f1", name: "docs", mimeType: "application/vnd.google-apps.folder", parents: ["root"] },
+			{ id: "file1", name: "note.md", mimeType: "text/plain", parents: ["f1"], modifiedTime: "2024-01-01T00:00:00.000Z", size: "100" },
+		];
+		const mockClient = {
+			listAllFiles: vi.fn().mockResolvedValue(allFiles),
+			getChangesStartToken: vi.fn().mockResolvedValue("token-abc"),
+		} as never;
+
+		const saveAll = vi.fn().mockRejectedValue(new Error("quota exceeded"));
+		const failingStore = {
+			open: vi.fn().mockResolvedValue(undefined),
+			loadAll: vi.fn().mockResolvedValue({ files: [], meta: new Map() }),
+			saveAll,
+			putFiles: vi.fn().mockRejectedValue(new Error("quota exceeded")),
+			deleteFiles: vi.fn().mockRejectedValue(new Error("quota exceeded")),
+			close: vi.fn().mockResolvedValue(undefined),
+		} as unknown as Store;
+
+		const fs = new GoogleDriveFs(mockClient, "root", undefined, failingStore);
+		await fs.list(); // fullScan → pendingFullPersist = true
+
+		// The flush fails. commitCheckpoint MUST reject rather than swallow — the
+		// orchestrator awaits it before committing the (advanced) cursor, so a throw
+		// aborts that commit and keeps the persisted cache and committed cursor in step.
+		await expect(fs.commitCheckpoint()).rejects.toThrow(/quota exceeded/);
+		expect(saveAll).toHaveBeenCalledTimes(1);
+
+		// The buffer is RETAINED (not cleared on failure), so when the store recovers
+		// the next clean cycle re-attempts the full flush. If the buffer had been
+		// cleared on failure, pendingFullPersist would be false and this second commit
+		// would persist nothing (saveAll would stay at 1).
+		saveAll.mockResolvedValueOnce(undefined);
+		await fs.commitCheckpoint();
+		expect(saveAll).toHaveBeenCalledTimes(2);
+	});
+});
+
 describe("GoogleDriveFs multi-parent resolution", () => {
 	it("resolves file with multiple parents to root when rootId is second", async () => {
 		const { GoogleDriveFs } = await import("./index");

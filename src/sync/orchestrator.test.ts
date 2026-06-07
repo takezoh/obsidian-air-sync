@@ -799,6 +799,65 @@ describe("SyncOrchestrator", () => {
 			expect(settings.backendData.changesStartPageToken).toBe("OLD");
 			await orchestrator.close();
 		});
+
+		/**
+		 * The metadata cache (IndexedDB) and the delta cursor (settings) are committed
+		 * as one commit-last unit: flush the cache, THEN advance the cursor. If the
+		 * cache flush (commitCheckpoint) fails it must propagate so the cursor is NOT
+		 * advanced — otherwise the committed cursor would run ahead of the unpersisted
+		 * cache and a restart's replay could drop an un-flushed remote deletion.
+		 * See docs/adr/0001-metadata-cache-is-subordinate-to-commit-last.md.
+		 */
+		it("does not advance the committed cursor when the checkpoint flush (cache persist) fails", async () => {
+			const localFs = createMockFs("local");
+			const remoteFs = createMockFs("remote");
+			// Steady state, matching baseline → a CLEAN cycle (no failed actions), so the
+			// orchestrator reaches commitCheckpoint before committing the cursor.
+			addFile(localFs, "synced.md", "kept", 1000);
+			addFile(remoteFs, "synced.md", "kept", 1000);
+
+			const settings = baseMockSettings({
+				backendType: "test",
+				vaultId: `test-${Math.random()}`,
+			});
+			settings.backendData = { changesStartPageToken: "OLD" };
+
+			const commitCheckpoint = vi.fn().mockRejectedValue(new Error("IndexedDB write failed"));
+			const deps = createDeps({
+				getSettings: () => settings,
+				localFs: () => localFs,
+				remoteFs: () => remoteFs,
+				backendProvider: () =>
+					mockProvider({
+						hasCheckpoint: () => true,
+						commitCheckpoint,
+						// readBackendState would advance the cursor to NEW — but commitCheckpoint
+						// throws first, so on the failing cycle this must never take effect.
+						readBackendState: (() => ({
+							changesStartPageToken: "NEW",
+						})) as unknown as import("../fs/backend").IBackendProvider["readBackendState"],
+					}),
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			await orchestrator.state.put({
+				path: "synced.md",
+				hash: "",
+				localMtime: 1000,
+				remoteMtime: 1000,
+				localSize: 4,
+				remoteSize: 4,
+				syncedAt: 900,
+			});
+
+			await orchestrator.runSync();
+
+			expect(commitCheckpoint).toHaveBeenCalled();
+			// The flush failed → the cursor stays at its committed value (never NEW), and
+			// the cycle surfaces an error rather than silently reporting success.
+			expect(settings.backendData.changesStartPageToken).toBe("OLD");
+			expect(deps.onStatusChange).toHaveBeenCalledWith("error");
+			await orchestrator.close();
+		});
 	});
 
 	describe("phantom warm deletion is prevented (not recovered)", () => {

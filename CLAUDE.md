@@ -11,6 +11,7 @@ This file is the **agent operating guide** for this repo. Where to look:
 | Design principles, module map, data models, interfaces | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | The enforced rules (lint / type / design guards) and how to declare an exception | [docs/code-enforcement.md](docs/code-enforcement.md) |
 | Subsystem deep dives (sync pipeline, conflicts, Drive, errors) | [docs/](docs/) |
+| Architecture Decision Records (why a design is the way it is — read before "optimizing" it) | [docs/adr/](docs/adr/) |
 | Generic Obsidian-plugin conventions (cross-tool baseline) | [AGENTS.md](AGENTS.md) |
 
 ## Commands

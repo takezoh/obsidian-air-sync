@@ -184,13 +184,15 @@ export class GoogleDriveFs implements IFileSystem {
 		const store = this.metadataStore;
 		if (!store) return;
 		await this.cacheMutex.run(async () => {
-			try {
-				await commitDriveCache(store, this.cache, this.touchedPaths, this.pendingFullPersist);
-			} catch (err) {
-				this.logger?.warn("Failed to persist checkpoint to IndexedDB", {
-					message: err instanceof Error ? err.message : String(err),
-				});
-			}
+			// Flush first, and clear the buffer ONLY after it succeeds. A failed flush
+			// must PROPAGATE (not be swallowed): the orchestrator awaits this before
+			// committing the advanced delta cursor, so a throw aborts that commit and
+			// keeps the persisted cache and the committed cursor in lockstep. Swallowing
+			// would let the cursor run ahead of the unpersisted cache, and a later
+			// restart's replay could not re-detect an un-flushed remote deletion (the
+			// crash-recovery contract — see docs/adr/0001 and IBackendProvider.commitCheckpoint).
+			// Retaining the buffer lets the next clean cycle retry the flush.
+			await commitDriveCache(store, this.cache, this.touchedPaths, this.pendingFullPersist);
 			this.pendingFullPersist = false;
 			this.touchedPaths.clear();
 		});
@@ -499,6 +501,19 @@ export class GoogleDriveFs implements IFileSystem {
 			),
 			staleGuard: (r) => ({ path: oldPath, expectedId: r.fileId }),
 			update: (r, result) => {
+				// The shared stale-guard only validates the SOURCE (oldPath still resolves
+				// to our file id). The destination is checked in resolve() (phase 1), but a
+				// concurrent delta can land a DIFFERENT file at newPath during the phase-2
+				// network op (run outside the mutex). Overwriting it via setFile would strand
+				// that delta's id in idToPath (and orphan its subtree, since setFile only
+				// re-indexes a NEW path). Skip instead — symmetric with write()'s new-path
+				// guard; the in-memory cursor advanced past the delta, so the next cycle
+				// re-detects our rename.
+				const occupant = this.cache.getFile(newPath);
+				if (occupant && occupant.id !== result.id) {
+					this.logger?.warn("Skipping stale cache update for rename", { path: newPath });
+					return;
+				}
 				this.cache.removeEntry(oldPath);
 				this.cache.setFile(newPath, result);
 				if (r.wasFolder) {

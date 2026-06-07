@@ -30,6 +30,8 @@ At the start of each cycle the orchestrator asks `provider.hasCheckpoint(setting
 
 The **Rescan vault** action (settings → Advanced) clears the committed checkpoint (`provider.resetTargetState`) and triggers a sync, forcing one cold reconcile against the remote — a manual recovery for a vault that looks stuck or incomplete. It diffs against baselines (it does not re-download) and keeps sync history.
 
+A backend may keep a **non-authoritative cache** (the Google Drive `path↔id` map in IndexedDB) to avoid a network re-list. That cache is a performance optimization, not a third source of truth: its only invariant is that it is **never committed ahead of (nor behind) the committed cursor**. The cache flush (`commitCheckpoint`) and the cursor advance are one commit-last unit — a failed flush propagates so the cursor is not advanced. Before "optimizing" any of this, read [ADR 0001](adr/0001-metadata-cache-is-subordinate-to-commit-last.md): the recurring bugs here all came from treating the cache as authoritative.
+
 ## Temperature modes
 
 The change detector selects a temperature based on the state of `LocalChangeTracker` and `SyncStateStore` (or a forced cold reconcile during [crash recovery](#crash-recovery)):
