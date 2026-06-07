@@ -24,7 +24,6 @@ export interface GoogleDriveCustomBackendData extends GoogleDriveBackendData {
 const DEFAULT_GDRIVE_CUSTOM_DATA: GoogleDriveCustomBackendData = {
 	remoteVaultFolderId: "",
 	accessTokenExpiry: 0,
-	changesStartPageToken: "",
 	pendingAuthState: "",
 	pendingFolderPickState: "",
 	customClientId: "",

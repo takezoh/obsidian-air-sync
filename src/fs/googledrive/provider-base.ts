@@ -259,23 +259,25 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 		return this.clientFor(this.auth.createDetachedGoogleAuth(data, logger), data, logger);
 	}
 
+	/** Open the per-target IndexedDB cache store, or null if no folder is bound. */
+	private metadataStoreFor(settings: AirSyncSettings): MetadataStore<DriveFile> | null {
+		const data = this.getData(settings);
+		if (!data.remoteVaultFolderId) return null;
+		return new MetadataStore<DriveFile>(`${settings.vaultId}-${data.remoteVaultFolderId}`, {
+			dbNamePrefix: "air-sync-drive",
+			version: 1,
+		});
+	}
+
 	createFs(app: App, settings: AirSyncSettings, logger?: Logger): IFileSystem | null {
 		const data = this.getData(settings);
 		const tokens = readDriveTokens(this.secretStore, this.type);
 		if (!tokens.refreshToken || !data.remoteVaultFolderId) return null;
 
 		const client = this.makeClient(settings, logger);
-		const metadataStore = new MetadataStore<DriveFile>(`${settings.vaultId}-${data.remoteVaultFolderId}`, {
-			dbNamePrefix: "air-sync-drive",
-			version: 1,
-		});
-		const fs = new GoogleDriveFs(client, data.remoteVaultFolderId, logger, metadataStore);
-
-		if (data.changesStartPageToken) {
-			fs.changesPageToken = data.changesStartPageToken;
-		}
-
-		return fs;
+		// The delta cursor is NOT seeded from settings — it lives in the metadata
+		// store alongside the file map and is restored together on init (ADR 0001).
+		return new GoogleDriveFs(client, data.remoteVaultFolderId, logger, this.metadataStoreFor(settings) ?? undefined);
 	}
 
 	isConnected(settings: AirSyncSettings): boolean {
@@ -288,25 +290,15 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 		return `${this.type}:${data.remoteVaultFolderId}`;
 	}
 
-	resetTargetState(settings: AirSyncSettings): void {
-		// backendData is the active backend's single bag, so its cursor lives at the top level.
-		delete settings.backendData.changesStartPageToken;
-	}
-
-	hasCheckpoint(settings: AirSyncSettings): boolean {
-		return !!this.getData(settings).changesStartPageToken;
-	}
-
-	readBackendState(fs: IFileSystem, commitCheckpoint: boolean): Record<string, unknown> {
+	readBackendState(fs: IFileSystem): Record<string, unknown> {
 		if (!(fs instanceof GoogleDriveFs)) return {};
 		const result: Record<string, unknown> = {};
 
-		// Advance the persisted cursor only on full success; on a partial/interrupted
-		// cycle leave it at the last committed value so the next run re-detects the gap.
-		const pageToken = fs.changesPageToken;
-		if (commitCheckpoint && pageToken) result.changesStartPageToken = pageToken;
-
-		// Store refreshed tokens in SecretStorage (not in backendData)
+		// The delta cursor is no longer persisted in settings — it commits atomically
+		// with the file map in the metadata store (ADR 0001). Here we only persist the
+		// non-secret token expiry; the tokens themselves go to SecretStorage. (Token
+		// state is saved on every cycle, clean or not: a refresh that already succeeded
+		// should not be discarded just because a later file op failed.)
 		const tokens = this.auth.getTokenState();
 		if (tokens && tokens.refreshToken) {
 			storeDriveTokens(this.secretStore, this.type, tokens);
@@ -317,10 +309,10 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 	}
 
 	/**
-	 * Flush the metadata cache to IndexedDB after a clean cycle, before the cursor
-	 * commits in {@link readBackendState} — so a crash can't leave the cache ahead
-	 * of the committed cursor (which would drop a remote deletion the replay can't
-	 * re-detect).
+	 * Flush the metadata cache AND the delta cursor to IndexedDB after a clean cycle,
+	 * atomically in one transaction (ADR 0001) — so a crash can never leave the cache
+	 * ahead of (or behind) the cursor and drop a remote deletion the replay can't
+	 * re-detect. The cursor is no longer persisted via {@link readBackendState}.
 	 */
 	async commitCheckpoint(fs: IFileSystem): Promise<void> {
 		if (fs instanceof GoogleDriveFs) await fs.commitCheckpoint();
@@ -449,7 +441,26 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 	async disconnect(_settings: AirSyncSettings): Promise<Record<string, unknown>> {
 		await this.auth.revokeAuth();
 		this.clearPluginSecrets();
+		// The per-target IndexedDB cache + cursor is cleared by BackendManager via the
+		// live FS's resetCheckpoint() (one connection, no race) — see disconnectBackend.
 		return { ...this.getDefaultData() };
+	}
+
+	/**
+	 * Clear the per-target checkpoint store by its settings key, without a live FS
+	 * (used by disconnect when the backend had no live FS — e.g. expired auth — so
+	 * no stale checkpoint survives). Best-effort: a failure must not block disconnect.
+	 */
+	async clearCheckpointStore(settings: AirSyncSettings): Promise<void> {
+		const store = this.metadataStoreFor(settings);
+		if (!store) return;
+		try {
+			await store.open();
+			await store.clear();
+			await store.close();
+		} catch {
+			/* non-fatal: an orphaned store is keyed by the old target and never reused */
+		}
 	}
 
 	clearPluginSecrets(): void {

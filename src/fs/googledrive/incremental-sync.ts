@@ -138,21 +138,33 @@ export async function applyIncrementalChanges(
 }
 
 /**
- * Flush the metadata cache to IndexedDB at a checkpoint commit. `fullPersist`
- * rewrites the whole map (after a full scan); otherwise the touched paths are
- * reconciled against the live cache — present → upsert, absent → delete. The
- * reconcile reads the final cache state, so it is order-independent and correct
- * even when `touched` spans several earlier failed cycles.
+ * IndexedDB meta key under which the delta cursor is persisted, ALONGSIDE the
+ * file map and in the SAME transaction (see {@link commitDriveCache}). Co-locating
+ * the cursor with the cache is what makes the checkpoint atomic — there is no
+ * separate settings write that a crash could leave out of step with the cache.
+ */
+export const CHANGES_CURSOR_KEY = "changesStartPageToken";
+
+/**
+ * Flush the metadata cache AND the delta cursor to IndexedDB at a checkpoint
+ * commit, atomically. `fullPersist` rewrites the whole map (after a full scan);
+ * otherwise the touched paths are reconciled against the live cache — present →
+ * upsert, absent → delete. The reconcile reads the final cache state, so it is
+ * order-independent and correct even when `touched` spans several earlier failed
+ * cycles. The cursor is written in the SAME transaction as the file changes, so
+ * the persisted cache can never run ahead of (or behind) the committed cursor.
  */
 export async function commitDriveCache(
 	store: MetadataStore<DriveFile>,
 	cache: DriveMetadataCache,
 	touched: Set<string>,
 	fullPersist: boolean,
+	cursor: string | null,
 ): Promise<void> {
 	await store.open();
+	const meta = cursor ? new Map([[CHANGES_CURSOR_KEY, cursor]]) : new Map<string, string>();
 	if (fullPersist) {
-		await store.saveAll(cache.exportRecords(), new Map());
+		await store.saveAll(cache.exportRecords(), meta);
 		return;
 	}
 	const updated: { path: string; file: DriveFile; isFolder: boolean }[] = [];
@@ -162,8 +174,53 @@ export async function commitDriveCache(
 		if (file) updated.push({ path, file, isFolder: cache.isFolder(path) });
 		else deleted.push(path);
 	}
-	if (updated.length > 0) await store.putFiles(updated);
-	if (deleted.length > 0) await store.deleteFiles(deleted);
+	await store.commitIncremental(updated, deleted, meta);
+}
+
+/** Snapshot the cache's current path-by-Drive-id mapping (before a 410 full-scan diff). */
+export function snapshotPathsById(cache: DriveMetadataCache): Map<string, string> {
+	const byId = new Map<string, string>();
+	for (const [path, file] of cache.entries()) byId.set(file.id, path);
+	return byId;
+}
+
+/**
+ * Compute a remote delta by diffing a pre-scan path-by-id snapshot against the
+ * freshly-scanned cache — the 410 (cursor-expired) fallback. Keys on Drive id, so
+ * it detects adds/deletes/renames but NOT in-place content edits (same path+id);
+ * those are caught by the next incremental sync or WARM mode's local-vs-record check.
+ */
+export function diffCacheByDriveId(
+	oldPathById: Map<string, string>,
+	cache: DriveMetadataCache,
+	logger?: Logger,
+): { modified: string[]; deleted: string[]; renamed: RenamePair[] } {
+	const modified: string[] = [];
+	const deleted: string[] = [];
+	const renamed: RenamePair[] = [];
+	const newIds = new Set<string>();
+	for (const [newPath, file] of cache.entries()) {
+		newIds.add(file.id);
+		const oldPath = oldPathById.get(file.id);
+		if (!oldPath) {
+			modified.push(newPath);
+		} else if (oldPath !== newPath) {
+			renamed.push({ oldPath, newPath, isFolder: cache.isFolder(newPath) || undefined });
+			modified.push(newPath);
+			deleted.push(oldPath);
+		}
+	}
+	for (const [id, oldPath] of oldPathById) {
+		if (!newIds.has(id)) deleted.push(oldPath);
+	}
+	if (modified.length > 0 || deleted.length > 0 || renamed.length > 0) {
+		logger?.info("Full scan delta", {
+			added: modified.length - renamed.length,
+			deleted: deleted.length - renamed.length,
+			renamed: renamed.length,
+		});
+	}
+	return { modified, deleted, renamed };
 }
 
 /** Check if an error is an HTTP error with the given status code */

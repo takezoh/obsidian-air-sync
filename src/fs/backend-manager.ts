@@ -60,6 +60,7 @@ export class BackendManager {
 			// transient null neither resets state nor overwrites the stored identity.
 			const newIdentity = provider.getIdentity(settings);
 			const storedIdentity = settings.lastSyncedIdentity ?? "";
+			let identityChanged = false;
 			if (newIdentity && newIdentity !== storedIdentity) {
 				// Reset baselines only when there WAS a prior target — a first-ever
 				// identity has nothing to reconcile against. Persist the new identity
@@ -69,16 +70,14 @@ export class BackendManager {
 						from: storedIdentity,
 						to: newIdentity,
 					});
-					provider.resetTargetState?.(settings);
 					await this.deps.onIdentityChanged();
+					identityChanged = true;
 				}
 				settings.lastSyncedIdentity = newIdentity;
 				await this.deps.saveSettings();
 			}
 
-			this.remoteFs?.close?.()?.catch((e: unknown) => {
-				this.deps.getLogger().warn("Failed to close previous backend", { error: e instanceof Error ? e.message : String(e) });
-			});
+			this.closeRemoteFs();
 			if (!provider.isConnected(settings)) {
 				this.remoteFs = null;
 				this.deps.onDisconnected();
@@ -90,6 +89,11 @@ export class BackendManager {
 
 			this.remoteFs = provider.createFs(this.deps.getApp(), settings, this.deps.getLogger());
 			if (this.remoteFs) {
+				// An identity change cleared the per-file SyncRecord baseline, so the next
+				// sync MUST cold-reconcile. Drop any checkpoint the new target's store may
+				// still hold from a prior binding (its cursor lives with the cache now,
+				// ADR 0001) — otherwise warm/hot detection would run with no baseline.
+				if (identityChanged) await this.remoteFs.resetCheckpoint?.();
 				this.deps.onConnected(this.remoteFs);
 				this.deps.getLogger().info("Backend initialized", { backend: settings.backendType });
 			}
@@ -130,10 +134,10 @@ export class BackendManager {
 				this.deps.getApp(), settings, this.deps.getVaultName(), this.deps.getLogger(),
 			);
 			settings.backendData = { ...settings.backendData, ...result.backendUpdates };
-			// New target → drop the previous folder's delta cursor, persisted now so a
-			// reload before the next sync can't load a stale cursor against the new folder.
-			provider.resetTargetState?.(settings);
 			await this.deps.saveSettings();
+			// New target's checkpoint reset happens in initBackend() below, when it
+			// re-detects the identity change (the cursor lives in the per-target store
+			// now, so there is no stale settings cursor to drop here — ADR 0001).
 			this.deps.notify("Remote folder updated");
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
@@ -199,11 +203,10 @@ export class BackendManager {
 				params, settings, this.deps.getLogger(),
 			);
 			settings.backendData = { ...settings.backendData, ...result.backendUpdates };
-			// New target → drop the previous folder's delta cursor, and persist it now
-			// (not just in-memory) so a reload before the next sync can't load a stale
-			// cursor against the newly-bound folder.
-			provider.resetTargetState?.(settings);
 			await this.deps.saveSettings();
+			// New target's checkpoint reset happens in initBackend() below, when it
+			// re-detects the identity change (the cursor lives in the per-target store
+			// now — ADR 0001).
 			this.deps.notify("Remote folder updated");
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
@@ -293,22 +296,68 @@ export class BackendManager {
 		this.deps.refreshSettingsDisplay();
 	}
 
+	/** Close the current FS's connections, swallowing errors (best-effort teardown). */
+	private closeRemoteFs(): void {
+		this.remoteFs?.close?.()?.catch((e: unknown) => {
+			this.deps.getLogger().warn("Failed to close backend", { error: e instanceof Error ? e.message : String(e) });
+		});
+	}
+
+	/**
+	 * Drop the current target's checkpoint store (cursor + cache) so no stale
+	 * checkpoint survives a disconnect/switch. Prefer the LIVE FS (its single open
+	 * connection, no second connection to the same DB); when there is none — e.g. an
+	 * expired backend with no FS — clear by settings key. Best-effort; caller must
+	 * invoke it BEFORE backendData is wiped (the folder id keys the store).
+	 */
+	private async dropCheckpointStore(settings: AirSyncSettings): Promise<void> {
+		if (this.remoteFs) {
+			await this.remoteFs.resetCheckpoint?.()?.catch((e: unknown) => {
+				this.deps.getLogger().warn("Failed to clear checkpoint store", {
+					error: e instanceof Error ? e.message : String(e),
+				});
+			});
+		} else {
+			await this.backendProvider?.clearCheckpointStore?.(settings);
+		}
+	}
+
 	/** Disconnect the current backend */
 	async disconnectBackend(): Promise<void> {
 		if (!this.backendProvider) return;
+		if (this.connecting) {
+			this.deps.notify("Busy connecting — try again in a moment.");
+			return;
+		}
 
 		const settings = this.deps.getSettings();
-		const resetData = await this.backendProvider.disconnect(settings);
-		settings.backendData = resetData;
-		// Forget the synced identity so a later reconnect (to any target) starts from
-		// a clean baseline rather than reusing the just-cleared state's identity.
-		settings.lastSyncedIdentity = "";
-		await this.deps.saveSettings();
+		// Hold `connecting` across the teardown so a NEW sync can't start mid-disconnect.
+		// (An already-in-flight cycle isn't interrupted — it holds its own remoteFs ref;
+		// if it re-commits a checkpoint after the clear, the next reconnect's baseline is
+		// empty so collectChanges forces a COLD reconcile that ignores the stale cursor.)
+		this.connecting = true;
+		try {
+			// Drop the per-target checkpoint store so no stale checkpoint survives a
+			// reconnect. BEFORE disconnect() resets backendData (the folder id keys it).
+			await this.dropCheckpointStore(settings);
 
-		await this.deps.onIdentityChanged();
+			const resetData = await this.backendProvider.disconnect(settings);
+			settings.backendData = resetData;
+			// Forget the synced identity so a later reconnect (to any target) starts
+			// from a clean baseline rather than reusing the just-cleared state's identity.
+			settings.lastSyncedIdentity = "";
+			await this.deps.saveSettings();
 
-		this.remoteFs = null;
-		this.deps.onDisconnected();
+			await this.deps.onIdentityChanged();
+
+			// Close the FS connection before dropping it — dropCheckpointStore opened the
+			// store (via resetCheckpoint) to clear it, so nulling without close leaks it.
+			this.closeRemoteFs();
+			this.remoteFs = null;
+			this.deps.onDisconnected();
+		} finally {
+			this.connecting = false;
+		}
 
 		this.deps.refreshSettingsDisplay();
 	}
@@ -354,6 +403,10 @@ export class BackendManager {
 				p.clearPluginSecrets?.();
 			}
 
+			// Drop the OLD target's checkpoint store too, so a switch leaves no orphan.
+			// BEFORE backendData is wiped below (the folder id keys the store).
+			await this.dropCheckpointStore(settings);
+
 			// Hard-clear persisted params (including any custom OAuth references) and the
 			// synced identity, then drop the sync-state baselines.
 			settings.backendData = {};
@@ -361,9 +414,7 @@ export class BackendManager {
 			await this.deps.onIdentityChanged();
 
 			settings.backendType = newType;
-			this.remoteFs?.close?.()?.catch((e: unknown) => {
-				this.deps.getLogger().warn("Failed to close previous backend", { error: e instanceof Error ? e.message : String(e) });
-			});
+			this.closeRemoteFs();
 			this.remoteFs = null;
 			this.backendProvider = null;
 			await this.deps.saveSettings();
@@ -378,8 +429,6 @@ export class BackendManager {
 
 	/** Release resources */
 	close(): void {
-		this.remoteFs?.close?.()?.catch((e: unknown) => {
-			this.deps.getLogger().warn("Failed to close backend on unload", { error: e instanceof Error ? e.message : String(e) });
-		});
+		this.closeRemoteFs();
 	}
 }

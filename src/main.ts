@@ -251,9 +251,10 @@ export default class AirSyncPlugin extends Plugin {
 	 * being silently dropped while the in-flight sync re-commits a checkpoint.
 	 */
 	async rescan(): Promise<void> {
-		this.backendManager.getBackendProvider()?.resetTargetState?.(this.settings);
-		await this.saveSettings();
-		await this.orchestrator.runSync();
+		// Discard the committed checkpoint (delta cursor + cache) and run a cold
+		// reconcile. The orchestrator performs the reset inside its sync mutex so it
+		// can't race an in-flight sync that holds the live FS cache (ADR 0001).
+		await this.orchestrator.rescan();
 	}
 
 	private updateStatusBar(): void {

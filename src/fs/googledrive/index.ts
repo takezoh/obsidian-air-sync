@@ -6,7 +6,7 @@ import type { DriveClient } from "./client";
 import type { MetadataStore } from "../../store/metadata-store";
 import type { Logger } from "../../logging/logger";
 import { DriveMetadataCache } from "./metadata-cache";
-import { applyIncrementalChanges, commitDriveCache } from "./incremental-sync";
+import { applyIncrementalChanges, commitDriveCache, CHANGES_CURSOR_KEY, snapshotPathsById, diffCacheByDriveId } from "./incremental-sync";
 import { INTERNAL_METADATA_PATH } from "../../sync/remote-vault";
 import { sha256 } from "../../utils/hash";
 import { AsyncMutex } from "../../queue/async-queue";
@@ -130,40 +130,38 @@ export class GoogleDriveFs implements IFileSystem {
 	}
 
 	/**
-	 * Ensure the metadata cache is initialized. Returns true when the cursor is a
-	 * prior checkpoint that warrants an incremental replay (loaded from cache, or
-	 * restored after rebuilding an empty cache); false after a fresh full scan
-	 * (the cursor was just acquired, so there is nothing newer to fetch yet).
+	 * Ensure the metadata cache is initialized. Returns true when a prior checkpoint
+	 * (file map + delta cursor) was restored from IndexedDB and warrants an
+	 * incremental replay; false after a fresh full scan (the cursor was just
+	 * acquired, so there is nothing newer to fetch yet).
 	 */
 	private async ensureInitialized(): Promise<boolean> {
 		if (this.initialized) return true;
-		if (this._changesPageToken) {
-			if (await this.loadFromCache()) return true;
-			// Cursor present but cache empty/missing: rebuild the file map without
-			// moving the cursor, so the next changes.list spans any un-synced gap.
-			const keep = this._changesPageToken;
-			await this.fullScan();
-			this._changesPageToken = keep;
-			return true;
-		}
+		if (await this.loadFromCache()) return true;
 		await this.fullScan();
 		return false;
 	}
 
 	/**
-	 * Restore the file map from IndexedDB. Returns false when there is no cursor
-	 * to continue from, or the cache is empty (the caller then full-scans). Never
-	 * overwrites _changesPageToken — the committed cursor (settings) is authoritative.
+	 * Restore the file map AND the delta cursor from IndexedDB. They are committed
+	 * together in one transaction (see commitDriveCache / ADR 0001), so the **cursor's
+	 * presence** is the checkpoint signal — restore whenever it is present, even if the
+	 * file map is empty (a vault that legitimately synced down to zero files is a valid
+	 * checkpoint, and this keys identically to {@link hasCheckpoint}). No cursor means
+	 * no usable checkpoint; the caller full-scans (losing the cursor is safe — a cold
+	 * reconcile re-derives everything from the SyncRecord baseline).
 	 */
 	private async loadFromCache(): Promise<boolean> {
-		if (!this.metadataStore || !this._changesPageToken) return false;
+		if (!this.metadataStore) return false;
 		try {
 			await this.metadataStore.open();
-			const { files } = await this.metadataStore.loadAll();
-			if (files.length === 0) return false;
+			const { files, meta } = await this.metadataStore.loadAll();
+			const cursor = meta.get(CHANGES_CURSOR_KEY);
+			if (!cursor) return false;
 
 			this.cache.clear();
 			this.cache.bulkLoad(files.map((r) => [r.path, r.file]));
+			this._changesPageToken = cursor;
 			this.initialized = true;
 			this.logger?.info("Cache loaded from IndexedDB", { fileCount: files.length });
 			return true;
@@ -176,25 +174,60 @@ export class GoogleDriveFs implements IFileSystem {
 	}
 
 	/**
-	 * Flush the cache to IndexedDB. Called only after a clean cycle, before the
-	 * cursor commits (see IBackendProvider.commitCheckpoint), so the persisted cache
-	 * tracks the committed cursor and never runs ahead of it.
+	 * Flush the file map AND the delta cursor to IndexedDB, atomically, after a
+	 * clean cycle. Because both commit in one transaction (see commitDriveCache /
+	 * ADR 0001), the persisted cache can never run ahead of — nor behind — the
+	 * committed cursor: a failed flush lands neither, and on the next run the replay
+	 * re-detects any un-flushed work. The buffer is cleared only after success (a
+	 * throw propagates and retains it for the next clean cycle's retry).
 	 */
 	async commitCheckpoint(): Promise<void> {
 		const store = this.metadataStore;
 		if (!store) return;
 		await this.cacheMutex.run(async () => {
-			// Flush first, and clear the buffer ONLY after it succeeds. A failed flush
-			// must PROPAGATE (not be swallowed): the orchestrator awaits this before
-			// committing the advanced delta cursor, so a throw aborts that commit and
-			// keeps the persisted cache and the committed cursor in lockstep. Swallowing
-			// would let the cursor run ahead of the unpersisted cache, and a later
-			// restart's replay could not re-detect an un-flushed remote deletion (the
-			// crash-recovery contract — see docs/adr/0001 and IBackendProvider.commitCheckpoint).
-			// Retaining the buffer lets the next clean cycle retry the flush.
-			await commitDriveCache(store, this.cache, this.touchedPaths, this.pendingFullPersist);
+			await commitDriveCache(store, this.cache, this.touchedPaths, this.pendingFullPersist, this._changesPageToken);
 			this.pendingFullPersist = false;
 			this.touchedPaths.clear();
+		});
+	}
+
+	/**
+	 * Whether a committed delta checkpoint exists. The orchestrator uses this to
+	 * force a cold reconcile when there is none (first sync, or after a rescan).
+	 * Reads the in-memory cursor once initialized, otherwise peeks the IDB store —
+	 * the cursor is co-located with the cache, so its presence is the checkpoint.
+	 */
+	async hasCheckpoint(): Promise<boolean> {
+		if (this.initialized) return !!this._changesPageToken;
+		if (!this.metadataStore) return false;
+		try {
+			await this.metadataStore.open();
+			return !!(await this.metadataStore.getMeta(CHANGES_CURSOR_KEY));
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * Discard the committed checkpoint (cursor + cache) so the next sync cold-
+	 * reconciles. Used by the Rescan action and an identity change. Losing the
+	 * checkpoint is safe — a cold full list × SyncRecord baseline join re-derives
+	 * every change (ADR 0001). Runs under `cacheMutex` (like every other mutator of
+	 * the cache/cursor/buffer state) so it can't corrupt a concurrent op; the IDB
+	 * clear runs first, so if it throws the in-memory state stays consistent with the
+	 * (un-cleared) store rather than being half-wiped.
+	 */
+	async resetCheckpoint(): Promise<void> {
+		await this.cacheMutex.run(async () => {
+			if (this.metadataStore) {
+				await this.metadataStore.open();
+				await this.metadataStore.clear();
+			}
+			this._changesPageToken = null;
+			this.cache.clear();
+			this.initialized = false;
+			this.touchedPaths.clear();
+			this.pendingFullPersist = false;
 		});
 	}
 
@@ -238,56 +271,17 @@ export class GoogleDriveFs implements IFileSystem {
 	}
 
 	/**
-	 * Full scan with delta computation: snapshot old state from persisted
-	 * metadata, perform full scan, then diff old vs new by Drive file ID.
-	 * Detects renames, additions, and deletions. Does NOT detect in-place
-	 * content changes (same path, same ID) — those are caught by the next
-	 * incremental sync or by WARM mode's local-vs-record comparison.
+	 * Full scan with delta computation (the 410 cursor-expiry fallback): snapshot
+	 * old paths-by-id, perform a fresh full scan, then diff old vs new by Drive id
+	 * (see diffCacheByDriveId). Returns null on the initial sync (no prior snapshot).
 	 */
 	private async fullScanWithDelta(): Promise<RemoteDelta | null> {
-		// Snapshot old paths by ID before the full scan overwrites the cache.
-		// (Only reached on 410 expiry, when the cache is already populated.)
-		const oldPathById = new Map<string, string>();
-		for (const [path, file] of this.cache.entries()) {
-			oldPathById.set(file.id, path);
-		}
-
+		// Snapshot before fullScan() overwrites the cache (only reached on 410, when
+		// the cache is already populated).
+		const oldPathById = snapshotPathsById(this.cache);
 		await this.fullScan();
-
 		if (oldPathById.size === 0) return null; // initial sync — no delta
-
-		const modified: string[] = [];
-		const deleted: string[] = [];
-		const renamed: RenamePair[] = [];
-		const newIds = new Set<string>();
-
-		for (const [newPath, file] of this.cache.entries()) {
-			newIds.add(file.id);
-			const oldPath = oldPathById.get(file.id);
-			if (!oldPath) {
-				modified.push(newPath);
-			} else if (oldPath !== newPath) {
-				renamed.push({ oldPath, newPath, isFolder: this.cache.isFolder(newPath) || undefined });
-				modified.push(newPath);
-				deleted.push(oldPath);
-			}
-		}
-
-		for (const [id, oldPath] of oldPathById) {
-			if (!newIds.has(id)) {
-				deleted.push(oldPath);
-			}
-		}
-
-		if (modified.length > 0 || deleted.length > 0 || renamed.length > 0) {
-			this.logger?.info("Full scan delta", {
-				added: modified.length - renamed.length,
-				deleted: deleted.length - renamed.length,
-				renamed: renamed.length,
-			});
-		}
-
-		return { modified, deleted, renamed };
+		return diffCacheByDriveId(oldPathById, this.cache, this.logger);
 	}
 
 	/**

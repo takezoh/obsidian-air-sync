@@ -75,33 +75,29 @@ export class MetadataStore<T> {
 		});
 	}
 
-	/** Upsert file records (used after incremental changes) */
-	async putFiles(records: FileRecord<T>[]): Promise<void> {
-		await this.helper.runTransaction(FILES_STORE, "readwrite", (tx) => {
-			const store = tx.objectStore(FILES_STORE);
-			for (const record of records) {
-				store.put(record);
-			}
+	/**
+	 * Upsert file records, delete others, and write meta entries — all in ONE
+	 * readwrite transaction over both stores. Used for an incremental checkpoint:
+	 * the file-map changes and the delta cursor (in `meta`) commit atomically, so a
+	 * crash can never leave the persisted cache out of step with the persisted
+	 * cursor (the inverse would silently drop a remote deletion on the next replay).
+	 */
+	async commitIncremental(updated: FileRecord<T>[], deleted: string[], meta: Map<string, string>): Promise<void> {
+		await this.helper.runTransaction([FILES_STORE, META_STORE], "readwrite", (tx) => {
+			const filesStore = tx.objectStore(FILES_STORE);
+			const metaStore = tx.objectStore(META_STORE);
+			for (const record of updated) filesStore.put(record);
+			for (const path of deleted) filesStore.delete(path);
+			for (const [key, value] of meta) metaStore.put({ key, value });
 			return () => {};
 		});
 	}
 
-	/** Delete file records by path (used after incremental changes) */
-	async deleteFiles(paths: string[]): Promise<void> {
-		await this.helper.runTransaction(FILES_STORE, "readwrite", (tx) => {
-			const store = tx.objectStore(FILES_STORE);
-			for (const path of paths) {
-				store.delete(path);
-			}
-			return () => {};
-		});
-	}
-
-	/** Update a single meta entry */
-	async putMeta(key: string, value: string): Promise<void> {
-		await this.helper.runTransaction(META_STORE, "readwrite", (tx) => {
-			tx.objectStore(META_STORE).put({ key, value });
-			return () => {};
+	/** Read a single meta value, or undefined if absent. */
+	async getMeta(key: string): Promise<string | undefined> {
+		return this.helper.runTransaction(META_STORE, "readonly", (tx) => {
+			const req = tx.objectStore(META_STORE).get(key);
+			return () => (req.result as { key: string; value: string } | undefined)?.value;
 		});
 	}
 

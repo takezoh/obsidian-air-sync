@@ -10,7 +10,6 @@ import { GoogleDriveAuthProviderBase, GoogleDriveProviderBase } from "./provider
 export interface GoogleDriveBackendData {
 	remoteVaultFolderId: string;
 	accessTokenExpiry: number;
-	changesStartPageToken: string;
 	pendingAuthState: string;
 	/** CSRF nonce for an in-flight web folder pick (Google Picker); cleared on completion. */
 	pendingFolderPickState: string;
@@ -19,7 +18,6 @@ export interface GoogleDriveBackendData {
 const DEFAULT_GDRIVE_DATA: GoogleDriveBackendData = {
 	remoteVaultFolderId: "",
 	accessTokenExpiry: 0,
-	changesStartPageToken: "",
 	pendingAuthState: "",
 	pendingFolderPickState: "",
 };

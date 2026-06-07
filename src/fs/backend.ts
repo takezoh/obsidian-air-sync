@@ -31,42 +31,25 @@ export interface IBackendProvider {
 	getIdentity(settings: AirSyncSettings): string | null;
 
 	/**
-	 * Called when the backend identity changes (e.g. user switches to a different folder).
-	 * The provider should reset any stale cursors/tokens in backendData that are
-	 * scoped to the previous remote target.
-	 */
-	resetTargetState?(settings: AirSyncSettings): void;
-
-	/**
-	 * Whether a committed incremental checkpoint (delta cursor) exists for the
-	 * current target. When false, the sync engine cannot trust delta-based remote
-	 * detection — the last sync never completed, or was reset — so it forces a
-	 * full cold reconcile. Backends without incremental sync may omit this.
-	 */
-	hasCheckpoint?(settings: AirSyncSettings): boolean;
-
-	/**
 	 * Read updated internal state from the FS to persist in settings.backendData.
-	 * Called after each sync cycle so backends can save tokens, cursors, etc.
-	 * Returns an opaque record — the sync layer does not inspect its contents.
-	 * Tokens are stored in SecretStorage rather than returned in the record.
+	 * Called after each sync cycle so backends can save non-secret state (e.g. token
+	 * expiry). Returns an opaque record — the sync layer does not inspect its
+	 * contents. Tokens are stored in SecretStorage rather than returned in the record.
 	 *
-	 * `commitCheckpoint` is true only when the whole pipeline succeeded
-	 * (failed === 0). When false, the backend must NOT advance its persisted
-	 * delta cursor — the spread in the caller preserves the prior committed value
-	 * — so an interrupted/partial sync re-detects the un-synced work next time.
+	 * The delta cursor is NOT persisted here — it is committed atomically with the
+	 * file-metadata cache in the backend's own store (see {@link commitCheckpoint}
+	 * and ADR 0001), so there is no separate settings write to gate on cycle success.
 	 */
-	readBackendState?(fs: IFileSystem, commitCheckpoint: boolean): Record<string, unknown>;
+	readBackendState?(fs: IFileSystem): Record<string, unknown>;
 
 	/**
-	 * Flush the backend's durable cache (e.g. the IndexedDB file-metadata map) to
-	 * its store. Called ONLY after a fully-successful cycle (failed === 0) and
-	 * BEFORE {@link readBackendState} commits the delta cursor — so the persisted
-	 * cache never runs ahead of the committed cursor. On a failed cycle this is NOT
-	 * called: the cache stays at the last committed state, so the next run's replay
-	 * from the committed cursor re-detects the un-synced work (a remote deletion in
-	 * particular, which a replay against an already-absorbed cache would silently
-	 * drop). Optional: backends without such a cache omit it.
+	 * Flush the backend's durable checkpoint — the file-metadata cache AND the delta
+	 * cursor — to its store, atomically (one transaction; see ADR 0001). Called ONLY
+	 * after a fully-successful cycle (failed === 0). On a failed cycle this is NOT
+	 * called: the cache and cursor stay at the last committed state, so the next run's
+	 * replay re-detects the un-synced work (a remote deletion in particular, which a
+	 * replay against an already-absorbed cache would silently drop). Optional:
+	 * backends without such a cache omit it.
 	 */
 	commitCheckpoint?(fs: IFileSystem): Promise<void>;
 
@@ -110,6 +93,16 @@ export interface IBackendProvider {
 	 * id, or that display the id directly, omit it. May make a network call.
 	 */
 	getRemoteVaultDisplayPath?(settings: AirSyncSettings, logger?: Logger): Promise<string | null>;
+
+	/**
+	 * Clear this backend's per-target durable checkpoint store (the IndexedDB
+	 * file-map + delta cursor) by its settings-derived key, WITHOUT needing a live
+	 * filesystem. Used by the disconnect path when no live FS exists (e.g. the
+	 * backend was in an error/expired state) so a stale checkpoint can't survive a
+	 * disconnect and mislead a later reconnect. Best-effort. Optional: backends
+	 * without such a store omit it.
+	 */
+	clearCheckpointStore?(settings: AirSyncSettings): Promise<void>;
 
 	/**
 	 * Disconnect the backend: revoke auth and reset all backend state.

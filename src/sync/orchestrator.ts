@@ -113,6 +113,17 @@ export class SyncOrchestrator {
 		return isIgnored(path, settings.ignorePatterns);
 	}
 
+	/**
+	 * Discard the committed remote checkpoint and run a sync, forcing one cold
+	 * reconcile (full list × baseline). The reset runs UNDER syncMutex so it can't
+	 * clear the live FS cache/cursor mid-cycle and corrupt an in-flight sync; the
+	 * subsequent runSync then sees no checkpoint and goes cold.
+	 */
+	async rescan(): Promise<void> {
+		await this.syncMutex.run(() => this.deps.remoteFs()?.resetCheckpoint?.());
+		await this.runSync();
+	}
+
 	async runSync(): Promise<void> {
 		const remoteFs = this.deps.remoteFs();
 		if (!remoteFs) {
@@ -145,10 +156,10 @@ export class SyncOrchestrator {
 				// trusted: no committed remote checkpoint (last sync never completed
 				// or was reset), or the previous cycle failed (its in-memory cursor
 				// may have advanced past un-committed work). Cold recovers either via
-				// a full list × baseline join.
-				const provider = this.deps.backendProvider();
-				const noCheckpoint = provider?.hasCheckpoint
-					? !provider.hasCheckpoint(this.deps.getSettings())
+				// a full list × baseline join. The checkpoint (delta cursor) lives in
+				// the backend's own store now, so this is an async FS query.
+				const noCheckpoint = remoteFs.hasCheckpoint
+					? !(await remoteFs.hasCheckpoint())
 					: false;
 				const forceFullScan = noCheckpoint || this.recoverViaColdScan;
 				this.deps.logger?.info("Sync started", { forceFullScan });
@@ -386,22 +397,21 @@ export class SyncOrchestrator {
 
 		const result = await executePlan(plan, ctx);
 
-		// Persist backend state. Advance the delta cursor only on a fully clean
-		// cycle (failed === 0) — a partial/interrupted sync must keep the prior
-		// committed cursor so the next run re-detects the un-synced work.
+		// Persist backend state. The delta cursor advances only on a fully clean
+		// cycle (failed === 0): commitCheckpoint flushes the file map AND the cursor
+		// to the backend store atomically, so a partial/interrupted sync keeps the
+		// prior committed cursor and the next run re-detects the un-synced work.
 		const provider = this.deps.backendProvider();
 		const cleanCycle = result.failed.length === 0;
-		// Flush the backend's durable cache BEFORE committing the cursor, and only on
-		// a clean cycle — so a crash mid-cycle can't leave the cache ahead of the
-		// committed cursor (which would drop a remote deletion the replay can't
-		// re-detect). On a failed cycle the cache stays at the committed state.
 		if (cleanCycle && provider?.commitCheckpoint && remoteFs) {
 			await provider.commitCheckpoint(remoteFs);
 		}
+		// readBackendState now persists only non-secret token state (the cursor lives
+		// in the backend store, committed above) — safe to run every cycle.
 		if (provider?.readBackendState && remoteFs) {
 			settings.backendData = {
 				...settings.backendData,
-				...provider.readBackendState(remoteFs, cleanCycle),
+				...provider.readBackendState(remoteFs),
 			};
 		}
 		await this.deps.saveSettings();

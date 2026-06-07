@@ -101,6 +101,23 @@ export interface IFileSystem {
 	} | null>;
 
 	/**
+	 * Whether a committed incremental checkpoint (delta cursor) exists. When false,
+	 * the sync engine cannot trust delta-based remote detection — the last sync never
+	 * completed, or was reset — so it forces a full cold reconcile. The cursor is
+	 * stored with the backend's own cache (not in settings), so this is async.
+	 * Backends without incremental sync may omit it.
+	 */
+	hasCheckpoint?(): Promise<boolean>;
+
+	/**
+	 * Discard the committed checkpoint (delta cursor + any derived cache) so the next
+	 * sync does a full cold reconcile. Used by the Rescan action. Losing the
+	 * checkpoint is safe — a cold list × baseline join re-derives every change.
+	 * Optional: backends without incremental sync omit it.
+	 */
+	resetCheckpoint?(): Promise<void>;
+
+	/**
 	 * Release resources (e.g. close IndexedDB connections).
 	 * Called on plugin unload. Optional — not all backends need cleanup.
 	 */

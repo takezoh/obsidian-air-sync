@@ -184,7 +184,6 @@ describe("GoogleDriveProvider detached auth refresh-token rotation", () => {
 	const expiredData = {
 		remoteVaultFolderId: "FID",
 		accessTokenExpiry: 0, // expired → the detached auth must refresh
-		changesStartPageToken: "",
 		pendingAuthState: "",
 		pendingFolderPickState: "",
 	};

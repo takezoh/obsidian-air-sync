@@ -1,6 +1,6 @@
 # ADR 0001 — The remote metadata cache is subordinate to commit-last state
 
-**Status:** Accepted · 2026-06-07
+**Status:** Accepted · 2026-06-07 · **Revised 2026-06-07** (cursor single-holding: co-located with the cache; supersedes the earlier "keep the cursor in settings" tradeoff)
 **Context area:** sync pipeline / Google Drive backend
 **Related:** [sync-pipeline.md → Crash recovery](../sync-pipeline.md), [google-drive-backend.md](../google-drive-backend.md)
 
@@ -11,7 +11,7 @@ Sync correctness rests on **two, and only two, authoritative states**, both comm
 
 | | State | Where | Commit rule |
 |---|---|---|---|
-| **A** | Incremental-sync position (delta cursor `changesStartPageToken`) | `settings.backendData` | Advanced **only on a fully clean cycle** (`failed === 0`). |
+| **A** | Incremental-sync position (delta cursor `changesStartPageToken`) | the backend's IndexedDB store (`META_STORE`), **co-located with the file-map cache** | Advanced **only on a fully clean cycle** (`failed === 0`), committed in the **same transaction** as the cache. |
 | **B** | Per-file sync state (`SyncRecord`) | sync state store | Written **per file, only after** that file's push/pull/delete succeeds (`plan-executor.ts`: IO → then `commitAction`). |
 
 From these the engine derives its safety property: **a half-finished or crashed cycle
@@ -47,11 +47,13 @@ authoritative state and over-engineering its persistence**:
    from A + B + "re-run converges."
 
 2. **The cache has exactly one invariant: it must never be committed _ahead of_ (nor
-   _behind_) the committed cursor.** Operationally: the cache flush and the cursor
-   advance are **one commit-last unit** — flush the cache, *then* advance the cursor, and
-   if the flush fails, **propagate the error so the cursor is not advanced** (do not
-   swallow). On the next run the cache and cursor are still in step, so the replay
-   re-detects any un-flushed work (a remote deletion in particular).
+   _behind_) the committed cursor.** This is now **structural**: the cache and the cursor
+   live in the **same IndexedDB store** and commit in **one transaction**
+   (`commitDriveCache` → `MetadataStore.saveAll` / `commitIncremental`), so they cannot
+   diverge — a failed flush lands neither. A failed flush still **propagates** (the cycle
+   surfaces an error and the next run re-detects the un-flushed work), but there is no
+   longer a two-store ordering to get wrong, nor a buffer-clear that could outrun a
+   failed persist.
 
 3. **Prefer simple-and-correct over optimized-and-subtle.** The cache flush should do one
    obvious thing. Convergence — not lockstep machinery — is the safety net.
@@ -64,16 +66,27 @@ authoritative state and over-engineering its persistence**:
 
 ## Consequences
 
-**Accepted tradeoff — the millisecond two-store window.** The cursor lives in
-`settings`, the cache in IndexedDB; they cannot be written in one atomic transaction, so
-a hard crash in the ~ms between the two writes can momentarily desync them. This is
-**deliberately not "fixed"**: keeping the cursor in `settings` (not in IndexedDB
-alongside the cache) is what lets the cursor **survive an IndexedDB loss** and drive a
-cheap file-map rebuild (`ensureInitialized`'s "cursor present, cache empty" path). Moving
-the cursor into IndexedDB to close the window would trade that resilience away — it
-relocates the tradeoff rather than removing it. `cc7d9b5` already shrank the window from
-"the whole cycle" (eager persist) to "two adjacent awaits" (commit-last); that residual
-is accepted.
+**Resolved — the cursor is co-located with the cache (single source of truth).** The
+cursor lives in the backend's IndexedDB store (`META_STORE`), committed in the **same
+transaction** as the file-map (`MetadataStore.saveAll` / `commitIncremental`). There is
+no second store and no write ordering, so the earlier "millisecond two-store window"
+(cursor in `settings`, cache in IndexedDB) is **gone** — cache and cursor are atomically
+in step, or both absent.
+
+This **supersedes** the earlier decision to keep the cursor in `settings` for
+"IndexedDB-loss resilience." That resilience was illusory: **losing the cursor converges
+anyway.** An empty/cursor-less store ⇒ no checkpoint ⇒ a cold full list × `SyncRecord`
+baseline join (with md5 comparison) that re-derives **every** change, including in-place
+content edits. So co-locating removes the window at no real cost — the only consequence
+of a rare IndexedDB loss is one extra cold reconcile, which the design already handles.
+The earlier `ensureInitialized` "cursor present, cache empty" rebuild path is removed
+(that state can no longer occur).
+
+On a backend/folder switch or disconnect the store — cursor **and** cache together — is
+cleared alongside `settings.backendData` and SecretStorage, so no stale checkpoint
+lingers (`disconnect` clears it; an identity change drops it via the freshly-built FS's
+`resetCheckpoint()`). The Rescan action likewise discards the checkpoint through the live
+FS (`resetCheckpoint()`), not by editing settings.
 
 **Prohibited patterns** (each previously caused or risked a real bug):
 - eager / mid-cycle cache persistence;
@@ -88,7 +101,12 @@ is accepted.
 
 **Pinned by tests** (keep these green; extend them, do not weaken them):
 - `orchestrator.test.ts` → *"does not advance the committed cursor when the checkpoint
-  flush (cache persist) fails"* and *"…when a cycle has failures"*.
+  flush (cache persist) fails"* (the flush throws ⇒ the post-checkpoint persist step is
+  skipped) and *"…when a cycle has failures"* (a failed cycle never calls
+  `commitCheckpoint`, so the cursor it would advance stays put).
 - `index.test.ts` → *"GoogleDriveFs.commitCheckpoint persistence-failure safety"*,
-  *"re-reports an un-pulled remote DELETION after a crash…"*, and the
+  *"re-reports an un-pulled remote DELETION after a crash…"*, *"treats an empty store as
+  no checkpoint: full-scans fresh and warrants no replay"*, and the rest of the
   *"cursor consolidation (crash safety)"* suite.
+- `metadata-store.test.ts` → *"commitIncremental upserts, deletes, and writes meta in one
+  transaction"* (the atomic cache+cursor co-commit).

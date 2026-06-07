@@ -20,6 +20,7 @@ vi.mock("./registry", () => ({
 let fakeProvider: IBackendProvider;
 let otherProvider: IBackendProvider;
 let fakeFs: IFileSystem;
+let fakeResetCheckpoint: ReturnType<typeof vi.fn>;
 
 function createDeps(
 	settings: AirSyncSettings,
@@ -49,6 +50,7 @@ function createDeps(
 }
 
 beforeEach(() => {
+	fakeResetCheckpoint = vi.fn().mockResolvedValue(undefined);
 	fakeFs = {
 		name: "test-remote",
 		list: vi.fn().mockResolvedValue([]),
@@ -58,6 +60,8 @@ beforeEach(() => {
 		mkdir: vi.fn(),
 		delete: vi.fn(),
 		rename: vi.fn(),
+		resetCheckpoint: fakeResetCheckpoint,
+		hasCheckpoint: vi.fn().mockResolvedValue(false),
 	} as unknown as IFileSystem;
 
 	fakeProvider = {
@@ -71,7 +75,6 @@ beforeEach(() => {
 		createFs: () => fakeFs,
 		isConnected: () => true,
 		getIdentity: () => "test:folder-A",
-		resetTargetState: vi.fn(),
 		disconnect: vi.fn().mockResolvedValue({}),
 		clearPluginSecrets: vi.fn(),
 	};
@@ -133,6 +136,9 @@ describe("BackendManager — identity change triggers onIdentityChanged", () => 
 		await mgr.disconnectBackend();
 
 		expect(deps.onIdentityChanged).toHaveBeenCalledTimes(1);
+		// The per-target checkpoint store (cursor + cache) is cleared via the live FS,
+		// so no stale checkpoint survives the disconnect (works for custom OAuth too).
+		expect(fakeResetCheckpoint).toHaveBeenCalledTimes(1);
 
 		// After disconnect, re-init should not trigger another callback
 		// (lastBackendIdentity was reset to null)
@@ -141,23 +147,42 @@ describe("BackendManager — identity change triggers onIdentityChanged", () => 
 		expect(deps.onIdentityChanged).not.toHaveBeenCalled();
 	});
 
-	it("calls provider.resetTargetState on identity change", async () => {
-		const resetSpy = vi.fn();
-		fakeProvider.resetTargetState = resetSpy;
+	it("clears the orphaned checkpoint store on disconnect when there is no live FS", async () => {
+		// An expired/error-state backend has remoteVaultFolderId bound but no live FS.
+		// Disconnect must still clear the per-target store (by settings key) so a stale
+		// checkpoint can't survive and mislead a later reconnect to the same folder.
+		fakeProvider.isConnected = () => false; // initBackend won't build an FS
+		fakeProvider.createFs = () => null;
+		const clearCheckpointStore = vi.fn().mockResolvedValue(undefined);
+		fakeProvider.clearCheckpointStore = clearCheckpointStore;
 
-		const settings = mockSettings({
-			backendData: { changesStartPageToken: "old-token", other: "keep" },
-		});
+		const settings = mockSettings();
 		const deps = createDeps(settings);
 		const mgr = new BackendManager(deps);
 
-		await mgr.initBackend(); // identity = "test:folder-A"
+		await mgr.initBackend(); // remoteFs stays null (isConnected === false)
+		await mgr.disconnectBackend();
+
+		// No live FS → the by-key store clear runs instead of the FS reset.
+		expect(clearCheckpointStore).toHaveBeenCalledTimes(1);
+		expect(fakeResetCheckpoint).not.toHaveBeenCalled();
+	});
+
+	it("resets the new target's checkpoint on identity change", async () => {
+		// The cursor lives with the cache in the per-target store now (ADR 0001), so an
+		// identity change drops it via the freshly-built FS's resetCheckpoint(), forcing
+		// the next sync to cold-reconcile against the (just-cleared) baseline.
+		const settings = mockSettings();
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+
+		await mgr.initBackend(); // identity = "test:folder-A" (first init, no reset)
+		expect(fakeResetCheckpoint).not.toHaveBeenCalled();
 
 		fakeProvider.getIdentity = () => "test:folder-B";
 		await mgr.initBackend();
 
-		expect(resetSpy).toHaveBeenCalledTimes(1);
-		expect(resetSpy).toHaveBeenCalledWith(settings);
+		expect(fakeResetCheckpoint).toHaveBeenCalledTimes(1);
 	});
 
 	it("clears stale baselines on the first init after a cross-reload backend switch", async () => {
@@ -165,8 +190,6 @@ describe("BackendManager — identity change triggers onIdentityChanged", () => 
 		// identity the state was last reconciled against survives in settings. So a
 		// custom→built-in switch must still be detected on this first init — otherwise
 		// the new target silently reuses the old backend's baselines (nothing uploads).
-		const resetSpy = vi.fn();
-		fakeProvider.resetTargetState = resetSpy;
 		fakeProvider.getIdentity = () => "test:folder-NEW";
 		const settings = mockSettings({ lastSyncedIdentity: "other:folder-OLD" });
 		const deps = createDeps(settings);
@@ -175,7 +198,7 @@ describe("BackendManager — identity change triggers onIdentityChanged", () => 
 		await mgr.initBackend(); // first init of this instance
 
 		expect(deps.onIdentityChanged).toHaveBeenCalledTimes(1);
-		expect(resetSpy).toHaveBeenCalledTimes(1);
+		expect(fakeResetCheckpoint).toHaveBeenCalledTimes(1);
 		expect(settings.lastSyncedIdentity).toBe("test:folder-NEW");
 	});
 
@@ -298,6 +321,20 @@ describe("BackendManager — switchBackend (hard reset)", () => {
 		expect(disconnectSpy).toHaveBeenCalledTimes(1);
 	});
 
+	it("clears the old target's checkpoint store on a backend switch", async () => {
+		// User requirement: switching backends drops the per-target store (cursor +
+		// cache) alongside settings and secrets, so no orphaned checkpoint lingers.
+		const settings = mockSettings({ backendData: { remoteVaultFolderId: "FID" } });
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend(); // live FS present (fakeProvider.isConnected → true)
+
+		await mgr.switchBackend("other");
+
+		// Cleared via the live (old-backend) FS before backendData is wiped.
+		expect(fakeResetCheckpoint).toHaveBeenCalledTimes(1);
+	});
+
 	it("does not revoke the old backend when it was not connected", async () => {
 		const disconnectSpy = vi.fn().mockResolvedValue({});
 		fakeProvider.disconnect = disconnectSpy;
@@ -325,13 +362,16 @@ describe("BackendManager — switchBackend (hard reset)", () => {
 	});
 
 	it("holds the connecting flag across the reset (gates concurrent syncs)", async () => {
-		// isConnected=false skips the revoke so onIdentityChanged is the first suspension.
 		fakeProvider.isConnected = () => false;
 		let connectingDuringReset = false;
 		let release!: () => void;
+		let reached!: () => void;
 		const blocker = new Promise<void>((r) => { release = r; });
+		// Resolves when switchBackend reaches the reset — robust to microtask timing.
+		const atReset = new Promise<void>((r) => { reached = r; });
 		const onIdentityChanged = vi.fn().mockImplementation(async () => {
 			connectingDuringReset = mgr.isConnecting();
+			reached();
 			await blocker;
 		});
 		const settings = mockSettings();
@@ -340,7 +380,7 @@ describe("BackendManager — switchBackend (hard reset)", () => {
 		await mgr.initBackend();
 
 		const done = mgr.switchBackend("other");
-		await Promise.resolve();
+		await atReset;
 		expect(connectingDuringReset).toBe(true); // sync gated out during the reset
 		release();
 		await done;
@@ -408,14 +448,16 @@ describe("BackendManager — web folder pick", () => {
 	});
 
 	it("completeBackendFolderPick binds the result, drops the checkpoint (→ cold sync), and re-inits", async () => {
-		// Seed a committed delta checkpoint from the previous folder.
-		const settings = mockSettings({ backendData: { changesStartPageToken: "OLD" } });
+		const settings = mockSettings();
+		// Identity derives from the bound folder, so changing it is detected on re-init.
+		fakeProvider.getIdentity = () => {
+			const id = settings.backendData.remoteVaultFolderId as string | undefined;
+			return id ? `test:${id}` : "test:folder-A";
+		};
 		const completeSpy = vi.fn().mockResolvedValue({
 			backendUpdates: { remoteVaultFolderId: "id:new", pendingFolderPickState: "" },
 		});
 		fakeProvider.completeWebFolderPick = completeSpy;
-		// Real reset behaviour: clear the checkpoint so the next sync is a full cold reconcile.
-		fakeProvider.resetTargetState = (s) => { delete s.backendData.changesStartPageToken; };
 		const deps = createDeps(settings);
 		const onConnected = deps.onConnected as ReturnType<typeof vi.fn>;
 		const refreshSettingsDisplay = deps.refreshSettingsDisplay as ReturnType<typeof vi.fn>;
@@ -423,6 +465,7 @@ describe("BackendManager — web folder pick", () => {
 		const mgr = new BackendManager(deps);
 		await mgr.initBackend();
 		onConnected.mockClear();
+		fakeResetCheckpoint.mockClear();
 
 		await mgr.completeBackendFolderPick({ id: "id:new", state: "S" });
 
@@ -430,9 +473,9 @@ describe("BackendManager — web folder pick", () => {
 			{ id: "id:new", state: "S" }, settings, expect.anything(),
 		);
 		expect(settings.backendData).toMatchObject({ remoteVaultFolderId: "id:new" });
-		// Changing folders drops the prior folder's delta cursor and persists it, so
-		// hasCheckpoint() is false and the next sync runs cold (full reconcile).
-		expect(settings.backendData.changesStartPageToken).toBeUndefined();
+		// Changing folders is an identity change → re-init drops the prior checkpoint via
+		// the FS (cursor lives with the cache now), so the next sync runs cold.
+		expect(fakeResetCheckpoint).toHaveBeenCalledTimes(1);
 		expect(saveSettings).toHaveBeenCalled();
 		expect(onConnected).toHaveBeenCalled(); // re-init created a fresh FS
 		expect(refreshSettingsDisplay).toHaveBeenCalled();
@@ -499,17 +542,21 @@ describe("BackendManager — web folder pick", () => {
 
 describe("BackendManager — bind default remote vault", () => {
 	it("resolves the default folder, drops the checkpoint (→ cold sync), and re-inits", async () => {
-		const settings = mockSettings({ backendData: { changesStartPageToken: "OLD" } });
+		const settings = mockSettings();
+		fakeProvider.getIdentity = () => {
+			const id = settings.backendData.remoteVaultFolderId as string | undefined;
+			return id ? `test:${id}` : "test:folder-A";
+		};
 		const resolveSpy = vi.fn().mockResolvedValue({
 			backendUpdates: { remoteVaultFolderId: "id:default" },
 		});
 		fakeProvider.resolveRemoteVault = resolveSpy;
-		fakeProvider.resetTargetState = (s) => { delete s.backendData.changesStartPageToken; };
 		const deps = createDeps(settings);
 		const onConnected = deps.onConnected as ReturnType<typeof vi.fn>;
 		const mgr = new BackendManager(deps);
 		await mgr.initBackend();
 		onConnected.mockClear();
+		fakeResetCheckpoint.mockClear();
 
 		await mgr.bindDefaultRemoteVault();
 
@@ -517,7 +564,7 @@ describe("BackendManager — bind default remote vault", () => {
 			expect.anything(), settings, "Test Vault", expect.anything(),
 		);
 		expect(settings.backendData).toMatchObject({ remoteVaultFolderId: "id:default" });
-		expect(settings.backendData.changesStartPageToken).toBeUndefined();
+		expect(fakeResetCheckpoint).toHaveBeenCalledTimes(1);
 		expect(deps.notify).toHaveBeenCalledWith("Remote folder updated");
 		expect(onConnected).toHaveBeenCalled(); // re-init created a fresh FS
 		expect(deps.refreshSettingsDisplay).toHaveBeenCalled();

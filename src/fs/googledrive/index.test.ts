@@ -790,7 +790,12 @@ describe("GoogleDriveFs cursor consolidation (crash safety)", () => {
 		await store.close();
 	});
 
-	it("rebuilds the file map but preserves the #3 cursor when the cache is empty", async () => {
+	it("treats an empty store as no checkpoint: full-scans fresh and warrants no replay", async () => {
+		// The cursor lives WITH the cache now (ADR 0001), committed in one transaction.
+		// So there is no "cursor survives, cache empty" state to preserve: an empty store
+		// means no committed checkpoint, and the FS does a fresh full scan. Losing the
+		// cursor is safe — the next cold reconcile re-derives every change from the
+		// SyncRecord baseline.
 		const { GoogleDriveFs } = await import("./index");
 		const { MetadataStore } = await import("../../store/metadata-store");
 		const store = new MetadataStore<DriveFile>("edge-empty-cache", { dbNamePrefix: "air-sync-drive", version: 1 });
@@ -801,15 +806,84 @@ describe("GoogleDriveFs cursor consolidation (crash safety)", () => {
 		const client = {
 			listAllFiles,
 			getChangesStartToken: vi.fn().mockResolvedValue("token-fresh"),
-			listChanges: vi.fn().mockResolvedValue({ changes: [] }),
+			listChanges: vi.fn(),
 		} as never;
 
 		const fs = new GoogleDriveFs(client, "root", undefined, store);
-		fs.changesPageToken = "token-X"; // #3 cursor present, but #2 cache is empty
-		await fs.list();
+		// A stale in-memory value must NOT masquerade as a committed checkpoint — the
+		// checkpoint is read from the (empty) store.
+		fs.changesPageToken = "token-X";
+		expect(await fs.hasCheckpoint()).toBe(false);
 
-		expect(listAllFiles).toHaveBeenCalledOnce(); // had to rebuild the file map
-		expect(fs.changesPageToken).toBe("token-X"); // RED if fullScan clobbers it to a fresh token
+		const delta = await fs.getChangedPaths();
+
+		expect(listAllFiles).toHaveBeenCalledOnce(); // rebuilt via a fresh full scan
+		expect(delta).toBeNull(); // fresh scan ⇒ no replay warranted
+		expect(fs.changesPageToken).toBe("token-fresh"); // freshly acquired, not the stale "token-X"
+		expect(await fs.hasCheckpoint()).toBe(true); // now initialized with a fresh cursor
+
+		await store.close();
+	});
+
+	it("restores an empty-but-synced vault's checkpoint (cursor present, 0 files) without re-scanning", async () => {
+		// Cursor presence — not file count — is the checkpoint signal: a vault that
+		// legitimately synced down to zero files must load its cursor and replay, not
+		// re-full-scan every session. This also keeps loadFromCache and hasCheckpoint
+		// keyed identically on the cursor (ADR 0001).
+		const { GoogleDriveFs } = await import("./index");
+		const { MetadataStore } = await import("../../store/metadata-store");
+		const store = new MetadataStore<DriveFile>("empty-synced", { dbNamePrefix: "air-sync-drive", version: 1 });
+
+		// Session 1: an empty remote vault — fullScan finds 0 files but acquires a cursor.
+		const client1 = {
+			listAllFiles: vi.fn().mockResolvedValue([]),
+			getChangesStartToken: vi.fn().mockResolvedValue("token-A"),
+			getFile: vi.fn().mockResolvedValue({ id: "root", name: "vault", mimeType: FOLDER }),
+		} as never;
+		const fs1 = new GoogleDriveFs(client1, "root", undefined, store);
+		await fs1.list();
+		await fs1.commitCheckpoint(); // persist {0 files, cursor token-A} atomically
+
+		// Session 2: a fresh FS over the same store restores the checkpoint and replays —
+		// no re-scan — even though the file map is empty.
+		const listAllFiles2 = vi.fn();
+		const client2 = {
+			listAllFiles: listAllFiles2,
+			getChangesStartToken: vi.fn(),
+			listChanges: vi.fn().mockResolvedValue({ changes: [], newStartPageToken: "token-A" }),
+		} as never;
+		const fs2 = new GoogleDriveFs(client2, "root", undefined, store);
+		expect(await fs2.hasCheckpoint()).toBe(true); // cursor present in the store
+		await fs2.getChangedPaths(); // replays from token-A
+		expect(listAllFiles2).not.toHaveBeenCalled(); // restored from cache, no re-scan
+
+		await store.close();
+	});
+
+	it("resetCheckpoint clears the persisted checkpoint so a fresh FS full-scans", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const { MetadataStore } = await import("../../store/metadata-store");
+		const store = new MetadataStore<DriveFile>("reset-cp", { dbNamePrefix: "air-sync-drive", version: 1 });
+
+		const initialFiles = [{ id: "f1", name: "notes", mimeType: FOLDER, parents: ["root"] }];
+		const client = {
+			listAllFiles: vi.fn().mockResolvedValue(initialFiles),
+			getChangesStartToken: vi.fn().mockResolvedValue("token-A"),
+			listChanges: vi.fn().mockResolvedValue({ changes: [], newStartPageToken: "token-A" }),
+			getFile: vi.fn().mockResolvedValue({ id: "root", name: "vault", mimeType: FOLDER }),
+		} as never;
+		const fs = new GoogleDriveFs(client, "root", undefined, store);
+		await fs.list();
+		await fs.commitCheckpoint();
+		expect(await fs.hasCheckpoint()).toBe(true);
+
+		await fs.resetCheckpoint();
+		// In-memory checkpoint gone…
+		expect(await fs.hasCheckpoint()).toBe(false);
+
+		// …and the persisted store too: a fresh FS finds no checkpoint and full-scans.
+		const fs2 = new GoogleDriveFs(client, "root", undefined, store);
+		expect(await fs2.hasCheckpoint()).toBe(false);
 
 		await store.close();
 	});
