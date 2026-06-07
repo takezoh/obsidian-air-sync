@@ -44,8 +44,12 @@ describe("DropboxAuthProvider.startAuth", () => {
 
 		expect(typeof out.pendingCodeVerifier).toBe("string");
 		expect((out.pendingCodeVerifier as string).length).toBe(64);
-		// The CSRF state is the relay-compatible {app, nonce} base64 blob.
-		const state = JSON.parse(atob(out.pendingAuthState as string)) as { app: string };
+		// The CSRF state is the relay-compatible {app, nonce} blob, now base64url
+		// (URL-transit safe); normalize back to standard base64 to decode.
+		const raw = out.pendingAuthState as string;
+		expect(raw).not.toMatch(/[+/=]/);
+		const b64 = raw.replace(/-/g, "+").replace(/_/g, "/");
+		const state = JSON.parse(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4))) as { app: string };
 		expect(state.app).toBe("obsidian-plugin");
 		expect(url.searchParams.get("state")).toBe(out.pendingAuthState);
 	});

@@ -4,6 +4,7 @@ import type { ISecretStore } from "../secret-store";
 import type { Logger } from "../../logging/logger";
 import { AuthError } from "../errors";
 import { setBackendSecret, hasBackendSecret } from "../token-store";
+import { BaseOAuthTokenManager, buildOAuthState, computeS256Challenge, generateRandomString } from "../oauth-pkce";
 import type { DropboxTokenResponse } from "./types";
 
 const AUTHORIZE_URL = "https://www.dropbox.com/oauth2/authorize";
@@ -13,7 +14,6 @@ const REVOKE_URL = "https://api.dropboxapi.com/2/auth/token/revoke";
 const REDIRECT_URI = "https://airsync.takezo.dev/callback";
 const SCOPES = "files.metadata.read files.content.read files.content.write account_info.read";
 const BACKEND_TYPE = "dropbox";
-const AUTH_FAILED_COOLDOWN = 60_000;
 
 /**
  * Public OAuth app key for the Air Sync Dropbox app (App folder permission).
@@ -23,39 +23,6 @@ const AUTH_FAILED_COOLDOWN = 60_000;
  * add `https://airsync.takezo.dev/callback` as a redirect URI, and set this.
  */
 const DROPBOX_CLIENT_ID = "REPLACE_WITH_DROPBOX_APP_KEY";
-
-const RANDOM_CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-
-/** Generate a cryptographically random string of the given length. */
-function generateRandomString(length: number): string {
-	const limit = 256 - (256 % RANDOM_CHARSET.length);
-	const out: string[] = [];
-	while (out.length < length) {
-		const arr = new Uint8Array(length - out.length);
-		crypto.getRandomValues(arr);
-		for (const b of arr) {
-			if (b < limit && out.length < length) out.push(RANDOM_CHARSET[b % RANDOM_CHARSET.length]!);
-		}
-	}
-	return out.join("");
-}
-
-/** Compute the PKCE S256 challenge: base64url(SHA-256(verifier)). */
-async function computeS256Challenge(verifier: string): Promise<string> {
-	const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
-	let base64 = "";
-	for (const b of new Uint8Array(hash)) base64 += String.fromCharCode(b);
-	return btoa(base64).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-/**
- * Build the CSRF `state` parameter. Its shape (`{app, nonce}`, base64) matches
- * what the existing `pages/callback` relay expects, so it bounces the callback
- * back to the Obsidian app — no Dropbox-specific worker route is needed.
- */
-function generateState(): string {
-	return btoa(JSON.stringify({ app: "obsidian-plugin", nonce: generateRandomString(32) }));
-}
 
 interface DropboxCallbackParams {
 	code: string;
@@ -79,53 +46,23 @@ function parseDropboxCallback(input: string): DropboxCallbackParams {
 
 /**
  * Dropbox token manager: holds the short-lived access token + long-lived refresh
- * token, refreshes on demand (PKCE refresh needs only `client_id` — no secret),
- * and dedupes concurrent refreshes. One instance per FS lifetime.
+ * token, refreshes on demand (PKCE refresh needs only `client_id` — no secret).
+ * The token lifecycle (expiry-skew reuse, concurrent-refresh dedup, post-failure
+ * cooldown, rotation hook) is inherited from {@link BaseOAuthTokenManager}; this
+ * class supplies only Dropbox's wire protocol. One instance per FS lifetime.
  */
-export class DropboxAuth {
-	private accessToken = "";
-	private refreshToken = "";
-	private accessTokenExpiry = 0;
-	private refreshPromise: Promise<string> | null = null;
-	private authFailedAt = 0;
-
-	constructor(private clientId: string, private logger?: Logger) {}
-
-	setTokens(refreshToken: string, accessToken: string, expiry: number): void {
-		this.refreshToken = refreshToken;
-		this.accessToken = accessToken;
-		this.accessTokenExpiry = expiry;
-		this.authFailedAt = 0;
+export class DropboxAuth extends BaseOAuthTokenManager {
+	constructor(private clientId: string, logger?: Logger) {
+		super();
+		this.logger = logger;
 	}
 
-	getTokenState(): { refreshToken: string; accessToken: string; accessTokenExpiry: number } {
-		return {
-			refreshToken: this.refreshToken,
-			accessToken: this.accessToken,
-			accessTokenExpiry: this.accessTokenExpiry,
-		};
+	protected notAuthenticatedMessage(): string {
+		return "Not authenticated. Please connect to Dropbox first.";
 	}
 
-	async getAccessToken(forceRefresh = false): Promise<string> {
-		if (!this.refreshToken && !this.accessToken) {
-			throw new AuthError("Not authenticated. Please connect to Dropbox first.", 401);
-		}
-		if (this.authFailedAt > 0 && Date.now() - this.authFailedAt < AUTH_FAILED_COOLDOWN) {
-			throw new AuthError("Authentication expired. Please reconnect in settings.", 401);
-		}
-		if (!forceRefresh && this.accessToken && Date.now() < this.accessTokenExpiry - 60_000) {
-			return this.accessToken;
-		}
-		if (!this.refreshToken) {
-			throw new AuthError("Dropbox session expired. Please reconnect in settings.", 401);
-		}
-		if (this.refreshPromise) return this.refreshPromise;
-		this.refreshPromise = this.performRefresh();
-		try {
-			return await this.refreshPromise;
-		} finally {
-			this.refreshPromise = null;
-		}
+	protected sessionExpiredMessage(): string {
+		return "Dropbox session expired. Please reconnect in settings.";
 	}
 
 	/** Exchange an authorization code for tokens (PKCE — no client secret). */
@@ -149,7 +86,7 @@ export class DropboxAuth {
 		this.storeTokenResponse(res.json as DropboxTokenResponse);
 	}
 
-	private async performRefresh(): Promise<string> {
+	protected async performRefresh(): Promise<string> {
 		this.logger?.info("Refreshing Dropbox access token");
 		let res;
 		try {
@@ -177,13 +114,6 @@ export class DropboxAuth {
 		}
 		this.storeTokenResponse(res.json as DropboxTokenResponse);
 		return this.accessToken;
-	}
-
-	private storeTokenResponse(token: DropboxTokenResponse): void {
-		this.accessToken = token.access_token;
-		this.accessTokenExpiry = Date.now() + token.expires_in * 1000;
-		if (token.refresh_token) this.refreshToken = token.refresh_token;
-		this.authFailedAt = 0;
 	}
 
 	async revokeToken(): Promise<void> {
@@ -259,7 +189,9 @@ export class DropboxAuthProvider implements IAuthProvider {
 	async startAuth(_backendData: Record<string, unknown>): Promise<Record<string, unknown>> {
 		const codeVerifier = generateRandomString(64);
 		const codeChallenge = await computeS256Challenge(codeVerifier);
-		const state = generateState();
+		// base64url state (URL-transit safe) via the shared builder; the pages/callback
+		// relay decodes both base64url and legacy base64.
+		const state = buildOAuthState();
 		const params = new URLSearchParams({
 			client_id: this.clientId,
 			response_type: "code",
