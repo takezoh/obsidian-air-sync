@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { DropboxMetadataCache } from "./metadata-cache";
 import {
 	applyDropboxDelta,
@@ -9,6 +9,8 @@ import type { DropboxClient } from "./client";
 import type { DropboxListFolderResponse } from "./types";
 import { DropboxApiError } from "./types";
 import { dbxFile, dbxFolder, dbxDeleted } from "./test-helpers";
+
+vi.mock("obsidian");
 
 /** A DropboxClient stub whose `listFolderContinue` replays staged pages. */
 function fakeClient(pages: DropboxListFolderResponse[]): DropboxClient {
@@ -91,6 +93,23 @@ describe("applyDropboxDelta — official algorithm", () => {
 		const cache = seededCache();
 		const result = await applyDropboxDelta({ cache, client: resetClient() }, "cur");
 		expect(result.needsFullScan).toBe(true);
+	});
+
+	it("throws (does not loop forever) when the server never clears has_more", async () => {
+		const { LIST_PAGE_CAP } = await import("./client");
+		let calls = 0;
+		// Every page advertises another → an unbounded drain without the guard.
+		const client = {
+			listFolderContinue: () => {
+				calls++;
+				return Promise.resolve({ entries: [], cursor: `c${calls}`, has_more: true });
+			},
+		} as unknown as DropboxClient;
+		const cache = seededCache();
+
+		await expect(applyDropboxDelta({ cache, client }, "cur")).rejects.toThrow(/pagination exceeded/);
+		// Bounded at the cap rather than spinning forever, and it throws (no silent truncation).
+		expect(calls).toBe(LIST_PAGE_CAP);
 	});
 
 	it("ignores a delta entry for the reserved metadata path (no phantom change, no corrupt record)", async () => {

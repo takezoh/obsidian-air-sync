@@ -22,6 +22,13 @@ export const MAX_RATE_LIMIT_RETRIES = 4;
 /** Cap a single 429 backoff so a large `Retry-After` can't freeze the sync for minutes. */
 const MAX_RATE_LIMIT_DELAY_MS = 64_000;
 
+/**
+ * Hard cap on pagination drain loops (full list and delta). Reaching it means the
+ * server isn't clearing `has_more`; we throw instead of looping forever or
+ * silently truncating (a short listing would read as mass deletion downstream).
+ */
+export const LIST_PAGE_CAP = 10_000;
+
 /** Pauses execution; injectable so tests run instantly. */
 export type SleepFn = (ms: number) => Promise<void>;
 const defaultSleep: SleepFn = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -149,7 +156,13 @@ export class DropboxClient {
 		const entries: DropboxEntry[] = [];
 		let res = await this.listFolder(path, recursive);
 		entries.push(...res.entries);
-		while (res.has_more) {
+		// Bound the drain: a server that never clears has_more would loop forever.
+		// Throw on the cap rather than silently truncating — a short full listing
+		// would otherwise read as a mass remote deletion in the cold reconcile.
+		for (let guard = 0; res.has_more; guard++) {
+			if (guard >= LIST_PAGE_CAP) {
+				throw new Error(`listFolderAll: pagination exceeded ${LIST_PAGE_CAP} pages (server not clearing has_more?)`);
+			}
 			res = await this.listFolderContinue(res.cursor);
 			entries.push(...res.entries);
 		}

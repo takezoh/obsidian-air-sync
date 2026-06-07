@@ -85,6 +85,23 @@ describe("DropboxClient error handling", () => {
 	});
 });
 
+describe("DropboxClient.listFolderAll pagination cap", () => {
+	it("throws (does not loop forever) when the server never clears has_more", async () => {
+		const { LIST_PAGE_CAP } = await import("./client");
+		let calls = 0;
+		(await spyRequestUrl()).mockImplementation(() => {
+			calls++;
+			// Always advertise another page → an unbounded drain without the guard.
+			return Promise.resolve(mockRes({ entries: [], cursor: "c", has_more: true }));
+		});
+		const client = await makeClient();
+
+		await expect(client.listFolderAll("", true)).rejects.toThrow(/pagination exceeded/);
+		// Bounded: 1 list_folder + LIST_PAGE_CAP continues, then it throws.
+		expect(calls).toBe(LIST_PAGE_CAP + 1);
+	});
+});
+
 describe("DropboxClient.upload", () => {
 	it("sends overwrite mode, second-precision client_modified, and octet-stream body", async () => {
 		const spy = (await spyRequestUrl()).mockResolvedValue(mockRes(dbxFile("5", "/root/note.md")));

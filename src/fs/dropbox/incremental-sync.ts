@@ -1,6 +1,7 @@
 import type { DropboxEntry } from "./types";
 import { isDropboxResetError } from "./types";
 import type { DropboxMetadataCache } from "./metadata-cache";
+import { LIST_PAGE_CAP } from "./client";
 import type { DropboxClient } from "./client";
 import type { MetadataStore } from "../../store/metadata-store";
 import type { RenamePair } from "../../sync/types";
@@ -100,9 +101,11 @@ export async function applyDropboxDelta(ctx: DropboxSyncContext, cursor: string)
 	};
 
 	let cur = cursor;
-	// One call may cap the entries; drain until `has_more` is false. The guard
-	// caps the pathological case where Dropbox never clears `has_more`.
-	for (let guard = 0; guard < 10_000; guard++) {
+	// One call may cap the entries; drain until `has_more` is false. The guard caps
+	// the pathological case where Dropbox never clears `has_more` — throw rather than
+	// silently truncating (a partial delta could drop or mis-order remote changes).
+	let drained = false;
+	for (let guard = 0; guard < LIST_PAGE_CAP; guard++) {
 		let res;
 		try {
 			res = await ctx.client.listFolderContinue(cur);
@@ -112,7 +115,10 @@ export async function applyDropboxDelta(ctx: DropboxSyncContext, cursor: string)
 		}
 		for (const entry of res.entries) applyDeltaEntry(ctx, acc, entry);
 		cur = res.cursor;
-		if (!res.has_more) break;
+		if (!res.has_more) { drained = true; break; }
+	}
+	if (!drained) {
+		throw new Error(`applyDropboxDelta: delta pagination exceeded ${LIST_PAGE_CAP} pages (server not clearing has_more?)`);
 	}
 
 	if (acc.changedPaths.size > 0) {
