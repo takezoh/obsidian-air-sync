@@ -217,6 +217,22 @@ describe("applyIncrementalChanges", () => {
 		}
 	});
 
+	it("throws (does not loop forever) when the server never clears nextPageToken", async () => {
+		const { LIST_PAGE_CAP } = await import("./client");
+		// Every page advertises another page → an unbounded drain without the guard.
+		listChanges.mockResolvedValue({
+			changes: [],
+			nextPageToken: "more",
+			newStartPageToken: undefined,
+		});
+
+		await expect(applyIncrementalChanges(ctx, "token")).rejects.toThrow(
+			/pagination exceeded/,
+		);
+		// Bounded at the cap rather than spinning forever.
+		expect(listChanges).toHaveBeenCalledTimes(LIST_PAGE_CAP);
+	});
+
 	it("reports old path as deleted when file is moved outside sync root", async () => {
 		const mockFile: DriveFile = {
 			id: "file-1",
