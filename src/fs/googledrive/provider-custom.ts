@@ -108,14 +108,14 @@ export class GoogleDriveCustomAuthProvider extends GoogleDriveAuthProviderBase {
 
 	createDetachedGoogleAuth(data: GoogleDriveBackendData, logger?: Logger): IGoogleAuth {
 		const customData = data as unknown as GoogleDriveCustomBackendData;
-		return new GoogleAuthDirect({
+		return this.wireDetachedRefreshPersistence(new GoogleAuthDirect({
 			clientId: this.resolveSecret(customData.customClientId),
 			clientSecret: this.resolveSecret(customData.customClientSecret),
 			logger,
 			scope: customData.customScope || undefined,
 			redirectUri: customData.customRedirectUri || undefined,
 			includeGrantedScopes: customData.customIncludeGrantedScopes,
-		});
+		}));
 	}
 
 	/** Resolve a secret name to its actual value via ISecretStore */

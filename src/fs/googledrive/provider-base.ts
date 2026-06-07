@@ -208,6 +208,20 @@ export abstract class GoogleDriveAuthProviderBase implements IAuthProvider {
 	 * display, folder pick) that must not reset the live sync's shared in-memory tokens.
 	 */
 	abstract createDetachedGoogleAuth(data: GoogleDriveBackendData, logger: Logger | undefined): IGoogleAuth;
+
+	/**
+	 * Wire a detached auth so a refresh that ROTATES the refresh token persists the
+	 * new value to SecretStorage. Without this, a rotated token would live only on
+	 * the throwaway instance and be discarded, leaving the stored (and shared
+	 * in-memory) token stale so the next real sync's refresh fails. Subclasses call
+	 * this on the instance they return from {@link createDetachedGoogleAuth}.
+	 */
+	protected wireDetachedRefreshPersistence(auth: IGoogleAuth): IGoogleAuth {
+		auth.setRefreshTokenRotatedHook((refreshToken) => {
+			setBackendSecret(this.secretStore, this.backendType, "refresh", refreshToken);
+		});
+		return auth;
+	}
 }
 
 /**

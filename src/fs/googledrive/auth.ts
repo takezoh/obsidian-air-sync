@@ -17,6 +17,13 @@ const AUTH_FAILED_COOLDOWN = 60_000;
 /** Shared interface for GoogleAuth and GoogleAuthDirect */
 export interface IGoogleAuth {
 	setTokens(refreshToken: string, accessToken: string, expiry: number): void;
+	/**
+	 * Register a hook fired when a refresh rotates the refresh token to a new
+	 * value. Lets a detached (throwaway) auth persist a rotated token that would
+	 * otherwise be discarded with the instance — leaving the shared/stored token
+	 * stale and failing the next real refresh.
+	 */
+	setRefreshTokenRotatedHook(cb: (refreshToken: string) => void): void;
 	readonly isAuthenticated: boolean;
 	getAuthorizationUrl(): Promise<string>;
 	getAuthState(): string | null;
@@ -43,12 +50,17 @@ abstract class GoogleAuthBase implements IGoogleAuth {
 	private authState: string | null = null;
 	private codeVerifier: string | null = null;
 	protected authFailedAt = 0;
+	private onRefreshTokenRotated?: (refreshToken: string) => void;
 
 	setTokens(refreshToken: string, accessToken: string, expiry: number): void {
 		this.refreshToken = refreshToken;
 		this.accessToken = accessToken;
 		this.accessTokenExpiry = expiry;
 		this.authFailedAt = 0;
+	}
+
+	setRefreshTokenRotatedHook(cb: (refreshToken: string) => void): void {
+		this.onRefreshTokenRotated = cb;
 	}
 
 	get isAuthenticated(): boolean {
@@ -154,7 +166,12 @@ abstract class GoogleAuthBase implements IGoogleAuth {
 		this.accessToken = token.access_token;
 		this.accessTokenExpiry = Date.now() + token.expires_in * 1000;
 		if (token.refresh_token) {
+			// Detect rotation: the provider returned a refresh token different from the
+			// one we held. Fire the hook so a detached auth can persist it (a shared
+			// auth leaves the hook unset and persists via readBackendState instead).
+			const rotated = !!this.refreshToken && token.refresh_token !== this.refreshToken;
 			this.refreshToken = token.refresh_token;
+			if (rotated) this.onRefreshTokenRotated?.(token.refresh_token);
 		}
 		this.authFailedAt = 0;
 	}
