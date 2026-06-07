@@ -93,7 +93,15 @@ export class DropboxMetadataCache {
 	/** Add or update an entry with full index maintenance. */
 	setEntry(path: string, entry: DropboxEntry): void {
 		if (this.isReserved(path)) return;
-		const prev = this.pathToEntry.get(path);
+		let prev = this.pathToEntry.get(path);
+		// A different entry now occupies this path with no preceding `deleted` tombstone
+		// (the provider didn't emit the delete first, or batched out of order). If the
+		// displaced entry was a folder, evict its whole cached subtree first so stale
+		// descendants don't linger as phantom paths.
+		if (prev && prev.id !== entry.id && this.folders.has(path)) {
+			this.removeTree(path); // clears prev + its subtree + idToPath + children index
+			prev = undefined;
+		}
 		// Overwriting a path held by a DIFFERENT id must evict the stale id from
 		// idToPath, or a later delete for that id would reverse-resolve to this
 		// still-live path and removeTree the wrong entry.

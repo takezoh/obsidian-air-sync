@@ -80,4 +80,22 @@ describe("DropboxMetadataCache.setEntry id eviction", () => {
 		expect(cache.getPathById("id:1")).toBeUndefined();
 		expect(cache.getPathById("id:2")).toBe("a.md");
 	});
+
+	it("evicts the old subtree when a folder is replaced by a different entry at the same path (no tombstone)", () => {
+		const cache = makeCache();
+		cache.buildFromEntries([
+			dbxFolder("d1", "/root/data"),
+			dbxFile("c1", "/root/data/child.txt"),
+		]);
+
+		// A delta upserts a FILE at "data" with a different id and NO preceding delete.
+		cache.setEntry("data", dbxFile("f9", "/root/data"));
+
+		expect(cache.getEntry("data")?.id).toBe("id:f9");
+		expect(cache.isFolder("data")).toBe(false);
+		// The displaced folder's descendant is gone, not orphaned as a phantom path.
+		expect(cache.hasEntry("data/child.txt")).toBe(false);
+		expect(cache.getPathById("id:d1")).toBeUndefined();
+		expect(cache.getPathById("id:c1")).toBeUndefined();
+	});
 });
