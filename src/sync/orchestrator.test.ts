@@ -716,7 +716,7 @@ describe("SyncOrchestrator", () => {
 			});
 			// A committed checkpoint exists, so hasCheckpoint stays true throughout —
 			// the recovery must come from the post-failure cold flag, not from hasCheckpoint.
-			settings.backendData.test = { changesStartPageToken: "T1" };
+			settings.backendData = { changesStartPageToken: "T1" };
 
 			const deps = createDeps({
 				getSettings: () => settings,
@@ -761,7 +761,7 @@ describe("SyncOrchestrator", () => {
 				backendType: "test",
 				vaultId: `test-${Math.random()}`,
 			});
-			settings.backendData.test = { changesStartPageToken: "OLD" };
+			settings.backendData = { changesStartPageToken: "OLD" };
 
 			const deps = createDeps({
 				getSettings: () => settings,
@@ -782,7 +782,7 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.runSync();
 
 			// The failed push must leave the committed cursor untouched.
-			expect(settings.backendData.test.changesStartPageToken).toBe("OLD");
+			expect(settings.backendData.changesStartPageToken).toBe("OLD");
 			await orchestrator.close();
 		});
 	});

@@ -24,7 +24,7 @@ export class GoogleDriveSettingsRenderer implements IBackendSettingsRenderer {
 		actions: BackendConnectionActions,
 		_app: App,
 	): void {
-		const data = (settings.backendData["googledrive"] ?? {}) as Partial<GoogleDriveBackendData>;
+		const data = (settings.backendData ?? {}) as Partial<GoogleDriveBackendData>;
 
 		const provider = getBackendProvider("googledrive");
 		const isConnected = provider?.isConnected(settings) ?? false;
@@ -87,7 +87,7 @@ export class GoogleDriveCustomSettingsRenderer implements IBackendSettingsRender
 		actions: BackendConnectionActions,
 		app: App,
 	): void {
-		const data = (settings.backendData["googledrive-custom"] ?? {}) as Partial<GoogleDriveCustomBackendData>;
+		const data = (settings.backendData ?? {}) as Partial<GoogleDriveCustomBackendData>;
 		const provider = getBackendProvider("googledrive-custom");
 		const isConnected = provider?.isConnected(settings) ?? false;
 
@@ -183,7 +183,7 @@ export class GoogleDriveCustomSettingsRenderer implements IBackendSettingsRender
 						if (isConnected) {
 							await actions.disconnect();
 						} else {
-							const current = (settings.backendData["googledrive-custom"] ?? {}) as Partial<GoogleDriveCustomBackendData>;
+							const current = (settings.backendData ?? {}) as Partial<GoogleDriveCustomBackendData>;
 							if (!current.remoteVaultFolderId) {
 								new Notice("Enter a remote vault folder ID first");
 								return;

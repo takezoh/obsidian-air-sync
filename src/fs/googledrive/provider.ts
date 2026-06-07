@@ -6,7 +6,7 @@ import { GoogleAuth } from "./auth";
 import type { IGoogleAuth } from "./auth";
 import { GoogleDriveAuthProviderBase, GoogleDriveProviderBase } from "./provider-base";
 
-/** All data stored in backendData["googledrive"] (tokens live in SecretStorage) */
+/** Google Drive's slice of the active-backend `backendData` bag (tokens live in SecretStorage) */
 export interface GoogleDriveBackendData {
 	remoteVaultFolderId: string;
 	lastKnownVaultName: string;
@@ -27,7 +27,7 @@ const DEFAULT_GDRIVE_DATA: GoogleDriveBackendData = {
 function getGDriveData(settings: AirSyncSettings): GoogleDriveBackendData {
 	return {
 		...DEFAULT_GDRIVE_DATA,
-		...getBackendData<GoogleDriveBackendData>(settings, "googledrive"),
+		...getBackendData<GoogleDriveBackendData>(settings),
 	};
 }
 

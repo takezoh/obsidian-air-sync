@@ -75,12 +75,19 @@ export interface IBackendProvider {
 	 * Returns the reset backendData to persist.
 	 */
 	disconnect(settings: AirSyncSettings): Promise<Record<string, unknown>>;
+
+	/**
+	 * Clear this backend's plugin-owned secrets (its `air-sync-<type>-*-token`
+	 * keys) from SecretStorage, without any network call or settings mutation.
+	 * Used by the backend-switch hard reset to sweep leftover tokens for every
+	 * registered backend — `ISecretStore` cannot be enumerated, so each backend
+	 * declares its own clear. New backends with plugin-owned secrets must implement
+	 * this; backends with none may omit it.
+	 */
+	clearPluginSecrets?(): void;
 }
 
-/** Type-safe helper to retrieve backend-specific data from settings */
-export function getBackendData<T>(
-	settings: AirSyncSettings,
-	type: string
-): T | undefined {
-	return settings.backendData[type] as T | undefined;
+/** Retrieve the active backend's parameters (the single flat bag) from settings. */
+export function getBackendData<T>(settings: AirSyncSettings): T | undefined {
+	return settings.backendData as T | undefined;
 }

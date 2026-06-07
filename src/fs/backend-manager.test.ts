@@ -11,11 +11,14 @@ import { mockSettings } from "../__mocks__/sync-test-helpers";
 vi.mock("./registry", () => ({
 	getBackendProvider: (type: string) => {
 		if (type === "test") return fakeProvider;
+		if (type === "other") return otherProvider;
 		return undefined;
 	},
+	getAllBackendProviders: () => [fakeProvider, otherProvider].filter(Boolean),
 }));
 
 let fakeProvider: IBackendProvider;
+let otherProvider: IBackendProvider;
 let fakeFs: IFileSystem;
 
 function createDeps(
@@ -70,6 +73,17 @@ beforeEach(() => {
 		getIdentity: () => "test:folder-A",
 		resetTargetState: vi.fn(),
 		disconnect: vi.fn().mockResolvedValue({}),
+		clearPluginSecrets: vi.fn(),
+	};
+	otherProvider = {
+		type: "other",
+		displayName: "Other",
+		auth: { isAuthenticated: () => false, startAuth: vi.fn(), completeAuth: vi.fn() },
+		createFs: () => null,
+		isConnected: () => false,
+		getIdentity: () => null,
+		disconnect: vi.fn().mockResolvedValue({}),
+		clearPluginSecrets: vi.fn(),
 	};
 });
 
@@ -132,9 +146,7 @@ describe("BackendManager — identity change triggers onIdentityChanged", () => 
 		fakeProvider.resetTargetState = resetSpy;
 
 		const settings = mockSettings({
-			backendData: {
-				test: { changesStartPageToken: "old-token", other: "keep" },
-			},
+			backendData: { changesStartPageToken: "old-token", other: "keep" },
 		});
 		const deps = createDeps(settings);
 		const mgr = new BackendManager(deps);
@@ -146,6 +158,48 @@ describe("BackendManager — identity change triggers onIdentityChanged", () => 
 
 		expect(resetSpy).toHaveBeenCalledTimes(1);
 		expect(resetSpy).toHaveBeenCalledWith(settings);
+	});
+
+	it("clears stale baselines on the first init after a cross-reload backend switch", async () => {
+		// A fresh manager == a plugin reload: the in-memory identity is gone, but the
+		// identity the state was last reconciled against survives in settings. So a
+		// custom→built-in switch must still be detected on this first init — otherwise
+		// the new target silently reuses the old backend's baselines (nothing uploads).
+		const resetSpy = vi.fn();
+		fakeProvider.resetTargetState = resetSpy;
+		fakeProvider.getIdentity = () => "test:folder-NEW";
+		const settings = mockSettings({ lastSyncedIdentity: "other:folder-OLD" });
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+
+		await mgr.initBackend(); // first init of this instance
+
+		expect(deps.onIdentityChanged).toHaveBeenCalledTimes(1);
+		expect(resetSpy).toHaveBeenCalledTimes(1);
+		expect(settings.lastSyncedIdentity).toBe("test:folder-NEW");
+	});
+
+	it("persists the synced identity on first init when none was stored", async () => {
+		const settings = mockSettings(); // lastSyncedIdentity == ""
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+
+		await mgr.initBackend();
+
+		expect(deps.onIdentityChanged).not.toHaveBeenCalled();
+		expect(settings.lastSyncedIdentity).toBe("test:folder-A");
+	});
+
+	it("forgets the persisted identity on disconnect", async () => {
+		const settings = mockSettings();
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+
+		await mgr.initBackend();
+		expect(settings.lastSyncedIdentity).toBe("test:folder-A");
+
+		await mgr.disconnectBackend();
+		expect(settings.lastSyncedIdentity).toBe("");
 	});
 });
 
@@ -183,12 +237,123 @@ describe("BackendManager — auth error notification on initBackend", () => {
 	});
 });
 
+describe("BackendManager — switchBackend (hard reset)", () => {
+	it("is a no-op when the new type equals the current", async () => {
+		const clearSpy = vi.fn();
+		fakeProvider.clearPluginSecrets = clearSpy;
+		const settings = mockSettings(); // backendType "test"
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend();
+
+		await mgr.switchBackend("test");
+
+		expect(clearSpy).not.toHaveBeenCalled();
+		expect(settings.backendType).toBe("test");
+	});
+
+	it("wipes backendData, clears identity, and clears sync state", async () => {
+		const onIdentityChanged = vi.fn().mockResolvedValue(undefined);
+		const settings = mockSettings({
+			backendData: { remoteVaultFolderId: "FID", customClientId: "ref" },
+		});
+		const deps = createDeps(settings, { onIdentityChanged });
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend();
+		onIdentityChanged.mockClear();
+
+		await mgr.switchBackend("other");
+
+		expect(settings.backendData).toEqual({});
+		expect(settings.lastSyncedIdentity).toBe("");
+		expect(settings.backendType).toBe("other");
+		expect(onIdentityChanged).toHaveBeenCalledTimes(1);
+	});
+
+	it("sweeps plugin-owned tokens for every registered backend", async () => {
+		const clearSpy = vi.fn();
+		const otherClearSpy = vi.fn();
+		fakeProvider.clearPluginSecrets = clearSpy;
+		otherProvider.clearPluginSecrets = otherClearSpy;
+		const settings = mockSettings();
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend();
+
+		await mgr.switchBackend("other");
+
+		expect(clearSpy).toHaveBeenCalled();
+		expect(otherClearSpy).toHaveBeenCalled();
+	});
+
+	it("best-effort revokes the old backend only when it was connected", async () => {
+		const disconnectSpy = vi.fn().mockResolvedValue({});
+		fakeProvider.disconnect = disconnectSpy;
+		const settings = mockSettings({ backendData: { remoteVaultFolderId: "FID" } });
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend();
+
+		await mgr.switchBackend("other"); // fakeProvider.isConnected → true
+		expect(disconnectSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not revoke the old backend when it was not connected", async () => {
+		const disconnectSpy = vi.fn().mockResolvedValue({});
+		fakeProvider.disconnect = disconnectSpy;
+		fakeProvider.isConnected = () => false;
+		const settings = mockSettings();
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend();
+
+		await mgr.switchBackend("other");
+		expect(disconnectSpy).not.toHaveBeenCalled();
+	});
+
+	it("leaves the new backend disconnected (must reconnect)", async () => {
+		const onDisconnected = vi.fn();
+		const settings = mockSettings();
+		const deps = createDeps(settings, { onDisconnected });
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend();
+
+		await mgr.switchBackend("other"); // otherProvider.isConnected → false
+
+		expect(mgr.getRemoteFs()).toBeNull();
+		expect(onDisconnected).toHaveBeenCalled();
+	});
+
+	it("holds the connecting flag across the reset (gates concurrent syncs)", async () => {
+		// isConnected=false skips the revoke so onIdentityChanged is the first suspension.
+		fakeProvider.isConnected = () => false;
+		let connectingDuringReset = false;
+		let release!: () => void;
+		const blocker = new Promise<void>((r) => { release = r; });
+		const onIdentityChanged = vi.fn().mockImplementation(async () => {
+			connectingDuringReset = mgr.isConnecting();
+			await blocker;
+		});
+		const settings = mockSettings();
+		const deps = createDeps(settings, { onIdentityChanged });
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend();
+
+		const done = mgr.switchBackend("other");
+		await Promise.resolve();
+		expect(connectingDuringReset).toBe(true); // sync gated out during the reset
+		release();
+		await done;
+		expect(mgr.isConnecting()).toBe(false);
+	});
+});
+
 describe("BackendManager — isConnected false with prior connection", () => {
 	it("notifies when isConnected is false but remoteVaultFolderId exists", async () => {
 		fakeProvider.isConnected = () => false;
 
 		const settings = mockSettings({
-			backendData: { test: { remoteVaultFolderId: "folder-123" } },
+			backendData: { remoteVaultFolderId: "folder-123" },
 		});
 		const deps = createDeps(settings);
 		const mgr = new BackendManager(deps);
@@ -341,6 +506,19 @@ describe("BackendManager — isConnecting flag", () => {
 		await mgr.completeBackendConnect("auth-code");
 
 		expect(mgr.isConnecting()).toBe(false);
+	});
+
+	it("records the synced identity after a successful connect", async () => {
+		const settings = mockSettings();
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend(); // sets backendProvider
+		settings.lastSyncedIdentity = ""; // pretend not yet recorded
+		fakeProvider.auth.completeAuth = () => Promise.resolve({});
+
+		await mgr.completeBackendConnect("auth-code");
+
+		expect(settings.lastSyncedIdentity).toBe("test:folder-A");
 	});
 
 	it("returns false after completeBackendConnect fails", async () => {

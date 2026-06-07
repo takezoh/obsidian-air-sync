@@ -1,9 +1,10 @@
 import { Notice, Platform, Plugin, setIcon, setTooltip } from "obsidian";
 import { DEFAULT_SETTINGS, AirSyncSettings } from "./settings";
+import { liftActiveBackendData } from "./settings-normalize";
 import { AirSyncSettingTab } from "./ui/settings";
 import { LocalFs } from "./fs/local/index";
 import { BackendManager } from "./fs/backend-manager";
-import { initRegistry } from "./fs/registry";
+import { initRegistry, getAllBackendProviders } from "./fs/registry";
 import type { ISecretStore } from "./fs/secret-store";
 import type { SyncStatus } from "./sync/orchestrator";
 import { SyncOrchestrator } from "./sync/orchestrator";
@@ -27,13 +28,16 @@ export default class AirSyncPlugin extends Plugin {
 	private logger!: Logger;
 
 	async onload() {
-		await this.loadSettings();
-
+		// Init the registry BEFORE loadSettings: the backendData normalization there
+		// needs the set of registered backend types to tell the old per-type-map
+		// shape from the new single-bag shape.
 		const secretStore: ISecretStore = {
 			getSecret: (key) => this.app.secretStorage.getSecret(key),
 			setSecret: (key, value) => { this.app.secretStorage.setSecret(key, value); },
 		};
 		initRegistry(secretStore);
+
+		await this.loadSettings();
 
 		this.localFs = new LocalFs(this.app, () => this.settings.syncDotPaths);
 
@@ -186,6 +190,11 @@ export default class AirSyncPlugin extends Plugin {
 		);
 
 		let needsSave = false;
+
+		// Normalize a legacy per-type backendData map to the single active-backend bag.
+		if (liftActiveBackendData(this.settings, getAllBackendProviders().map((p) => p.type))) {
+			needsSave = true;
+		}
 
 		// Generate a stable vault ID on first load
 		if (!this.settings.vaultId) {

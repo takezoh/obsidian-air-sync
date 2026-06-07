@@ -35,6 +35,9 @@ function storeDriveTokens(store: ISecretStore, type: string, tokens: DriveTokens
 	setBackendSecret(store, type, "access", tokens.accessToken);
 }
 
+/** Plugin-owned secret names every Drive backend stores under air-sync-<type>-<name>-token. */
+const DRIVE_SECRET_NAMES = ["refresh", "access"];
+
 /**
  * Parse auth callback input (URL from auth server containing tokens or code).
  * Built-in flow: obsidian://air-sync-auth?access_token=...&refresh_token=...&expires_in=...&state=...
@@ -221,10 +224,8 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 	}
 
 	resetTargetState(settings: AirSyncSettings): void {
-		const data = settings.backendData[this.type];
-		if (data) {
-			delete data.changesStartPageToken;
-		}
+		// backendData is the active backend's single bag, so its cursor lives at the top level.
+		delete settings.backendData.changesStartPageToken;
 	}
 
 	hasCheckpoint(settings: AirSyncSettings): boolean {
@@ -267,8 +268,12 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 
 	async disconnect(_settings: AirSyncSettings): Promise<Record<string, unknown>> {
 		await this.auth.revokeAuth();
-		clearBackendSecrets(this.secretStore, this.type, ["refresh", "access"]);
+		this.clearPluginSecrets();
 		return { ...this.getDefaultData() };
+	}
+
+	clearPluginSecrets(): void {
+		clearBackendSecrets(this.secretStore, this.type, DRIVE_SECRET_NAMES);
 	}
 
 	protected abstract getData(settings: AirSyncSettings): GoogleDriveBackendData;
