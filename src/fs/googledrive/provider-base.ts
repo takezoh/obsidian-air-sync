@@ -303,6 +303,16 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 	}
 
 	/**
+	 * Flush the metadata cache to IndexedDB after a clean cycle, before the cursor
+	 * commits in {@link readBackendState} — so a crash can't leave the cache ahead
+	 * of the committed cursor (which would drop a remote deletion the replay can't
+	 * re-detect).
+	 */
+	async commitCheckpoint(fs: IFileSystem): Promise<void> {
+		if (fs instanceof GoogleDriveFs) await fs.commitCheckpoint();
+	}
+
+	/**
 	 * Find or create this vault's default remote folder (obsidian-air-sync/<Vault Name>),
 	 * migrating a legacy obsidian-air-sync/<uuid>/.airsync/metadata.json vault if one
 	 * matches. Invoked explicitly when the user binds the default folder — not
