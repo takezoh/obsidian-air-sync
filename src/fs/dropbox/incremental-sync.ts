@@ -7,11 +7,15 @@ import type { RenamePair } from "../../sync/types";
 import type { Logger } from "../../logging/logger";
 import { INTERNAL_METADATA_PATH } from "../../sync/remote-vault";
 
-/** Context for incremental sync operations. */
+/**
+ * Context for incremental sync operations. Note there is no metadataStore here:
+ * applying a delta mutates only the in-memory cache. Persisting the cache to
+ * IndexedDB is deferred to the checkpoint commit (DropboxFs.commitCheckpoint),
+ * so the persisted cache never runs ahead of the committed delta cursor.
+ */
 export interface DropboxSyncContext {
 	cache: DropboxMetadataCache;
 	client: DropboxClient;
-	metadataStore?: MetadataStore<DropboxEntry>;
 	logger?: Logger;
 }
 
@@ -26,11 +30,7 @@ export interface RemoteDelta {
 	renamed: RenamePair[];
 }
 
-type FileRecordTuple = { path: string; file: DropboxEntry; isFolder: boolean };
-
 interface DeltaAccumulator {
-	updatedRecords: FileRecordTuple[];
-	deletedPaths: string[];
 	changedPaths: Set<string>;
 	renamedPaths: RenamePair[];
 }
@@ -82,11 +82,6 @@ export function computeFullScanDelta(
 	return { modified, deleted, renamed };
 }
 
-/** Snapshot a record tuple for the entry currently cached at `path`. */
-function recordAt(cache: DropboxMetadataCache, path: string): FileRecordTuple {
-	return { path, file: cache.getEntry(path)!, isFolder: cache.isFolder(path) };
-}
-
 /**
  * Apply `list_folder/continue` entries to the cache, following Dropbox's
  * official local-cache sync algorithm: process entries in order; `file`/`folder`
@@ -100,8 +95,6 @@ function recordAt(cache: DropboxMetadataCache, path: string): FileRecordTuple {
  */
 export async function applyDropboxDelta(ctx: DropboxSyncContext, cursor: string): Promise<DropboxDeltaResult> {
 	const acc: DeltaAccumulator = {
-		updatedRecords: [],
-		deletedPaths: [],
 		changedPaths: new Set<string>(),
 		renamedPaths: [],
 	};
@@ -122,14 +115,11 @@ export async function applyDropboxDelta(ctx: DropboxSyncContext, cursor: string)
 		if (!res.has_more) break;
 	}
 
-	if (acc.updatedRecords.length > 0 || acc.deletedPaths.length > 0) {
-		ctx.logger?.info("Dropbox delta applied", {
-			updated: acc.updatedRecords.length,
-			deleted: acc.deletedPaths.length,
-		});
-		await persistDelta(ctx, acc.updatedRecords, acc.deletedPaths);
+	if (acc.changedPaths.size > 0) {
+		ctx.logger?.info("Dropbox delta applied", { changed: acc.changedPaths.size });
 	}
-
+	// The in-memory cache now reflects the delta; persistence to IndexedDB is the
+	// caller's job at checkpoint commit (see DropboxFs.commitCheckpoint).
 	return { needsFullScan: false, newCursor: cur, changedPaths: acc.changedPaths, renamedPaths: acc.renamedPaths };
 }
 
@@ -148,7 +138,6 @@ function applyDeltaEntry(ctx: DropboxSyncContext, acc: DeltaAccumulator, entry: 
 		if (oldPath !== undefined) {
 			for (const p of [oldPath, ...cache.collectDescendants(oldPath)]) {
 				acc.changedPaths.add(p);
-				acc.deletedPaths.push(p);
 			}
 			cache.removeTree(oldPath);
 		}
@@ -160,7 +149,6 @@ function applyDeltaEntry(ctx: DropboxSyncContext, acc: DeltaAccumulator, entry: 
 		const descendants = cache.collectDescendants(path);
 		for (const p of [path, ...descendants]) {
 			acc.changedPaths.add(p);
-			acc.deletedPaths.push(p);
 		}
 		cache.removeTree(path);
 		return;
@@ -175,7 +163,6 @@ function applyDeltaEntry(ctx: DropboxSyncContext, acc: DeltaAccumulator, entry: 
 	// New file/folder, or in-place modify (same path).
 	cache.setEntry(path, entry);
 	acc.changedPaths.add(path);
-	acc.updatedRecords.push(recordAt(cache, path));
 }
 
 /** Coalesce a `deleted(old)`+`file/folder(new)` pair (same id) into a rename. */
@@ -195,38 +182,42 @@ function applyRename(
 
 	acc.renamedPaths.push({ oldPath, newPath, isFolder: wasFolder || undefined });
 	acc.changedPaths.add(newPath);
-	acc.updatedRecords.push(recordAt(cache, newPath));
 	acc.changedPaths.add(oldPath);
-	acc.deletedPaths.push(oldPath);
 	for (const d of oldDescendants) {
 		acc.changedPaths.add(d);
-		acc.deletedPaths.push(d);
 	}
 	if (wasFolder) {
 		for (const nd of cache.collectDescendants(newPath)) {
 			acc.changedPaths.add(nd);
-			acc.updatedRecords.push(recordAt(cache, nd));
 		}
 	}
 }
 
 /**
- * Persist the delta's file-map changes to IndexedDB. The cursor is NOT stored
- * here — it lives in settings.backendData and is committed only after a
- * fully-successful sync, so an interrupted cycle re-detects the gap next time.
+ * Flush the metadata cache to IndexedDB at a checkpoint commit. `fullPersist`
+ * rewrites the whole map (after a full scan); otherwise the touched paths are
+ * reconciled against the live cache — present → upsert, absent → delete. The
+ * reconcile reads the final cache state, so it is order-independent and correct
+ * even when `touched` spans several earlier failed cycles.
  */
-async function persistDelta(
-	ctx: DropboxSyncContext,
-	updated: FileRecordTuple[],
-	deleted: string[],
+export async function commitDropboxCache(
+	store: MetadataStore<DropboxEntry>,
+	cache: DropboxMetadataCache,
+	touched: Set<string>,
+	fullPersist: boolean,
 ): Promise<void> {
-	if (!ctx.metadataStore) return;
-	try {
-		if (updated.length > 0) await ctx.metadataStore.putFiles(updated);
-		if (deleted.length > 0) await ctx.metadataStore.deleteFiles(deleted);
-	} catch (err) {
-		ctx.logger?.warn("Failed to persist Dropbox delta to IndexedDB", {
-			message: err instanceof Error ? err.message : String(err),
-		});
+	await store.open();
+	if (fullPersist) {
+		await store.saveAll(cache.exportRecords(), new Map());
+		return;
 	}
+	const updated: { path: string; file: DropboxEntry; isFolder: boolean }[] = [];
+	const deleted: string[] = [];
+	for (const path of touched) {
+		const entry = cache.getEntry(path);
+		if (entry) updated.push({ path, file: entry, isFolder: cache.isFolder(path) });
+		else deleted.push(path);
+	}
+	if (updated.length > 0) await store.putFiles(updated);
+	if (deleted.length > 0) await store.deleteFiles(deleted);
 }

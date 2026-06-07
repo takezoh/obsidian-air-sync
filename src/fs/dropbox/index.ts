@@ -10,6 +10,7 @@ import { DropboxMetadataCache } from "./metadata-cache";
 import {
 	applyDropboxDelta,
 	classifyChangedPaths,
+	commitDropboxCache,
 	computeFullScanDelta,
 	type RemoteDelta,
 } from "./incremental-sync";
@@ -37,6 +38,15 @@ export class DropboxFs implements IFileSystem {
 
 	/** Latest `list_folder` delta cursor (for incremental sync). */
 	private _cursor: string | null = null;
+
+	/**
+	 * Cache changes not yet flushed to IndexedDB — persistence is deferred to the
+	 * checkpoint commit ({@link commitCheckpoint}) so the persisted cache never runs
+	 * ahead of the committed cursor (a crash would otherwise drop a deletion the
+	 * replay can't re-detect). `pendingFullPersist` supersedes it after a full scan.
+	 */
+	private touchedPaths = new Set<string>();
+	private pendingFullPersist = false;
 
 	constructor(
 		private client: DropboxClient,
@@ -120,8 +130,10 @@ export class DropboxFs implements IFileSystem {
 		const entries = await this.client.listFolderAll(this.cursorRoot, true);
 		this.cache.buildFromEntries(entries);
 		this.initialized = true;
+		// Whole cache rebuilt → flush it all at the next commit (not just touched paths).
+		this.touchedPaths.clear();
+		this.pendingFullPersist = true;
 		this.logger?.info("Full scan completed", { fileCount: this.cache.size });
-		void this.persistCache();
 	}
 
 	/**
@@ -167,28 +179,38 @@ export class DropboxFs implements IFileSystem {
 		}
 	}
 
-	/** Persist the file map. The cursor is committed via backendData, not here. */
-	private async persistCache(): Promise<void> {
-		if (!this.metadataStore) return;
-		try {
-			await this.metadataStore.open();
-			await this.metadataStore.saveAll(this.cache.exportRecords(), new Map());
-		} catch (err) {
-			this.logger?.warn("Failed to persist cache to IndexedDB", {
-				message: err instanceof Error ? err.message : String(err),
-			});
-		}
+	/**
+	 * Flush the cache to IndexedDB. Called only after a clean cycle, before the
+	 * cursor commits (see IBackendProvider.commitCheckpoint), so the persisted cache
+	 * tracks the committed cursor and never runs ahead of it.
+	 */
+	async commitCheckpoint(): Promise<void> {
+		const store = this.metadataStore;
+		if (!store) return;
+		await this.cacheMutex.run(async () => {
+			try {
+				await commitDropboxCache(store, this.cache, this.touchedPaths, this.pendingFullPersist);
+			} catch (err) {
+				this.logger?.warn("Failed to persist checkpoint to IndexedDB", {
+					message: err instanceof Error ? err.message : String(err),
+				});
+			}
+			this.pendingFullPersist = false;
+			this.touchedPaths.clear();
+		});
 	}
 
 	/** Apply delta from the current cursor (caller ensured init + holds mutex). */
 	private async applyDelta(): Promise<RemoteDelta | null> {
 		if (!this._cursor) return null;
 		const result = await applyDropboxDelta(
-			{ cache: this.cache, client: this.client, metadataStore: this.metadataStore, logger: this.logger },
+			{ cache: this.cache, client: this.client, logger: this.logger },
 			this._cursor,
 		);
 		if (result.needsFullScan) return this.fullScanWithDelta();
 		this._cursor = result.newCursor;
+		// Buffer changed paths for the checkpoint commit (persisted only on a clean cycle).
+		for (const p of result.changedPaths) this.touchedPaths.add(p);
 		return classifyChangedPaths(this.cache, result.changedPaths, result.renamedPaths);
 	}
 

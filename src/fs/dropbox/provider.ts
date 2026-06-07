@@ -171,6 +171,16 @@ export class DropboxProvider implements IBackendProvider {
 		return result;
 	}
 
+	/**
+	 * Flush the metadata cache to IndexedDB after a clean cycle, before the cursor
+	 * commits in {@link readBackendState} — so a crash can't leave the cache ahead
+	 * of the committed cursor (which would drop a remote deletion the replay can't
+	 * re-detect).
+	 */
+	async commitCheckpoint(fs: IFileSystem): Promise<void> {
+		if (fs instanceof DropboxFs) await fs.commitCheckpoint();
+	}
+
 	async resolveRemoteVault(
 		_app: App,
 		settings: AirSyncSettings,

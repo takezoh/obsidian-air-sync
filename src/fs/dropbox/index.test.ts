@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import type { RequestUrlParam } from "obsidian";
-import { spyRequestUrl, mockRes, dbxFile, dbxFolder, untagged } from "./test-helpers";
+import { spyRequestUrl, mockRes, dbxFile, dbxFolder, dbxDeleted, untagged } from "./test-helpers";
 import type { DropboxFsInternal } from "./test-helpers";
 import type { DropboxEntry } from "./types";
-import type { MetadataStore } from "../../store/metadata-store";
+import type { FileRecord, MetadataStore } from "../../store/metadata-store";
 
 vi.mock("obsidian");
 
@@ -156,6 +156,88 @@ describe("DropboxFs.rename", () => {
 		expect((await fs.stat("papers"))?.isDirectory).toBe(true);
 		// A write into the renamed folder must not throw 'papers is a file'.
 		await expect(fs.write("papers/child.md", bytes("x"), 0)).resolves.toMatchObject({ path: "papers/child.md" });
+	});
+});
+
+describe("DropboxFs checkpoint persistence (commit-last)", () => {
+	// A shared IndexedDB-like store that survives a simulated crash (two FS instances
+	// against the same backing rows).
+	function sharedStore(seed: Record<string, DropboxEntry>) {
+		const rows = new Map<string, FileRecord<DropboxEntry>>();
+		for (const [path, file] of Object.entries(seed)) {
+			rows.set(path, { path, file, isFolder: file[".tag"] === "folder" });
+		}
+		const store = {
+			open: () => Promise.resolve(),
+			loadAll: () => Promise.resolve({ files: [...rows.values()], meta: new Map<string, string>() }),
+			saveAll: (files: FileRecord<DropboxEntry>[]) => {
+				rows.clear();
+				for (const r of files) rows.set(r.path, r);
+				return Promise.resolve();
+			},
+			putFiles: (recs: FileRecord<DropboxEntry>[]) => {
+				for (const r of recs) rows.set(r.path, r);
+				return Promise.resolve();
+			},
+			deleteFiles: (paths: string[]) => {
+				for (const p of paths) rows.delete(p);
+				return Promise.resolve();
+			},
+			close: () => Promise.resolve(),
+		} as unknown as MetadataStore<DropboxEntry>;
+		return { store, rows };
+	}
+
+	function deltaDeletesA() {
+		return (opts: string | RequestUrlParam) => {
+			const url = typeof opts === "string" ? opts : opts.url;
+			if (url.includes("get_metadata")) return Promise.resolve(metaRes("/root"));
+			if (url.includes("list_folder/continue")) {
+				return Promise.resolve(mockRes({ entries: [dbxDeleted("/root/a.md")], cursor: "C1", has_more: false }));
+			}
+			return Promise.resolve(mockRes({}));
+		};
+	}
+
+	it("survives a crash mid-cycle: an un-committed cache stays at the committed cursor so the deletion replays", async () => {
+		// Regression: a remote deletion was persisted to IndexedDB the moment the delta
+		// was applied (eager), decoupled from the cursor (which commits only on success).
+		// A crash before commit then loaded a cache that had already dropped the file, and
+		// the replay from the committed cursor early-returned on the absent path — the
+		// deletion was lost (local copy never removed).
+		const { store, rows } = sharedStore({ "a.md": dbxFile("1", "/root/a.md") });
+		(await spyRequestUrl()).mockImplementation(deltaDeletesA());
+		const { DropboxFs } = await import("./index");
+		const { DropboxClient } = await import("./client");
+
+		// Cycle N (committed cursor C0): the remote deletes a.md. The delta surfaces it,
+		// but the cycle "crashes" before commitCheckpoint runs.
+		const fs1 = new DropboxFs(new DropboxClient(() => Promise.resolve("AT")), "id:root", undefined, store);
+		fs1.cursor = "C0";
+		expect((await fs1.getChangedPaths())?.deleted).toContain("a.md");
+		// Crash: commitCheckpoint NOT called → the store must still hold a.md.
+		expect(rows.has("a.md")).toBe(true);
+
+		// Cycle N+1 after restart: a fresh FS rebuilt from the committed cursor C0 must
+		// re-detect the deletion via replay.
+		const fs2 = new DropboxFs(new DropboxClient(() => Promise.resolve("AT")), "id:root", undefined, store);
+		fs2.cursor = "C0";
+		expect((await fs2.getChangedPaths())?.deleted).toContain("a.md");
+	});
+
+	it("commitCheckpoint flushes the delta to the store only after a clean cycle", async () => {
+		const { store, rows } = sharedStore({ "a.md": dbxFile("1", "/root/a.md") });
+		(await spyRequestUrl()).mockImplementation(deltaDeletesA());
+		const { DropboxFs } = await import("./index");
+		const { DropboxClient } = await import("./client");
+		const fs = new DropboxFs(new DropboxClient(() => Promise.resolve("AT")), "id:root", undefined, store);
+		fs.cursor = "C0";
+
+		await fs.getChangedPaths();
+		expect(rows.has("a.md")).toBe(true); // not yet committed
+
+		await fs.commitCheckpoint();
+		expect(rows.has("a.md")).toBe(false); // committed → store now matches the cache
 	});
 });
 
