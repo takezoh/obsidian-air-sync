@@ -18,6 +18,13 @@ const UPLOAD_API = "https://www.googleapis.com/upload/drive/v3";
 const FILE_FIELDS = "id,name,mimeType,size,modifiedTime,parents,md5Checksum,trashed";
 
 /**
+ * Hard cap on pagination drain loops (full list and changes.list). At pageSize
+ * 1000 this is 10M entries — beyond any real vault — so reaching it means the
+ * server isn't clearing its page token; we throw instead of looping forever.
+ */
+export const LIST_PAGE_CAP = 10_000;
+
+/**
  * Low-level Google Drive REST API v3 client.
  * Uses Obsidian's requestUrl for CORS-free requests.
  */
@@ -143,7 +150,11 @@ export class DriveClient {
 		const enqueueFolder = (folderId: string): void => {
 			const task = pool.run(async () => {
 				let pageToken: string | undefined;
-				do {
+				// Bound the pagination drain: a server that never clears nextPageToken
+				// would otherwise loop forever. 10k pages × 1000 files/page is far beyond
+				// any real folder, so hitting it means a misbehaving server — throw rather
+				// than silently truncate (a short listing would read as mass deletion).
+				for (let guard = 0; guard < LIST_PAGE_CAP; guard++) {
 					const result = await this.listFiles(folderId, pageToken);
 					for (const file of result.files) {
 						allFiles.push(file);
@@ -152,7 +163,11 @@ export class DriveClient {
 						}
 					}
 					pageToken = result.nextPageToken;
-				} while (pageToken);
+					if (!pageToken) return;
+				}
+				throw new Error(
+					`listAllFiles: pagination exceeded ${LIST_PAGE_CAP} pages for folder ${folderId} (server not clearing nextPageToken?)`
+				);
 			});
 			tasks.push(task);
 		};

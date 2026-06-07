@@ -180,6 +180,49 @@ describe("GoogleDriveProvider.completeWebFolderPick", () => {
 	});
 });
 
+describe("GoogleDriveProvider detached auth refresh-token rotation", () => {
+	const expiredData = {
+		remoteVaultFolderId: "FID",
+		accessTokenExpiry: 0, // expired → the detached auth must refresh
+		changesStartPageToken: "",
+		pendingAuthState: "",
+		pendingFolderPickState: "",
+	};
+
+	it("persists a rotated refresh token from a detached refresh to SecretStorage", async () => {
+		const { provider, store } = await makeProvider(CONNECTED); // stored RT/AT
+		const detached = provider.auth.createDetachedGoogleAuth(expiredData);
+		detached.setTokens("RT", "AT", 0); // seeded from the stored (now-expired) tokens
+
+		// The refresh endpoint rotates the refresh token (returns a NEW one).
+		(await spyRequestUrl()).mockResolvedValue(
+			mockRes({ access_token: "AT2", refresh_token: "RT2", expires_in: 3600, token_type: "Bearer" }),
+		);
+
+		const token = await detached.getAccessToken(false);
+
+		expect(token).toBe("AT2");
+		// The rotated refresh token was persisted — not discarded with the throwaway
+		// instance, which would have left the stored token stale.
+		expect(store.getSecret("air-sync-googledrive-refresh-token")).toBe("RT2");
+	});
+
+	it("leaves the stored refresh token untouched when the provider does not rotate it", async () => {
+		const { provider, store } = await makeProvider(CONNECTED);
+		const detached = provider.auth.createDetachedGoogleAuth(expiredData);
+		detached.setTokens("RT", "AT", 0);
+
+		// A normal refresh returns only a new access token (no refresh_token).
+		(await spyRequestUrl()).mockResolvedValue(
+			mockRes({ access_token: "AT2", expires_in: 3600, token_type: "Bearer" }),
+		);
+
+		await detached.getAccessToken(false);
+
+		expect(store.getSecret("air-sync-googledrive-refresh-token")).toBe("RT");
+	});
+});
+
 describe("GoogleDriveProvider.getRemoteVaultDisplayPath", () => {
 	/** Route getFile(id) responses by the folder id in the request URL. Missing ids 404. */
 	function routeGetFile(byId: Record<string, { name: string; parents?: string[] }>) {

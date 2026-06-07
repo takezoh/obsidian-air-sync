@@ -90,6 +90,24 @@ describe("GoogleAuth.getAuthorizationUrl", () => {
 		expect(url).not.toContain("code_challenge");
 		expect(auth.getAuthState()).not.toBeNull();
 	});
+
+	it("produces a URL-safe (base64url) state that survives redirect hops", async () => {
+		const { GoogleAuth } = await import("./auth");
+		const auth = new GoogleAuth();
+		await auth.getAuthorizationUrl();
+
+		const state = auth.getAuthState();
+		expect(state).not.toBeNull();
+		// base64url contains none of the chars a form-decoder would mangle.
+		expect(state!).not.toMatch(/[+/=]/);
+		// Still decodes to the expected payload (normalize back to standard base64).
+		const b64 = state!.replace(/-/g, "+").replace(/_/g, "/");
+		const decoded = JSON.parse(
+			atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4)),
+		) as { app: string; nonce: string };
+		expect(decoded.app).toBe("obsidian-plugin");
+		expect(typeof decoded.nonce).toBe("string");
+	});
 });
 
 describe("GoogleAuth.getAccessToken concurrency", () => {
@@ -366,7 +384,12 @@ describe("GoogleAuthDirect.getAuthorizationUrl", () => {
 
 		const state = auth.getAuthState();
 		expect(state).not.toBeNull();
-		const decoded = JSON.parse(atob(state!)) as { custom: boolean };
+		// State is base64url (URL-safe); normalize back to standard base64 to decode.
+		expect(state!).not.toMatch(/[+/=]/);
+		const b64 = state!.replace(/-/g, "+").replace(/_/g, "/");
+		const decoded = JSON.parse(
+			atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4)),
+		) as { custom: boolean };
 		expect(decoded.custom).toBe(true);
 	});
 });

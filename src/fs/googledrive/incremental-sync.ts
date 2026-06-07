@@ -1,6 +1,7 @@
 import { FOLDER_MIME } from "./types";
 import type { DriveFile } from "./types";
 import type { DriveMetadataCache } from "./metadata-cache";
+import { LIST_PAGE_CAP } from "./client";
 import type { DriveClient } from "./client";
 import type { MetadataStore } from "../../store/metadata-store";
 import type { RenamePair } from "../../sync/types";
@@ -41,7 +42,15 @@ export async function applyIncrementalChanges(
 		const changedPaths = new Set<string>();
 		const renamedPaths: RenamePair[] = [];
 
-		do {
+		// Bound the drain: a server that never clears nextPageToken would loop
+		// forever. 10k pages of changes is far beyond any real delta, so throw
+		// rather than spin (mirrors the full-list cap in listAllFiles).
+		for (let guard = 0; ; guard++) {
+			if (guard >= LIST_PAGE_CAP) {
+				throw new Error(
+					`applyIncrementalChanges: changes pagination exceeded ${LIST_PAGE_CAP} pages (server not clearing nextPageToken?)`,
+				);
+			}
 			const result = await ctx.client.listChanges(
 				changesPageToken,
 				pageToken
@@ -109,7 +118,8 @@ export async function applyIncrementalChanges(
 			if (result.newStartPageToken) {
 				currentToken = result.newStartPageToken;
 			}
-		} while (pageToken);
+			if (!pageToken) break;
+		}
 
 		if (totalChanges > 0) {
 			ctx.logger?.info("Incremental changes applied", { changeCount: totalChanges });

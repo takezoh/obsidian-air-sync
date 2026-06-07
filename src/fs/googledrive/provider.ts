@@ -62,7 +62,7 @@ export class GoogleDriveAuthProvider extends GoogleDriveAuthProviderBase {
 	}
 
 	createDetachedGoogleAuth(_data: GoogleDriveBackendData, logger?: Logger): IGoogleAuth {
-		return new GoogleAuth(logger);
+		return this.wireDetachedRefreshPersistence(new GoogleAuth(logger));
 	}
 }
 

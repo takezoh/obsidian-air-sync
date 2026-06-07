@@ -80,7 +80,17 @@ export class GoogleDriveFs implements IFileSystem {
 		const result = await opts.execute(resolved);
 		await this.cacheMutex.run(() => {
 			const { path, expectedId } = opts.staleGuard(resolved);
-			if (expectedId && this.cache.getFile(path)?.id !== expectedId) {
+			const currentId = this.cache.getFile(path)?.id;
+			// Guard the phase-3 cache write against a concurrent delta that touched
+			// this path while the network op (phase 2) ran:
+			//  - expectedId set (operating on a known file): skip if the path now
+			//    resolves to a different id — it was replaced/moved out from under us.
+			//  - expectedId undefined (creating a NEW path): skip if the path is now
+			//    occupied at all. A concurrent delta created it, and overwriting would
+			//    drop that change; the in-memory cursor already advanced past it, so the
+			//    next cycle re-detects our write — no data loss.
+			const stale = expectedId === undefined ? currentId !== undefined : currentId !== expectedId;
+			if (stale) {
 				this.logger?.warn(`Skipping stale cache update for ${opts.operationName}`, { path });
 				return;
 			}

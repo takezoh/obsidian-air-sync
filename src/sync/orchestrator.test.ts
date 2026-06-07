@@ -573,6 +573,20 @@ describe("SyncOrchestrator", () => {
 			// Sibling content under the same opted-in root still syncs.
 			expect(orchestrator.isExcluded(".airsync/logs/x.log")).toBe(false);
 		});
+
+		it("always excludes OS-junk files on every backend, regardless of ignore/syncDotPaths", () => {
+			const settings = mockSettings();
+			settings.syncDotPaths = []; // .DS_Store excluded even though dot paths are off-scope
+			settings.ignorePatterns = []; // no user pattern needed — junk is always excluded
+			const deps = createDeps({ getSettings: () => settings });
+			const orchestrator = new SyncOrchestrator(deps);
+
+			expect(orchestrator.isExcluded("desktop.ini")).toBe(true);
+			expect(orchestrator.isExcluded("Anime/Thumbs.db")).toBe(true);
+			expect(orchestrator.isExcluded("notes/.DS_Store")).toBe(true);
+			// Real content is unaffected.
+			expect(orchestrator.isExcluded("notes/hello.md")).toBe(false);
+		});
 	});
 
 	describe("getStatus()", () => {

@@ -180,6 +180,24 @@ describe("DriveClient.listAllFiles parallelization", () => {
 
 		mockRequestUrl.mockRestore();
 	});
+
+	it("throws (does not loop forever) when the server never clears nextPageToken", async () => {
+		const { DriveClient, LIST_PAGE_CAP } = await import("./client");
+
+		let calls = 0;
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(() => {
+			calls++;
+			// Always advertise another page → an unbounded drain without the guard.
+			return Promise.resolve(mockRes({ files: [], nextPageToken: "more" }));
+		});
+
+		const client = new DriveClient(() => Promise.resolve("access"));
+		await expect(client.listAllFiles("root")).rejects.toThrow(/pagination exceeded/);
+		// Bounded at the cap rather than spinning forever.
+		expect(calls).toBe(LIST_PAGE_CAP);
+
+		mockRequestUrl.mockRestore();
+	});
 });
 
 describe("DriveClient resumable upload", () => {
