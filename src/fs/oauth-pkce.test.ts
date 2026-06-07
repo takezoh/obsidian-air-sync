@@ -61,6 +61,10 @@ class TestTokenManager extends BaseOAuthTokenManager {
 		return "not authed (test)";
 	}
 
+	protected sessionExpiredMessage(): string {
+		return "session expired (test)";
+	}
+
 	protected async performRefresh(): Promise<string> {
 		this.refreshCount++;
 		await Promise.resolve();
@@ -71,10 +75,25 @@ class TestTokenManager extends BaseOAuthTokenManager {
 }
 
 describe("BaseOAuthTokenManager", () => {
-	it("throws the provider-specific message when there is no refresh token", async () => {
+	it("throws the provider-specific message when there are no tokens at all", async () => {
 		const m = new TestTokenManager();
 		await expect(m.getAccessToken()).rejects.toThrow("not authed (test)");
 		await expect(m.getAccessToken()).rejects.toBeInstanceOf(AuthError);
+	});
+
+	it("serves a still-valid access token even without a refresh token", async () => {
+		const m = new TestTokenManager();
+		// Access-only: no refresh token, but a fresh access token is present.
+		m.setTokens("", "access-only", Date.now() + 3_600_000);
+		expect(await m.getAccessToken()).toBe("access-only");
+		expect(m.refreshCount).toBe(0);
+	});
+
+	it("throws the session-expired message when a refresh is needed but no refresh token exists", async () => {
+		const m = new TestTokenManager();
+		m.setTokens("", "stale", 0); // access-only and expired → cannot refresh
+		await expect(m.getAccessToken()).rejects.toThrow("session expired (test)");
+		expect(m.refreshCount).toBe(0);
 	});
 
 	it("returns the cached access token within the expiry-skew window (no refresh)", async () => {

@@ -118,7 +118,7 @@ export abstract class BaseOAuthTokenManager {
 	}
 
 	async getAccessToken(forceRefresh = false): Promise<string> {
-		if (!this.refreshToken) {
+		if (!this.refreshToken && !this.accessToken) {
 			throw new AuthError(this.notAuthenticatedMessage(), 401);
 		}
 		if (this.authFailedAt > 0 && Date.now() - this.authFailedAt < AUTH_FAILED_COOLDOWN_MS) {
@@ -126,6 +126,12 @@ export abstract class BaseOAuthTokenManager {
 		}
 		if (!forceRefresh && this.accessToken && Date.now() < this.accessTokenExpiry - TOKEN_SKEW_MS) {
 			return this.accessToken;
+		}
+		// A refresh is required (forced, or the access token is missing/stale) but there
+		// is no refresh token to perform it — surface a reconnect prompt rather than
+		// pretending we can refresh.
+		if (!this.refreshToken) {
+			throw new AuthError(this.sessionExpiredMessage(), 401);
 		}
 		if (this.refreshPromise) {
 			return this.refreshPromise;
@@ -141,8 +147,13 @@ export abstract class BaseOAuthTokenManager {
 	/** Perform the provider-specific token refresh and return the new access token. */
 	protected abstract performRefresh(): Promise<string>;
 
-	/** AuthError message for the "no refresh token yet" case (names the service). */
+	/** AuthError message for the "no tokens at all" case (names the service). */
 	protected abstract notAuthenticatedMessage(): string;
+
+	/** AuthError message when a refresh is needed but no refresh token is available. */
+	protected sessionExpiredMessage(): string {
+		return "Authentication expired. Please reconnect in settings.";
+	}
 
 	/** Handle token refresh errors: set authFailedAt and throw AuthError for 400/401. */
 	protected handleRefreshError(err: unknown): never {
