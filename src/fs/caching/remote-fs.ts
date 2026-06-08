@@ -4,6 +4,7 @@ import type { RenamePair } from "../types";
 import type { MetadataStore } from "../../store/metadata-store";
 import type { Logger } from "../../logging/logger";
 import { AsyncMutex } from "../../queue/async-queue";
+import { normalizeSyncPath } from "../../utils/path";
 import type { AbstractMetadataCache } from "./metadata-cache";
 
 /** A remote delta: paths added/modified, deleted, and renamed since the last cursor. */
@@ -405,12 +406,9 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 			if (await this.ensureInitialized()) {
 				await this._applyIncrementalChanges();
 			}
-
-			const entities: FileEntity[] = [];
-			for (const [path, file] of this.cache.entries()) {
-				entities.push(this.cache.toEntity(path, file));
-			}
-			return entities;
+			return Array.from(this.cache.entries(), ([path, file]) =>
+				this.cache.toEntity(path, file),
+			);
 		});
 	}
 
@@ -421,6 +419,7 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	 * stat() is only called after list() has refreshed the cache.
 	 */
 	async stat(path: string): Promise<FileEntity | null> {
+		path = normalizeSyncPath(path);
 		return this.cacheMutex.run(async () => {
 			await this.ensureInitialized();
 			const file = this.cache.getFile(path);
@@ -431,9 +430,13 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 
 	/** Download file content. Like stat(), relies on list() having refreshed the cache. */
 	async read(path: string): Promise<ArrayBuffer> {
+		path = normalizeSyncPath(path);
 		// Phase 1: resolve the backend id under the mutex.
 		const fileId = await this.cacheMutex.run(async () => {
 			await this.ensureInitialized();
+			if (this.cache.isFolder(path)) {
+				throw new Error(`Not a file (is a directory): ${path}`);
+			}
 			const id = this.cache.idAt(path);
 			if (id === undefined) {
 				throw new Error(`File not found: ${path}`);
@@ -446,6 +449,7 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	}
 
 	async listDir(path: string): Promise<FileEntity[]> {
+		path = normalizeSyncPath(path);
 		return this.cacheMutex.run(async () => {
 			await this.ensureInitialized();
 			const kids = this.cache.getChildren(path);
@@ -462,6 +466,7 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	}
 
 	async delete(path: string): Promise<void> {
+		path = normalizeSyncPath(path);
 		// Phase 1: resolve the backend id under the mutex.
 		const fileId = await this.cacheMutex.run(async () => {
 			await this.ensureInitialized();

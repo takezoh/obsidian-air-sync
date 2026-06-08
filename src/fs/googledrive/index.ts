@@ -8,6 +8,7 @@ import { DriveMetadataCache } from "./metadata-cache";
 import { applyIncrementalChanges } from "./incremental-sync";
 import { INTERNAL_METADATA_PATH } from "../remote-vault-contract";
 import { sha256 } from "../../utils/hash";
+import { normalizeSyncPath, validateRename } from "../../utils/path";
 import { CachingRemoteFs } from "../caching/remote-fs";
 import type { IncrementalChangesResult } from "../caching/remote-fs";
 
@@ -73,6 +74,7 @@ export class GoogleDriveFs extends CachingRemoteFs<DriveFile> {
 		content: ArrayBuffer,
 		mtime: number
 	): Promise<FileEntity> {
+		path = normalizeSyncPath(path);
 		if (path === INTERNAL_METADATA_PATH) {
 			// The backend manages its metadata out-of-band; it must never be pushed
 			// through the sync engine (the orchestrator excludes it too). Fail loudly
@@ -82,6 +84,11 @@ export class GoogleDriveFs extends CachingRemoteFs<DriveFile> {
 		const { result: driveFile } = await this.withCacheMutex({
 			operationName: "write",
 			resolve: async () => {
+				if (this.cache.isFolder(path)) {
+					throw new Error(
+						`Cannot write file: "${path}" is an existing directory`,
+					);
+				}
 				const existingFile = this.cache.getFile(path);
 				const existingId = existingFile?.id;
 				const fileName = path.split("/").pop()!;
@@ -113,6 +120,7 @@ export class GoogleDriveFs extends CachingRemoteFs<DriveFile> {
 	}
 
 	async mkdir(path: string): Promise<FileEntity> {
+		path = normalizeSyncPath(path);
 		return this.cacheMutex.run(async () => {
 			await this.ensureInitialized();
 			const folderId = await this.ensureFolder(path);
@@ -128,6 +136,9 @@ export class GoogleDriveFs extends CachingRemoteFs<DriveFile> {
 	}
 
 	async rename(oldPath: string, newPath: string): Promise<void> {
+		oldPath = normalizeSyncPath(oldPath);
+		newPath = normalizeSyncPath(newPath);
+		validateRename(oldPath, newPath);
 		await this.withCacheMutex({
 			operationName: "rename",
 			resolve: async () => {
