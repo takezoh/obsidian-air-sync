@@ -81,20 +81,22 @@ export class DropboxSettingsRenderer implements IBackendSettingsRenderer {
 		const folderSetting = new Setting(containerEl).setName("Remote vault folder");
 
 		if (data.remoteVaultFolderId) {
-			// Bound: show the folder path (resolved live from its id, never stored).
-			// A slow/failed lookup just leaves a placeholder. No "Choose folder" once
-			// bound — same gate as the default-folder button below (only offered while unbound).
+			// Bound: show the folder id IMMEDIATELY (never block the field on a network
+			// call — mirrors the Google Drive renderer), then best-effort upgrade to the
+			// id-resolved path. A slow/failed/never-settling lookup just leaves the id
+			// shown — it must never stick on a "Resolving…" placeholder. No "Choose folder"
+			// once bound — same gate as the default-folder button below.
 			folderSetting.setDesc(
 				"The folder this vault syncs into, inside the app folder.",
 			);
 			let pathField: TextComponent | undefined;
 			folderSetting
 				.addText((text) => {
-					pathField = text.setValue("Resolving…").setDisabled(true);
+					pathField = text.setValue(data.remoteVaultFolderId ?? "").setDisabled(true);
 				});
 			void provider?.getRemoteVaultDisplayPath?.(settings)
-				.then((path) => pathField?.setValue(path ?? "(folder unavailable)"))
-				.catch(() => pathField?.setValue("(couldn't resolve path)"));
+				.then((path) => { if (path) pathField?.setValue(path); })
+				.catch(() => { /* keep the id shown */ });
 		} else {
 			// Not bound yet: use the default folder (/<Vault Name> under the app folder),
 			// or pick an existing one. Binding only happens on an explicit choice here.
