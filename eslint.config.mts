@@ -216,10 +216,8 @@ export default tseslint.config(
 		// Grandfathered modules above the 300-line cap (known debt). Each is
 		// pinned at its current size so it cannot grow further without being
 		// split — ratchet these down over time; do not raise them.
-		files: ["src/fs/googledrive/index.ts"],
-		rules: { "max-lines": ["error", { max: 397, skipBlankLines: true, skipComments: true }] },
-	},
-	{
+		// (googledrive/index.ts was here at 397; A1 lifted its cache/checkpoint
+		// machinery into fs/caching/, dropping it back under the standard 300 cap.)
 		files: ["src/fs/googledrive/auth.ts"],
 		rules: { "max-lines": ["error", { max: 337, skipBlankLines: true, skipComments: true }] },
 	},

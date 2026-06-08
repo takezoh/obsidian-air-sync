@@ -66,6 +66,19 @@ export abstract class AbstractMetadataCache<TFile> {
 	get size(): number { return this.pathToFile.size; }
 	entries(): IterableIterator<[string, TFile]> { return this.pathToFile.entries(); }
 
+	/** The backend id of the file currently cached at `path`, or undefined if none. */
+	idAt(path: string): string | undefined {
+		const file = this.pathToFile.get(path);
+		return file === undefined ? undefined : this.extractId(file);
+	}
+
+	/** Snapshot the whole cache as an id→path map (used for a full-scan diff). */
+	snapshotPathsById(): Map<string, string> {
+		const byId = new Map<string, string>();
+		for (const [path, file] of this.pathToFile) byId.set(this.extractId(file), path);
+		return byId;
+	}
+
 	// ── Mutation methods ──
 
 	/**
