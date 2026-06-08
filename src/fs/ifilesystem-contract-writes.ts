@@ -29,6 +29,18 @@ export function registerWriteContract(ctx: IFileSystemContractCtx): void {
 			expect(await readText("a.txt")).toBe("new");
 		});
 
+		it("returns the new size and mtime when overwriting", async () => {
+			// The returned entity must reflect the just-written bytes, not the
+			// pre-overwrite state — a backend that hands back a stale TFile/stat
+			// would re-baseline against the wrong size/mtime.
+			await seed("a.txt", "old", 1000);
+			const entity = await ctx.fs().write("a.txt", bytes("a longer body"), 2000);
+			expect(entity.size).toBe(
+				new TextEncoder().encode("a longer body").byteLength,
+			);
+			expect(entity.mtime).toBe(2000);
+		});
+
 		it("creates parent directories automatically", async () => {
 			await ctx.fs().write("a/b/c.txt", bytes("data"), 1000);
 			expect(await exists("a")).toBe(true);

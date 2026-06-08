@@ -52,7 +52,7 @@ export interface IFileSystemContractCtx {
 	/** Whether `stat()` returns a non-empty content hash for files. */
 	computesHashOnStat: boolean;
 	/** Seed a file through the public `write()` — every backend's real entry point. */
-	seed: (path: string, text: string, mtime?: number) => Promise<unknown>;
+	seed: (path: string, text: string, mtime?: number) => Promise<void>;
 	/** A path exists iff `stat()` resolves to a non-null entity (file OR directory). */
 	exists: (path: string) => Promise<boolean>;
 	/** Read a path's content as text. */
@@ -84,8 +84,9 @@ export function runIFileSystemContract(
 		const ctx: IFileSystemContractCtx = {
 			fs: () => current,
 			computesHashOnStat: opts.computesHashOnStat ?? true,
-			seed: (path, text, mtime = 1000) =>
-				current.write(path, bytes(text), mtime),
+			seed: async (path, text, mtime = 1000) => {
+				await current.write(path, bytes(text), mtime);
+			},
 			exists: async (path) => (await current.stat(path)) !== null,
 			readText: async (path) => decode(await current.read(path)),
 		};

@@ -262,8 +262,9 @@ export class Vault {
 		const children: (TFile | TFolder)[] = [];
 		for (const [p, entry] of this.files) {
 			if (p.startsWith(".") || !p.startsWith(prefix)) continue;
-			const rest = p.substring(prefix.length);
-			if (rest === "" || rest.includes("/")) continue;
+			// Keys are normalized (no trailing slash), so rest is never "" here;
+			// a "/" in it means a deeper descendant, not an immediate child.
+			if (p.substring(prefix.length).includes("/")) continue;
 			children.push(
 				entry.type === "folder"
 					? new TFolder(p)
@@ -320,6 +321,11 @@ export class Vault {
 			throw new Error(`File not found: ${file.path}`);
 		entry.content = content.slice(0); // copy on store (see createBinary)
 		if (options?.mtime !== undefined) entry.mtime = options.mtime;
+		// Real Obsidian mutates the live TFile's stat in place, so a caller holding
+		// the TFile (e.g. LocalFs.write's overwrite branch) reads the post-write
+		// size/mtime. Mirror that so the returned FileEntity isn't stale.
+		file.stat.size = content.byteLength;
+		if (options?.mtime !== undefined) file.stat.mtime = options.mtime;
 		// Stays async so the not-found throw rejects.
 		await Promise.resolve();
 	}

@@ -372,8 +372,8 @@ describe("LocalFs", () => {
 			await fs.rename("notes/a.md", ".templates/a.md");
 
 			expect(await vault.adapter.exists(".templates/a.md")).toBe(true);
-			// Source removal goes through the index-aware trashFile (no-op in the mock,
-			// so assert the call rather than disk absence).
+			// Source removal goes through the index-aware trashFile; assert the call
+			// (the disk-absence side is covered by the shared IFileSystem contract).
 			expect(trashSpy).toHaveBeenCalled();
 		});
 
