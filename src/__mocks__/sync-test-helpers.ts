@@ -169,11 +169,23 @@ export function createMockFs(name: string): IFileSystem & {
 				}
 			}
 		},
-		getChangedPaths: () =>
-			Promise.resolve({
-				modified: [] as string[],
-				deleted: [] as string[],
-			}),
+		// A full incremental-checkpoint capability (all-or-nothing — see IFileSystem).
+		// Defaults are no-op/empty; individual tests override a method (or delete
+		// `checkpoint`) to drive cold-reconcile / commit / reset behaviour.
+		checkpoint: {
+			getChangedPaths: () =>
+				Promise.resolve({
+					modified: [] as string[],
+					deleted: [] as string[],
+				}),
+			// Load-bearing default: true ⇒ orchestrator's `checkpoint ? !hasCheckpoint() : false`
+			// is false ⇒ no forced cold scan, so default tests stay WARM/COLD (mirroring the
+			// pre-capability mock, which had no hasCheckpoint and short-circuited to false).
+			// Flipping this to false would silently force every default test cold.
+			hasCheckpoint: () => Promise.resolve(true),
+			resetCheckpoint: () => Promise.resolve(),
+			commitCheckpoint: () => Promise.resolve(),
+		},
 	};
 }
 
@@ -341,9 +353,11 @@ export function mockSettings(
 		enableThreeWayMerge: true,
 		mobileMaxFileSizeMB: 10,
 		screenWakeLockOnSync: false,
+		showSyncNotifications: false,
 		enableLogging: false,
 		logLevel: "info",
 		backendData: {},
+		lastSyncedIdentity: "",
 		...overrides,
 	};
 }

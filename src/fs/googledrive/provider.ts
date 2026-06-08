@@ -5,29 +5,30 @@ import type { Logger } from "../../logging/logger";
 import { GoogleAuth } from "./auth";
 import type { IGoogleAuth } from "./auth";
 import { GoogleDriveAuthProviderBase, GoogleDriveProviderBase } from "./provider-base";
+import type { IBackendSettingsRenderer } from "../settings-renderer";
+import { GoogleDriveSettingsRenderer } from "../../ui/googledrive-settings";
 
-/** All data stored in backendData["googledrive"] (tokens live in SecretStorage) */
+/** Google Drive's slice of the active-backend `backendData` bag (tokens live in SecretStorage) */
 export interface GoogleDriveBackendData {
 	remoteVaultFolderId: string;
-	lastKnownVaultName: string;
 	accessTokenExpiry: number;
-	changesStartPageToken: string;
 	pendingAuthState: string;
+	/** CSRF nonce for an in-flight web folder pick (Google Picker); cleared on completion. */
+	pendingFolderPickState: string;
 }
 
 const DEFAULT_GDRIVE_DATA: GoogleDriveBackendData = {
 	remoteVaultFolderId: "",
-	lastKnownVaultName: "",
 	accessTokenExpiry: 0,
-	changesStartPageToken: "",
 	pendingAuthState: "",
+	pendingFolderPickState: "",
 };
 
 /** Type-safe accessor for Google Drive backend data */
 function getGDriveData(settings: AirSyncSettings): GoogleDriveBackendData {
 	return {
 		...DEFAULT_GDRIVE_DATA,
-		...getBackendData<GoogleDriveBackendData>(settings, "googledrive"),
+		...getBackendData<GoogleDriveBackendData>(settings),
 	};
 }
 
@@ -59,6 +60,10 @@ export class GoogleDriveAuthProvider extends GoogleDriveAuthProviderBase {
 		}
 		return this.googleAuth;
 	}
+
+	createDetachedGoogleAuth(_data: GoogleDriveBackendData, logger?: Logger): IGoogleAuth {
+		return this.wireDetachedRefreshPersistence(new GoogleAuth(logger));
+	}
 }
 
 /**
@@ -80,5 +85,9 @@ export class GoogleDriveProvider extends GoogleDriveProviderBase {
 
 	protected getDefaultData(): GoogleDriveBackendData {
 		return DEFAULT_GDRIVE_DATA;
+	}
+
+	createSettingsRenderer(): IBackendSettingsRenderer {
+		return new GoogleDriveSettingsRenderer();
 	}
 }

@@ -1,5 +1,23 @@
 import { describe, it, expect } from "vitest";
-import { isIgnored } from "./ignore";
+import { isIgnored, isSystemJunkFile } from "./ignore";
+
+describe("isSystemJunkFile", () => {
+	it("matches OS-junk basenames case-insensitively, anywhere in the tree", () => {
+		expect(isSystemJunkFile("desktop.ini")).toBe(true);
+		expect(isSystemJunkFile("Anime/desktop.ini")).toBe(true);
+		expect(isSystemJunkFile("a/b/DESKTOP.INI")).toBe(true);
+		expect(isSystemJunkFile("x/Thumbs.db")).toBe(true);
+		expect(isSystemJunkFile(".DS_Store")).toBe(true);
+		expect(isSystemJunkFile("notes/sub/.ds_store")).toBe(true);
+	});
+
+	it("does not match normal files or partial-name lookalikes", () => {
+		expect(isSystemJunkFile("notes/hello.md")).toBe(false);
+		expect(isSystemJunkFile("desktop.ini.md")).toBe(false); // only the exact basename
+		expect(isSystemJunkFile("my-thumbs.db")).toBe(false);
+		expect(isSystemJunkFile("")).toBe(false);
+	});
+});
 
 describe("isIgnored", () => {
 	it("returns false for empty patterns", () => {

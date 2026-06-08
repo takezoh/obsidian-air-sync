@@ -342,8 +342,8 @@ interface RemoteChanges {
 }
 
 async function getRemoteChanges(remoteFs: IFileSystem): Promise<RemoteChanges> {
-	if (!remoteFs.getChangedPaths) return { paths: [], renamed: [] };
-	const result = await remoteFs.getChangedPaths();
+	if (!remoteFs.checkpoint) return { paths: [], renamed: [] };
+	const result = await remoteFs.checkpoint.getChangedPaths();
 	if (!result) return { paths: [], renamed: [] };
 	return {
 		paths: [...result.modified, ...result.deleted],

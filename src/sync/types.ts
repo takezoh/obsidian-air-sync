@@ -1,4 +1,4 @@
-import type { FileEntity, RemoteChecksum } from "../fs/types";
+import type { FileEntity, RemoteChecksum, RenamePair } from "../fs/types";
 
 /** A stored record of the last-known synced state for a file */
 export interface SyncRecord {
@@ -31,7 +31,7 @@ export interface MixedEntity {
 }
 
 /** User-facing strategy for resolving conflicts */
-export type ConflictStrategy = "auto_merge" | "duplicate" | "ask";
+export type ConflictStrategy = "auto_merge" | "duplicate";
 
 /** A record of a conflict resolution for audit/history purposes */
 export interface ConflictRecord {
@@ -47,13 +47,10 @@ export interface ConflictRecord {
 	sessionId: string;
 }
 
-/** A rename pair: source and destination paths */
-export interface RenamePair {
-	oldPath: string;
-	newPath: string;
-	/** When true, this pair represents a folder rename (not a file rename) */
-	isFolder?: boolean;
-}
+// RenamePair is part of the IFileSystem contract, so its canonical home is
+// fs/types (imported above). Re-exported here for the sync engine's many
+// consumers, keeping the fs/ → sync/ dependency from inverting.
+export type { RenamePair };
 
 /** Sync service status */
 export type SyncStatus = "idle" | "syncing" | "error" | "partial_error" | "not_connected";

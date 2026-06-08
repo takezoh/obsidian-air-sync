@@ -61,9 +61,12 @@ const PURE_TRANSFORMS = [
 // no-restricted-syntax selectors -------------------------------------------
 
 /**
- * Keep the vault index read centralized in LocalFs so there is a single,
- * layout-ready-gated entry point. getAllLoadedFiles() is an in-memory snapshot
- * that can under-report before the vault finishes loading.
+ * Keep the vault index read centralized in LocalFs.list() so there is a single
+ * entry point. getAllLoadedFiles() is an in-memory snapshot that can under-report
+ * before the vault finishes loading; the layout-ready GATE that makes it safe lives
+ * in the orchestrator (runSync/shouldSync early-return until isLayoutReady), NOT in
+ * list() itself — see LocalFs.list()'s contract. This rule centralizes the read so
+ * that gate has a single thing to protect.
  */
 const NO_GET_ALL_LOADED_FILES = {
 	selector: "CallExpression[callee.property.name='getAllLoadedFiles']",
@@ -181,10 +184,8 @@ export default tseslint.config(
 		// Grandfathered modules above the 300-line cap (known debt). Each is
 		// pinned at its current size so it cannot grow further without being
 		// split — ratchet these down over time; do not raise them.
-		files: ["src/fs/googledrive/index.ts"],
-		rules: { "max-lines": ["error", { max: 397, skipBlankLines: true, skipComments: true }] },
-	},
-	{
+		// (googledrive/index.ts was here at 397; A1 lifted its cache/checkpoint
+		// machinery into fs/caching/, dropping it back under the standard 300 cap.)
 		files: ["src/fs/googledrive/auth.ts"],
 		rules: { "max-lines": ["error", { max: 337, skipBlankLines: true, skipComments: true }] },
 	},
@@ -201,9 +202,5 @@ export default tseslint.config(
 		"version-bump.mjs",
 		"versions.json",
 		"main.js",
-		// Separate sub-projects with their own toolchains; not part of the plugin
-		// gate. oauth-worker/ is type-checked by its own tsconfig (wrangler).
-		"oauth-worker/**",
-		"pages/**",
 	]),
 );

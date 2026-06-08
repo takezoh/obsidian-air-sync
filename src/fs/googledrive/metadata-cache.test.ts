@@ -381,15 +381,15 @@ describe("removeTree", () => {
 	});
 });
 
-// ── driveFileToEntity ──
+// ── toEntity ──
 
-describe("driveFileToEntity", () => {
+describe("toEntity", () => {
 	it("converts file to entity", () => {
 		const cache = makeCache();
 		const file = makeDriveFile({ id: "f1", name: "a.txt", modifiedTime: "2024-01-01T00:00:00.000Z", size: "100", md5Checksum: "abc" });
 		cache.setFile("a.txt", file);
 
-		const entity = cache.driveFileToEntity("a.txt", file);
+		const entity = cache.toEntity("a.txt", file);
 		expect(entity.path).toBe("a.txt");
 		expect(entity.isDirectory).toBe(false);
 		expect(entity.size).toBe(100);
@@ -404,7 +404,7 @@ describe("driveFileToEntity", () => {
 		const folder = makeFolder({ id: "d1", name: "docs" });
 		cache.setFile("docs", folder);
 
-		const entity = cache.driveFileToEntity("docs", folder);
+		const entity = cache.toEntity("docs", folder);
 		expect(entity.isDirectory).toBe(true);
 		expect(entity.size).toBe(0);
 	});
@@ -414,7 +414,7 @@ describe("driveFileToEntity", () => {
 		const file = makeDriveFile({ id: "f1", name: "a.txt" });
 		cache.setFile("a.txt", file);
 
-		const entity = cache.driveFileToEntity("a.txt", file);
+		const entity = cache.toEntity("a.txt", file);
 		expect(entity.mtime).toBe(0);
 		expect(entity.size).toBe(0);
 	});
@@ -493,6 +493,40 @@ describe("applyFileChange", () => {
 
 		expect(cache.hasFile("a.txt")).toBe(false);
 		expect(cache.getPathById("f1")).toBeUndefined();
+	});
+
+	it("evicts the old subtree when a folder is replaced by a file at the same path (no tombstone)", () => {
+		const cache = makeCache();
+		// A folder "data" with a child, then a delta upserts a FILE at "data" with a
+		// different id and NO preceding `deleted` tombstone for the old folder.
+		cache.setFile("data", makeFolder({ id: "d1", name: "data", parents: [ROOT] }));
+		cache.setFile("data/child.txt", makeDriveFile({ id: "c1", name: "child.txt", parents: ["d1"] }));
+
+		const replacement = makeDriveFile({ id: "f9", name: "data", parents: [ROOT] });
+		cache.applyFileChange(replacement);
+
+		// The new file is installed and the old folder's descendant is gone (not orphaned).
+		expect(cache.getFile("data")).toBe(replacement);
+		expect(cache.isFolder("data")).toBe(false);
+		expect(cache.hasFile("data/child.txt")).toBe(false);
+		// The displaced folder's id no longer points anywhere.
+		expect(cache.getPathById("d1")).toBeUndefined();
+		expect(cache.getPathById("c1")).toBeUndefined();
+	});
+
+	it("clears the displaced id when a file is replaced by a different file at the same path", () => {
+		const cache = makeCache();
+		// Drive allows two files with the same name (path) but different ids; a delta
+		// for the second displaces the first in the cache.
+		cache.setFile("a.txt", makeDriveFile({ id: "old", name: "a.txt", parents: [ROOT] }));
+
+		const replacement = makeDriveFile({ id: "new", name: "a.txt", parents: [ROOT] });
+		cache.applyFileChange(replacement);
+
+		expect(cache.getFile("a.txt")).toBe(replacement);
+		expect(cache.getPathById("new")).toBe("a.txt");
+		// The displaced id is no longer mapped to the path.
+		expect(cache.getPathById("old")).toBeUndefined();
 	});
 });
 

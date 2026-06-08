@@ -1,14 +1,15 @@
-import type { App } from "obsidian";
+import type { App, TextComponent } from "obsidian";
 import { Notice, SecretComponent, Setting } from "obsidian";
 import type { AirSyncSettings } from "../settings";
 import type {
 	BackendConnectionActions,
 	IBackendSettingsRenderer,
-} from "./backend-settings";
+} from "../fs/settings-renderer";
 import type { GoogleDriveBackendData } from "../fs/googledrive/provider";
 import type { GoogleDriveCustomBackendData } from "../fs/googledrive/provider-custom";
 import { DEFAULT_CUSTOM_SCOPE, DEFAULT_CUSTOM_REDIRECT_URI } from "../fs/googledrive/auth";
 import { getBackendProvider } from "../fs/registry";
+import { REMOTE_VAULT_ROOT } from "../fs/remote-vault-contract";
 
 /**
  * Renders Google Drive-specific settings UI:
@@ -22,20 +23,20 @@ export class GoogleDriveSettingsRenderer implements IBackendSettingsRenderer {
 		settings: AirSyncSettings,
 		_onSave: (updates: Record<string, unknown>) => Promise<void>,
 		actions: BackendConnectionActions,
-		_app: App,
+		app: App,
 	): void {
-		const data = (settings.backendData["googledrive"] ?? {}) as Partial<GoogleDriveBackendData>;
-
 		const provider = getBackendProvider("googledrive");
-		const isConnected = provider?.isConnected(settings) ?? false;
+		// Gate on auth alone (not isConnected): after auth but before a folder is bound,
+		// the user still needs the connected UI to choose a remote folder.
+		const authed = provider?.auth.isAuthenticated(settings.backendData ?? {}) ?? false;
 
 		let statusDesc: string;
 		let statusClass: string;
-		if (isConnected) {
-			statusDesc = "\u25cf Connected";
+		if (authed) {
+			statusDesc = "● Connected";
 			statusClass = "air-sync-status-connected";
 		} else {
-			statusDesc = "\u25cf Not connected";
+			statusDesc = "● Not connected";
 			statusClass = "air-sync-status-disconnected";
 		}
 		const statusSetting = new Setting(containerEl)
@@ -46,10 +47,10 @@ export class GoogleDriveSettingsRenderer implements IBackendSettingsRenderer {
 			.addButton((button) =>
 				button
 					.setButtonText(
-						isConnected ? "Disconnect" : "Connect to Google Drive"
+						authed ? "Disconnect" : "Connect to Google Drive"
 					)
 					.onClick(async () => {
-						if (isConnected) {
+						if (authed) {
 							await actions.disconnect();
 						} else {
 							await actions.startAuth();
@@ -58,18 +59,57 @@ export class GoogleDriveSettingsRenderer implements IBackendSettingsRenderer {
 					})
 			);
 
-		// Show remote vault folder ID when connected (read-only)
-		if (isConnected && data.remoteVaultFolderId) {
-			new Setting(containerEl)
-				.setName("Remote vault folder")
-				.setDesc("Automatically managed folder in Google Drive")
-				.addText((text) =>
-					text
-						.setValue(data.remoteVaultFolderId ?? "")
-						.setDisabled(true)
+		if (!authed) return;
+
+		const data = (settings.backendData ?? {}) as Partial<GoogleDriveBackendData>;
+		const folderSetting = new Setting(containerEl).setName("Remote vault folder");
+
+		if (data.remoteVaultFolderId) {
+			// Bound: show the folder (id rendered IMMEDIATELY — never block on a network
+			// call — then best-effort upgraded to the id-resolved path) + a button to pick
+			// a different folder. A slow/failed lookup just leaves the id shown.
+			folderSetting.setDesc(
+				"The Google Drive folder this vault syncs into. Use the button to pick a different folder.",
+			);
+			let pathField: TextComponent | undefined;
+			folderSetting
+				.addText((text) => {
+					pathField = text.setValue(data.remoteVaultFolderId ?? "").setDisabled(true);
+				})
+				.addButton((button) =>
+					button
+						.setButtonText("Choose folder")
+						.onClick(async () => {
+							await actions.startFolderPick();
+						}),
+				);
+			void provider?.getRemoteVaultDisplayPath?.(settings)
+				.then((path) => { if (path) pathField?.setValue(path); })
+				.catch(() => { /* keep the id shown */ });
+		} else {
+			// Not bound yet: use the default folder (obsidian-air-sync/<Vault Name>), or
+			// pick an existing one. Binding only happens on an explicit choice here.
+			const defaultPath = `${REMOTE_VAULT_ROOT}/${app.vault.getName()}`;
+			folderSetting.setDesc(
+				"Choose where this vault syncs: use the default folder, or pick an existing one.",
+			);
+			folderSetting
+				.addButton((button) =>
+					button
+						.setButtonText(defaultPath)
+						.setCta()
+						.onClick(async () => {
+							await actions.bindDefaultFolder();
+						}),
+				)
+				.addButton((button) =>
+					button
+						.setButtonText("Choose folder")
+						.onClick(async () => {
+							await actions.startFolderPick();
+						}),
 				);
 		}
-
 	}
 }
 
@@ -87,7 +127,7 @@ export class GoogleDriveCustomSettingsRenderer implements IBackendSettingsRender
 		actions: BackendConnectionActions,
 		app: App,
 	): void {
-		const data = (settings.backendData["googledrive-custom"] ?? {}) as Partial<GoogleDriveCustomBackendData>;
+		const data = (settings.backendData ?? {}) as Partial<GoogleDriveCustomBackendData>;
 		const provider = getBackendProvider("googledrive-custom");
 		const isConnected = provider?.isConnected(settings) ?? false;
 
@@ -163,10 +203,10 @@ export class GoogleDriveCustomSettingsRenderer implements IBackendSettingsRender
 		let statusDesc: string;
 		let statusClass: string;
 		if (isConnected) {
-			statusDesc = "\u25cf Connected";
+			statusDesc = "● Connected";
 			statusClass = "air-sync-status-connected";
 		} else {
-			statusDesc = "\u25cf Not connected";
+			statusDesc = "● Not connected";
 			statusClass = "air-sync-status-disconnected";
 		}
 		const statusSetting = new Setting(containerEl)
@@ -183,7 +223,7 @@ export class GoogleDriveCustomSettingsRenderer implements IBackendSettingsRender
 						if (isConnected) {
 							await actions.disconnect();
 						} else {
-							const current = (settings.backendData["googledrive-custom"] ?? {}) as Partial<GoogleDriveCustomBackendData>;
+							const current = (settings.backendData ?? {}) as Partial<GoogleDriveCustomBackendData>;
 							if (!current.remoteVaultFolderId) {
 								new Notice("Enter a remote vault folder ID first");
 								return;

@@ -1,7 +1,7 @@
 import { requestUrl } from "obsidian";
 import type { Logger } from "../../logging/logger";
 import { assertTokenResponse } from "./types";
-import { AuthError } from "../errors";
+import { BaseOAuthTokenManager, buildOAuthState, computeS256Challenge, generateRandomString } from "../oauth-pkce";
 
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -12,11 +12,17 @@ export const DEFAULT_CUSTOM_REDIRECT_URI = "https://airsync.takezo.dev/callback"
 const REDIRECT_URI = `${AUTH_SERVER_URL}/google/callback`;
 
 const GOOGLE_CLIENT_ID = "135801498656-lfjor2ml3v26t9l63mkoka0bndgl9eue.apps.googleusercontent.com";
-const AUTH_FAILED_COOLDOWN = 60_000;
 
 /** Shared interface for GoogleAuth and GoogleAuthDirect */
 export interface IGoogleAuth {
 	setTokens(refreshToken: string, accessToken: string, expiry: number): void;
+	/**
+	 * Register a hook fired when a refresh rotates the refresh token to a new
+	 * value. Lets a detached (throwaway) auth persist a rotated token that would
+	 * otherwise be discarded with the instance — leaving the shared/stored token
+	 * stale and failing the next real refresh.
+	 */
+	setRefreshTokenRotatedHook(cb: (refreshToken: string) => void): void;
 	readonly isAuthenticated: boolean;
 	getAuthorizationUrl(): Promise<string>;
 	getAuthState(): string | null;
@@ -30,29 +36,17 @@ export interface IGoogleAuth {
 }
 
 /**
- * Base class for Google OAuth implementations.
- * Manages token storage, refresh deduplication, CSRF state, and revocation.
- * Subclasses provide the auth URL, callback handling, and refresh strategy.
+ * Base class for Google OAuth implementations. Inherits the OAuth token
+ * lifecycle (skew/cooldown/dedup/rotation) from {@link BaseOAuthTokenManager}
+ * and adds Google's CSRF state, PKCE verifier, and token revocation. Subclasses
+ * provide the auth URL, callback handling, and refresh strategy.
  */
-abstract class GoogleAuthBase implements IGoogleAuth {
-	protected accessToken = "";
-	protected accessTokenExpiry = 0;
-	protected refreshToken = "";
-	private refreshPromise: Promise<string> | null = null;
-	protected logger?: Logger;
+abstract class GoogleAuthBase extends BaseOAuthTokenManager implements IGoogleAuth {
 	private authState: string | null = null;
 	private codeVerifier: string | null = null;
-	protected authFailedAt = 0;
 
-	setTokens(refreshToken: string, accessToken: string, expiry: number): void {
-		this.refreshToken = refreshToken;
-		this.accessToken = accessToken;
-		this.accessTokenExpiry = expiry;
-		this.authFailedAt = 0;
-	}
-
-	get isAuthenticated(): boolean {
-		return this.refreshToken.length > 0;
+	protected notAuthenticatedMessage(): string {
+		return "Not authenticated. Please connect to Google Drive first.";
 	}
 
 	abstract getAuthorizationUrl(): Promise<string>;
@@ -74,51 +68,6 @@ abstract class GoogleAuthBase implements IGoogleAuth {
 	}
 
 	abstract handleAuthCallback(params: Record<string, string | undefined>): Promise<void>;
-
-	async getAccessToken(forceRefresh = false): Promise<string> {
-		if (!this.refreshToken) {
-			throw new AuthError("Not authenticated. Please connect to Google Drive first.", 401);
-		}
-		if (this.authFailedAt > 0 && Date.now() - this.authFailedAt < AUTH_FAILED_COOLDOWN) {
-			throw new AuthError("Authentication expired. Please reconnect in settings.", 401);
-		}
-		if (!forceRefresh && this.accessToken && Date.now() < this.accessTokenExpiry - 60_000) {
-			return this.accessToken;
-		}
-		if (this.refreshPromise) {
-			return this.refreshPromise;
-		}
-		this.refreshPromise = this.performRefresh();
-		try {
-			return await this.refreshPromise;
-		} finally {
-			this.refreshPromise = null;
-		}
-	}
-
-	protected abstract performRefresh(): Promise<string>;
-
-	/** Handle token refresh errors: set authFailedAt timestamp and throw AuthError for 400/401 */
-	protected handleRefreshError(err: unknown): never {
-		const status = (err as { status?: number }).status;
-		if (status === 400 || status === 401) {
-			this.authFailedAt = Date.now();
-		}
-		const msg = err instanceof Error ? err.message : String(err);
-		this.logger?.error("Token refresh failed", { error: msg });
-		if (status === 400 || status === 401) {
-			throw new AuthError(`Token refresh failed: ${msg}`, status);
-		}
-		throw err as Error;
-	}
-
-	getTokenState(): { refreshToken: string; accessToken: string; accessTokenExpiry: number } {
-		return {
-			refreshToken: this.refreshToken,
-			accessToken: this.accessToken,
-			accessTokenExpiry: this.accessTokenExpiry,
-		};
-	}
 
 	async revokeToken(): Promise<void> {
 		const token = this.refreshToken || this.accessToken;
@@ -149,23 +98,9 @@ abstract class GoogleAuthBase implements IGoogleAuth {
 		this.authState = null;
 	}
 
-	/** Store tokens from a validated TokenResponse */
-	protected storeTokenResponse(token: { access_token: string; refresh_token?: string; expires_in: number }): void {
-		this.accessToken = token.access_token;
-		this.accessTokenExpiry = Date.now() + token.expires_in * 1000;
-		if (token.refresh_token) {
-			this.refreshToken = token.refresh_token;
-		}
-		this.authFailedAt = 0;
-	}
-
-	/** Generate a state parameter with the given extra fields */
+	/** Generate (and store as the pending CSRF state) a base64url OAuth state value. */
 	protected generateState(extra: Record<string, unknown> = {}): string {
-		this.authState = btoa(JSON.stringify({
-			app: "obsidian-plugin",
-			...extra,
-			nonce: generateRandomString(32),
-		}));
+		this.authState = buildOAuthState(extra);
 		return this.authState;
 	}
 }
@@ -384,35 +319,4 @@ function extractGoogleErrorDetail(err: unknown): string {
 		}
 	}
 	return err instanceof Error ? err.message : String(err);
-}
-
-/** Compute S256 code challenge: base64url(SHA-256(verifier)) */
-async function computeS256Challenge(verifier: string): Promise<string> {
-	const data = new TextEncoder().encode(verifier);
-	const hash = await crypto.subtle.digest("SHA-256", data);
-	// base64url encoding (RFC 7636 Appendix A)
-	let base64 = "";
-	const bytes = new Uint8Array(hash);
-	for (const b of bytes) {
-		base64 += String.fromCharCode(b);
-	}
-	return btoa(base64).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-const RANDOM_CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-
-/** Generate a cryptographically random string of the given length */
-function generateRandomString(length: number): string {
-	const limit = 256 - (256 % RANDOM_CHARSET.length);
-	const result: string[] = [];
-	while (result.length < length) {
-		const array = new Uint8Array(length - result.length);
-		crypto.getRandomValues(array);
-		for (const b of array) {
-			if (b < limit && result.length < length) {
-				result.push(RANDOM_CHARSET[b % RANDOM_CHARSET.length]!);
-			}
-		}
-	}
-	return result.join("");
 }

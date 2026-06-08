@@ -11,7 +11,8 @@ afterEach(() => {
 
 const ACCESS_KEY = "air-sync-pcloud-access-token";
 
-function settings(pcloud: Record<string, unknown> = {}): AirSyncSettings {
+/** `backendData` is a single flat bag for the active backend (not a per-type map). */
+function settings(backendData: Record<string, unknown> = {}): AirSyncSettings {
 	return {
 		vaultId: "v1",
 		backendType: "pcloud",
@@ -21,9 +22,11 @@ function settings(pcloud: Record<string, unknown> = {}): AirSyncSettings {
 		syncDotPaths: [],
 		mobileMaxFileSizeMB: 10,
 		screenWakeLockOnSync: false,
+		showSyncNotifications: false,
 		enableLogging: false,
 		logLevel: "info",
-		backendData: { pcloud },
+		backendData,
+		lastSyncedIdentity: "",
 	};
 }
 
@@ -47,14 +50,6 @@ describe("PCloudProvider connection state", () => {
 		expect(provider.getIdentity(settings({ remoteVaultFolderId: "9" }))).toBe("pcloud:9");
 		expect(provider.getIdentity(settings({}))).toBeNull();
 	});
-
-	it("hasCheckpoint reflects a stored diffId; resetTargetState clears it", async () => {
-		const provider = await makeProvider();
-		expect(provider.hasCheckpoint(settings({ diffId: "5" }))).toBe(true);
-		const s = settings({ diffId: "5" });
-		provider.resetTargetState(s);
-		expect(s.backendData.pcloud?.diffId).toBeUndefined();
-	});
 });
 
 describe("PCloudProvider.createFs", () => {
@@ -63,24 +58,13 @@ describe("PCloudProvider.createFs", () => {
 		expect(provider.createFs({} as never, settings({ remoteVaultFolderId: "9" }))).toBeNull();
 	});
 
-	it("creates a PCloudFs and restores the diff cursor", async () => {
+	it("creates a PCloudFs when token and folder are present", async () => {
 		const { PCloudFs } = await import("./index");
 		const provider = await makeProvider({ [ACCESS_KEY]: "TOK" });
-		const fs = provider.createFs({} as never, settings({ remoteVaultFolderId: "9", diffId: "77" }));
+		// The delta cursor is no longer seeded from settings — it lives in the
+		// metadata store and is restored on init (ADR 0001).
+		const fs = provider.createFs({} as never, settings({ remoteVaultFolderId: "9" }));
 		expect(fs).toBeInstanceOf(PCloudFs);
-		expect((fs as InstanceType<typeof PCloudFs>).diffId).toBe("77");
-	});
-});
-
-describe("PCloudProvider.readBackendState", () => {
-	it("commits the diff cursor only on a successful checkpoint", async () => {
-		const { PCloudFs } = await import("./index");
-		const { PCloudClient } = await import("./client");
-		const provider = await makeProvider({ [ACCESS_KEY]: "TOK" });
-		const fs = new PCloudFs(new PCloudClient(() => "TOK", () => "api.pcloud.com"), "9");
-		fs.diffId = "101";
-		expect(provider.readBackendState(fs, true)).toEqual({ diffId: "101" });
-		expect(provider.readBackendState(fs, false)).toEqual({});
 	});
 });
 
@@ -121,8 +105,8 @@ describe("PCloudProvider.disconnect", () => {
 		const store = createMockSecretStore({ [ACCESS_KEY]: "TOK" });
 		const { PCloudProvider } = await import("./provider");
 		const provider = new PCloudProvider(store);
-		const reset = await provider.disconnect(settings({ remoteVaultFolderId: "9", diffId: "5" }));
+		const reset = await provider.disconnect(settings({ remoteVaultFolderId: "9" }));
 		expect(store.getSecret(ACCESS_KEY)).toBe("");
-		expect(reset).toMatchObject({ remoteVaultFolderId: "", diffId: "", apiHost: "" });
+		expect(reset).toMatchObject({ remoteVaultFolderId: "", apiHost: "", lastKnownVaultName: "" });
 	});
 });

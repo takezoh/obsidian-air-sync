@@ -21,12 +21,13 @@ Works on desktop and mobile, powered by your own Google Drive.
 1. Open the plugin settings (**Settings → Air Sync**).
 2. Click **Connect to Google Drive**.
 3. Approve access in your browser.
+4. Choose where to sync: use the **default folder** (named after your vault), or **pick an existing folder** in your Drive.
 
-That's it — Air Sync creates a folder in your Google Drive and starts syncing on its own.
+That's it — Air Sync syncs into that folder from then on.
 
 The first sync scans your Drive folder, so it may take a little while. After that, syncing is fast.
 
-> **Using more than one device?** Air Sync links each device to the same Drive folder by your vault's name. Connect the other device to the same Google account and give the vault the same name, and they'll sync together. A different vault name creates a separate folder in Drive that won't sync with the others.
+> **Using more than one device?** Air Sync identifies your vault's folder by your vault's name. Connect the other device to the same Google account, give the vault the same name, and choose the default folder — they'll sync together. A different vault name uses a separate folder that won't sync with the others.
 
 ## Settings
 
@@ -46,14 +47,6 @@ The defaults work for most people — you rarely need to change these.
 ---
 
 ## Advanced
-
-### Custom OAuth
-
-By default, Air Sync uses the `drive.file` scope, which only allows access to files the plugin itself created. With custom OAuth, you can use your own Google Cloud OAuth client and manage authorization independently.
-
-The authorization code exchange is protected by PKCE — the code cannot be used without the verifier held only by the plugin.
-
-> **Note**: Tokens are stored in Obsidian's secret storage, which is accessible to other plugins. The built-in OAuth limits exposure with the `drive.file` scope. Custom OAuth may increase risk depending on the scope you configure.
 
 ### Conflict resolution strategies
 
@@ -97,6 +90,14 @@ Example:
 - **Authentication completes but sync doesn't start**: Restart the plugin (disable → enable in Community plugins settings), then try syncing manually.
 - **Token error after successful authorization**: Check that the device has a stable network connection — token exchange requires connectivity immediately after authorization.
 - **The browser callback didn't return to Obsidian**: Try disconnecting and reconnecting from the plugin settings.
+
+## Custom OAuth
+
+By default, Air Sync uses the `drive.file` scope, which only allows access to files the plugin itself created. With custom OAuth, you can use your own Google Cloud OAuth client and manage authorization independently.
+
+The authorization code exchange is protected by PKCE — the code cannot be used without the verifier held only by the plugin.
+
+> **Note**: Tokens are stored in Obsidian's secret storage, which is accessible to other plugins. The built-in OAuth limits exposure with the `drive.file` scope. Custom OAuth may increase risk depending on the scope you configure.
 
 ## Privacy & network use
 

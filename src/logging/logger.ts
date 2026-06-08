@@ -1,4 +1,6 @@
 import type { AirSyncSettings } from "../settings";
+import type { RawFsAdapter } from "../fs/raw-fs";
+import { ensureDir } from "../fs/raw-fs";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -8,13 +10,6 @@ const LOG_LEVEL_ORDER: Record<LogLevel, number> = {
 	warn: 2,
 	error: 3,
 };
-
-export interface LoggerAdapter {
-	exists(path: string): Promise<boolean>;
-	read(path: string): Promise<string>;
-	write(path: string, data: string): Promise<void>;
-	mkdir(path: string): Promise<void>;
-}
 
 /**
  * Sanitize a device name for use as a directory name.
@@ -43,14 +38,14 @@ export function getDeviceName(isMobile: boolean, vaultId?: string): string {
 export class Logger {
 	private buffer: string[] = [];
 	private _deviceName: string;
-	private _adapter: LoggerAdapter;
+	private _adapter: RawFsAdapter;
 	private getSettings: () => AirSyncSettings;
 	// DOM timer id (number), not Node's `NodeJS.Timeout`: window.setInterval is
 	// the browser API the plugin runs against (isDesktopOnly: false).
 	private flushTimer: number | null = null;
 
 	constructor(
-		adapter: LoggerAdapter,
+		adapter: RawFsAdapter,
 		getSettings: () => AirSyncSettings,
 		deviceName: string,
 	) {
@@ -62,7 +57,7 @@ export class Logger {
 		}, 30_000);
 	}
 
-	get adapter(): LoggerAdapter { return this._adapter; }
+	get adapter(): RawFsAdapter { return this._adapter; }
 	get sanitizedDeviceName(): string { return this._deviceName; }
 
 	debug(message: string, context?: Record<string, unknown>): void {
@@ -117,16 +112,7 @@ export class Logger {
 		const filePath = `${dir}/${date}.log`;
 
 		try {
-			// Ensure directories exist
-			if (!(await this._adapter.exists(".airsync"))) {
-				await this._adapter.mkdir(".airsync");
-			}
-			if (!(await this._adapter.exists(logsDir))) {
-				await this._adapter.mkdir(logsDir);
-			}
-			if (!(await this._adapter.exists(dir))) {
-				await this._adapter.mkdir(dir);
-			}
+			await ensureDir(this._adapter, dir);
 
 			let existing = "";
 			if (await this._adapter.exists(filePath)) {

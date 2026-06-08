@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { Logger, LoggerAdapter, getDeviceName } from "./logger";
+import { Logger, getDeviceName } from "./logger";
+import type { RawFsAdapter } from "../fs/raw-fs";
 import type { AirSyncSettings } from "../settings";
 import { DEFAULT_SETTINGS } from "../settings";
 
@@ -11,7 +12,7 @@ vi.stubGlobal("window", {
 	clearInterval: globalThis.clearInterval.bind(globalThis),
 });
 
-function createMockAdapter(): LoggerAdapter & {
+function createMockAdapter(): RawFsAdapter & {
 	written: Map<string, string>;
 	dirs: Set<string>;
 } {

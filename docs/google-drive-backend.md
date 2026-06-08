@@ -6,14 +6,14 @@
 
 ### Initialization lifecycle
 
-The remote delta cursor (`changesPageToken`) has a single source of truth: `settings.backendData.changesStartPageToken`, seeded onto the FS by `createFs()`. The `MetadataStore` (IndexedDB, keyed `{vaultId}-{remoteVaultFolderId}`) caches **only the file map** — never the cursor. The cursor is committed (to settings) only on a fully-successful sync; see [Crash recovery](sync-pipeline.md#crash-recovery).
+The remote delta cursor (`changesPageToken`) has a single source of truth: the `MetadataStore` (IndexedDB, keyed `{vaultId}-{remoteVaultFolderId}`), where it is stored in `META_STORE` **alongside the file map and committed in the same transaction** (see [ADR 0001](adr/0001-metadata-cache-is-subordinate-to-commit-last.md)). It is **not** kept in `settings`. The cursor advances only on a fully-successful sync; see [Crash recovery](sync-pipeline.md#crash-recovery).
 
 On first `list()`, `stat()`, `read()`, or `write()`, `ensureInitialized()` runs:
 
-1. **Cursor present** (seeded from settings): restore the file map from IndexedDB via `loadFromCache()` — files only; it never overwrites the cursor. If the cache is empty/missing, rebuild it with `fullScan()` but **restore** the seeded cursor afterward, so the next `changes.list` spans any un-synced gap. Either way an incremental replay is warranted.
-2. **No cursor** (genuine first sync, or after a rescan / state clear): `fullScan()` clears the cache, fetches a fresh changes start token BEFORE listing (so changes that land during the scan are not missed), runs `listAllFiles()` recursively with `AsyncPool(3)` concurrency, builds the `DriveMetadataCache` from the flat file list, marks the FS initialized, and fire-and-forgets `persistCache()` (files only). No replay is warranted — the token is "now".
+1. **Checkpoint present** (file map + cursor restored together): `loadFromCache()` reads both the file map and the cursor (`META_STORE`) from IndexedDB — they were committed in one transaction, so a checkpoint exists only when **both** are present. An incremental replay is warranted.
+2. **No checkpoint** (genuine first sync, an empty/missing store, or after a rescan / state clear): `fullScan()` clears the cache, fetches a fresh changes start token BEFORE listing (so changes that land during the scan are not missed), runs `listAllFiles()` recursively with `AsyncPool(3)` concurrency, builds the `DriveMetadataCache` from the flat file list, and marks the FS initialized. No replay is warranted — the token is "now". Persistence is deferred to the checkpoint commit (a clean cycle), not eager.
 
-`list()` and `getChangedPaths()` apply an incremental `changes.list` only when a replay is warranted (cursor restored, or the FS was already initialized); a fresh full scan reports no delta. The cache is scoped to `vaultId` so a plugin reinstall (which regenerates `vaultId`) starts with a fresh cache, preventing stale entries.
+`list()` and `getChangedPaths()` apply an incremental `changes.list` only when a replay is warranted (checkpoint restored, or the FS was already initialized); a fresh full scan reports no delta. The cache is scoped to `vaultId` so a plugin reinstall (which regenerates `vaultId`) starts with a fresh cache, preventing stale entries.
 
 ### Cache invalidation
 
@@ -40,7 +40,7 @@ All cache reads and writes are protected by `cacheMutex` (an `AsyncMutex`). Writ
 
 ### Hiding `.airsync/metadata.json`
 
-`.airsync/metadata.json` is backend-internal bookkeeping written **out of band via the raw `DriveClient`** (`resolveRemoteVault` / `updateMetadataIfNeeded`, below), never through the `IFileSystem` surface. `GoogleDriveFs` keeps it out of the sync engine by **never ingesting it into the metadata cache** (`INTERNAL_METADATA_PATH`, defined in `sync/remote-vault.ts`; skipped in `DriveMetadataCache.bulkLoad` and `applyFileChange`). Because every read path is cache-backed, that one exclusion covers `list()`, `stat()`, `read()`, `delete()`, `listDir()`, and `getChangedPaths()` uniformly. The single write path that doesn't consult the cache — `write()` (upload) — `throws` for this path rather than fabricating a baseline.
+`.airsync/metadata.json` is a **legacy** backend-internal file. New vaults never create it — the remote vault is now identified by its folder name (`obsidian-air-sync/<Vault Name>`, see below) — but older vaults may still have one, and a device still running an older plugin version could write one, so the exclusion guards are retained as belt-and-suspenders. `GoogleDriveFs` keeps any such file out of the sync engine by **never ingesting it into the metadata cache** (`INTERNAL_METADATA_PATH`, defined in `sync/remote-vault.ts`; skipped in `DriveMetadataCache.bulkLoad` and `applyFileChange`). Because every read path is cache-backed, that one exclusion covers `list()`, `stat()`, `read()`, `delete()`, `listDir()`, and `getChangedPaths()` uniformly. The single write path that doesn't consult the cache — `write()` (upload) — `throws` for this path rather than fabricating a baseline. (Migration reads/deletes a legacy `metadata.json` out of band via the raw `DriveClient`, never through the `IFileSystem` surface — see Remote vault resolution below.)
 
 The sync engine also reserves the same path symmetrically in `SyncOrchestrator.isExcluded()`, so it is never pushed/pulled/deleted from the local side either — even when the user opts `.airsync` into `syncDotPaths`. (Remote-side hiding alone would be unsafe: a local copy could be pushed, a synthetic write would commit a baseline, and the next cycle would `delete_local` it as a phantom remote deletion. The orchestrator exclusion is the authoritative guarantee; the cache-level skip is enumeration hygiene.)
 
@@ -74,7 +74,7 @@ Key operations:
    - **Modified/created**: call `cache.applyFileChangeDetectMove()`, add resolved path to `changedPaths`. If a move is detected (oldPath ≠ newPath), add oldPath to `deletedPaths` and record in `renamedPaths`
    - If a tracked item moves out of the sync root (old path known, new path unresolvable), its old path -- and, if it was a folder, its old descendant paths -- are reported as deleted
    - When a folder is moved or renamed (it was a folder and oldPath ≠ newPath), all of its new descendant paths are additionally re-emitted as modified/updated, because their resolved paths shifted
-4. If any changes were seen (`totalChanges > 0`), persist updated records via `putFiles` and removals via `deleteFiles`. The cursor is **not** persisted here — it advances in memory only (`IncrementalChangesResult.newToken`) and is committed to `settings.backendData` by the orchestrator after a fully-successful cycle (see [Crash recovery](sync-pipeline.md#crash-recovery)). With zero changes nothing is persisted
+4. `applyIncrementalChanges()` mutates only the in-memory cache and advances the cursor in memory (`IncrementalChangesResult.newToken`); it does **not** persist. Persistence is deferred to the checkpoint commit (`commitDriveCache`, called by the orchestrator after a fully-successful cycle), which writes the touched file records **and** the cursor (`META_STORE`) in one atomic transaction (`commitIncremental`), or rewrites the whole map after a full scan (`saveAll`). See [Crash recovery](sync-pipeline.md#crash-recovery)
 5. Return `{ newToken, changedPaths, renamedPaths }` or `{ needsFullScan: true }` on 410
 
 The 410 fallback triggers `fullScanWithDelta()` which compares persisted metadata against the fresh cache to compute renames, additions, and deletions.
@@ -104,7 +104,7 @@ Key methods:
 
 ## Authentication
 
-Two OAuth implementations share a common base class (`GoogleAuthBase`). The server side of the built-in flow — the `auth-airsync.takezo.dev` endpoints — is documented in [oauth-worker.md](oauth-worker.md).
+Two OAuth implementations share a common base class (`GoogleAuthBase`). The server side of the built-in flow — the `auth-airsync.takezo.dev` endpoints — lives in the dedicated [air-sync-auth](https://github.com/takezoh/air-sync-auth) repo.
 
 ### GoogleAuth (server-side, built-in)
 
@@ -132,7 +132,7 @@ Two OAuth implementations share a common base class (`GoogleAuthBase`). The serv
 
 ### Token storage
 
-Tokens (`refreshToken`, `accessToken`) are stored in Obsidian's `SecretStorage` via `token-store.ts`, never in `settings.backendData`. Only non-secret data lives in `settings.backendData`: `remoteVaultFolderId`, `lastKnownVaultName`, `accessTokenExpiry`, `changesStartPageToken` (the single committed delta checkpoint), and `pendingAuthState`/`pendingCodeVerifier` (transient, to survive a plugin reload mid-flow), plus the custom-OAuth fields (`customClientId`/`customClientSecret` are SecretStorage secret-name references, `customScope`, `customRedirectUri`, `customIncludeGrantedScopes`).
+Tokens (`refreshToken`, `accessToken`) are stored in Obsidian's `SecretStorage` via `token-store.ts`, never in `settings.backendData`. Only non-secret data lives in `settings.backendData`: `remoteVaultFolderId`, `accessTokenExpiry`, and `pendingAuthState`/`pendingCodeVerifier` (transient, to survive a plugin reload mid-flow), plus the custom-OAuth fields. The delta cursor is **not** here — it lives in the `MetadataStore` (`META_STORE`), co-located with the file map (ADR 0001) (`customClientId`/`customClientSecret` are SecretStorage secret-name references, `customScope`, `customRedirectUri`, `customIncludeGrantedScopes`).
 
 ## Resumable upload
 
@@ -151,24 +151,28 @@ Tokens (`refreshToken`, `accessToken`) are stored in Obsidian's `SecretStorage` 
 
 - Type: `"googledrive"`
 - Uses `GoogleAuth` (server-side OAuth)
-- `resolveRemoteVault()`: finds or creates a vault folder under `obsidian-air-sync/` in Drive (auto-creates on first connect)
+- `resolveRemoteVault()`: finds or creates `obsidian-air-sync/<Vault Name>` in Drive. Invoked **explicitly** when the user binds the default folder (the "default folder" button → `BackendManager.bindDefaultRemoteVault()`), **not** automatically on connect
 
 ### GoogleDriveCustomProvider (user credentials)
 
 - Type: `"googledrive-custom"`
 - Uses `GoogleAuthDirect` (PKCE with user-provided `client_id` / `client_secret`)
-- Requires `remoteVaultFolderId` to be set manually in settings; its `resolveRemoteVault()` override throws (`"Remote vault folder id is required for custom OAuth"`) when it is unset, so it never auto-creates
+- Requires `remoteVaultFolderId` to be set manually in settings; its `resolveRemoteVault()` override throws (`"Remote vault folder id is required for custom OAuth"`) when it is unset
 - On disconnect, preserves custom credential references and folder ID
 
-Both extend `GoogleDriveProviderBase` which handles `createFs()`, `hasCheckpoint(settings)` (true iff `changesStartPageToken` is set), `readBackendState(fs, commitCheckpoint)` (returns the cursor only when `commitCheckpoint` is true, i.e. the cycle fully succeeded), `resetTargetState()` (clears the cursor — used by both a backend identity change and the **Rescan vault** action), and `disconnect()`.
+Both extend `GoogleDriveProviderBase` which handles `createFs()`, `readBackendState(fs)` (persists only non-secret token state — the cursor is committed atomically with the cache by `commitCheckpoint`, not here), `commitCheckpoint(fs)` (forwards to the FS), and `disconnect()` (also clears the per-target `MetadataStore`). The "is there a checkpoint?" query and the checkpoint reset now live on the FS: `IFileSystem.hasCheckpoint()` (async, reads `META_STORE`) and `resetCheckpoint()` (clears the cursor + cache; used by an identity change and the **Rescan vault** action).
 
 ### Remote vault resolution
 
-Layout: `<Drive root>/obsidian-air-sync/<uuid>/.airsync/metadata.json`. `resolveRemoteVault()` builds a `DriveClient` and calls `resolveGDriveRemoteVault()`:
+Layout: `<Drive root>/obsidian-air-sync/<Vault Name>` — the folder **name is the vault name**; there is no `.airsync/metadata.json`. Binding is always explicit (the user picks a folder in the Google Picker, or presses the default-folder button); nothing is auto-bound on connect. The default-folder button calls `resolveRemoteVault()`, which builds a `DriveClient` and calls `resolveGDriveRemoteVault()` (returns `{ remoteVaultFolderId }`):
 
-- If `remoteVaultFolderId` is cached, `resolveLinked()` confirms the folder is accessible via `getFile()` and, via `updateMetadataIfNeeded()`, rewrites (or recreates) `.airsync/metadata.json` if the vault name changed or the metadata file/folder is missing.
-- Otherwise it find-or-creates the root `obsidian-air-sync` folder, then `resolveNew()` lists that root's child folders, reads each `.airsync/metadata.json`, and matches on `vaultName`; on no match it creates a folder named `crypto.randomUUID()` with a child `.airsync` folder holding `metadata.json` `{ vaultName }`.
+- If `remoteVaultFolderId` is cached, `resolveLinked()` just confirms the folder is accessible via `getFile()`.
+- Otherwise it find-or-creates the root `obsidian-air-sync` folder, then:
+  1. **Migration:** lists the root's child folders and, for each, reads a legacy `.airsync/metadata.json`; if one's `vaultName` matches, it renames that folder to the vault name (`updateFileMetadata`), trashes the legacy `metadata.json` (`deleteFile`), and binds it — preserving the already-synced data while keeping the folder id stable for other devices.
+  2. **By name:** otherwise find-or-creates `obsidian-air-sync/<Vault Name>` (`findChildByName` / `createFolder`) and binds it.
+
+Bound folders picked via the Google Picker are addressed purely by id (`completeWebFolderPick`), independent of this layout.
 
 ### createFs() contract
 
-`createFs()` returns null unless both a refresh token (SecretStorage) and `remoteVaultFolderId` exist. It instantiates a `MetadataStore` keyed `${vaultId}-${remoteVaultFolderId}` (`dbNamePrefix` `air-sync-drive`, version 1), seeds the auth with the stored tokens and `accessTokenExpiry`, and restores `changesStartPageToken` onto the FS as its authoritative delta cursor (the `MetadataStore` caches only the file map).
+`createFs()` returns null unless both a refresh token (SecretStorage) and `remoteVaultFolderId` exist. It instantiates a `MetadataStore` keyed `${vaultId}-${remoteVaultFolderId}` (`dbNamePrefix` `air-sync-drive`, version 1) and seeds the auth with the stored tokens and `accessTokenExpiry`. It does **not** seed the cursor — the FS restores it (with the file map) from the `MetadataStore` on first init (`loadFromCache`).

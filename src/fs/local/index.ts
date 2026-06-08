@@ -22,6 +22,17 @@ export class LocalFs implements IFileSystem {
 		);
 	}
 
+	/**
+	 * List the vault index. This returns the in-memory `getAllLoadedFiles()` snapshot,
+	 * which **can under-report before the workspace layout is ready**. It does NOT gate
+	 * on layout-ready itself — that is the CALLER's responsibility, and it is owned by
+	 * the sync engine: `SyncOrchestrator.runSync()` (and `shouldSync()`) early-return
+	 * until `isLayoutReady`, and the only path here runs through them
+	 * (runSync → executeSyncOnce → collectChanges → list). Keeping the gate in the
+	 * orchestrator (the timing authority) rather than in this low-level FS adapter
+	 * avoids coupling LocalFs to the workspace lifecycle. New callers of `list()` MUST
+	 * be in a layout-ready-gated context.
+	 */
 	async list(): Promise<FileEntity[]> {
 		const entities: FileEntity[] = [];
 		const allFiles = this.vault.getAllLoadedFiles();
@@ -64,8 +75,10 @@ export class LocalFs implements IFileSystem {
 		}
 		if (!file) {
 			// A normal path may simply not be loaded into the index yet, so confirm
-			// against the adapter (absence is what drives deletions).
-			return this.statViaAdapter(path);
+			// against the raw adapter (absence is what drives deletions). The adapter
+			// stat is regime-independent, so the dot-path adapter's identical impl
+			// serves both routes — no separate non-dot helper needed.
+			return this.dotPath.stat(path);
 		}
 
 		if (file instanceof TFile) {
@@ -89,17 +102,6 @@ export class LocalFs implements IFileSystem {
 		}
 
 		return null;
-	}
-
-	private async statViaAdapter(path: string): Promise<FileEntity | null> {
-		const s = await this.vault.adapter.stat(path);
-		if (!s) return null;
-		if (s.type === "folder") {
-			return { path, isDirectory: true, size: 0, mtime: 0, hash: "" };
-		}
-		const content = await this.vault.adapter.readBinary(path);
-		const hash = await sha256(content);
-		return { path, isDirectory: false, size: s.size, mtime: s.mtime, hash };
 	}
 
 	async read(path: string): Promise<ArrayBuffer> {

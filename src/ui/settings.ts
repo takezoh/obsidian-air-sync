@@ -3,6 +3,7 @@ import type AirSyncPlugin from "../main";
 import type { ConflictStrategy } from "../sync/types";
 import { getAllBackendProviders, getBackendProvider } from "../fs/registry";
 import { getBackendSettingsRenderer } from "./backend-settings";
+import { parseLines } from "../utils/parse-lines";
 
 export class AirSyncSettingTab extends PluginSettingTab {
 	plugin: AirSyncPlugin;
@@ -27,7 +28,6 @@ export class AirSyncSettingTab extends PluginSettingTab {
 				dropdown
 					.addOption("auto_merge", "Auto merge (recommended)")
 					.addOption("duplicate", "Always create duplicate")
-					.addOption("ask", "Ask each time")
 					.setValue(this.plugin.settings.conflictStrategy)
 					.onChange(async (value) => {
 						this.plugin.settings.conflictStrategy =
@@ -49,16 +49,11 @@ export class AirSyncSettingTab extends PluginSettingTab {
 					dropdown
 						.setValue(this.plugin.settings.backendType)
 						.onChange(async (value) => {
-							const previousType = this.plugin.settings.backendType;
-							if (previousType !== value) {
-								const prevProvider = getBackendProvider(previousType);
-								if (prevProvider && prevProvider.isConnected(this.plugin.settings)) {
-									await this.plugin.backendManager.disconnectBackend();
-								}
+							if (this.plugin.settings.backendType !== value) {
+								// Full reset: clears all backend params + sweeps every
+								// backend's plugin tokens, so the new one starts clean.
+								await this.plugin.backendManager.switchBackend(value);
 							}
-							this.plugin.settings.backendType = value;
-							await this.plugin.saveSettings();
-							await this.plugin.backendManager.initBackend();
 							this.display();
 						});
 				});
@@ -76,13 +71,11 @@ export class AirSyncSettingTab extends PluginSettingTab {
 				.setName(`${provider?.displayName ?? "Backend"} connection`)
 				.setHeading();
 
-			const backendType = this.plugin.settings.backendType;
 			renderer.render(
 				containerEl,
 				this.plugin.settings,
 				async (updates) => {
-					const current = this.plugin.settings.backendData[backendType] ?? {};
-					this.plugin.settings.backendData[backendType] = { ...current, ...updates };
+					this.plugin.settings.backendData = { ...this.plugin.settings.backendData, ...updates };
 					await this.plugin.saveSettings();
 					await this.plugin.backendManager.initBackend();
 				},
@@ -92,6 +85,8 @@ export class AirSyncSettingTab extends PluginSettingTab {
 						this.plugin.backendManager.completeBackendConnect(code),
 					disconnect: () => this.plugin.backendManager.disconnectBackend(),
 					refreshDisplay: () => this.display(),
+					startFolderPick: () => this.plugin.backendManager.startBackendFolderPick(),
+					bindDefaultFolder: () => this.plugin.backendManager.bindDefaultRemoteVault(),
 				},
 				this.app,
 			);
@@ -124,12 +119,11 @@ export class AirSyncSettingTab extends PluginSettingTab {
 						this.plugin.settings.syncDotPaths.join("\n")
 					)
 					.onChange(async (value) => {
-						const paths = value
-							.split("\n")
-							.map((line) => line.trim().replace(/\/+$/, ""))
-							.filter((line) => line.length > 0)
-							.filter((line) => line.startsWith("."));
-						this.plugin.settings.syncDotPaths = [...new Set(paths)];
+						this.plugin.settings.syncDotPaths = parseLines(value, {
+							stripTrailingSlash: true,
+							requirePrefix: ".",
+							dedupe: true,
+						});
 						await this.plugin.saveSettings();
 					})
 			);
@@ -143,8 +137,9 @@ export class AirSyncSettingTab extends PluginSettingTab {
 						this.plugin.settings.ignorePatterns.join("\n")
 					)
 					.onChange(async (value) => {
-						this.plugin.settings.ignorePatterns =
-							value.split("\n");
+						// Trailing slashes are meaningful in gitignore (dir-only), so unlike
+						// dot paths we deliberately do NOT strip them here.
+						this.plugin.settings.ignorePatterns = parseLines(value);
 						await this.plugin.saveSettings();
 					})
 			);
@@ -184,6 +179,20 @@ export class AirSyncSettingTab extends PluginSettingTab {
 						})
 				);
 		}
+
+		new Setting(containerEl)
+			.setName("Show sync notifications")
+			.setDesc(
+				"Show a brief notice summarizing each completed sync (files uploaded, downloaded, etc.)."
+			)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.showSyncNotifications)
+					.onChange(async (value) => {
+						this.plugin.settings.showSyncNotifications = value;
+						await this.plugin.saveSettings();
+					})
+			);
 
 		new Setting(containerEl)
 			.setName("Enable logging")

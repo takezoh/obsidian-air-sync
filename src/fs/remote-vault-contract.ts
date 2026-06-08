@@ -1,3 +1,13 @@
+/**
+ * Backend-agnostic remote-vault contract.
+ *
+ * These constants and types describe the remote-vault convention that the `fs/`
+ * layer owns: the default root folder name, the reserved metadata path, and the
+ * result shape a backend returns when it resolves/binds a remote vault. They live
+ * in `fs/` because they appear in the `IBackendProvider`/`IFileSystem` contract;
+ * `sync/` and `ui/` import them from here.
+ */
+
 /** Root folder name created in the backend storage */
 export const REMOTE_VAULT_ROOT = "obsidian-air-sync";
 
@@ -11,13 +21,8 @@ export const REMOTE_VAULT_ROOT = "obsidian-air-sync";
  */
 export const INTERNAL_METADATA_PATH = ".airsync/metadata.json";
 
-/** Metadata stored in .airsync/metadata.json inside each remote vault */
-export interface RemoteVaultMetadata {
-	vaultName: string;
-}
-
 /** Result of resolving a remote vault */
 export interface RemoteVaultResolution {
-	/** Backend-specific data to persist in settings.backendData (e.g., remoteVaultFolderId, lastKnownVaultName) */
+	/** Backend-specific data to persist in settings.backendData (e.g., remoteVaultFolderId) */
 	backendUpdates: Record<string, unknown>;
 }

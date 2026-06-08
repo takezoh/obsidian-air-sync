@@ -3,7 +3,9 @@ import type { IFileSystem } from "./interface";
 import type { IAuthProvider } from "./auth";
 import type { AirSyncSettings } from "../settings";
 import type { Logger } from "../logging/logger";
-import type { RemoteVaultResolution } from "../sync/remote-vault";
+import type { RemoteVaultResolution } from "./remote-vault-contract";
+import type { ErrorClassification } from "./errors";
+import type { IBackendSettingsRenderer } from "./settings-renderer";
 
 /**
  * Abstraction for a remote storage backend.
@@ -31,37 +33,39 @@ export interface IBackendProvider {
 	getIdentity(settings: AirSyncSettings): string | null;
 
 	/**
-	 * Called when the backend identity changes (e.g. user switches to a different folder).
-	 * The provider should reset any stale cursors/tokens in backendData that are
-	 * scoped to the previous remote target.
+	 * The backend's own settings-UI renderer. Declared here so the provider registry
+	 * is the single source of truth for "what backends exist" — the settings tab
+	 * resolves the renderer by type instead of the UI keeping a parallel list.
 	 */
-	resetTargetState?(settings: AirSyncSettings): void;
+	createSettingsRenderer?(): IBackendSettingsRenderer;
 
 	/**
-	 * Whether a committed incremental checkpoint (delta cursor) exists for the
-	 * current target. When false, the sync engine cannot trust delta-based remote
-	 * detection — the last sync never completed, or was reset — so it forces a
-	 * full cold reconcile. Backends without incremental sync may omit this.
+	 * Classify an error thrown by this backend's I/O into a backend-neutral kind the
+	 * retry policy can act on (auth / permission / rateLimit / notFound / transient).
+	 * Lets the sync engine decide retry-vs-abort without knowing any backend's error
+	 * shape (e.g. that Google returns 403 for BOTH permission-denied and rate-limits).
+	 * Optional: when omitted the engine falls back to {@link classifyHttpError}.
 	 */
-	hasCheckpoint?(settings: AirSyncSettings): boolean;
+	classifyError?(err: unknown): ErrorClassification;
 
 	/**
 	 * Read updated internal state from the FS to persist in settings.backendData.
-	 * Called after each sync cycle so backends can save tokens, cursors, etc.
-	 * Returns an opaque record — the sync layer does not inspect its contents.
-	 * Tokens are stored in SecretStorage rather than returned in the record.
+	 * Called after each sync cycle so backends can save non-secret state (e.g. token
+	 * expiry). Returns an opaque record — the sync layer does not inspect its
+	 * contents. Tokens are stored in SecretStorage rather than returned in the record.
 	 *
-	 * `commitCheckpoint` is true only when the whole pipeline succeeded
-	 * (failed === 0). When false, the backend must NOT advance its persisted
-	 * delta cursor — the spread in the caller preserves the prior committed value
-	 * — so an interrupted/partial sync re-detects the un-synced work next time.
+	 * The delta cursor is NOT persisted here — it is committed atomically with the
+	 * file-metadata cache in the backend's own store (via `IFileSystem.commitCheckpoint`
+	 * and ADR 0001), so there is no separate settings write to gate on cycle success.
+	 * Reads provider/auth state only, so it takes no FS argument.
 	 */
-	readBackendState?(fs: IFileSystem, commitCheckpoint: boolean): Record<string, unknown>;
+	readBackendState?(): Record<string, unknown>;
 
 	/**
-	 * Discover or create the remote vault for the given vault name.
-	 * Called by BackendManager after auth, before createFs().
-	 * Returns backend-specific data to persist in settings.backendData.
+	 * Find or create this vault's default remote folder for the given vault name.
+	 * Invoked explicitly when the user binds the default folder (BackendManager
+	 * .bindDefaultRemoteVault) — NOT automatically on connect. Returns backend-specific
+	 * data to persist in settings.backendData.
 	 */
 	resolveRemoteVault?(
 		app: App,
@@ -71,16 +75,78 @@ export interface IBackendProvider {
 	): Promise<RemoteVaultResolution>;
 
 	/**
+	 * The backend's web-hosted folder-pick flow (e.g. the Google Picker on the OAuth
+	 * relay; see {@link WebFolderPicker} for what travels together and why), or
+	 * `undefined` for backends without one. Check `provider.picker` once; its presence
+	 * guarantees both halves. (Display of the bound folder is the separate
+	 * {@link getRemoteVaultDisplayPath} — a folder can be bound without a picker.)
+	 */
+	picker?: WebFolderPicker;
+
+	/**
+	 * Resolve the bound remote vault's current path for display, from its stored id
+	 * (the path itself is not persisted). Optional: backends that don't address by
+	 * id, or that display the id directly, omit it. May make a network call.
+	 */
+	getRemoteVaultDisplayPath?(settings: AirSyncSettings, logger?: Logger): Promise<string | null>;
+
+	/**
+	 * Clear this backend's per-target durable checkpoint store (the IndexedDB
+	 * file-map + delta cursor) by its settings-derived key, WITHOUT needing a live
+	 * filesystem. Used by the disconnect path when no live FS exists (e.g. the
+	 * backend was in an error/expired state) so a stale checkpoint can't survive a
+	 * disconnect and mislead a later reconnect. Best-effort. Optional: backends
+	 * without such a store omit it.
+	 */
+	clearCheckpointStore?(settings: AirSyncSettings): Promise<void>;
+
+	/**
 	 * Disconnect the backend: revoke auth and reset all backend state.
 	 * Returns the reset backendData to persist.
 	 */
 	disconnect(settings: AirSyncSettings): Promise<Record<string, unknown>>;
+
+	/**
+	 * Clear this backend's plugin-owned secrets (its `air-sync-<type>-*-token`
+	 * keys) from SecretStorage, without any network call or settings mutation.
+	 * Used by the backend-switch hard reset to sweep leftover tokens for every
+	 * registered backend — `ISecretStore` cannot be enumerated, so each backend
+	 * declares its own clear. New backends with plugin-owned secrets must implement
+	 * this; backends with none may omit it.
+	 */
+	clearPluginSecrets?(): void;
 }
 
-/** Type-safe helper to retrieve backend-specific data from settings */
-export function getBackendData<T>(
-	settings: AirSyncSettings,
-	type: string
-): T | undefined {
-	return settings.backendData[type] as T | undefined;
+/**
+ * A backend's web-hosted folder-pick flow, exposed as one object on
+ * {@link IBackendProvider.picker}. The two halves are required together so a backend
+ * can't ship a `start` with no `complete` (or vice versa) — the pick would dead-end.
+ * Resolving the bound folder's display path is deliberately NOT here: a folder can be
+ * bound via the default-folder path without ever opening a picker, so display is an
+ * independent optional (`IBackendProvider.getRemoteVaultDisplayPath`).
+ */
+export interface WebFolderPicker {
+	/**
+	 * Open the picker (e.g. the Google Picker on the OAuth relay) in the browser. The
+	 * selection returns asynchronously via an `obsidian://` deep link and is bound by
+	 * {@link completeWebFolderPick}. Returns backendData to persist (e.g. a CSRF nonce).
+	 */
+	startWebFolderPick(settings: AirSyncSettings): Promise<Record<string, unknown>>;
+
+	/**
+	 * Bind the vault to the folder selected by {@link startWebFolderPick}, given the
+	 * deep-link params. Validates the selection (CSRF state, reachability with the
+	 * current token) and returns the backend data to persist. Throws on an invalid
+	 * or inaccessible selection.
+	 */
+	completeWebFolderPick(
+		params: Record<string, string | undefined>,
+		settings: AirSyncSettings,
+		logger?: Logger,
+	): Promise<RemoteVaultResolution>;
+}
+
+/** Retrieve the active backend's parameters (the single flat bag) from settings. */
+export function getBackendData<T>(settings: AirSyncSettings): T | undefined {
+	return settings.backendData as T | undefined;
 }

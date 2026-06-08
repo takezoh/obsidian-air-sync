@@ -248,12 +248,20 @@ interface IBackendProvider {
   resetTargetState?(settings): void;
   hasCheckpoint?(settings): boolean;       // is a committed delta cursor present? false ⇒ force a cold reconcile
   readBackendState?(fs, commitCheckpoint): Record<string, unknown>;  // advance the cursor only when commitCheckpoint (failed === 0)
-  resolveRemoteVault?(app, settings, vaultName, logger?): Promise<RemoteVaultResolution>;
+  resolveRemoteVault?(app, settings, vaultName, logger?): Promise<RemoteVaultResolution>;  // find/create the default vault folder
+  startWebFolderPick?(settings): Promise<Record<string, unknown>>;            // open the web folder picker (Google Picker)
+  completeWebFolderPick?(params, settings, logger?): Promise<RemoteVaultResolution>;  // bind the picked folder (by id)
+  getRemoteVaultDisplayPath?(settings, logger?): Promise<string | null>;      // resolve the bound folder's path for settings
+  clearPluginSecrets?(): void;       // sweep this backend's plugin-owned secrets (used by the backend-switch reset)
   disconnect(settings): Promise<Record<string, unknown>>;
 }
 ```
 
 `hasCheckpoint`/`readBackendState` together make the remote delta cursor crash-safe: the cursor is committed to `settings.backendData` only after a fully-successful cycle, and when no checkpoint is committed (`hasCheckpoint === false`: first sync, an interrupted/partial sync, or after a manual rescan) the orchestrator forces a full cold reconcile — delta detection alone can't surface remote files an interrupted sync left un-baselined.
+
+`settings.backendData` is a single flat bag holding **only the active backend's** parameters (tokens live in `SecretStorage`, keyed per backend — never in `backendData`). Switching backends hard-resets it: all params are wiped and every registered backend's plugin-owned secrets are swept (`clearPluginSecrets`), so the new backend starts disconnected and can't reuse another's token under the wrong OAuth client.
+
+Remote-vault binding is **explicit**, not automatic on connect. After auth the user either binds the convention folder `obsidian-air-sync/<Vault Name>` (`BackendManager.bindDefaultRemoteVault` → `resolveRemoteVault`, which find-or-creates it and migrates a legacy `obsidian-air-sync/<uuid>` vault if one matches) or picks any folder via the web Google Picker (`startWebFolderPick` → `completeWebFolderPick`, bound by id). The folder is the sole binding; there is no `.airsync/metadata.json`. See [docs/google-drive-backend.md](docs/google-drive-backend.md) for the Drive specifics.
 
 ### IAuthProvider (fs/auth.ts)
 
@@ -273,4 +281,4 @@ The provider registry (`fs/registry.ts`) maps backend types to provider instance
 - [Conflict resolution](docs/conflict-resolution.md) -- strategies, 3-way merge, conflict history
 - [Google Drive backend](docs/google-drive-backend.md) -- metadata cache, authentication, and the sole owner of incremental sync / cache invalidation
 - [Error handling](docs/error-handling.md) -- resilience: error classification, retry, rate limiting (recovery scenarios cross-reference the sync pipeline)
-- [OAuth worker](docs/oauth-worker.md) -- server-side Google token exchange (`oauth-worker/`) plus the GitHub Pages site (`pages/`): privacy/terms and the custom-OAuth callback
+- [OAuth worker & auth site](https://github.com/takezoh/air-sync-auth) -- server-side Google token exchange plus the static site (privacy/terms, custom-OAuth callback), in the dedicated `air-sync-auth` repo (kept out of this plugin's tree)

@@ -4,7 +4,7 @@ import type { AirSyncSettings } from "../settings";
 import type {
 	BackendConnectionActions,
 	IBackendSettingsRenderer,
-} from "./backend-settings";
+} from "../fs/settings-renderer";
 import type { PCloudBackendData } from "../fs/pcloud/provider";
 import { getBackendProvider } from "../fs/registry";
 
@@ -24,7 +24,8 @@ export class PCloudSettingsRenderer implements IBackendSettingsRenderer {
 		actions: BackendConnectionActions,
 		_app: App,
 	): void {
-		const data = (settings.backendData["pcloud"] ?? {}) as Partial<PCloudBackendData>;
+		// backendData is a single flat bag for the active backend (not a per-type map).
+		const data = (settings.backendData ?? {}) as Partial<PCloudBackendData>;
 
 		const provider = getBackendProvider("pcloud");
 		const isConnected = provider?.isConnected(settings) ?? false;

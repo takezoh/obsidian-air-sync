@@ -13,9 +13,10 @@ import { AuthError } from "../fs/errors";
 
 // Make retry backoff instant: the retry tests assert behaviour (retry count,
 // status), not wall-clock timing, and real exponential backoff + jitter added
-// ~4s to the suite. `sleep` is the only export stubbed; error classification
-// (getErrorInfo / isRateLimitError) stays real. Mocking sleep — rather than
-// using fake timers — avoids interfering with fake-indexeddb's async scheduling.
+// ~4s to the suite. `sleep` is the only export stubbed; the retry policy
+// (decideRetry) and the error classifier (fs/errors classifyHttpError) stay real.
+// Mocking sleep — rather than fake timers — avoids interfering with
+// fake-indexeddb's async scheduling.
 vi.mock("./error", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./error")>();
 	return { ...actual, sleep: () => Promise.resolve() };
@@ -119,7 +120,7 @@ describe("SyncOrchestrator", () => {
 		});
 
 		it("shows sync completion notice when logging is enabled", async () => {
-			const settings = { ...mockSettings(), enableLogging: true };
+			const settings = { ...mockSettings(), showSyncNotifications: true };
 			const deps = createDeps({ getSettings: () => settings });
 			const orchestrator = new SyncOrchestrator(deps);
 			await orchestrator.runSync();
@@ -282,7 +283,7 @@ describe("SyncOrchestrator", () => {
 
 		it("runs normally when backend is not connecting", async () => {
 			const settings = mockSettings();
-			settings.enableLogging = true;
+			settings.showSyncNotifications = true;
 			const deps = createDeps({
 				isBackendConnecting: () => false,
 				getSettings: () => settings,
@@ -294,7 +295,7 @@ describe("SyncOrchestrator", () => {
 		});
 
 		it("optimizes rename pair into rename_remote action", async () => {
-			const settings = { ...mockSettings(), enableLogging: true };
+			const settings = { ...mockSettings(), showSyncNotifications: true };
 			const deps = createDeps({ getSettings: () => settings });
 			const localFs = createMockFs("local");
 			const remoteFs = createMockFs("remote");
@@ -560,6 +561,20 @@ describe("SyncOrchestrator", () => {
 			// Sibling content under the same opted-in root still syncs.
 			expect(orchestrator.isExcluded(".airsync/logs/x.log")).toBe(false);
 		});
+
+		it("always excludes OS-junk files on every backend, regardless of ignore/syncDotPaths", () => {
+			const settings = mockSettings();
+			settings.syncDotPaths = []; // .DS_Store excluded even though dot paths are off-scope
+			settings.ignorePatterns = []; // no user pattern needed — junk is always excluded
+			const deps = createDeps({ getSettings: () => settings });
+			const orchestrator = new SyncOrchestrator(deps);
+
+			expect(orchestrator.isExcluded("desktop.ini")).toBe(true);
+			expect(orchestrator.isExcluded("Anime/Thumbs.db")).toBe(true);
+			expect(orchestrator.isExcluded("notes/.DS_Store")).toBe(true);
+			// Real content is unaffected.
+			expect(orchestrator.isExcluded("notes/hello.md")).toBe(false);
+		});
 	});
 
 	describe("getStatus()", () => {
@@ -671,11 +686,14 @@ describe("SyncOrchestrator", () => {
 				backendType: "test",
 				vaultId: `test-${Math.random()}`,
 			});
+			// hasCheckpoint lives on the FS's checkpoint capability now (the cursor is
+			// stored with the cache).
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(false);
 			const deps = createDeps({
 				getSettings: () => settings,
 				localFs: () => localFs,
 				remoteFs: () => remoteFs,
-				backendProvider: () => mockProvider({ hasCheckpoint: () => false }),
+				backendProvider: () => mockProvider({}),
 			});
 			const orchestrator = new SyncOrchestrator(deps);
 
@@ -694,6 +712,45 @@ describe("SyncOrchestrator", () => {
 
 			expect(localFs.files.has("orphan.md")).toBe(true);
 			expect(await orchestrator.state.get("orphan.md")).toBeDefined();
+			await orchestrator.close();
+		});
+
+		it("rescan() resets the checkpoint via the FS inside the sync cycle, then cold-reconciles", async () => {
+			// The reset must run through the orchestrator's sync mutex (not be fired
+			// straight at the live FS from outside) so it can't clear the cache mid-cycle
+			// and corrupt an in-flight sync. After the reset, hasCheckpoint is false → cold.
+			const localFs = createMockFs("local");
+			const remoteFs = createMockFs("remote");
+			addFile(localFs, "synced.md", "kept", 1000);
+			addFile(remoteFs, "synced.md", "kept", 1000);
+			addFile(remoteFs, "orphan.md", "left behind", 1000); // only a COLD reconcile finds this
+
+			const settings = baseMockSettings({ backendType: "test", vaultId: `test-${Math.random()}` });
+			// A checkpoint exists; rescan must discard it (via resetCheckpoint) to force cold.
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
+			const resetCheckpoint = vi.fn().mockImplementation(() => {
+				remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(false); // reset ⇒ no checkpoint
+				return Promise.resolve();
+			});
+			remoteFs.checkpoint!.resetCheckpoint = resetCheckpoint;
+
+			const deps = createDeps({
+				getSettings: () => settings,
+				localFs: () => localFs,
+				remoteFs: () => remoteFs,
+				backendProvider: () => mockProvider({}),
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			await orchestrator.state.put({
+				path: "synced.md", hash: "", localMtime: 1000, remoteMtime: 1000,
+				localSize: 4, remoteSize: 4, syncedAt: 900,
+			});
+
+			await orchestrator.rescan();
+
+			expect(resetCheckpoint).toHaveBeenCalledTimes(1);
+			// The forced cold reconcile rediscovered the orphan a warm/hot delta would miss.
+			expect(localFs.files.has("orphan.md")).toBe(true);
 			await orchestrator.close();
 		});
 
@@ -716,13 +773,13 @@ describe("SyncOrchestrator", () => {
 			});
 			// A committed checkpoint exists, so hasCheckpoint stays true throughout —
 			// the recovery must come from the post-failure cold flag, not from hasCheckpoint.
-			settings.backendData.test = { changesStartPageToken: "T1" };
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
 
 			const deps = createDeps({
 				getSettings: () => settings,
 				localFs: () => localFs,
 				remoteFs: () => remoteFs,
-				backendProvider: () => mockProvider({ hasCheckpoint: () => true }),
+				backendProvider: () => mockProvider({}),
 			});
 			const orchestrator = new SyncOrchestrator(deps);
 			await orchestrator.state.put({
@@ -761,28 +818,81 @@ describe("SyncOrchestrator", () => {
 				backendType: "test",
 				vaultId: `test-${Math.random()}`,
 			});
-			settings.backendData.test = { changesStartPageToken: "OLD" };
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
 
+			// The cursor now commits inside commitCheckpoint (atomically with the cache).
+			// A failed cycle must NOT call it — that is exactly how the cursor is held back.
+			const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+			remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
+			const deps = createDeps({
+				getSettings: () => settings,
+				localFs: () => localFs,
+				remoteFs: () => remoteFs,
+				backendProvider: () => mockProvider({}),
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+
+			await orchestrator.runSync();
+
+			// A failed action ⇒ the checkpoint (cursor + cache) is never committed.
+			expect(commitCheckpoint).not.toHaveBeenCalled();
+			await orchestrator.close();
+		});
+
+		/**
+		 * The cursor commits atomically with the file map INSIDE commitCheckpoint (one
+		 * IndexedDB transaction — ADR 0001). If that flush fails it must propagate so
+		 * the cycle surfaces an error and the later token-state persist is skipped —
+		 * nothing is committed, so a restart's replay re-detects the un-flushed work.
+		 * See docs/adr/0001-metadata-cache-is-subordinate-to-commit-last.md.
+		 */
+		it("does not advance the committed cursor when the checkpoint flush (cache persist) fails", async () => {
+			const localFs = createMockFs("local");
+			const remoteFs = createMockFs("remote");
+			// Steady state, matching baseline → a CLEAN cycle (no failed actions), so the
+			// orchestrator reaches commitCheckpoint.
+			addFile(localFs, "synced.md", "kept", 1000);
+			addFile(remoteFs, "synced.md", "kept", 1000);
+
+			const settings = baseMockSettings({
+				backendType: "test",
+				vaultId: `test-${Math.random()}`,
+			});
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
+
+			const commitCheckpoint = vi.fn().mockRejectedValue(new Error("IndexedDB write failed"));
+			remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
+			// readBackendState persists token state AFTER the checkpoint; a failed flush
+			// must abort before it runs, so the cursor (committed inside commitCheckpoint)
+			// is never advanced.
+			const readBackendState = vi.fn().mockReturnValue({});
 			const deps = createDeps({
 				getSettings: () => settings,
 				localFs: () => localFs,
 				remoteFs: () => remoteFs,
 				backendProvider: () =>
 					mockProvider({
-						hasCheckpoint: () => true,
-						// New contract: omit the cursor unless the cycle fully succeeded.
-						readBackendState: ((_fs: unknown, commitCheckpoint?: boolean) =>
-							commitCheckpoint === false
-								? {}
-								: { changesStartPageToken: "NEW" }) as unknown as import("../fs/backend").IBackendProvider["readBackendState"],
+						readBackendState: readBackendState as unknown as import("../fs/backend").IBackendProvider["readBackendState"],
 					}),
 			});
 			const orchestrator = new SyncOrchestrator(deps);
+			await orchestrator.state.put({
+				path: "synced.md",
+				hash: "",
+				localMtime: 1000,
+				remoteMtime: 1000,
+				localSize: 4,
+				remoteSize: 4,
+				syncedAt: 900,
+			});
 
 			await orchestrator.runSync();
 
-			// The failed push must leave the committed cursor untouched.
-			expect(settings.backendData.test.changesStartPageToken).toBe("OLD");
+			expect(commitCheckpoint).toHaveBeenCalled();
+			// The flush threw → the post-checkpoint persist step never ran, and the cycle
+			// surfaces an error rather than silently reporting success.
+			expect(readBackendState).not.toHaveBeenCalled();
+			expect(deps.onStatusChange).toHaveBeenCalledWith("error");
 			await orchestrator.close();
 		});
 	});

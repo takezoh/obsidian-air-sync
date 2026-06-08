@@ -1,4 +1,3 @@
-import type { IFileSystem } from "../interface";
 import type { FileEntity } from "../types";
 import { FOLDER_MIME, toRemoteChecksum } from "./types";
 import type { DriveFile } from "./types";
@@ -7,323 +6,75 @@ import type { MetadataStore } from "../../store/metadata-store";
 import type { Logger } from "../../logging/logger";
 import { DriveMetadataCache } from "./metadata-cache";
 import { applyIncrementalChanges } from "./incremental-sync";
-import { INTERNAL_METADATA_PATH } from "../../sync/remote-vault";
+import { INTERNAL_METADATA_PATH } from "../remote-vault-contract";
 import { sha256 } from "../../utils/hash";
-import { AsyncMutex } from "../../queue/async-queue";
-
-import type { RenamePair } from "../../sync/types";
-
-interface RemoteDelta {
-	modified: string[];
-	deleted: string[];
-	renamed: RenamePair[];
-}
+import { normalizeSyncPath, validateRename } from "../../utils/path";
+import { CachingRemoteFs } from "../caching/remote-fs";
+import type { IncrementalChangesResult } from "../caching/remote-fs";
 
 /**
  * IFileSystem implementation backed by Google Drive.
- * Caches Drive file metadata (path↔ID, modifiedTime, size) to avoid
- * downloading file content during list()/stat(). Uses changes.list
- * for incremental sync after the initial full scan.
+ *
+ * The crash-safe cache/checkpoint machinery lives in {@link CachingRemoteFs}; this
+ * subclass supplies the Drive-specific seams (changes.list delta, listAllFiles,
+ * download/delete by id, root-liveness) and the mutating ops (write/mkdir/rename),
+ * whose Drive API calls and multi-parent handling are backend-specific.
  */
-export class GoogleDriveFs implements IFileSystem {
+export class GoogleDriveFs extends CachingRemoteFs<DriveFile> {
 	readonly name = "googledrive";
 	private client: DriveClient;
-	private rootFolderId: string;
-	private cache: DriveMetadataCache;
-
-	private initialized = false;
-	private cacheMutex = new AsyncMutex();
-	private metadataStore?: MetadataStore<DriveFile>;
-	private logger?: Logger;
-
-	/** Latest changes start page token (for incremental sync) */
-	private _changesPageToken: string | null = null;
 
 	constructor(client: DriveClient, rootFolderId: string, logger?: Logger, metadataStore?: MetadataStore<DriveFile>) {
+		super(rootFolderId, new DriveMetadataCache(rootFolderId, logger), metadataStore, logger);
 		this.client = client;
-		this.rootFolderId = rootFolderId;
-		this.logger = logger;
-		this.metadataStore = metadataStore;
-		this.cache = new DriveMetadataCache(rootFolderId, logger);
 	}
 
-	/** Get the current changes page token to persist between sessions */
-	get changesPageToken(): string | null {
-		return this._changesPageToken;
+	// ── Drive-specific seams ──
+
+	protected getStartCursor(): Promise<string> {
+		return this.client.getChangesStartToken();
 	}
 
-	/** Set a previously saved changes page token for incremental sync */
-	set changesPageToken(token: string | null) {
-		this._changesPageToken = token;
+	protected fullList(): Promise<DriveFile[]> {
+		return this.client.listAllFiles(this.rootFolderId);
 	}
 
-	private async withCacheMutex<TResolved, TResult>(opts: {
-		resolve: () => Promise<TResolved> | TResolved;
-		execute: (resolved: TResolved) => Promise<TResult>;
-		update: (resolved: TResolved, result: TResult) => void;
-		staleGuard: (resolved: TResolved) => { path: string; expectedId: string | undefined };
-		operationName: string;
-	}): Promise<{ resolved: TResolved; result: TResult }> {
-		const resolved = await this.cacheMutex.run(async () => {
-			await this.ensureInitialized();
-			return opts.resolve();
-		});
-		const result = await opts.execute(resolved);
-		await this.cacheMutex.run(() => {
-			const { path, expectedId } = opts.staleGuard(resolved);
-			if (expectedId && this.cache.getFile(path)?.id !== expectedId) {
-				this.logger?.warn(`Skipping stale cache update for ${opts.operationName}`, { path });
-				return;
-			}
-			opts.update(resolved, result);
-		});
-		return { resolved, result };
-	}
-
-	/** Full scan to build the metadata cache */
-	private async fullScan(): Promise<void> {
-		this.cache.clear();
-
-		// Get starting page token BEFORE listing to not miss concurrent changes
-		this._changesPageToken = await this.client.getChangesStartToken();
-
-		const allFiles = await this.client.listAllFiles(this.rootFolderId);
-		this.cache.buildFromFiles(allFiles);
-
-		this.initialized = true;
-		this.logger?.info("Full scan completed", { fileCount: this.cache.size });
-		void this.persistCache();
-	}
-
-	/**
-	 * Ensure the metadata cache is initialized. Returns true when the cursor is a
-	 * prior checkpoint that warrants an incremental replay (loaded from cache, or
-	 * restored after rebuilding an empty cache); false after a fresh full scan
-	 * (the cursor was just acquired, so there is nothing newer to fetch yet).
-	 */
-	private async ensureInitialized(): Promise<boolean> {
-		if (this.initialized) return true;
-		if (this._changesPageToken) {
-			if (await this.loadFromCache()) return true;
-			// Cursor present but cache empty/missing: rebuild the file map without
-			// moving the cursor, so the next changes.list spans any un-synced gap.
-			const keep = this._changesPageToken;
-			await this.fullScan();
-			this._changesPageToken = keep;
-			return true;
-		}
-		await this.fullScan();
-		return false;
-	}
-
-	/**
-	 * Restore the file map from IndexedDB. Returns false when there is no cursor
-	 * to continue from, or the cache is empty (the caller then full-scans). Never
-	 * overwrites _changesPageToken — the committed cursor (settings) is authoritative.
-	 */
-	private async loadFromCache(): Promise<boolean> {
-		if (!this.metadataStore || !this._changesPageToken) return false;
-		try {
-			await this.metadataStore.open();
-			const { files } = await this.metadataStore.loadAll();
-			if (files.length === 0) return false;
-
-			this.cache.clear();
-			this.cache.bulkLoad(files.map((r) => [r.path, r.file]));
-			this.initialized = true;
-			this.logger?.info("Cache loaded from IndexedDB", { fileCount: files.length });
-			return true;
-		} catch (err) {
-			this.logger?.warn("Failed to load cache from IndexedDB, will full scan", {
-				message: err instanceof Error ? err.message : String(err),
-			});
-			return false;
+	protected async assertRootAlive(): Promise<void> {
+		// A deleted/trashed remote root lists as empty (HTTP 200, not 404) — the same
+		// shape as a genuinely empty folder. Confirm the root is still live before
+		// accepting an empty listing: getFile throws (404) if it was permanently
+		// deleted, and trashed===true means it was moved to Trash. Either way abort
+		// this sync rather than nuking the local vault (the volume-based abort guard
+		// was removed in favour of this root-liveness check).
+		const root = await this.client.getFile(this.rootFolderId);
+		if (root.trashed) {
+			throw new Error(`Remote vault folder is in Trash (id: ${this.rootFolderId})`);
 		}
 	}
 
-	/**
-	 * Persist the file map to IndexedDB. The delta cursor is NOT stored here — it
-	 * lives in settings.backendData and is committed only on a fully-successful sync.
-	 */
-	private async persistCache(): Promise<void> {
-		if (!this.metadataStore) return;
-		try {
-			await this.metadataStore.open();
-			await this.metadataStore.saveAll(this.cache.exportRecords(), new Map());
-		} catch (err) {
-			this.logger?.warn("Failed to persist cache to IndexedDB", {
-				message: err instanceof Error ? err.message : String(err),
-			});
-		}
-	}
-
-	// Kept for backward compatibility; delegates to getChangedPaths().
-	async applyIncrementalChanges(): Promise<{ modified: string[]; deleted: string[] } | null> {
-		return this.getChangedPaths();
-	}
-
-	/** Apply incremental changes from the current cursor (caller ensured init + holds mutex). */
-	private async _applyIncrementalChanges(): Promise<RemoteDelta | null> {
-		if (!this._changesPageToken) return null;
-
-		const result = await applyIncrementalChanges(
-			{
-				cache: this.cache,
-				client: this.client,
-				metadataStore: this.metadataStore,
-				logger: this.logger,
-			},
-			this._changesPageToken,
+	protected fetchChanges(cursor: string): Promise<IncrementalChangesResult> {
+		return applyIncrementalChanges(
+			{ cache: this.cache, client: this.client, logger: this.logger },
+			cursor,
 		);
-
-		if (result.needsFullScan) {
-			// Cursor expired (410): snapshot-diff a fresh full scan for the delta.
-			return this.fullScanWithDelta();
-		}
-
-		this._changesPageToken = result.newToken;
-
-		const modified: string[] = [];
-		const deleted: string[] = [];
-		for (const path of result.changedPaths) {
-			// removeTree() was already called during applyIncrementalChanges(), so
-			// deleted paths will correctly be absent from cache here. Edge case: if a
-			// path was removed as a descendant of a deleted folder but a new file with
-			// the same path was added in the same batch, it would be misclassified as
-			// modified. This is unlikely in practice and does not cause data loss.
-			if (this.cache.hasFile(path)) {
-				modified.push(path);
-			} else {
-				deleted.push(path);
-			}
-		}
-		return { modified, deleted, renamed: result.renamedPaths };
 	}
 
-	/**
-	 * Full scan with delta computation: snapshot old state from persisted
-	 * metadata, perform full scan, then diff old vs new by Drive file ID.
-	 * Detects renames, additions, and deletions. Does NOT detect in-place
-	 * content changes (same path, same ID) — those are caught by the next
-	 * incremental sync or by WARM mode's local-vs-record comparison.
-	 */
-	private async fullScanWithDelta(): Promise<RemoteDelta | null> {
-		// Snapshot old paths by ID before the full scan overwrites the cache.
-		// (Only reached on 410 expiry, when the cache is already populated.)
-		const oldPathById = new Map<string, string>();
-		for (const [path, file] of this.cache.entries()) {
-			oldPathById.set(file.id, path);
-		}
-
-		await this.fullScan();
-
-		if (oldPathById.size === 0) return null; // initial sync — no delta
-
-		const modified: string[] = [];
-		const deleted: string[] = [];
-		const renamed: RenamePair[] = [];
-		const newIds = new Set<string>();
-
-		for (const [newPath, file] of this.cache.entries()) {
-			newIds.add(file.id);
-			const oldPath = oldPathById.get(file.id);
-			if (!oldPath) {
-				modified.push(newPath);
-			} else if (oldPath !== newPath) {
-				renamed.push({ oldPath, newPath, isFolder: this.cache.isFolder(newPath) || undefined });
-				modified.push(newPath);
-				deleted.push(oldPath);
-			}
-		}
-
-		for (const [id, oldPath] of oldPathById) {
-			if (!newIds.has(id)) {
-				deleted.push(oldPath);
-			}
-		}
-
-		if (modified.length > 0 || deleted.length > 0 || renamed.length > 0) {
-			this.logger?.info("Full scan delta", {
-				added: modified.length - renamed.length,
-				deleted: deleted.length - renamed.length,
-				renamed: renamed.length,
-			});
-		}
-
-		return { modified, deleted, renamed };
-	}
-
-	/**
-	 * Return paths changed since the last committed cursor. Returns null on the
-	 * initial sync (a fresh full scan just captured "now", so there is no delta).
-	 */
-	async getChangedPaths(): Promise<{ modified: string[]; deleted: string[]; renamed?: { oldPath: string; newPath: string }[] } | null> {
-		return this.cacheMutex.run(async () => {
-			const replay = await this.ensureInitialized();
-			return replay ? this._applyIncrementalChanges() : null;
-		});
-	}
-
-	async list(): Promise<FileEntity[]> {
-		return this.cacheMutex.run(async () => {
-			// A fresh full scan captures "now"; a restored cursor warrants a replay.
-			if (await this.ensureInitialized()) {
-				await this._applyIncrementalChanges();
-			}
-
-			const entities: FileEntity[] = [];
-			for (const [path, driveFile] of this.cache.entries()) {
-				entities.push(this.cache.driveFileToEntity(path, driveFile));
-			}
-			return entities;
-		});
-	}
-
-	/**
-	 * Return cached metadata for a path.
-	 * hash is always "" — the sync engine should use remoteChecksum
-	 * for content-change detection rather than relying on hash.
-	 *
-	 * Does not call applyIncrementalChanges here because list() already
-	 * applies incremental changes before returning the full file list.
-	 * stat() is only called after list() has refreshed the cache.
-	 */
-	async stat(path: string): Promise<FileEntity | null> {
-		return this.cacheMutex.run(async () => {
-			await this.ensureInitialized();
-
-			const driveFile = this.cache.getFile(path);
-			if (!driveFile) return null;
-
-			return this.cache.driveFileToEntity(path, driveFile);
-		});
-	}
-
-	/**
-	 * Download file content from Drive.
-	 * Like stat(), does not call applyIncrementalChanges — the cache is
-	 * kept fresh by list() which is always called first in the sync cycle.
-	 */
-	async read(path: string): Promise<ArrayBuffer> {
-		// Phase 1: resolve fileId under mutex
-		const fileId = await this.cacheMutex.run(async () => {
-			await this.ensureInitialized();
-			const driveFile = this.cache.getFile(path);
-			if (!driveFile) {
-				throw new Error(`File not found on Drive: ${path}`);
-			}
-			return driveFile.id;
-		});
-
-		// Phase 2: download outside mutex (network I/O)
+	protected downloadFile(fileId: string): Promise<ArrayBuffer> {
 		return this.client.downloadFile(fileId);
 	}
+
+	protected deleteRemote(fileId: string): Promise<void> {
+		return this.client.deleteFile(fileId);
+	}
+
+	// ── Mutating ops (Drive API + multi-parent handling) ──
 
 	async write(
 		path: string,
 		content: ArrayBuffer,
 		mtime: number
 	): Promise<FileEntity> {
+		path = normalizeSyncPath(path);
 		if (path === INTERNAL_METADATA_PATH) {
 			// The backend manages its metadata out-of-band; it must never be pushed
 			// through the sync engine (the orchestrator excludes it too). Fail loudly
@@ -333,6 +84,11 @@ export class GoogleDriveFs implements IFileSystem {
 		const { result: driveFile } = await this.withCacheMutex({
 			operationName: "write",
 			resolve: async () => {
+				if (this.cache.isFolder(path)) {
+					throw new Error(
+						`Cannot write file: "${path}" is an existing directory`,
+					);
+				}
 				const existingFile = this.cache.getFile(path);
 				const existingId = existingFile?.id;
 				const fileName = path.split("/").pop()!;
@@ -364,6 +120,7 @@ export class GoogleDriveFs implements IFileSystem {
 	}
 
 	async mkdir(path: string): Promise<FileEntity> {
+		path = normalizeSyncPath(path);
 		return this.cacheMutex.run(async () => {
 			await this.ensureInitialized();
 			const folderId = await this.ensureFolder(path);
@@ -378,48 +135,10 @@ export class GoogleDriveFs implements IFileSystem {
 		});
 	}
 
-	async listDir(path: string): Promise<FileEntity[]> {
-		return this.cacheMutex.run(async () => {
-			await this.ensureInitialized();
-			const kids = this.cache.getChildren(path);
-			if (!kids) return [];
-			const entities: FileEntity[] = [];
-			for (const childPath of kids) {
-				const driveFile = this.cache.getFile(childPath);
-				if (driveFile) {
-					entities.push(this.cache.driveFileToEntity(childPath, driveFile));
-				}
-			}
-			return entities;
-		});
-	}
-
-	async delete(path: string): Promise<void> {
-		// Phase 1: resolve fileId under mutex
-		const fileId = await this.cacheMutex.run(async () => {
-			await this.ensureInitialized();
-			const driveFile = this.cache.getFile(path);
-			if (!driveFile) return null;
-			return driveFile.id;
-		});
-
-		if (!fileId) return;
-
-		// Phase 2: API delete outside mutex (network I/O)
-		await this.client.deleteFile(fileId);
-
-		// Phase 3: update cache under mutex with ID guard
-		// (applyIncrementalChanges may have updated the cache during phase 2)
-		await this.cacheMutex.run(() => {
-			if (this.cache.getFile(path)?.id === fileId) {
-				this.cache.removeTree(path);
-			} else {
-				this.logger?.warn("Skipping stale cache update for delete", { path });
-			}
-		});
-	}
-
 	async rename(oldPath: string, newPath: string): Promise<void> {
+		oldPath = normalizeSyncPath(oldPath);
+		newPath = normalizeSyncPath(newPath);
+		validateRename(oldPath, newPath);
 		await this.withCacheMutex({
 			operationName: "rename",
 			resolve: async () => {
@@ -464,6 +183,19 @@ export class GoogleDriveFs implements IFileSystem {
 			),
 			staleGuard: (r) => ({ path: oldPath, expectedId: r.fileId }),
 			update: (r, result) => {
+				// The shared stale-guard only validates the SOURCE (oldPath still resolves
+				// to our file id). The destination is checked in resolve() (phase 1), but a
+				// concurrent delta can land a DIFFERENT file at newPath during the phase-2
+				// network op (run outside the mutex). Overwriting it via setFile would strand
+				// that delta's id in idToPath (and orphan its subtree, since setFile only
+				// re-indexes a NEW path). Skip instead — symmetric with write()'s new-path
+				// guard; the in-memory cursor advanced past the delta, so the next cycle
+				// re-detects our rename.
+				const occupant = this.cache.getFile(newPath);
+				if (occupant && occupant.id !== result.id) {
+					this.logger?.warn("Skipping stale cache update for rename", { path: newPath });
+					return;
+				}
 				this.cache.removeEntry(oldPath);
 				this.cache.setFile(newPath, result);
 				if (r.wasFolder) {
@@ -511,10 +243,5 @@ export class GoogleDriveFs implements IFileSystem {
 		}
 
 		return parentId;
-	}
-
-	/** Close the metadata store (call on plugin unload) */
-	async close(): Promise<void> {
-		await this.metadataStore?.close();
 	}
 }

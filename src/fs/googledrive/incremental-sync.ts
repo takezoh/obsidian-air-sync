@@ -1,22 +1,23 @@
-import type { DriveFile } from "./types";
 import { FOLDER_MIME } from "./types";
-import type { DriveMetadataCache } from "./metadata-cache";
+import type { DriveFile } from "./types";
+import { LIST_PAGE_CAP } from "./client";
 import type { DriveClient } from "./client";
-import type { MetadataStore } from "../../store/metadata-store";
-import type { RenamePair } from "../../sync/types";
+import type { RenamePair } from "../types";
 import type { Logger } from "../../logging/logger";
+import type { AbstractMetadataCache } from "../caching/metadata-cache";
+import type { IncrementalChangesResult } from "../caching/remote-fs";
 
-/** Context for incremental sync operations */
+/**
+ * Context for incremental sync operations. Note there is no metadataStore here:
+ * applying changes mutates only the in-memory cache. Persisting the cache to
+ * IndexedDB is deferred to the checkpoint commit (CachingRemoteFs.commitCheckpoint),
+ * so the persisted cache never runs ahead of the committed delta cursor.
+ */
 export interface IncrementalSyncContext {
-	cache: DriveMetadataCache;
+	cache: AbstractMetadataCache<DriveFile>;
 	client: DriveClient;
-	metadataStore?: MetadataStore<DriveFile>;
 	logger?: Logger;
 }
-
-export type IncrementalChangesResult =
-	| { needsFullScan: false; newToken: string; changedPaths: Set<string>; renamedPaths: RenamePair[] }
-	| { needsFullScan: true; changedPaths: Set<string> };
 
 /**
  * Apply incremental changes from the Drive changes.list API.
@@ -34,12 +35,18 @@ export async function applyIncrementalChanges(
 		let currentToken = changesPageToken;
 
 		let totalChanges = 0;
-		const updatedRecords: { path: string; file: DriveFile; isFolder: boolean }[] = [];
-		const deletedPaths: string[] = [];
 		const changedPaths = new Set<string>();
 		const renamedPaths: RenamePair[] = [];
 
-		do {
+		// Bound the drain: a server that never clears nextPageToken would loop
+		// forever. 10k pages of changes is far beyond any real delta, so throw
+		// rather than spin (mirrors the full-list cap in listAllFiles).
+		for (let guard = 0; ; guard++) {
+			if (guard >= LIST_PAGE_CAP) {
+				throw new Error(
+					`applyIncrementalChanges: changes pagination exceeded ${LIST_PAGE_CAP} pages (server not clearing nextPageToken?)`,
+				);
+			}
 			const result = await ctx.client.listChanges(
 				changesPageToken,
 				pageToken
@@ -68,7 +75,6 @@ export async function applyIncrementalChanges(
 					if (path) {
 						// Collect descendants before removing
 						const descendants = ctx.cache.collectDescendants(path);
-						deletedPaths.push(path, ...descendants);
 						changedPaths.add(path);
 						for (const d of descendants) changedPaths.add(d);
 						ctx.cache.removeTree(path);
@@ -78,11 +84,6 @@ export async function applyIncrementalChanges(
 						ctx.cache.applyFileChangeDetectMove(change.file);
 
 					if (updatedPath) {
-						updatedRecords.push({
-							path: updatedPath,
-							file: change.file,
-							isFolder: change.file.mimeType === FOLDER_MIME,
-						});
 						changedPaths.add(updatedPath);
 					}
 
@@ -91,10 +92,8 @@ export async function applyIncrementalChanges(
 					const movedOutOfRoot = oldPath && !updatedPath;
 					if (moved || movedOutOfRoot) {
 						changedPaths.add(oldPath);
-						deletedPaths.push(oldPath);
 						for (const d of oldDescendants) {
 							changedPaths.add(d);
-							deletedPaths.push(d);
 						}
 					}
 					if (moved) {
@@ -106,16 +105,6 @@ export async function applyIncrementalChanges(
 						const newDescendants = ctx.cache.collectDescendants(updatedPath);
 						for (const nd of newDescendants) {
 							changedPaths.add(nd);
-							const ndFile = ctx.cache.getFile(nd);
-							if (ndFile) {
-								updatedRecords.push({
-									path: nd,
-									file: ndFile,
-									isFolder: ndFile.mimeType === FOLDER_MIME,
-								});
-							} else {
-								ctx.logger?.warn("Descendant not found in cache after folder move", { path: nd });
-							}
 						}
 					}
 				}
@@ -125,13 +114,14 @@ export async function applyIncrementalChanges(
 			if (result.newStartPageToken) {
 				currentToken = result.newStartPageToken;
 			}
-		} while (pageToken);
+			if (!pageToken) break;
+		}
 
 		if (totalChanges > 0) {
 			ctx.logger?.info("Incremental changes applied", { changeCount: totalChanges });
-			await persistIncrementalChanges(ctx, updatedRecords, deletedPaths);
 		}
-
+		// The in-memory cache now reflects the changes; persistence to IndexedDB is
+		// the caller's job at checkpoint commit (see GoogleDriveFs.commitCheckpoint).
 		return { newToken: currentToken, needsFullScan: false, changedPaths, renamedPaths };
 	} catch (err) {
 		if (isHttpError(err, 410)) {
@@ -140,27 +130,6 @@ export async function applyIncrementalChanges(
 			return { needsFullScan: true, changedPaths: new Set<string>() };
 		}
 		throw err;
-	}
-}
-
-/**
- * Persist the incremental file-map changes to IndexedDB. The delta cursor is NOT
- * stored here — it lives in settings.backendData and is committed only after a
- * fully-successful sync, so an interrupted cycle re-detects the gap next time.
- */
-async function persistIncrementalChanges(
-	ctx: IncrementalSyncContext,
-	updated: { path: string; file: DriveFile; isFolder: boolean }[],
-	deleted: string[],
-): Promise<void> {
-	if (!ctx.metadataStore) return;
-	try {
-		if (updated.length > 0) await ctx.metadataStore.putFiles(updated);
-		if (deleted.length > 0) await ctx.metadataStore.deleteFiles(deleted);
-	} catch (err) {
-		ctx.logger?.warn("Failed to persist incremental changes to IndexedDB", {
-			message: err instanceof Error ? err.message : String(err),
-		});
 	}
 }
 

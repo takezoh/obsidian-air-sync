@@ -1,9 +1,10 @@
 import { Notice, Platform, Plugin, setIcon, setTooltip } from "obsidian";
 import { DEFAULT_SETTINGS, AirSyncSettings } from "./settings";
+import { liftActiveBackendData, normalizeConflictStrategy } from "./settings-normalize";
 import { AirSyncSettingTab } from "./ui/settings";
 import { LocalFs } from "./fs/local/index";
 import { BackendManager } from "./fs/backend-manager";
-import { initRegistry } from "./fs/registry";
+import { initRegistry, getAllBackendProviders } from "./fs/registry";
 import type { ISecretStore } from "./fs/secret-store";
 import type { SyncStatus } from "./sync/orchestrator";
 import { SyncOrchestrator } from "./sync/orchestrator";
@@ -11,7 +12,7 @@ import { SyncScheduler } from "./sync/scheduler";
 import { ScreenWakeLockManager } from "./sync/wake-lock";
 import { LocalChangeTracker } from "./sync/local-tracker";
 import { Logger, getDeviceName } from "./logging/logger";
-import type { LoggerAdapter } from "./logging/logger";
+import { ConflictHistory } from "./sync/conflict-history";
 
 export default class AirSyncPlugin extends Plugin {
 	settings!: AirSyncSettings;
@@ -25,25 +26,34 @@ export default class AirSyncPlugin extends Plugin {
 	private localTracker!: LocalChangeTracker;
 	private settingTab: AirSyncSettingTab | null = null;
 	private logger!: Logger;
+	private conflictHistory!: ConflictHistory;
 
 	async onload() {
-		await this.loadSettings();
-
+		// Init the registry BEFORE loadSettings: the backendData normalization there
+		// needs the set of registered backend types to tell the old per-type-map
+		// shape from the new single-bag shape.
 		const secretStore: ISecretStore = {
 			getSecret: (key) => this.app.secretStorage.getSecret(key),
 			setSecret: (key, value) => { this.app.secretStorage.setSecret(key, value); },
 		};
 		initRegistry(secretStore);
 
+		await this.loadSettings();
+
 		this.localFs = new LocalFs(this.app, () => this.settings.syncDotPaths);
 
 		const deviceName = getDeviceName(Platform.isMobile, this.settings.vaultId);
+		// vault.adapter is a structural superset of RawFsAdapter — no cast needed.
 		this.logger = new Logger(
-			this.app.vault.adapter as unknown as LoggerAdapter,
+			this.app.vault.adapter,
 			() => this.settings,
 			deviceName,
 		);
 		this.logger.info("Plugin loaded", { deviceName, vaultId: this.settings.vaultId });
+
+		// Conflict-resolution audit history, written via the same raw adapter + device
+		// name as the logger (it persists to .airsync/conflicts/<device>.json).
+		this.conflictHistory = new ConflictHistory(this.logger.adapter, this.logger.sanitizedDeviceName);
 
 		this.backendManager = new BackendManager({
 			getSettings: () => this.settings,
@@ -59,7 +69,7 @@ export default class AirSyncPlugin extends Plugin {
 				this.syncStatus = "not_connected";
 				this.updateStatusBar();
 			},
-			onIdentityChanged: async () => {
+			clearSyncBaseline: async () => {
 				await this.orchestrator?.clearSyncState();
 			},
 			notify: (message) => {
@@ -101,6 +111,7 @@ export default class AirSyncPlugin extends Plugin {
 			logger: this.logger,
 			isBackendConnecting: () => this.backendManager.isConnecting(),
 			isLayoutReady: () => this.app.workspace.layoutReady,
+			recordConflicts: (records) => this.conflictHistory.append(records),
 		});
 
 		this.scheduler = new SyncScheduler({
@@ -132,6 +143,13 @@ export default class AirSyncPlugin extends Plugin {
 				url.searchParams.set(key, value);
 			}
 			void this.backendManager.completeBackendConnect(url.toString());
+		});
+
+		// Web folder-picker result via obsidian://air-sync-folder. Backend-agnostic:
+		// BackendManager routes to the active backend's completeWebFolderPick. Kept
+		// separate from auth — distinct payload, no sniffing dispatch needed.
+		this.registerObsidianProtocolHandler("air-sync-folder", (params) => {
+			void this.backendManager.completeBackendFolderPick(params);
 		});
 
 		// Initialize backend if configured
@@ -187,6 +205,16 @@ export default class AirSyncPlugin extends Plugin {
 
 		let needsSave = false;
 
+		// Normalize a legacy per-type backendData map to the single active-backend bag.
+		if (liftActiveBackendData(this.settings, getAllBackendProviders().map((p) => p.type))) {
+			needsSave = true;
+		}
+
+		// Coerce a removed conflictStrategy (e.g. the retired "ask") to a valid one.
+		if (normalizeConflictStrategy(this.settings)) {
+			needsSave = true;
+		}
+
 		// Generate a stable vault ID on first load
 		if (!this.settings.vaultId) {
 			this.settings.vaultId = crypto.randomUUID();
@@ -235,9 +263,10 @@ export default class AirSyncPlugin extends Plugin {
 	 * being silently dropped while the in-flight sync re-commits a checkpoint.
 	 */
 	async rescan(): Promise<void> {
-		this.backendManager.getBackendProvider()?.resetTargetState?.(this.settings);
-		await this.saveSettings();
-		await this.orchestrator.runSync();
+		// Discard the committed checkpoint (delta cursor + cache) and run a cold
+		// reconcile. The orchestrator performs the reset inside its sync mutex so it
+		// can't race an in-flight sync that holds the live FS cache (ADR 0001).
+		await this.orchestrator.rescan();
 	}
 
 	private updateStatusBar(): void {

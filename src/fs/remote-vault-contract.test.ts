@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { REMOTE_VAULT_ROOT } from "./remote-vault";
+import { REMOTE_VAULT_ROOT } from "./remote-vault-contract";
 
 describe("REMOTE_VAULT_ROOT", () => {
 	it("is obsidian-air-sync", () => {
