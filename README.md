@@ -2,7 +2,7 @@
 
 Your Obsidian notes, always up to date on every device — without ever thinking about sync. Edit on your laptop, pick up your phone, and it's caught up before you start typing.
 
-Works on desktop and mobile, powered by your own cloud storage — **Google Drive or Dropbox**.
+Works on desktop and mobile, powered by your own cloud storage — **Google Drive**, or **Dropbox** (Preview).
 
 > **Requires a Google or Dropbox account.**
 
@@ -18,8 +18,10 @@ Works on desktop and mobile, powered by your own cloud storage — **Google Driv
 
 > **Requires a Google or Dropbox account.**
 
+> **Dropbox is in Preview** — enter your own Dropbox **app key** in settings before connecting (Air Sync's own key isn't built in yet).
+
 1. Open the plugin settings (**Settings → Air Sync**).
-2. Pick your backend (**Google Drive** or **Dropbox**) if more than one is available.
+2. Pick your backend (**Google Drive** or **Dropbox** (Preview)) if more than one is available.
 3. Click **Connect to …** (e.g. **Connect to Google Drive** or **Connect to Dropbox**), then approve access in your browser.
 4. Choose where to sync: use the **default folder** (named after your vault), or **pick an existing folder**.
 

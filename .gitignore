@@ -36,3 +36,4 @@ dist/
 .playwright-mcp/
 .mcp.json
 *.log
+.roost/

@@ -16,13 +16,22 @@ const SCOPES = "files.metadata.read files.content.read files.content.write";
 const BACKEND_TYPE = "dropbox";
 
 /**
+ * Sentinel meaning "no real app key is embedded yet". While {@link DROPBOX_CLIENT_ID}
+ * holds this, the Dropbox backend is in Preview: the user must supply their own app
+ * key via the settings field ({@link DropboxBackendData.appKey}) and {@link startAuth}
+ * refuses to run with the placeholder. PREVIEW: delete this, the settings field, and
+ * the appKey override path once the real key is embedded at official release.
+ */
+const PLACEHOLDER_APP_KEY = "REPLACE_WITH_DROPBOX_APP_KEY";
+
+/**
  * Public OAuth app key for the Air Sync Dropbox app (App folder permission).
  *
  * PKCE means there is NO client secret anywhere — the `code_verifier` is the
  * ephemeral proof. Register the app at https://www.dropbox.com/developers/apps,
- * add `https://airsync.takezo.dev/callback` as a redirect URI, and set this.
+ * add `https://airsync.takezo.dev/callback` as a redirect URI, and embed the key here.
  */
-export const DROPBOX_CLIENT_ID = "REPLACE_WITH_DROPBOX_APP_KEY";
+export const DROPBOX_CLIENT_ID = PLACEHOLDER_APP_KEY;
 
 interface DropboxCallbackParams {
 	code: string;
@@ -55,6 +64,11 @@ export class DropboxAuth extends BaseOAuthTokenManager {
 	constructor(private clientId: string, logger?: Logger) {
 		super();
 		this.logger = logger;
+	}
+
+	/** PREVIEW: apply a settings-supplied app key to a token manager created earlier. */
+	setClientId(clientId: string): void {
+		this.clientId = clientId;
 	}
 
 	protected notAuthenticatedMessage(): string {
@@ -160,9 +174,20 @@ export class DropboxAuthProvider implements IAuthProvider {
 		private logger?: Logger,
 	) {}
 
+	/**
+	 * Effective app key: the user-supplied Preview key (`backendData.appKey`) wins,
+	 * else the embedded {@link DROPBOX_CLIENT_ID}. PREVIEW: remove this override (and
+	 * the settings field) once the real key is embedded at official release.
+	 */
+	private effectiveClientId(appKey?: string): string {
+		return appKey && appKey.trim() ? appKey.trim() : this.clientId;
+	}
+
 	/** Get or lazily create the shared token manager (so refreshed tokens are persistable). */
-	getOrCreateAuth(logger?: Logger): DropboxAuth {
-		if (!this.tokenAuth) this.tokenAuth = new DropboxAuth(this.clientId, logger ?? this.logger);
+	getOrCreateAuth(appKey?: string, logger?: Logger): DropboxAuth {
+		const clientId = this.effectiveClientId(appKey);
+		if (!this.tokenAuth) this.tokenAuth = new DropboxAuth(clientId, logger ?? this.logger);
+		else this.tokenAuth.setClientId(clientId);
 		return this.tokenAuth;
 	}
 
@@ -171,8 +196,8 @@ export class DropboxAuthProvider implements IAuthProvider {
 	 * for one-off read calls (e.g. resolving the folder path for the settings UI)
 	 * so they don't clobber the live sync's in-memory tokens / failure cooldown.
 	 */
-	createDetachedAuth(logger?: Logger): DropboxAuth {
-		const auth = new DropboxAuth(this.clientId, logger ?? this.logger);
+	createDetachedAuth(appKey?: string, logger?: Logger): DropboxAuth {
+		const auth = new DropboxAuth(this.effectiveClientId(appKey), logger ?? this.logger);
 		// Persist a rotated refresh token from a detached refresh to SecretStorage —
 		// otherwise it would be discarded with this throwaway instance, leaving the
 		// stored (and shared) token stale so the next real sync's refresh fails. The
@@ -194,14 +219,21 @@ export class DropboxAuthProvider implements IAuthProvider {
 		return hasBackendSecret(this.secretStore, BACKEND_TYPE, "refresh");
 	}
 
-	async startAuth(_backendData: Record<string, unknown>): Promise<Record<string, unknown>> {
+	async startAuth(backendData: Record<string, unknown>): Promise<Record<string, unknown>> {
+		const appKey = typeof backendData.appKey === "string" ? backendData.appKey : undefined;
+		const clientId = this.effectiveClientId(appKey);
+		// PREVIEW: no key embedded and none entered — refuse rather than open a broken
+		// authorize URL. Removed once the real key is embedded (the fallback always wins).
+		if (clientId === PLACEHOLDER_APP_KEY) {
+			throw new Error("Enter your Dropbox app key in settings first.");
+		}
 		const codeVerifier = generateRandomString(64);
 		const codeChallenge = await computeS256Challenge(codeVerifier);
 		// base64url state (URL-transit safe) via the shared builder; the callback
 		// relay page (air-sync-auth) decodes both base64url and legacy base64.
 		const state = buildOAuthState();
 		const params = new URLSearchParams({
-			client_id: this.clientId,
+			client_id: clientId,
 			response_type: "code",
 			token_access_type: "offline",
 			code_challenge: codeChallenge,
@@ -231,7 +263,8 @@ export class DropboxAuthProvider implements IAuthProvider {
 			throw new Error("PKCE code verifier is missing. Please restart the authorization flow.");
 		}
 
-		const auth = this.getOrCreateAuth();
+		const appKey = typeof backendData.appKey === "string" ? backendData.appKey : undefined;
+		const auth = this.getOrCreateAuth(appKey);
 		await auth.exchangeCode(params.code, codeVerifier);
 		const tokens = auth.getTokenState();
 		setBackendSecret(this.secretStore, BACKEND_TYPE, "refresh", tokens.refreshToken);
