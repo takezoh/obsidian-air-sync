@@ -312,10 +312,9 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 	}
 
 	/**
-	 * Find or create this vault's default remote folder (obsidian-air-sync/<Vault Name>),
-	 * migrating a legacy obsidian-air-sync/<uuid>/.airsync/metadata.json vault if one
-	 * matches. Invoked explicitly when the user binds the default folder — not
-	 * automatically on connect.
+	 * Find or create this vault's default remote folder (obsidian-air-sync/<Vault Name>).
+	 * Invoked explicitly when the user binds the default folder — not automatically on
+	 * connect.
 	 */
 	async resolveRemoteVault(
 		app: App,
