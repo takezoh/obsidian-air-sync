@@ -90,11 +90,36 @@ export interface IFileSystem {
 	rename(oldPath: string, newPath: string): Promise<void>;
 
 	/**
+	 * The backend's incremental delta cursor + crash-safe checkpoint, or `undefined`
+	 * for backends without incremental sync (e.g. the local vault). Bundled as one
+	 * capability so it is all-or-nothing: a backend that can detect deltas
+	 * (`getChangedPaths`) MUST also expose the full checkpoint lifecycle
+	 * (`hasCheckpoint`/`resetCheckpoint`/`commitCheckpoint`) — a half-implementation
+	 * would silently degrade crash recovery (ADR 0001). Check `fs.checkpoint` once;
+	 * its presence guarantees every method below.
+	 */
+	checkpoint?: IncrementalCheckpoint;
+
+	/**
+	 * Release resources (e.g. close IndexedDB connections).
+	 * Called on plugin unload. Optional — not all backends need cleanup.
+	 */
+	close?(): Promise<void>;
+}
+
+/**
+ * A backend's incremental-sync capability: a delta cursor for change detection and a
+ * crash-safe, atomically-committed checkpoint (ADR 0001). Exposed as one object on
+ * {@link IFileSystem.checkpoint} so the four methods travel together — implementing one
+ * means implementing all (the type enforces it; B1-3).
+ */
+export interface IncrementalCheckpoint {
+	/**
 	 * Return paths changed since the last sync, or null if unavailable.
 	 * Should be called before list() to allow the change-detector to skip
 	 * unchanged paths. Returns modified, deleted, and optionally renamed path lists.
 	 */
-	getChangedPaths?(): Promise<{
+	getChangedPaths(): Promise<{
 		modified: string[];
 		deleted: string[];
 		renamed?: RenamePair[];
@@ -105,17 +130,15 @@ export interface IFileSystem {
 	 * the sync engine cannot trust delta-based remote detection — the last sync never
 	 * completed, or was reset — so it forces a full cold reconcile. The cursor is
 	 * stored with the backend's own cache (not in settings), so this is async.
-	 * Backends without incremental sync may omit it.
 	 */
-	hasCheckpoint?(): Promise<boolean>;
+	hasCheckpoint(): Promise<boolean>;
 
 	/**
 	 * Discard the committed checkpoint (delta cursor + any derived cache) so the next
 	 * sync does a full cold reconcile. Used by the Rescan action. Losing the
 	 * checkpoint is safe — a cold list × baseline join re-derives every change.
-	 * Optional: backends without incremental sync omit it.
 	 */
-	resetCheckpoint?(): Promise<void>;
+	resetCheckpoint(): Promise<void>;
 
 	/**
 	 * Flush the committed checkpoint — the delta cursor AND any derived cache — to the
@@ -123,13 +146,7 @@ export interface IFileSystem {
 	 * sync engine ONLY after a fully-successful cycle (failed === 0); a failed cycle
 	 * leaves cache+cursor at the last committed state so the next run re-detects the
 	 * un-synced work. Lives on the FS (not the provider) so the engine never has to
-	 * downcast. Optional: backends without an incremental checkpoint omit it.
+	 * downcast.
 	 */
-	commitCheckpoint?(): Promise<void>;
-
-	/**
-	 * Release resources (e.g. close IndexedDB connections).
-	 * Called on plugin unload. Optional — not all backends need cleanup.
-	 */
-	close?(): Promise<void>;
+	commitCheckpoint(): Promise<void>;
 }

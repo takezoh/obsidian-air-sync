@@ -1,4 +1,4 @@
-import type { IFileSystem } from "../interface";
+import type { IFileSystem, IncrementalCheckpoint } from "../interface";
 import type { FileEntity } from "../types";
 import type { RenamePair } from "../types";
 import type { MetadataStore } from "../../store/metadata-store";
@@ -216,6 +216,16 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	}
 
 	// ── Checkpoint: atomic cache + cursor commit (ADR 0001) ──
+
+	/**
+	 * Every CachingRemoteFs IS its own incremental-checkpoint capability — it implements
+	 * all four methods directly. Exposing `this` (typed down to {@link IncrementalCheckpoint})
+	 * is what lets the sync engine treat the bundle as one all-or-nothing capability
+	 * (`fs.checkpoint?.…`) without a downcast.
+	 */
+	get checkpoint(): IncrementalCheckpoint {
+		return this;
+	}
 
 	/**
 	 * Flush the file map AND the delta cursor to IndexedDB, atomically, after a clean

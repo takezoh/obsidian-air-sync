@@ -124,7 +124,7 @@ export class SyncOrchestrator {
 	 * subsequent runSync then sees no checkpoint and goes cold.
 	 */
 	async rescan(): Promise<void> {
-		await this.syncMutex.run(() => this.deps.remoteFs()?.resetCheckpoint?.());
+		await this.syncMutex.run(() => this.deps.remoteFs()?.checkpoint?.resetCheckpoint());
 		await this.runSync();
 	}
 
@@ -162,8 +162,8 @@ export class SyncOrchestrator {
 				// may have advanced past un-committed work). Cold recovers either via
 				// a full list × baseline join. The checkpoint (delta cursor) lives in
 				// the backend's own store now, so this is an async FS query.
-				const noCheckpoint = remoteFs.hasCheckpoint
-					? !(await remoteFs.hasCheckpoint())
+				const noCheckpoint = remoteFs.checkpoint
+					? !(await remoteFs.checkpoint.hasCheckpoint())
 					: false;
 				const forceFullScan = noCheckpoint || this.recoverViaColdScan;
 				this.deps.logger?.info("Sync started", { forceFullScan });
@@ -416,8 +416,8 @@ export class SyncOrchestrator {
 		const cleanCycle = result.failed.length === 0;
 		// The checkpoint lives on the FS now (no provider downcast): flush it only on a
 		// fully clean cycle so a partial sync keeps the prior committed cursor.
-		if (cleanCycle && remoteFs?.commitCheckpoint) {
-			await remoteFs.commitCheckpoint();
+		if (cleanCycle && remoteFs?.checkpoint) {
+			await remoteFs.checkpoint.commitCheckpoint();
 		}
 		// readBackendState now persists only non-secret token state (the cursor lives
 		// in the backend store, committed above) — safe to run every cycle.

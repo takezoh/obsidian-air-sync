@@ -96,7 +96,7 @@ export class BackendManager {
 				// sync MUST cold-reconcile. Drop any checkpoint the new target's store may
 				// still hold from a prior binding (its cursor lives with the cache now,
 				// ADR 0001) — otherwise warm/hot detection would run with no baseline.
-				if (identityChanged) await this.remoteFs.resetCheckpoint?.();
+				if (identityChanged) await this.remoteFs.checkpoint?.resetCheckpoint();
 				this.deps.onConnected(this.remoteFs);
 				this.deps.getLogger().info("Backend initialized", { backend: settings.backendType });
 			}
@@ -315,7 +315,7 @@ export class BackendManager {
 	 */
 	private async dropCheckpointStore(settings: AirSyncSettings): Promise<void> {
 		if (this.remoteFs) {
-			await this.remoteFs.resetCheckpoint?.()?.catch((e: unknown) => {
+			await this.remoteFs.checkpoint?.resetCheckpoint()?.catch((e: unknown) => {
 				this.deps.getLogger().warn("Failed to clear checkpoint store", {
 					error: e instanceof Error ? e.message : String(e),
 				});

@@ -60,8 +60,12 @@ beforeEach(() => {
 		mkdir: vi.fn(),
 		delete: vi.fn(),
 		rename: vi.fn(),
-		resetCheckpoint: fakeResetCheckpoint,
-		hasCheckpoint: vi.fn().mockResolvedValue(false),
+		checkpoint: {
+			getChangedPaths: vi.fn().mockResolvedValue(null),
+			resetCheckpoint: fakeResetCheckpoint,
+			hasCheckpoint: vi.fn().mockResolvedValue(false),
+			commitCheckpoint: vi.fn().mockResolvedValue(undefined),
+		},
 	} as unknown as IFileSystem;
 
 	fakeProvider = {

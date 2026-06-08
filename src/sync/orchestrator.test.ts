@@ -686,8 +686,9 @@ describe("SyncOrchestrator", () => {
 				backendType: "test",
 				vaultId: `test-${Math.random()}`,
 			});
-			// hasCheckpoint lives on the FS now (the cursor is stored with the cache).
-			remoteFs.hasCheckpoint = vi.fn().mockResolvedValue(false);
+			// hasCheckpoint lives on the FS's checkpoint capability now (the cursor is
+			// stored with the cache).
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(false);
 			const deps = createDeps({
 				getSettings: () => settings,
 				localFs: () => localFs,
@@ -726,12 +727,12 @@ describe("SyncOrchestrator", () => {
 
 			const settings = baseMockSettings({ backendType: "test", vaultId: `test-${Math.random()}` });
 			// A checkpoint exists; rescan must discard it (via resetCheckpoint) to force cold.
-			remoteFs.hasCheckpoint = vi.fn().mockResolvedValue(true);
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
 			const resetCheckpoint = vi.fn().mockImplementation(() => {
-				remoteFs.hasCheckpoint = vi.fn().mockResolvedValue(false); // reset ⇒ no checkpoint
+				remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(false); // reset ⇒ no checkpoint
 				return Promise.resolve();
 			});
-			remoteFs.resetCheckpoint = resetCheckpoint;
+			remoteFs.checkpoint!.resetCheckpoint = resetCheckpoint;
 
 			const deps = createDeps({
 				getSettings: () => settings,
@@ -772,7 +773,7 @@ describe("SyncOrchestrator", () => {
 			});
 			// A committed checkpoint exists, so hasCheckpoint stays true throughout —
 			// the recovery must come from the post-failure cold flag, not from hasCheckpoint.
-			remoteFs.hasCheckpoint = vi.fn().mockResolvedValue(true);
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
 
 			const deps = createDeps({
 				getSettings: () => settings,
@@ -817,12 +818,12 @@ describe("SyncOrchestrator", () => {
 				backendType: "test",
 				vaultId: `test-${Math.random()}`,
 			});
-			remoteFs.hasCheckpoint = vi.fn().mockResolvedValue(true);
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
 
 			// The cursor now commits inside commitCheckpoint (atomically with the cache).
 			// A failed cycle must NOT call it — that is exactly how the cursor is held back.
 			const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
-			remoteFs.commitCheckpoint = commitCheckpoint;
+			remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
 			const deps = createDeps({
 				getSettings: () => settings,
 				localFs: () => localFs,
@@ -857,10 +858,10 @@ describe("SyncOrchestrator", () => {
 				backendType: "test",
 				vaultId: `test-${Math.random()}`,
 			});
-			remoteFs.hasCheckpoint = vi.fn().mockResolvedValue(true);
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
 
 			const commitCheckpoint = vi.fn().mockRejectedValue(new Error("IndexedDB write failed"));
-			remoteFs.commitCheckpoint = commitCheckpoint;
+			remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
 			// readBackendState persists token state AFTER the checkpoint; a failed flush
 			// must abort before it runs, so the cursor (committed inside commitCheckpoint)
 			// is never advanced.

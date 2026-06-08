@@ -169,11 +169,19 @@ export function createMockFs(name: string): IFileSystem & {
 				}
 			}
 		},
-		getChangedPaths: () =>
-			Promise.resolve({
-				modified: [] as string[],
-				deleted: [] as string[],
-			}),
+		// A full incremental-checkpoint capability (all-or-nothing — see IFileSystem).
+		// Defaults are no-op/empty; individual tests override a method (or delete
+		// `checkpoint`) to drive cold-reconcile / commit / reset behaviour.
+		checkpoint: {
+			getChangedPaths: () =>
+				Promise.resolve({
+					modified: [] as string[],
+					deleted: [] as string[],
+				}),
+			hasCheckpoint: () => Promise.resolve(true),
+			resetCheckpoint: () => Promise.resolve(),
+			commitCheckpoint: () => Promise.resolve(),
+		},
 	};
 }
 
