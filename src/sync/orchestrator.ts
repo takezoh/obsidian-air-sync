@@ -11,11 +11,11 @@ import { LocalChangeTracker } from "./local-tracker";
 import { collectChanges } from "./change-detector";
 import { planSync } from "./decision-engine";
 import { refinePlan } from "./rename-optimizer";
-import { executePlan } from "./plan-executor";
+import { executePlan, toConflictRecords } from "./plan-executor";
 import type { ExecutionContext, ExecutionResult } from "./plan-executor";
 import { classifyHttpError } from "../fs/errors";
 import { decideRetry, sleep } from "./error";
-import type { SyncStatus } from "./types";
+import type { ConflictRecord, SyncStatus } from "./types";
 import { buildSyncRecord } from "./state-committer";
 import { buildNotificationMessage } from "./sync-notification";
 import type { SyncCycleResult } from "./sync-notification";
@@ -39,6 +39,8 @@ export interface SyncOrchestratorDeps {
 	isLayoutReady?: () => boolean;
 	localTracker: LocalChangeTracker;
 	logger?: Logger;
+	/** Persist a cycle's resolved conflicts to the audit history (once per cycle). */
+	recordConflicts?: (records: ConflictRecord[]) => Promise<void>;
 }
 
 const MAX_RETRIES = 3;
@@ -54,6 +56,8 @@ export class SyncOrchestrator {
 	 * cycle cold — a full list × baseline join recovers it regardless of cursor.
 	 */
 	private recoverViaColdScan = false;
+	/** Stable id grouping this plugin session's conflict-history records. */
+	private readonly sessionId = crypto.randomUUID();
 	private deps: SyncOrchestratorDeps;
 
 	constructor(deps: SyncOrchestratorDeps) {
@@ -183,6 +187,15 @@ export class SyncOrchestrator {
 				// controls only whether logs are written (it used to double as this gate).
 				if (this.deps.getSettings().showSyncNotifications) {
 					this.deps.notify(buildNotificationMessage(result));
+				}
+
+				// Record this cycle's resolved conflicts to the audit history — once per
+				// cycle, and only when there were any. Writing stays separate from
+				// resolution: the resolver produced the outcomes, this just persists them.
+				const conflictRecords = result.result.conflicts;
+				if (conflictRecords.length > 0) {
+					await this.deps.recordConflicts?.(toConflictRecords(
+						conflictRecords, this.deps.getSettings().conflictStrategy, this.sessionId, new Date().toISOString()));
 				}
 				await this.deps.logger?.flush();
 

@@ -1,6 +1,6 @@
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
-import type { ConflictStrategy, SyncAction, SyncPlan } from "./types";
+import type { ConflictRecord, ConflictStrategy, SyncAction, SyncPlan } from "./types";
 import type { StateCommitterContext } from "./state-committer";
 import type { ConflictResolverContext, ConflictResolutionResult } from "./conflict-resolver";
 import type { Logger } from "../logging/logger";
@@ -31,6 +31,32 @@ export interface ExecutionResult {
 	succeeded: CompletedAction[];
 	failed: FailedAction[];
 	conflicts: ResolvedConflict[];
+}
+
+/**
+ * Bridge resolved conflicts into audit-history records (one per resolution). Pure,
+ * so the writer (ConflictHistory) stays separate from both resolution and this
+ * mapping — the caller stamps a session id and timestamp and hands the records to
+ * the writer once per cycle.
+ */
+export function toConflictRecords(
+	conflicts: ResolvedConflict[],
+	strategy: ConflictStrategy,
+	sessionId: string,
+	resolvedAt: string,
+): ConflictRecord[] {
+	return conflicts.map((c) => ({
+		path: c.action.path,
+		actionType: c.action.action,
+		strategy,
+		action: c.resolution.action,
+		local: c.localEntity,
+		remote: c.remoteEntity,
+		duplicatePath: c.resolution.duplicatePath,
+		hasConflictMarkers: c.resolution.hasConflictMarkers,
+		resolvedAt,
+		sessionId,
+	}));
 }
 
 export interface ExecutionContext {

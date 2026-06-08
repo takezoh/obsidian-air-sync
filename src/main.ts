@@ -13,6 +13,7 @@ import { ScreenWakeLockManager } from "./sync/wake-lock";
 import { LocalChangeTracker } from "./sync/local-tracker";
 import { Logger, getDeviceName } from "./logging/logger";
 import type { LoggerAdapter } from "./logging/logger";
+import { ConflictHistory } from "./sync/conflict-history";
 
 export default class AirSyncPlugin extends Plugin {
 	settings!: AirSyncSettings;
@@ -26,6 +27,7 @@ export default class AirSyncPlugin extends Plugin {
 	private localTracker!: LocalChangeTracker;
 	private settingTab: AirSyncSettingTab | null = null;
 	private logger!: Logger;
+	private conflictHistory!: ConflictHistory;
 
 	async onload() {
 		// Init the registry BEFORE loadSettings: the backendData normalization there
@@ -48,6 +50,10 @@ export default class AirSyncPlugin extends Plugin {
 			deviceName,
 		);
 		this.logger.info("Plugin loaded", { deviceName, vaultId: this.settings.vaultId });
+
+		// Conflict-resolution audit history, written via the same raw adapter + device
+		// name as the logger (it persists to .airsync/conflicts/<device>.json).
+		this.conflictHistory = new ConflictHistory(this.logger.adapter, this.logger.sanitizedDeviceName);
 
 		this.backendManager = new BackendManager({
 			getSettings: () => this.settings,
@@ -106,6 +112,7 @@ export default class AirSyncPlugin extends Plugin {
 			logger: this.logger,
 			isBackendConnecting: () => this.backendManager.isConnecting(),
 			isLayoutReady: () => this.app.workspace.layoutReady,
+			recordConflicts: (records) => this.conflictHistory.append(records),
 		});
 
 		this.scheduler = new SyncScheduler({

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { executePlan } from "./plan-executor";
-import type { ExecutionContext } from "./plan-executor";
+import { executePlan, toConflictRecords } from "./plan-executor";
+import type { ExecutionContext, ResolvedConflict } from "./plan-executor";
 import type { SyncAction, SyncPlan } from "./types";
 import { createMockFs, createMockStateStore, addFile } from "../__mocks__/sync-test-helpers";
 import type { SyncStateStore } from "./state";
@@ -488,5 +488,44 @@ describe("executePlan", () => {
 			expect(result.failed).toHaveLength(0);
 			expect(result.conflicts).toHaveLength(0);
 		});
+	});
+});
+
+describe("toConflictRecords", () => {
+	const localEntity = { path: "a.md", isDirectory: false, size: 1, mtime: 1, hash: "L" };
+	const remoteEntity = { path: "a.md", isDirectory: false, size: 2, mtime: 2, hash: "R" };
+
+	it("maps a resolved conflict to a record carrying the resolution + stamps", () => {
+		const conflicts: ResolvedConflict[] = [{
+			action: { action: "conflict", path: "a.md" } as unknown as SyncAction,
+			resolution: { action: "duplicated", duplicatePath: "a.conflict.md" },
+			localEntity,
+			remoteEntity,
+		}];
+		const rec = toConflictRecords(conflicts, "duplicate", "sess-1", "2024-01-01T00:00:00.000Z")[0]!;
+		expect(rec.path).toBe("a.md");
+		expect(rec.actionType).toBe("conflict");
+		expect(rec.strategy).toBe("duplicate");
+		expect(rec.action).toBe("duplicated");
+		expect(rec.duplicatePath).toBe("a.conflict.md");
+		expect(rec.local).toBe(localEntity);
+		expect(rec.remote).toBe(remoteEntity);
+		expect(rec.sessionId).toBe("sess-1");
+		expect(rec.resolvedAt).toBe("2024-01-01T00:00:00.000Z");
+	});
+
+	it("carries hasConflictMarkers through for a merged resolution (and tolerates absent entities)", () => {
+		const conflicts: ResolvedConflict[] = [{
+			action: { action: "conflict", path: "b.md" } as unknown as SyncAction,
+			resolution: { action: "merged", hasConflictMarkers: true },
+		}];
+		const rec = toConflictRecords(conflicts, "auto_merge", "s", "t")[0]!;
+		expect(rec.action).toBe("merged");
+		expect(rec.hasConflictMarkers).toBe(true);
+		expect(rec.local).toBeUndefined();
+	});
+
+	it("returns an empty list for no conflicts (so the writer is never touched)", () => {
+		expect(toConflictRecords([], "auto_merge", "s", "t")).toEqual([]);
 	});
 });
