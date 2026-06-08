@@ -36,6 +36,13 @@ describe("classifyHttpError", () => {
 		expect(classifyHttpError(new AuthError("nope", 403))).toEqual({ kind: "auth" });
 	});
 
+	it("treats a RAW 401 (not an AuthError) as auth — abort, do not retry", () => {
+		// Intentional behaviour shift from the pre-refactor loop, which only special-cased
+		// `instanceof AuthError` and would have retried a bare 401 with backoff. A 401 is
+		// never worth retrying, so the classifier aborts on it directly.
+		expect(classifyHttpError({ status: 401 })).toEqual({ kind: "auth" });
+	});
+
 	it.each([
 		[401, "auth"],
 		[403, "permission"],

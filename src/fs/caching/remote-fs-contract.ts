@@ -22,9 +22,22 @@ export interface CachingRemoteFsHarness<TFile> {
  * The crash-safety / convergence contract for {@link CachingRemoteFs}, parameterized
  * over a backend harness. It pins the ADR 0001 invariants at the *base* level so any
  * backend that inherits the base inherits the guarantees too (and a new backend
- * verifies them in one line). The Google Drive suite proves the same properties for
- * the real client; this proves them for the base machinery itself, independent of
- * any one backend.
+ * verifies them in one line).
+ *
+ * **Scope — read this before relying on it for a new backend.** ADR 0001 has *two*
+ * convergence paths and this contract covers them asymmetrically, on purpose:
+ *
+ * - **Path 1 (crash ⇒ fresh FS object replays from the committed cursor)** is fully
+ *   guaranteed here — it is entirely an FS property, so the contract asserts it.
+ * - **Path 2 (same-session failure ⇒ state C)** is NOT, and cannot be, closed by the
+ *   FS alone: a live FS that already advanced its in-memory cursor past un-committed
+ *   work will not re-surface it (the `does NOT self-heal` test below pins exactly this
+ *   FS-observable boundary). Recovery is the orchestrator's job via
+ *   `recoverViaColdScan` (force the next cycle cold). So a backend that runs this
+ *   contract gets path-1 coverage for free but MUST ALSO be exercised at the
+ *   orchestrator level for path-2 — see `orchestrator.test.ts` "forces a cold
+ *   reconcile on the cycle after a failure" and ADR 0001 (state C). Parameterizing
+ *   that orchestrator-level test by backend is the B3 follow-up.
  */
 export function runCachingRemoteFsContract<TFile>(
 	name: string,
@@ -85,6 +98,34 @@ export function runCachingRemoteFsContract<TFile>(
 			const fs2 = h.makeFs(store);
 			const d2 = await fs2.getChangedPaths();
 			expect(d2?.deleted).toContain("a.md");
+			await store.close();
+		});
+
+		it("does NOT self-heal an un-committed change in-session (path 2 is the orchestrator's job)", async () => {
+			// The flip side of the crash test, and the reason `recoverViaColdScan` exists.
+			// A live FS that detected a change advanced its IN-MEMORY cursor past it (state
+			// C). Without a commit, a SECOND pass on the SAME FS does not re-surface it —
+			// the FS cannot self-recover in-session. So an orchestrator that re-ran only
+			// the live FS after a failed cycle would silently drop the work; that gap is
+			// closed at the orchestrator level (force-cold next cycle), NOT here. Pinning
+			// this FS-observable boundary keeps a new backend from assuming the contract
+			// covers path 2.
+			const h = makeHarness();
+			h.seedFile("a.md");
+			const store = h.makeStore("contract-no-self-heal");
+
+			const fs = h.makeFs(store);
+			await fs.list();
+			await fs.commitCheckpoint();
+
+			h.stageRemoteDelete("a.md");
+			const first = await fs.getChangedPaths();
+			expect(first?.deleted).toContain("a.md"); // detected once; in-memory cursor advanced
+
+			// No commit ⇒ committed cursor still behind. The live FS does NOT re-report it.
+			const second = await fs.getChangedPaths();
+			expect(second?.deleted ?? []).not.toContain("a.md");
+			expect(await fs.hasCheckpoint()).toBe(true); // in-memory cursor present, unchanged
 			await store.close();
 		});
 
