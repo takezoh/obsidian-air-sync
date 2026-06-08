@@ -20,7 +20,7 @@
 		"@types/node": "^20.19.35",
 		"@vitest/coverage-v8": "^4.1.8",
 		"esbuild": "0.25.5",
-		"eslint-plugin-obsidianmd": "0.3.0",
+		"eslint-plugin-obsidianmd": "0.1.9",
 		"fake-indexeddb": "^6.2.5",
 		"globals": "14.0.0",
 		"jiti": "2.6.1",
