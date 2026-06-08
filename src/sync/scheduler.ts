@@ -122,6 +122,7 @@ export class SyncScheduler {
 			// App-level visibility: read the main document (matching the focus/
 			// online listeners), not activeDocument — we want "Obsidian is
 			// foreground", not whichever popout happens to be focused.
+			// eslint-disable-next-line obsidianmd/prefer-active-doc -- see comment above: main-document visibility is intentional here.
 			if (document.visibilityState !== "visible") return;
 			this.triggerSync();
 		});

@@ -106,6 +106,41 @@ export default tseslint.config(
 	},
 	...obsidianmd.configs.recommended,
 	{
+		// eslint-plugin-obsidianmd's `recommended` applies its plugin rules with
+		// NO `files` filter, so type-information rules (no-plugin-as-component, …)
+		// get attached to non-TS files such as package.json / manifest.json. Those
+		// are parsed by the JSON language (no TypeScript program), so the rules
+		// throw "you have used a rule which requires type information" at lint time.
+		// Scope the type-aware obsidianmd rules off for the one JSON file the
+		// recommended config actually lints (package.json). Matching only
+		// "package.json" — not "**/*.json" — avoids pulling other JSON files
+		// (manifest.json, tsconfig.json, …) into the lint set under the default
+		// (TS) parser, which would fail with "Unexpected token :".
+		// (Upstream config footgun in eslint-plugin-obsidianmd 0.3.0.)
+		files: ["package.json"],
+		rules: {
+			"obsidianmd/no-plugin-as-component": "off",
+			"obsidianmd/no-view-references-in-plugin": "off",
+			"obsidianmd/prefer-instanceof": "off",
+			"obsidianmd/prefer-file-manager-trash-file": "off",
+			"obsidianmd/no-unsupported-api": "off",
+		},
+	},
+	{
+		// Tests, mocks and test helpers are not shipped, so the obsidianmd
+		// "recommended" rules that target shipped runtime behavior (popout-window
+		// timer/document/global usage) don't apply to them — and the community
+		// submission bot likewise does not lint test files. Our own guards still
+		// run; only these shipped-code-only obsidianmd rules are silenced here.
+		// (Same file set the max-lines exemption uses below.)
+		files: ["src/**/*.test.ts", "src/__mocks__/**", "src/**/test-helpers.ts"],
+		rules: {
+			"obsidianmd/prefer-window-timers": "off",
+			"obsidianmd/no-global-this": "off",
+			"obsidianmd/prefer-active-doc": "off",
+		},
+	},
+	{
 		// Project-wide guards: documented conventions, now enforced.
 		files: ["src/**/*.ts"],
 		rules: {

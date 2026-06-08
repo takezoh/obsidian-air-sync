@@ -1,3 +1,14 @@
+/*
+ * Cloudflare Worker source — NOT part of the Obsidian plugin bundle (main.js).
+ * The Obsidian community submission bot lints the whole repository with its own
+ * ruleset, but without this sub-project's tsconfig and @cloudflare/workers-types,
+ * so every Workers runtime global (Request/Response/URL) resolves as an `error`
+ * type and trips @typescript-eslint's no-unsafe-* rules. This file is type-checked
+ * separately by its own tsc (oauth-worker/tsconfig.json) + wrangler, so the plugin
+ * ruleset does not apply to it. Our own gate already ignores oauth-worker/** —
+ * this directive is only for the submission bot, which does not honor that ignore.
+ */
+/* eslint-disable */
 import { Env } from './types';
 import { handleCallback, handleTokenRefresh } from './oauth';
 

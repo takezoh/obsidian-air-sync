@@ -1,3 +1,16 @@
+/*
+ * Cloudflare Worker source — NOT part of the Obsidian plugin bundle (main.js).
+ * The Obsidian community submission bot lints the whole repository with its own
+ * ruleset, but without this sub-project's tsconfig and @cloudflare/workers-types,
+ * so every Workers runtime global (Request/Response/URL/fetch) resolves as an
+ * `error` type and trips @typescript-eslint's no-unsafe-* rules; `fetch` (the
+ * correct API here — Obsidian's requestUrl does not exist in Workers) also trips
+ * no-restricted-globals. This file is type-checked separately by its own
+ * tsc (oauth-worker/tsconfig.json) + wrangler, so the plugin ruleset does not
+ * apply to it. Our own gate already ignores oauth-worker/** — this directive is
+ * only for the submission bot, which does not honor that ignore.
+ */
+/* eslint-disable */
 import { Env } from './types';
 import { redirectPage, errorPage } from './html';
 
@@ -90,7 +103,8 @@ export async function handleCallback(request: Request, env: Env): Promise<Respon
   });
 
   if (!tokenRes.ok) {
-    const errorBody = await tokenRes.text();
+    // The callback path returns a user-facing HTML error page, so Google's raw
+    // error body is intentionally not surfaced — only the status drives the copy.
     const detail = tokenRes.status >= 500
       ? `Google server error (${tokenRes.status})`
       : `Token exchange failed (${tokenRes.status})`;

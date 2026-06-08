@@ -65,6 +65,7 @@ export class ScreenWakeLockManager {
 		if (!this.want || this.sentinel || this.acquiring) return;
 		if (!this.deps.isEnabled()) return;
 		if (typeof navigator === "undefined" || !navigator.wakeLock) return;
+		// eslint-disable-next-line obsidianmd/prefer-active-doc -- intentional: the screen wake lock is an app-level concern; gate on the main window's visibility, not a focused popout (activeDocument).
 		if (document.visibilityState !== "visible") return;
 		this.acquiring = true;
 		try {
@@ -105,6 +106,7 @@ export class ScreenWakeLockManager {
 
 	private onVisible(): void {
 		if (!this.want || this.sentinel) return;
+		// eslint-disable-next-line obsidianmd/prefer-active-doc -- intentional: app-level visibility gate for the screen wake lock (same rationale as acquire()).
 		if (document.visibilityState !== "visible") return;
 		void this.acquire();
 	}

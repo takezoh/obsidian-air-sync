@@ -79,6 +79,7 @@ export default class AirSyncPlugin extends Plugin {
 		this.wakeLock = new ScreenWakeLockManager({
 			isEnabled: () => Platform.isMobile && this.settings.screenWakeLockOnSync,
 			register: (cb) => this.register(cb),
+			// eslint-disable-next-line obsidianmd/prefer-active-doc -- intentional: app-level foreground. The screen wake lock tracks whether the main Obsidian window is visible, not whichever popout is focused (activeDocument).
 			registerDocumentEvent: (type, cb) => this.registerDomEvent(document, type, cb),
 			logger: this.logger,
 		});
@@ -118,6 +119,7 @@ export default class AirSyncPlugin extends Plugin {
 			isExcluded: (path) => this.orchestrator.isExcluded(path),
 			registerEvent: (ref) => this.registerEvent(ref),
 			registerWindowEvent: (type, cb) => this.registerDomEvent(window, type, cb),
+			// eslint-disable-next-line obsidianmd/prefer-active-doc -- intentional: app-level foreground. The scheduler reacts to the main window's visibility (see scheduler.ts wireVisibilityEvent), not a focused popout (activeDocument).
 			registerDocumentEvent: (type, cb) => this.registerDomEvent(document, type, cb),
 		});
 
