@@ -192,10 +192,14 @@ export class SyncOrchestrator {
 				// Record this cycle's resolved conflicts to the audit history — once per
 				// cycle, and only when there were any. Writing stays separate from
 				// resolution: the resolver produced the outcomes, this just persists them.
+				// Best-effort: the audit write is supplementary, so a failure here must not
+				// turn an otherwise-clean cycle into a reported error nor skip the dirty-path
+				// acknowledgment below — log it and carry on.
 				const conflictRecords = result.result.conflicts;
 				if (conflictRecords.length > 0) {
-					await this.deps.recordConflicts?.(toConflictRecords(
-						conflictRecords, this.deps.getSettings().conflictStrategy, this.sessionId, new Date().toISOString()));
+					await this.deps.recordConflicts?.(toConflictRecords(conflictRecords,
+						this.deps.getSettings().conflictStrategy, this.sessionId, new Date().toISOString()))
+						?.catch((err) => this.deps.logger?.warn("Failed to record conflict history", { message: err instanceof Error ? err.message : String(err) }));
 				}
 				await this.deps.logger?.flush();
 
@@ -239,7 +243,7 @@ export class SyncOrchestrator {
 					this.deps.onStatusChange("error");
 					this.deps.notify(decision.kind === "auth"
 						? "Authentication error. Please reconnect in settings."
-						: `Permission denied. Please check your ${provider?.displayName ?? "the remote backend"} permissions.`);
+						: `Permission denied. Please check your ${provider?.displayName ?? "remote backend"} permissions.`);
 					return null;
 				}
 				// "stop" (e.g. 404) and "exhausted" both fall through to the generic

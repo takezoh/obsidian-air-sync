@@ -111,7 +111,7 @@ export abstract class AbstractMetadataCache<TFile> {
 		this.folders.delete(path);
 	}
 
-	/** Bulk-load files from a fullScan (clears existing data first) */
+	/** Bulk-load files into the cache. Does NOT clear — callers clear() first when rebuilding. */
 	bulkLoad(items: Iterable<[string, TFile]>): void {
 		for (const [path, file] of items) {
 			if (this.isReserved(path)) continue;

@@ -54,7 +54,9 @@ export function getErrorInfo(err: unknown): ErrorInfo {
 			if (ra) {
 				const parsed = Number(ra);
 				if (!isNaN(parsed)) {
-					retryAfter = parsed;
+					// Clamp: a malformed negative Retry-After must not become a negative
+					// (immediately-resolving) sleep that defeats throttling.
+					retryAfter = Math.max(0, parsed);
 				} else {
 					// RFC 7231: Retry-After can be an HTTP-date
 					const dateMs = Date.parse(ra);
