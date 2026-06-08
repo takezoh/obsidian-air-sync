@@ -22,7 +22,7 @@ const BACKEND_TYPE = "dropbox";
  * ephemeral proof. Register the app at https://www.dropbox.com/developers/apps,
  * add `https://airsync.takezo.dev/callback` as a redirect URI, and set this.
  */
-const DROPBOX_CLIENT_ID = "REPLACE_WITH_DROPBOX_APP_KEY";
+export const DROPBOX_CLIENT_ID = "REPLACE_WITH_DROPBOX_APP_KEY";
 
 interface DropboxCallbackParams {
 	code: string;
