@@ -52,6 +52,13 @@ const DRIVE_SECRET_NAMES = ["refresh", "access"];
  */
 const FOLDER_PICKER_URL = "https://airsync.takezo.dev/googledrive-folder";
 
+/**
+ * Public Google Picker API key, passed to the host page as `?apiKey=` so the plugin
+ * owns it (the page keeps an embedded copy only as a fallback). NOT a secret: locked
+ * in Cloud Console to the Picker API + referrer `airsync.takezo.dev/*`.
+ */
+const PICKER_API_KEY = "AIzaSyDyXTKejmlaTcBIDCx3lJYFhDMmyRKRZwc";
+
 /** Random hex nonce for the folder-pick CSRF `state`. */
 function randomState(): string {
 	const arr = new Uint8Array(24);
@@ -360,7 +367,9 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 		const token = await auth.getAccessToken(false);
 
 		const state = randomState();
-		const url = `${FOLDER_PICKER_URL}?state=${encodeURIComponent(state)}#token=${encodeURIComponent(token)}`;
+		// apiKey in the query (public, referrer-restricted); token in the fragment so it
+		// never reaches the relay host — the fragment must stay last.
+		const url = `${FOLDER_PICKER_URL}?state=${encodeURIComponent(state)}&apiKey=${encodeURIComponent(PICKER_API_KEY)}#token=${encodeURIComponent(token)}`;
 		if (Platform.isMobile) {
 			window.location.href = url;
 		} else {
