@@ -66,23 +66,17 @@ export class GoogleDriveSettingsRenderer implements IBackendSettingsRenderer {
 
 		if (data.remoteVaultFolderId) {
 			// Bound: show the folder (id rendered IMMEDIATELY — never block on a network
-			// call — then best-effort upgraded to the id-resolved path) + a button to pick
-			// a different folder. A slow/failed lookup just leaves the id shown.
+			// call — then best-effort upgraded to the id-resolved path). A slow/failed
+			// lookup just leaves the id shown. No "Choose folder" once bound — same gate
+			// as the default-folder button below (only offered while unbound).
 			folderSetting.setDesc(
-				"The Google Drive folder this vault syncs into. Use the button to pick a different folder.",
+				"The Google Drive folder this vault syncs into.",
 			);
 			let pathField: TextComponent | undefined;
 			folderSetting
 				.addText((text) => {
 					pathField = text.setValue(data.remoteVaultFolderId ?? "").setDisabled(true);
-				})
-				.addButton((button) =>
-					button
-						.setButtonText("Choose folder")
-						.onClick(async () => {
-							await actions.startFolderPick();
-						}),
-				);
+				});
 			void provider?.getRemoteVaultDisplayPath?.(settings)
 				.then((path) => { if (path) pathField?.setValue(path); })
 				.catch(() => { /* keep the id shown */ });
