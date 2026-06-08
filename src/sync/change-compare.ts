@@ -1,5 +1,6 @@
 import type { FileEntity } from "../fs/types";
 import type { SyncRecord } from "./types";
+import { checksumsEqual } from "./content-identity";
 
 /**
  * Check if a local file has changed since the last sync.
@@ -42,7 +43,7 @@ export function hasRemoteChanged(file: FileEntity, record: SyncRecord): boolean 
 	const rc = record.remoteChecksum;
 	const checksumChanged =
 		fc !== undefined && rc !== undefined && fc.algo === rc.algo
-			? fc.value !== rc.value
+			? !checksumsEqual(fc, rc)
 			: undefined;
 
 	if (file.mtime > 0 && record.remoteMtime > 0) {

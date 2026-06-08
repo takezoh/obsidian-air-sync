@@ -277,6 +277,32 @@ describe("match condition — all four conjuncts (no baseline, both exist)", () 
 			}),
 		).toBe("conflict");
 	});
+
+	it("remote proves identity via same-algo remoteChecksum (hash empty) → match", () => {
+		// A remote backend that returns hash:"" but a same-algorithm remoteChecksum
+		// whose value equals the local hash provably holds identical content. The
+		// match must be recognized through the same content-key abstraction the
+		// conflict resolver uses — NOT only via a raw `.hash === .hash` compare that
+		// silently depends on hashes having been pre-normalized upstream.
+		expect(
+			decide({
+				path: "f.md",
+				local: local({ hash: "h", size: 42 }),
+				remote: remote({ hash: "", size: 42, remoteChecksum: { algo: "sha256", value: "h" } }),
+			}),
+		).toBe("match");
+	});
+
+	it("remote remoteChecksum of a different algo cannot prove identity → conflict", () => {
+		// Cross-algorithm checksums are not comparable; never a definitive match.
+		expect(
+			decide({
+				path: "f.md",
+				local: local({ hash: "h", size: 42 }),
+				remote: remote({ hash: "", size: 42, remoteChecksum: { algo: "md5", value: "h" } }),
+			}),
+		).toBe("conflict");
+	});
 });
 
 describe("mechanism invariance — the Action is stable regardless of how the predicate flips", () => {

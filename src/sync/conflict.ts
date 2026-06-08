@@ -1,10 +1,11 @@
 import type { IFileSystem } from "../fs/interface";
-import type { FileEntity, RemoteChecksum } from "../fs/types";
+import type { FileEntity } from "../fs/types";
 import type { SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
 import type { Logger } from "../logging/logger";
 import { getFileExtension } from "../utils/path";
 import { isMergeEligible, threeWayMerge } from "./merge";
+import { sameContent } from "./content-identity";
 
 /** Internal strategy used by the low-level conflict resolver */
 export type ResolverStrategy = "keep_newer" | "keep_local" | "keep_remote" | "duplicate" | "auto_merge";
@@ -314,29 +315,6 @@ async function attemptThreeWayMerge(
 		action: "merged",
 		hasConflictMarkers: mergeResult.hasConflicts,
 	};
-}
-
-/**
- * Reduce an entity to a comparable {algo, value} content key, or null if it has
- * none. A local `hash` is SHA-256; a remote backend that returns `hash: ""`
- * exposes its `remoteChecksum` (e.g. Drive md5) instead.
- */
-function contentKey(e: FileEntity): RemoteChecksum | null {
-	if (e.hash) return { algo: "sha256", value: e.hash };
-	if (e.remoteChecksum) return e.remoteChecksum;
-	return null;
-}
-
-/**
- * Returns true when two FileEntity objects provably represent identical content.
- * Only compares checksums of the SAME algorithm — a local SHA-256 hash and a
- * remote md5 are not comparable, so this returns false (the caller then
- * tie-breaks) rather than risk a cross-algorithm verdict.
- */
-function sameContent(a: FileEntity, b: FileEntity): boolean {
-	const ka = contentKey(a);
-	const kb = contentKey(b);
-	return ka !== null && kb !== null && ka.algo === kb.algo && ka.value === kb.value;
 }
 
 function isValidJson(content: string): boolean {

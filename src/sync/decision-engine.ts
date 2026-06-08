@@ -1,5 +1,6 @@
 import type { MixedEntity, SyncAction, SyncPlan } from "./types";
 import { hasChanged, hasRemoteChanged } from "./change-compare";
+import { sameContent } from "./content-identity";
 
 export function planSync(entries: MixedEntity[]): SyncPlan {
 	const actions: SyncAction[] = [];
@@ -63,12 +64,9 @@ function decideAction(entry: MixedEntity): SyncAction | null {
 	}
 
 	if (local && remote) {
-		if (
-			local.hash &&
-			remote.hash &&
-			local.hash === remote.hash &&
-			local.size === remote.size
-		) {
+		// Provably-identical content (via hash or a same-algo remoteChecksum) is a
+		// no-op match; the size guard rejects the degenerate hash-collision case.
+		if (sameContent(local, remote) && local.size === remote.size) {
 			return { ...base, action: "match" };
 		}
 		return { ...base, action: "conflict" };
