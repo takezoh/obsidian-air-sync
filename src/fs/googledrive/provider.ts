@@ -5,12 +5,13 @@ import type { Logger } from "../../logging/logger";
 import { GoogleAuth } from "./auth";
 import type { IGoogleAuth } from "./auth";
 import { GoogleDriveAuthProviderBase, GoogleDriveProviderBase } from "./provider-base";
+import type { IBackendSettingsRenderer } from "../settings-renderer";
+import { GoogleDriveSettingsRenderer } from "../../ui/googledrive-settings";
 
 /** Google Drive's slice of the active-backend `backendData` bag (tokens live in SecretStorage) */
 export interface GoogleDriveBackendData {
 	remoteVaultFolderId: string;
 	accessTokenExpiry: number;
-	changesStartPageToken: string;
 	pendingAuthState: string;
 	/** CSRF nonce for an in-flight web folder pick (Google Picker); cleared on completion. */
 	pendingFolderPickState: string;
@@ -19,7 +20,6 @@ export interface GoogleDriveBackendData {
 const DEFAULT_GDRIVE_DATA: GoogleDriveBackendData = {
 	remoteVaultFolderId: "",
 	accessTokenExpiry: 0,
-	changesStartPageToken: "",
 	pendingAuthState: "",
 	pendingFolderPickState: "",
 };
@@ -85,5 +85,9 @@ export class GoogleDriveProvider extends GoogleDriveProviderBase {
 
 	protected getDefaultData(): GoogleDriveBackendData {
 		return DEFAULT_GDRIVE_DATA;
+	}
+
+	createSettingsRenderer(): IBackendSettingsRenderer {
+		return new GoogleDriveSettingsRenderer();
 	}
 }

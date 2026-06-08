@@ -148,8 +148,8 @@ function tokenErrorDetail(res: { json?: unknown; text?: string }): string {
 /**
  * Dropbox authentication provider — in-plugin Authorization Code + PKCE, fully
  * worker-less. The authorization code returns via the existing no-secret
- * `pages/callback` relay; this plugin exchanges it for tokens directly with
- * Dropbox using the ephemeral `code_verifier`.
+ * `callback` relay page (hosted in the air-sync-auth repo); this plugin exchanges
+ * it for tokens directly with Dropbox using the ephemeral `code_verifier`.
  */
 export class DropboxAuthProvider implements IAuthProvider {
 	private tokenAuth: DropboxAuth | null = null;
@@ -197,8 +197,8 @@ export class DropboxAuthProvider implements IAuthProvider {
 	async startAuth(_backendData: Record<string, unknown>): Promise<Record<string, unknown>> {
 		const codeVerifier = generateRandomString(64);
 		const codeChallenge = await computeS256Challenge(codeVerifier);
-		// base64url state (URL-transit safe) via the shared builder; the pages/callback
-		// relay decodes both base64url and legacy base64.
+		// base64url state (URL-transit safe) via the shared builder; the callback
+		// relay page (air-sync-auth) decodes both base64url and legacy base64.
 		const state = buildOAuthState();
 		const params = new URLSearchParams({
 			client_id: this.clientId,

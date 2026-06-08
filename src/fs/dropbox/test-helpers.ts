@@ -2,10 +2,12 @@ import type { DropboxEntry } from "./types";
 
 export { spyRequestUrl, mockRes, createMockSecretStore } from "../googledrive/test-helpers";
 
-/** Access private fields on DropboxFs in tests (skip the initial full scan). */
+/** Access private fields on DropboxFs (inherited from CachingRemoteFs) in tests. */
 export interface DropboxFsInternal {
+	/** Skip the initial full scan. */
 	initialized: boolean;
-	_cursor: string | null;
+	/** The in-memory delta cursor (CachingRemoteFs._changesPageToken). */
+	_changesPageToken: string | null;
 }
 
 /** Build a Dropbox file entry for tests (paths are absolute, as Dropbox returns them). */

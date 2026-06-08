@@ -38,3 +38,23 @@ export function liftActiveBackendData(
 	settings.backendData = isObject(active) ? active : {};
 	return true;
 }
+
+/**
+ * Coerce a removed/unknown `conflictStrategy` to a valid one.
+ *
+ * WHY THIS EXISTS: the interactive `"ask"` strategy was removed (it was never
+ * reachable — the resolver's modal needs an `app` that the sync pipeline never
+ * threads, so `"ask"` always fell back to `"duplicate"`). A vault saved while it
+ * was selected still has `conflictStrategy: "ask"` on disk; left as-is it would
+ * hit no `switch` case in the resolver. We map it to `"duplicate"` — what it
+ * actually did — rather than the default, so the user's effective behavior is
+ * preserved. Any other unrecognized value falls back to the default `"auto_merge"`.
+ *
+ * @returns true if `settings.conflictStrategy` was changed (caller should persist).
+ */
+export function normalizeConflictStrategy(settings: AirSyncSettings): boolean {
+	const strategy = settings.conflictStrategy as string;
+	if (strategy === "auto_merge" || strategy === "duplicate") return false;
+	settings.conflictStrategy = strategy === "ask" ? "duplicate" : "auto_merge";
+	return true;
+}

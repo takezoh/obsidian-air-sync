@@ -4,11 +4,13 @@ import { getBackendData } from "../backend";
 import type { ISecretStore } from "../secret-store";
 import type { AirSyncSettings } from "../../settings";
 import type { Logger } from "../../logging/logger";
-import type { RemoteVaultResolution } from "../../sync/remote-vault";
+import type { RemoteVaultResolution } from "../remote-vault-contract";
 import { GoogleAuthDirect } from "./auth";
 import type { IGoogleAuth } from "./auth";
 import { GoogleDriveAuthProviderBase, GoogleDriveProviderBase } from "./provider-base";
 import type { GoogleDriveBackendData } from "./provider";
+import type { IBackendSettingsRenderer } from "../settings-renderer";
+import { GoogleDriveCustomSettingsRenderer } from "../../ui/googledrive-settings";
 
 /** Backend data for custom OAuth — extends the standard Google Drive data with secret references */
 export interface GoogleDriveCustomBackendData extends GoogleDriveBackendData {
@@ -24,7 +26,6 @@ export interface GoogleDriveCustomBackendData extends GoogleDriveBackendData {
 const DEFAULT_GDRIVE_CUSTOM_DATA: GoogleDriveCustomBackendData = {
 	remoteVaultFolderId: "",
 	accessTokenExpiry: 0,
-	changesStartPageToken: "",
 	pendingAuthState: "",
 	pendingFolderPickState: "",
 	customClientId: "",
@@ -137,6 +138,10 @@ export class GoogleDriveCustomProvider extends GoogleDriveProviderBase {
 	constructor(secretStore: ISecretStore) {
 		super(secretStore);
 		this.auth = new GoogleDriveCustomAuthProvider(secretStore);
+	}
+
+	createSettingsRenderer(): IBackendSettingsRenderer {
+		return new GoogleDriveCustomSettingsRenderer();
 	}
 
 	async resolveRemoteVault(

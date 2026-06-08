@@ -1,5 +1,5 @@
 import type { FileEntity } from "./types";
-import type { RenamePair } from "../sync/types";
+import type { RenamePair } from "./types";
 
 /**
  * Abstract filesystem interface for sync operations.
@@ -90,19 +90,62 @@ export interface IFileSystem {
 	rename(oldPath: string, newPath: string): Promise<void>;
 
 	/**
-	 * Return paths changed since the last sync, or null if unavailable.
-	 * Should be called before list() to allow the change-detector to skip
-	 * unchanged paths. Returns modified, deleted, and optionally renamed path lists.
+	 * The backend's incremental delta cursor + crash-safe checkpoint (see
+	 * {@link IncrementalCheckpoint} for what travels together and why), or `undefined`
+	 * for backends without incremental sync (e.g. the local vault). Check `fs.checkpoint`
+	 * once; its presence guarantees every method on the capability.
 	 */
-	getChangedPaths?(): Promise<{
-		modified: string[];
-		deleted: string[];
-		renamed?: RenamePair[];
-	} | null>;
+	checkpoint?: IncrementalCheckpoint;
 
 	/**
 	 * Release resources (e.g. close IndexedDB connections).
 	 * Called on plugin unload. Optional — not all backends need cleanup.
 	 */
 	close?(): Promise<void>;
+}
+
+/**
+ * A backend's incremental-sync capability: a delta cursor for change detection and a
+ * crash-safe, atomically-committed checkpoint (ADR 0001). Exposed as one object on
+ * {@link IFileSystem.checkpoint} so the four methods travel together — a backend that
+ * can detect deltas (`getChangedPaths`) MUST also expose the full checkpoint lifecycle
+ * (`hasCheckpoint`/`resetCheckpoint`/`commitCheckpoint`), because a half-implementation
+ * would silently degrade crash recovery. The type enforces all-or-nothing (B1-3).
+ */
+export interface IncrementalCheckpoint {
+	/**
+	 * Return paths changed since the last sync, or null if unavailable.
+	 * Should be called before list() to allow the change-detector to skip
+	 * unchanged paths. Returns modified, deleted, and optionally renamed path lists.
+	 */
+	getChangedPaths(): Promise<{
+		modified: string[];
+		deleted: string[];
+		renamed?: RenamePair[];
+	} | null>;
+
+	/**
+	 * Whether a committed incremental checkpoint (delta cursor) exists. When false,
+	 * the sync engine cannot trust delta-based remote detection — the last sync never
+	 * completed, or was reset — so it forces a full cold reconcile. The cursor is
+	 * stored with the backend's own cache (not in settings), so this is async.
+	 */
+	hasCheckpoint(): Promise<boolean>;
+
+	/**
+	 * Discard the committed checkpoint (delta cursor + any derived cache) so the next
+	 * sync does a full cold reconcile. Used by the Rescan action. Losing the
+	 * checkpoint is safe — a cold list × baseline join re-derives every change.
+	 */
+	resetCheckpoint(): Promise<void>;
+
+	/**
+	 * Flush the committed checkpoint — the delta cursor AND any derived cache — to the
+	 * backend's own store, atomically (one transaction; see ADR 0001). Called by the
+	 * sync engine ONLY after a fully-successful cycle (failed === 0); a failed cycle
+	 * leaves cache+cursor at the last committed state so the next run re-detects the
+	 * un-synced work. Lives on the FS (not the provider) so the engine never has to
+	 * downcast.
+	 */
+	commitCheckpoint(): Promise<void>;
 }

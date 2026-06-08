@@ -5,17 +5,17 @@ import type { Logger } from "../logging/logger";
 import { AsyncMutex } from "../queue/async-queue";
 import { isIgnored, isSystemJunkFile } from "../utils/ignore";
 import { isDotPathOutOfScope } from "../utils/path";
-import { INTERNAL_METADATA_PATH } from "./remote-vault";
+import { INTERNAL_METADATA_PATH } from "../fs/remote-vault-contract";
 import { SyncStateStore } from "./state";
 import { LocalChangeTracker } from "./local-tracker";
 import { collectChanges } from "./change-detector";
 import { planSync } from "./decision-engine";
 import { refinePlan } from "./rename-optimizer";
-import { executePlan } from "./plan-executor";
+import { executePlan, toConflictRecords } from "./plan-executor";
 import type { ExecutionContext, ExecutionResult } from "./plan-executor";
-import { AuthError } from "../fs/errors";
-import { getErrorInfo, isRateLimitError, sleep } from "./error";
-import type { SyncStatus } from "./types";
+import { classifyHttpError } from "../fs/errors";
+import { decideRetry, sleep } from "./error";
+import type { ConflictRecord, SyncStatus } from "./types";
 import { buildSyncRecord } from "./state-committer";
 import { buildNotificationMessage } from "./sync-notification";
 import type { SyncCycleResult } from "./sync-notification";
@@ -39,6 +39,8 @@ export interface SyncOrchestratorDeps {
 	isLayoutReady?: () => boolean;
 	localTracker: LocalChangeTracker;
 	logger?: Logger;
+	/** Persist a cycle's resolved conflicts to the audit history (once per cycle). */
+	recordConflicts?: (records: ConflictRecord[]) => Promise<void>;
 }
 
 const MAX_RETRIES = 3;
@@ -54,6 +56,8 @@ export class SyncOrchestrator {
 	 * cycle cold — a full list × baseline join recovers it regardless of cursor.
 	 */
 	private recoverViaColdScan = false;
+	/** Stable id grouping this plugin session's conflict-history records. */
+	private readonly sessionId = crypto.randomUUID();
 	private deps: SyncOrchestratorDeps;
 
 	constructor(deps: SyncOrchestratorDeps) {
@@ -113,6 +117,17 @@ export class SyncOrchestrator {
 		return isIgnored(path, settings.ignorePatterns);
 	}
 
+	/**
+	 * Discard the committed remote checkpoint and run a sync, forcing one cold
+	 * reconcile (full list × baseline). The reset runs UNDER syncMutex so it can't
+	 * clear the live FS cache/cursor mid-cycle and corrupt an in-flight sync; the
+	 * subsequent runSync then sees no checkpoint and goes cold.
+	 */
+	async rescan(): Promise<void> {
+		await this.syncMutex.run(() => this.deps.remoteFs()?.checkpoint?.resetCheckpoint());
+		await this.runSync();
+	}
+
 	async runSync(): Promise<void> {
 		const remoteFs = this.deps.remoteFs();
 		if (!remoteFs) {
@@ -145,10 +160,10 @@ export class SyncOrchestrator {
 				// trusted: no committed remote checkpoint (last sync never completed
 				// or was reset), or the previous cycle failed (its in-memory cursor
 				// may have advanced past un-committed work). Cold recovers either via
-				// a full list × baseline join.
-				const provider = this.deps.backendProvider();
-				const noCheckpoint = provider?.hasCheckpoint
-					? !provider.hasCheckpoint(this.deps.getSettings())
+				// a full list × baseline join. The checkpoint (delta cursor) lives in
+				// the backend's own store now, so this is an async FS query.
+				const noCheckpoint = remoteFs.checkpoint
+					? !(await remoteFs.checkpoint.hasCheckpoint())
 					: false;
 				const forceFullScan = noCheckpoint || this.recoverViaColdScan;
 				this.deps.logger?.info("Sync started", { forceFullScan });
@@ -168,8 +183,23 @@ export class SyncOrchestrator {
 					this.deps.logger?.info("Sync completed", { succeeded, conflicts, failed });
 				}
 
-				if (this.deps.getSettings().enableLogging) {
+				// The per-cycle notice is gated on its OWN setting now — `enableLogging`
+				// controls only whether logs are written (it used to double as this gate).
+				if (this.deps.getSettings().showSyncNotifications) {
 					this.deps.notify(buildNotificationMessage(result));
+				}
+
+				// Record this cycle's resolved conflicts to the audit history — once per
+				// cycle, and only when there were any. Writing stays separate from
+				// resolution: the resolver produced the outcomes, this just persists them.
+				// Best-effort: the audit write is supplementary, so a failure here must not
+				// turn an otherwise-clean cycle into a reported error nor skip the dirty-path
+				// acknowledgment below — log it and carry on.
+				const conflictRecords = result.result.conflicts;
+				if (conflictRecords.length > 0) {
+					await this.deps.recordConflicts?.(toConflictRecords(conflictRecords,
+						this.deps.getSettings().conflictStrategy, this.sessionId, new Date().toISOString()))
+						?.catch((err) => this.deps.logger?.warn("Failed to record conflict history", { message: err instanceof Error ? err.message : String(err) }));
 				}
 				await this.deps.logger?.flush();
 
@@ -197,33 +227,29 @@ export class SyncOrchestrator {
 				};
 			} catch (err) {
 				lastError = err;
-				const { status, retryAfter } = getErrorInfo(err);
+				// Classification is the backend's job (it knows its own error shapes,
+				// e.g. that Google 403 can mean rate-limit); the retry POLICY is the
+				// engine's and stays backend-neutral. Fall back to the generic HTTP
+				// classifier for backends that don't override it.
+				const provider = this.deps.backendProvider();
+				const classification = provider?.classifyError?.(err) ?? classifyHttpError(err);
 				this.deps.logger?.error(
 					`Sync error (attempt ${attempt}/${MAX_RETRIES})`,
-					{ status, message: err instanceof Error ? err.message : String(err) },
+					{ kind: classification.kind, message: err instanceof Error ? err.message : String(err) },
 				);
 
-				if (err instanceof AuthError) {
+				const decision = decideRetry(classification, attempt, MAX_RETRIES, Math.random);
+				if (decision.action === "abort") {
 					this.deps.onStatusChange("error");
-					this.deps.notify("Authentication error. Please reconnect in settings.");
+					this.deps.notify(decision.kind === "auth"
+						? "Authentication error. Please reconnect in settings."
+						: `Permission denied. Please check your ${provider?.displayName ?? "remote backend"} permissions.`);
 					return null;
 				}
-				if (status === 403 && !isRateLimitError(err)) {
-					this.deps.onStatusChange("error");
-					this.deps.notify("Permission denied. Please check your Google Drive permissions.");
-					return null;
-				}
-				if (status === 404) break;
-				if (attempt === MAX_RETRIES) break;
-
-				let delay: number;
-				if ((status === 429 || status === 403) && retryAfter !== null) {
-					delay = retryAfter * 1000;
-				} else {
-					const base = Math.pow(2, attempt - 1) * 1000;
-					delay = base * (0.5 + Math.random());
-				}
-				await sleep(delay);
+				// "stop" (e.g. 404) and "exhausted" both fall through to the generic
+				// failure handler below; only "retry" waits and loops.
+				if (decision.action !== "retry") break;
+				await sleep(decision.delayMs);
 			}
 		}
 
@@ -386,22 +412,23 @@ export class SyncOrchestrator {
 
 		const result = await executePlan(plan, ctx);
 
-		// Persist backend state. Advance the delta cursor only on a fully clean
-		// cycle (failed === 0) — a partial/interrupted sync must keep the prior
-		// committed cursor so the next run re-detects the un-synced work.
+		// Persist backend state. The delta cursor advances only on a fully clean
+		// cycle (failed === 0): commitCheckpoint flushes the file map AND the cursor
+		// to the backend store atomically, so a partial/interrupted sync keeps the
+		// prior committed cursor and the next run re-detects the un-synced work.
 		const provider = this.deps.backendProvider();
 		const cleanCycle = result.failed.length === 0;
-		// Flush the backend's durable cache BEFORE committing the cursor, and only on
-		// a clean cycle — so a crash mid-cycle can't leave the cache ahead of the
-		// committed cursor (which would drop a remote deletion the replay can't
-		// re-detect). On a failed cycle the cache stays at the committed state.
-		if (cleanCycle && provider?.commitCheckpoint && remoteFs) {
-			await provider.commitCheckpoint(remoteFs);
+		// The checkpoint lives on the FS now (no provider downcast): flush it only on a
+		// fully clean cycle so a partial sync keeps the prior committed cursor.
+		if (cleanCycle && remoteFs?.checkpoint) {
+			await remoteFs.checkpoint.commitCheckpoint();
 		}
-		if (provider?.readBackendState && remoteFs) {
+		// readBackendState now persists only non-secret token state (the cursor lives
+		// in the backend store, committed above) — safe to run every cycle.
+		if (provider?.readBackendState) {
 			settings.backendData = {
 				...settings.backendData,
-				...provider.readBackendState(remoteFs, cleanCycle),
+				...provider.readBackendState(),
 			};
 		}
 		await this.deps.saveSettings();

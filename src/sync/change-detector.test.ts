@@ -254,9 +254,8 @@ describe("collectChanges — temperature selection", () => {
 			await stateStore.put(makeRecord("remote-changed.md"));
 			addFile(remoteFs, "remote-changed.md", "remote new content", 2000);
 
-			// Attach getChangedPaths to remoteFs
-			(remoteFs as unknown as { getChangedPaths: () => Promise<{ modified: string[]; deleted: string[] }> })
-				.getChangedPaths = () => Promise.resolve({ modified: ["remote-changed.md"], deleted: [] });
+			// Drive the checkpoint capability's getChangedPaths
+			remoteFs.checkpoint!.getChangedPaths = () => Promise.resolve({ modified: ["remote-changed.md"], deleted: [] });
 
 			const result = await collectChanges(makeDeps());
 
@@ -302,8 +301,7 @@ describe("collectChanges — temperature selection", () => {
 			addFile(localFs, "local-dirty.md", "changed", 2000);
 			addFile(remoteFs, "remote-only.md", "remote changed", 2000);
 
-			(remoteFs as unknown as { getChangedPaths: () => Promise<{ modified: string[]; deleted: string[] }> })
-				.getChangedPaths = () => Promise.resolve({ modified: ["remote-only.md"], deleted: [] });
+			remoteFs.checkpoint!.getChangedPaths = () => Promise.resolve({ modified: ["remote-only.md"], deleted: [] });
 
 			localTracker.acknowledge([]);
 			localTracker.markDirty("local-dirty.md");
@@ -322,8 +320,7 @@ describe("collectChanges — temperature selection", () => {
 			addFile(localFs, "local-dirty.md", "changed", 2000);
 			// remote-deleted.md is absent from remoteFs (deleted)
 
-			(remoteFs as unknown as { getChangedPaths: () => Promise<{ modified: string[]; deleted: string[] }> })
-				.getChangedPaths = () => Promise.resolve({ modified: [], deleted: ["remote-deleted.md"] });
+			remoteFs.checkpoint!.getChangedPaths = () => Promise.resolve({ modified: [], deleted: ["remote-deleted.md"] });
 
 			localTracker.acknowledge([]);
 			localTracker.markDirty("local-dirty.md");
@@ -369,11 +366,11 @@ describe("collectChanges — temperature selection", () => {
 		});
 	});
 
-	describe("getChangedPaths absent or returning null", () => {
-		it("warm mode falls back gracefully when getChangedPaths is absent", async () => {
+	describe("checkpoint capability absent or getChangedPaths returning null", () => {
+		it("warm mode falls back gracefully when the checkpoint capability is absent", async () => {
 			await stateStore.put(makeRecord("a.md", { localMtime: 500 }));
 			addFile(localFs, "a.md", "modified", 2000);
-			delete (remoteFs as unknown as Record<string, unknown>).getChangedPaths;
+			delete remoteFs.checkpoint;
 
 			const result = await collectChanges(makeDeps());
 
@@ -384,8 +381,7 @@ describe("collectChanges — temperature selection", () => {
 			await stateStore.put(makeRecord("a.md", { localMtime: 500 }));
 			addFile(localFs, "a.md", "modified", 2000);
 
-			(remoteFs as unknown as { getChangedPaths: () => Promise<null> })
-				.getChangedPaths = () => Promise.resolve(null);
+			remoteFs.checkpoint!.getChangedPaths = () => Promise.resolve(null);
 
 			const result = await collectChanges(makeDeps());
 
@@ -444,11 +440,10 @@ describe("collectChanges — temperature selection", () => {
 			await stateStore.put(makeRecord("a.md"));
 			addFile(localFs, "a.md", "content", 1000);
 
-			(remoteFs as unknown as { getChangedPaths: () => Promise<{ modified: string[]; deleted: string[]; renamed: { oldPath: string; newPath: string }[] }> })
-				.getChangedPaths = () => Promise.resolve({
-					modified: ["b.md"], deleted: ["a.md"],
-					renamed: [{ oldPath: "a.md", newPath: "b.md" }],
-				});
+			remoteFs.checkpoint!.getChangedPaths = () => Promise.resolve({
+				modified: ["b.md"], deleted: ["a.md"],
+				renamed: [{ oldPath: "a.md", newPath: "b.md" }],
+			});
 
 			localTracker.acknowledge([]);
 			localTracker.markDirty("a.md");
@@ -482,11 +477,10 @@ describe("collectChanges — temperature selection", () => {
 			await stateStore.put(makeRecord("a.md"));
 			addFile(localFs, "a.md", "content", 1000);
 
-			(remoteFs as unknown as { getChangedPaths: () => Promise<{ modified: string[]; deleted: string[]; renamed: { oldPath: string; newPath: string }[] }> })
-				.getChangedPaths = () => Promise.resolve({
-					modified: ["b.md"], deleted: ["a.md"],
-					renamed: [{ oldPath: "a.md", newPath: "b.md" }],
-				});
+			remoteFs.checkpoint!.getChangedPaths = () => Promise.resolve({
+				modified: ["b.md"], deleted: ["a.md"],
+				renamed: [{ oldPath: "a.md", newPath: "b.md" }],
+			});
 
 			const result = await collectChanges(makeDeps());
 

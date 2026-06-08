@@ -1,63 +1,13 @@
-import type { App } from "obsidian";
-import type { AirSyncSettings } from "../settings";
-import { GoogleDriveSettingsRenderer, GoogleDriveCustomSettingsRenderer } from "./googledrive-settings";
-import { DropboxSettingsRenderer } from "./dropbox-settings";
-
-/** Actions that settings renderers can invoke for connection flow UI */
-export interface BackendConnectionActions {
-	startAuth(): Promise<void>;
-	completeAuth(code: string): Promise<void>;
-	disconnect(): Promise<void>;
-	refreshDisplay(): void;
-	/** Open the backend's web folder picker (e.g. the Google Picker or Dropbox Chooser), if it has one. */
-	startFolderPick(): Promise<void>;
-	/** Bind the backend's default remote folder (Google Drive: obsidian-air-sync/<Vault Name>; Dropbox: /<Vault Name>). */
-	bindDefaultFolder(): Promise<void>;
-}
+import { getBackendProvider } from "../fs/registry";
+import type { IBackendSettingsRenderer } from "../fs/settings-renderer";
 
 /**
- * Renders backend-specific settings UI.
- * Each backend (Google Drive, Dropbox, etc.) implements this interface
- * to provide its configuration fields and connection flow.
+ * Resolve a backend's settings renderer by type. There is no separate renderer
+ * registry: each backend supplies its renderer via
+ * {@link IBackendProvider.createSettingsRenderer}, so the `fs/registry` provider
+ * list is the single source of truth — no parallel UI-side array to keep in sync by
+ * hand (the previous duplication, guarded only by an integrity test).
  */
-export interface IBackendSettingsRenderer {
-	/** Must match the corresponding IBackendProvider.type */
-	readonly backendType: string;
-
-	render(
-		containerEl: HTMLElement,
-		settings: AirSyncSettings,
-		onSave: (updates: Record<string, unknown>) => Promise<void>,
-		actions: BackendConnectionActions,
-		app: App,
-	): void;
-}
-
-// --- Registry (same pattern as src/fs/registry.ts) ---
-
-const renderers: IBackendSettingsRenderer[] = [
-	new GoogleDriveSettingsRenderer(),
-	new GoogleDriveCustomSettingsRenderer(),
-	new DropboxSettingsRenderer(),
-];
-
-const rendererMap = new Map<string, IBackendSettingsRenderer>();
-for (const r of renderers) {
-	if (rendererMap.has(r.backendType)) {
-		// Defensive: should never happen at runtime with a single renderer
-		continue;
-	}
-	rendererMap.set(r.backendType, r);
-}
-
-/** Get a settings renderer by backend type */
-export function getBackendSettingsRenderer(
-	type: string
-): IBackendSettingsRenderer | undefined {
-	return rendererMap.get(type);
-}
-
-/** Get all registered settings renderers */
-export function getAllBackendSettingsRenderers(): readonly IBackendSettingsRenderer[] {
-	return [...renderers];
+export function getBackendSettingsRenderer(type: string): IBackendSettingsRenderer | undefined {
+	return getBackendProvider(type)?.createSettingsRenderer?.();
 }

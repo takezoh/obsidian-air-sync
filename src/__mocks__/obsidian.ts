@@ -133,6 +133,9 @@ export class TFile {
 
 export class TFolder {
 	path: string;
+	// Immediate children, populated by getAbstractFileByPath so listDir's
+	// `folder.children` walk (LocalFs's normal-path branch) has something to read.
+	children: (TFile | TFolder)[] = [];
 	constructor(path: string) {
 		this.path = path;
 	}
@@ -167,8 +170,11 @@ export class Vault {
 			const entry = this.files.get(path);
 			if (!entry || entry.type !== "file")
 				throw new Error(`File not found: ${path}`);
-			// Stays async so the not-found throw rejects.
-			return await Promise.resolve(entry.content ?? new ArrayBuffer(0));
+			// Detach a copy: a real adapter reads fresh bytes off disk, so a
+			// caller mutating the result must not corrupt stored content.
+			return await Promise.resolve(
+				(entry.content ?? new ArrayBuffer(0)).slice(0),
+			);
 		},
 		list: (
 			dir: string,
@@ -192,9 +198,11 @@ export class Vault {
 			data: ArrayBuffer,
 			options?: { mtime?: number },
 		): Promise<void> => {
+			// Copy on store: a real adapter persists its own bytes, so a later
+			// mutation of the caller's buffer must not change stored content.
 			this.files.set(path, {
 				type: "file",
-				content: data,
+				content: data.slice(0),
 				mtime: options?.mtime,
 			});
 			return Promise.resolve();
@@ -231,13 +239,43 @@ export class Vault {
 		if (path.startsWith(".")) return null;
 		const entry = this.files.get(path);
 		if (!entry) return null;
-		if (entry.type === "folder") return new TFolder(path);
+		if (entry.type === "folder") {
+			const folder = new TFolder(path);
+			folder.children = this.immediateChildren(path);
+			return folder;
+		}
 		const f = new TFile(
 			path,
 			entry.content?.byteLength ?? 0,
 			entry.mtime ?? 0,
 		);
 		return f;
+	}
+
+	/**
+	 * Immediate (one-level) children of a folder as index-visible TFile/TFolder,
+	 * so `folder.children` mirrors the real Vault. Hidden paths stay excluded,
+	 * matching getAbstractFileByPath / getAllLoadedFiles.
+	 */
+	private immediateChildren(dir: string): (TFile | TFolder)[] {
+		const prefix = dir + "/";
+		const children: (TFile | TFolder)[] = [];
+		for (const [p, entry] of this.files) {
+			if (p.startsWith(".") || !p.startsWith(prefix)) continue;
+			// Keys are normalized (no trailing slash), so rest is never "" here;
+			// a "/" in it means a deeper descendant, not an immediate child.
+			if (p.substring(prefix.length).includes("/")) continue;
+			children.push(
+				entry.type === "folder"
+					? new TFolder(p)
+					: new TFile(
+							p,
+							entry.content?.byteLength ?? 0,
+							entry.mtime ?? 0,
+						),
+			);
+		}
+		return children;
 	}
 
 	async createFolder(path: string): Promise<TFolder> {
@@ -253,8 +291,8 @@ export class Vault {
 		const entry = this.files.get(file.path);
 		if (!entry || entry.type !== "file")
 			throw new Error(`File not found: ${file.path}`);
-		// Stays async so the not-found throw rejects.
-		return await Promise.resolve(entry.content ?? new ArrayBuffer(0));
+		// Detach a copy each read, as a real Vault would (fresh bytes off disk).
+		return await Promise.resolve((entry.content ?? new ArrayBuffer(0)).slice(0));
 	}
 
 	createBinary(
@@ -262,7 +300,12 @@ export class Vault {
 		content: ArrayBuffer,
 		options?: { mtime?: number },
 	): Promise<TFile> {
-		this.files.set(path, { type: "file", content, mtime: options?.mtime });
+		// Copy on store so a later mutation of the caller's buffer can't change it.
+		this.files.set(path, {
+			type: "file",
+			content: content.slice(0),
+			mtime: options?.mtime,
+		});
 		return Promise.resolve(
 			new TFile(path, content.byteLength, options?.mtime ?? 0),
 		);
@@ -276,8 +319,13 @@ export class Vault {
 		const entry = this.files.get(file.path);
 		if (!entry || entry.type !== "file")
 			throw new Error(`File not found: ${file.path}`);
-		entry.content = content;
+		entry.content = content.slice(0); // copy on store (see createBinary)
 		if (options?.mtime !== undefined) entry.mtime = options.mtime;
+		// Real Obsidian mutates the live TFile's stat in place, so a caller holding
+		// the TFile (e.g. LocalFs.write's overwrite branch) reads the post-write
+		// size/mtime. Mirror that so the returned FileEntity isn't stale.
+		file.stat.size = content.byteLength;
+		if (options?.mtime !== undefined) file.stat.mtime = options.mtime;
 		// Stays async so the not-found throw rejects.
 		await Promise.resolve();
 	}
@@ -303,10 +351,21 @@ export class Vault {
 	}
 
 	async rename(file: TFile | TFolder, newPath: string): Promise<void> {
-		const entry = this.files.get(file.path);
-		if (!entry) throw new Error(`File not found: ${file.path}`);
-		this.files.delete(file.path);
+		const oldPath = file.path;
+		const entry = this.files.get(oldPath);
+		if (!entry) throw new Error(`File not found: ${oldPath}`);
+		this.files.delete(oldPath);
 		this.files.set(newPath, entry);
+		// Folder rename: move every descendant so child paths stay coherent,
+		// exactly as the real Vault does (the single-entry move alone would orphan
+		// children and break LocalFs's folder-rename path).
+		const prefix = oldPath + "/";
+		for (const [p, e] of [...this.files]) {
+			if (p.startsWith(prefix)) {
+				this.files.delete(p);
+				this.files.set(newPath + "/" + p.substring(prefix.length), e);
+			}
+		}
 		// Stays async so the not-found throw rejects.
 		await Promise.resolve();
 	}
@@ -324,7 +383,17 @@ export class App {
 	vault: Vault;
 	workspace: Workspace;
 	fileManager = {
-		trashFile: async (_file: TFile | TFolder) => {},
+		// Real trashFile removes the file/folder from the vault. The previous no-op
+		// left deletions invisible to the index; route through the adapter so a
+		// LocalFs.delete actually drops the path (files via remove, folders
+		// recursively via rmdir). `this.vault` is set by the time this is called.
+		trashFile: async (file: TFile | TFolder) => {
+			if (file instanceof TFolder) {
+				await this.vault.adapter.rmdir(file.path, true);
+			} else {
+				await this.vault.adapter.remove(file.path);
+			}
+		},
 	};
 	constructor() {
 		this.vault = new Vault();

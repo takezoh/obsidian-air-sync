@@ -4,7 +4,7 @@ import type { AirSyncSettings } from "../settings";
 import type {
 	BackendConnectionActions,
 	IBackendSettingsRenderer,
-} from "./backend-settings";
+} from "../fs/settings-renderer";
 import type { DropboxBackendData } from "../fs/dropbox/provider";
 import { getBackendProvider } from "../fs/registry";
 

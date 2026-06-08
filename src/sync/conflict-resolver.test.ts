@@ -7,8 +7,6 @@ import {
 	addFile,
 	readText,
 } from "../__mocks__/sync-test-helpers";
-import { __ui } from "../__mocks__/obsidian";
-import type { App } from "obsidian";
 
 describe("resolveConflict", () => {
 	let localFs: ReturnType<typeof createMockFs>;
@@ -271,94 +269,6 @@ describe("resolveConflict", () => {
 
 			// stateStore has no content → falls back to newer-wins → local is newer
 			expect(result.action).toBe("kept_local");
-		});
-	});
-
-	describe("ask strategy", () => {
-		it("falls back to duplicate when no app is provided", async () => {
-			const local = addFile(localFs, "file.md", "local content", 2000);
-			const remote = addFile(remoteFs, "file.md", "remote content", 1000);
-
-			const result = await resolveConflict(
-				{ path: "file.md", localFs, remoteFs, local, remote },
-				"ask",
-			);
-
-			expect(result.action).toBe("duplicated");
-		});
-	});
-
-	describe("ask strategy — modal choices (with app)", () => {
-		const app = {} as unknown as App;
-
-		beforeEach(() => {
-			__ui.buttons = [];
-			__ui.lastModal = null;
-		});
-
-		function clickChoice(label: string) {
-			const button = __ui.buttons.find((b) => b.name === label);
-			if (!button) throw new Error(`No modal button labelled "${label}"`);
-			button.click();
-		}
-
-		it("routes the 'keep local' choice to keep_local", async () => {
-			const local = addFile(localFs, "file.md", "local content", 2000);
-			const remote = addFile(remoteFs, "file.md", "remote content", 1000);
-
-			const pending = resolveConflict(
-				{ path: "file.md", localFs, remoteFs, local, remote, app },
-				"ask",
-			);
-			clickChoice("Keep local");
-			const result = await pending;
-
-			expect(result.action).toBe("kept_local");
-			expect(readText(remoteFs, "file.md")).toBe("local content");
-		});
-
-		it("routes the 'keep remote' choice to keep_remote", async () => {
-			const local = addFile(localFs, "file.md", "local content", 2000);
-			const remote = addFile(remoteFs, "file.md", "remote content", 1000);
-
-			const pending = resolveConflict(
-				{ path: "file.md", localFs, remoteFs, local, remote, app },
-				"ask",
-			);
-			clickChoice("Keep remote");
-			const result = await pending;
-
-			expect(result.action).toBe("kept_remote");
-			expect(readText(localFs, "file.md")).toBe("remote content");
-		});
-
-		it("routes the 'keep both' choice to duplicate", async () => {
-			const local = addFile(localFs, "file.md", "local content", 2000);
-			const remote = addFile(remoteFs, "file.md", "remote content", 1000);
-
-			const pending = resolveConflict(
-				{ path: "file.md", localFs, remoteFs, local, remote, app },
-				"ask",
-			);
-			clickChoice("Keep both");
-			const result = await pending;
-
-			expect(result.action).toBe("duplicated");
-		});
-
-		it("defaults to duplicate when the modal is dismissed without choosing", async () => {
-			const local = addFile(localFs, "file.md", "local content", 2000);
-			const remote = addFile(remoteFs, "file.md", "remote content", 1000);
-
-			const pending = resolveConflict(
-				{ path: "file.md", localFs, remoteFs, local, remote, app },
-				"ask",
-			);
-			// Dismissing the dialog must never silently pick a side — it keeps both.
-			__ui.lastModal!.close();
-			const result = await pending;
-
-			expect(result.action).toBe("duplicated");
 		});
 	});
 });

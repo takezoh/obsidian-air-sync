@@ -1,27 +1,23 @@
 import { FOLDER_MIME } from "./types";
 import type { DriveFile } from "./types";
-import type { DriveMetadataCache } from "./metadata-cache";
 import { LIST_PAGE_CAP } from "./client";
 import type { DriveClient } from "./client";
-import type { MetadataStore } from "../../store/metadata-store";
-import type { RenamePair } from "../../sync/types";
+import type { RenamePair } from "../types";
 import type { Logger } from "../../logging/logger";
+import type { AbstractMetadataCache } from "../caching/metadata-cache";
+import type { IncrementalChangesResult } from "../caching/remote-fs";
 
 /**
  * Context for incremental sync operations. Note there is no metadataStore here:
  * applying changes mutates only the in-memory cache. Persisting the cache to
- * IndexedDB is deferred to the checkpoint commit (GoogleDriveFs.commitCheckpoint),
+ * IndexedDB is deferred to the checkpoint commit (CachingRemoteFs.commitCheckpoint),
  * so the persisted cache never runs ahead of the committed delta cursor.
  */
 export interface IncrementalSyncContext {
-	cache: DriveMetadataCache;
+	cache: AbstractMetadataCache<DriveFile>;
 	client: DriveClient;
 	logger?: Logger;
 }
-
-export type IncrementalChangesResult =
-	| { needsFullScan: false; newToken: string; changedPaths: Set<string>; renamedPaths: RenamePair[] }
-	| { needsFullScan: true; changedPaths: Set<string> };
 
 /**
  * Apply incremental changes from the Drive changes.list API.
@@ -135,35 +131,6 @@ export async function applyIncrementalChanges(
 		}
 		throw err;
 	}
-}
-
-/**
- * Flush the metadata cache to IndexedDB at a checkpoint commit. `fullPersist`
- * rewrites the whole map (after a full scan); otherwise the touched paths are
- * reconciled against the live cache — present → upsert, absent → delete. The
- * reconcile reads the final cache state, so it is order-independent and correct
- * even when `touched` spans several earlier failed cycles.
- */
-export async function commitDriveCache(
-	store: MetadataStore<DriveFile>,
-	cache: DriveMetadataCache,
-	touched: Set<string>,
-	fullPersist: boolean,
-): Promise<void> {
-	await store.open();
-	if (fullPersist) {
-		await store.saveAll(cache.exportRecords(), new Map());
-		return;
-	}
-	const updated: { path: string; file: DriveFile; isFolder: boolean }[] = [];
-	const deleted: string[] = [];
-	for (const path of touched) {
-		const file = cache.getFile(path);
-		if (file) updated.push({ path, file, isFolder: cache.isFolder(path) });
-		else deleted.push(path);
-	}
-	if (updated.length > 0) await store.putFiles(updated);
-	if (deleted.length > 0) await store.deleteFiles(deleted);
 }
 
 /** Check if an error is an HTTP error with the given status code */

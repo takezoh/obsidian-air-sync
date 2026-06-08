@@ -282,4 +282,4 @@ The provider registry (`fs/registry.ts`) maps backend types to provider instance
 - [Google Drive backend](docs/google-drive-backend.md) -- metadata cache, authentication, and the sole owner of incremental sync / cache invalidation
 - [Dropbox backend](docs/dropbox-backend.md) -- App Folder scope, id-only addressing, worker-less PKCE auth, the web Chooser folder picker
 - [Error handling](docs/error-handling.md) -- resilience: error classification, retry, rate limiting (recovery scenarios cross-reference the sync pipeline)
-- [OAuth worker](docs/oauth-worker.md) -- server-side Google token exchange (`oauth-worker/`) plus the GitHub Pages site (`pages/`): privacy/terms, the shared custom-OAuth/Dropbox callback, and the Dropbox Chooser folder picker
+- [OAuth worker & auth site](https://github.com/takezoh/air-sync-auth) -- server-side Google token exchange plus the static site (privacy/terms, the shared custom-OAuth/Dropbox callback, and the Dropbox Chooser folder picker), in the dedicated `air-sync-auth` repo (kept out of this plugin's tree)

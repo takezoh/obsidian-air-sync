@@ -187,38 +187,25 @@ describe("DropboxProvider.getRemoteVaultDisplayPath", () => {
 	});
 });
 
-describe("DropboxProvider checkpoint state", () => {
-	it("commits the cursor only on a fully-successful sync, and never persists a path", async () => {
+describe("DropboxProvider.readBackendState", () => {
+	it("persists refreshed token expiry but NEVER a cursor (the cursor co-commits with the cache in IDB)", async () => {
 		const { provider } = await makeProvider(CONNECTED);
-		const { DropboxFs } = await import("./index");
-		const { DropboxClient } = await import("./client");
-		const fs = new DropboxFs(new DropboxClient(() => Promise.resolve("AT")), "id:root");
-		fs.cursor = "CURSOR-1";
-
-		const partial = provider.readBackendState(fs, false);
-		expect(partial.cursor).toBeUndefined();
-		// The remote path is resolved from the id on demand, never persisted.
-		expect(partial).not.toHaveProperty("remoteVaultRootPath");
-
-		expect(provider.readBackendState(fs, true).cursor).toBe("CURSOR-1");
-	});
-
-	it("hasCheckpoint reflects a stored cursor and resetTargetState clears it", async () => {
-		const { provider } = await makeProvider(CONNECTED);
-		expect(provider.hasCheckpoint(settingsWith({ cursor: "C" }))).toBe(true);
-		const settings = settingsWith({ cursor: "C" });
-		provider.resetTargetState(settings);
-		expect(settings.backendData.cursor).toBeUndefined();
+		// The delta cursor is no longer in settings (ADR 0001 — it commits atomically
+		// with the file-map cache via the FS's commitCheckpoint), so readBackendState
+		// takes no FS and never returns a `cursor` key.
+		const state = provider.readBackendState();
+		expect(state).not.toHaveProperty("cursor");
+		expect(state).not.toHaveProperty("remoteVaultRootPath");
 	});
 });
 
 describe("DropboxProvider.disconnect", () => {
 	it("clears both token secrets and resets backend data", async () => {
 		const { provider, store } = await makeProvider(CONNECTED);
-		const data = await provider.disconnect(settingsWith({ remoteVaultFolderId: "id:x", cursor: "C" }));
+		const data = await provider.disconnect(settingsWith({ remoteVaultFolderId: "id:x" }));
 		expect(store.getSecret("air-sync-dropbox-refresh-token")).toBe("");
 		expect(store.getSecret("air-sync-dropbox-access-token")).toBe("");
-		expect(data).toMatchObject({ remoteVaultFolderId: "", cursor: "" });
+		expect(data).toMatchObject({ remoteVaultFolderId: "" });
 	});
 });
 

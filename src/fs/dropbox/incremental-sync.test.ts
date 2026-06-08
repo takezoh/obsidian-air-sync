@@ -1,16 +1,25 @@
 import { describe, it, expect, vi } from "vitest";
 import { DropboxMetadataCache } from "./metadata-cache";
-import {
-	applyDropboxDelta,
-	classifyChangedPaths,
-	computeFullScanDelta,
-} from "./incremental-sync";
+import { applyDropboxDelta } from "./incremental-sync";
 import type { DropboxClient } from "./client";
 import type { DropboxListFolderResponse } from "./types";
 import { DropboxApiError } from "./types";
 import { dbxFile, dbxFolder, dbxDeleted } from "./test-helpers";
 
 vi.mock("obsidian");
+
+/**
+ * Split a delta's changedPaths into modified (still cached) vs deleted (gone) —
+ * mirrors how CachingRemoteFs classifies them after applyDropboxDelta runs. (The
+ * classification moved to the base; this local helper keeps these unit tests focused
+ * on the Dropbox delta's effect on the cache + the changedPaths set.)
+ */
+function classify(cache: DropboxMetadataCache, changedPaths: Set<string>) {
+	const modified: string[] = [];
+	const deleted: string[] = [];
+	for (const path of changedPaths) (cache.hasFile(path) ? modified : deleted).push(path);
+	return { modified, deleted };
+}
 
 /** A DropboxClient stub whose `listFolderContinue` replays staged pages. */
 function fakeClient(pages: DropboxListFolderResponse[]): DropboxClient {
@@ -35,7 +44,7 @@ function resetClient(): DropboxClient {
 
 function seededCache() {
 	const cache = new DropboxMetadataCache("/root");
-	cache.buildFromEntries([
+	cache.buildFromFiles([
 		dbxFile("1", "/root/a.md"),
 		dbxFolder("2", "/root/dir"),
 		dbxFile("3", "/root/dir/b.md"),
@@ -54,12 +63,12 @@ describe("applyDropboxDelta — official algorithm", () => {
 		const result = await applyDropboxDelta({ cache, client }, "cur");
 		if (result.needsFullScan) throw new Error("unexpected reset");
 
-		expect(result.newCursor).toBe("next");
-		expect(cache.hasEntry("c.md")).toBe(true);
-		expect(cache.hasEntry("dir")).toBe(false);
-		expect(cache.hasEntry("dir/b.md")).toBe(false);
+		expect(result.newToken).toBe("next");
+		expect(cache.hasFile("c.md")).toBe(true);
+		expect(cache.hasFile("dir")).toBe(false);
+		expect(cache.hasFile("dir/b.md")).toBe(false);
 
-		const delta = classifyChangedPaths(cache, result.changedPaths, result.renamedPaths);
+		const delta = classify(cache, result.changedPaths);
 		expect(delta.modified).toContain("c.md");
 		expect(delta.deleted).toEqual(expect.arrayContaining(["dir", "dir/b.md"]));
 	});
@@ -71,8 +80,8 @@ describe("applyDropboxDelta — official algorithm", () => {
 		const result = await applyDropboxDelta({ cache, client }, "cur");
 		if (result.needsFullScan) throw new Error("unexpected reset");
 
-		expect(cache.hasEntry("renamed.md")).toBe(true);
-		expect(cache.hasEntry("a.md")).toBe(false);
+		expect(cache.hasFile("renamed.md")).toBe(true);
+		expect(cache.hasFile("a.md")).toBe(false);
 		expect(cache.getPathById("id:1")).toBe("renamed.md");
 		expect(result.renamedPaths).toEqual([{ oldPath: "a.md", newPath: "renamed.md", isFolder: undefined }]);
 	});
@@ -83,9 +92,9 @@ describe("applyDropboxDelta — official algorithm", () => {
 		const result = await applyDropboxDelta({ cache, client }, "cur");
 		if (result.needsFullScan) throw new Error("unexpected reset");
 
-		expect(cache.hasEntry("papers")).toBe(true);
-		expect(cache.hasEntry("papers/b.md")).toBe(true);
-		expect(cache.hasEntry("dir/b.md")).toBe(false);
+		expect(cache.hasFile("papers")).toBe(true);
+		expect(cache.hasFile("papers/b.md")).toBe(true);
+		expect(cache.hasFile("dir/b.md")).toBe(false);
 		expect(result.renamedPaths).toEqual([{ oldPath: "dir", newPath: "papers", isFolder: true }]);
 	});
 
@@ -118,10 +127,10 @@ describe("applyDropboxDelta — official algorithm", () => {
 		const result = await applyDropboxDelta({ cache, client }, "cur");
 		if (result.needsFullScan) throw new Error("unexpected reset");
 
-		expect(cache.hasEntry(".airsync/metadata.json")).toBe(false);
+		expect(cache.hasFile(".airsync/metadata.json")).toBe(false);
 		// The reserved path must not surface as a change of any kind.
 		expect(result.changedPaths.has(".airsync/metadata.json")).toBe(false);
-		const delta = classifyChangedPaths(cache, result.changedPaths, result.renamedPaths);
+		const delta = classify(cache, result.changedPaths);
 		expect(delta.modified).not.toContain(".airsync/metadata.json");
 		expect(delta.deleted).not.toContain(".airsync/metadata.json");
 	});
@@ -133,33 +142,12 @@ describe("applyDropboxDelta — official algorithm", () => {
 		const result = await applyDropboxDelta({ cache, client }, "cur");
 		if (result.needsFullScan) throw new Error("unexpected reset");
 
-		expect(cache.hasEntry("a.md")).toBe(false);
-		const delta = classifyChangedPaths(cache, result.changedPaths, result.renamedPaths);
+		expect(cache.hasFile("a.md")).toBe(false);
+		const delta = classify(cache, result.changedPaths);
 		expect(delta.deleted).toContain("a.md");
 	});
 });
 
-describe("computeFullScanDelta", () => {
-	it("derives renames and deletions from a path-by-id snapshot", () => {
-		const before = new Map<string, string>([
-			["id:1", "a.md"],
-			["id:2", "dir"],
-			["id:3", "dir/b.md"],
-		]);
-		const after = new DropboxMetadataCache("/root");
-		after.buildFromEntries([
-			dbxFile("1", "/root/a.md"), // unchanged
-			dbxFolder("2", "/root/dir"),
-			dbxFile("3", "/root/dir/renamed.md"), // moved
-		]);
-		const delta = computeFullScanDelta(before, after);
-		expect(delta).not.toBeNull();
-		expect(delta!.renamed).toEqual([{ oldPath: "dir/b.md", newPath: "dir/renamed.md", isFolder: undefined }]);
-		expect(delta!.deleted).toContain("dir/b.md");
-		expect(delta!.modified).toContain("dir/renamed.md");
-	});
-
-	it("returns null for an empty prior snapshot", () => {
-		expect(computeFullScanDelta(new Map(), new DropboxMetadataCache("/root"))).toBeNull();
-	});
-});
+// The cursor-expiry full-scan-and-diff-by-id fallback (formerly computeFullScanDelta)
+// now lives in CachingRemoteFs.diffById — shared by every backend and exercised by the
+// Dropbox crash-safety contract (crash-safety-contract.test.ts) against the real FS.

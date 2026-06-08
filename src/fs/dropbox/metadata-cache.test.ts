@@ -24,10 +24,10 @@ describe("DropboxMetadataCache.relativize", () => {
 	});
 });
 
-describe("DropboxMetadataCache.buildFromEntries", () => {
+describe("DropboxMetadataCache.buildFromFiles", () => {
 	it("builds a path tree from a flat recursive listing", () => {
 		const cache = makeCache();
-		cache.buildFromEntries([
+		cache.buildFromFiles([
 			dbxFolder("2", "/root/dir"),
 			dbxFile("1", "/root/a.md"),
 			dbxFile("3", "/root/dir/b.md"),
@@ -40,34 +40,34 @@ describe("DropboxMetadataCache.buildFromEntries", () => {
 
 	it("skips deleted tombstones and the root folder entry", () => {
 		const cache = makeCache();
-		cache.buildFromEntries([
+		cache.buildFromFiles([
 			dbxFolder("0", "/root"),
 			{ ".tag": "deleted", name: "x.md", path_lower: "/root/x.md", path_display: "/root/x.md" },
 			dbxFile("1", "/root/keep.md"),
 		]);
 		expect(cache.size).toBe(1);
-		expect(cache.hasEntry("keep.md")).toBe(true);
+		expect(cache.hasFile("keep.md")).toBe(true);
 	});
 });
 
 describe("DropboxMetadataCache.removeTree / rewriteChildPaths", () => {
 	it("removeTree drops an entry and all descendants", () => {
 		const cache = makeCache();
-		cache.buildFromEntries([dbxFolder("2", "/root/dir"), dbxFile("3", "/root/dir/b.md")]);
+		cache.buildFromFiles([dbxFolder("2", "/root/dir"), dbxFile("3", "/root/dir/b.md")]);
 		cache.removeTree("dir");
-		expect(cache.hasEntry("dir")).toBe(false);
-		expect(cache.hasEntry("dir/b.md")).toBe(false);
+		expect(cache.hasFile("dir")).toBe(false);
+		expect(cache.hasFile("dir/b.md")).toBe(false);
 		expect(cache.getPathById("id:3")).toBeUndefined();
 	});
 
 	it("rewriteChildPaths reparents descendants and their id index", () => {
 		const cache = makeCache();
-		cache.buildFromEntries([dbxFolder("2", "/root/dir"), dbxFile("3", "/root/dir/b.md")]);
+		cache.buildFromFiles([dbxFolder("2", "/root/dir"), dbxFile("3", "/root/dir/b.md")]);
 		cache.removeEntry("dir");
 		cache.setEntry("renamed", dbxFolder("2", "/root/renamed"));
 		cache.rewriteChildPaths("dir", "renamed");
-		expect(cache.hasEntry("renamed/b.md")).toBe(true);
-		expect(cache.hasEntry("dir/b.md")).toBe(false);
+		expect(cache.hasFile("renamed/b.md")).toBe(true);
+		expect(cache.hasFile("dir/b.md")).toBe(false);
 		expect(cache.getPathById("id:3")).toBe("renamed/b.md");
 	});
 });
@@ -83,7 +83,7 @@ describe("DropboxMetadataCache.setEntry id eviction", () => {
 
 	it("evicts the old subtree when a folder is replaced by a different entry at the same path (no tombstone)", () => {
 		const cache = makeCache();
-		cache.buildFromEntries([
+		cache.buildFromFiles([
 			dbxFolder("d1", "/root/data"),
 			dbxFile("c1", "/root/data/child.txt"),
 		]);
@@ -91,10 +91,10 @@ describe("DropboxMetadataCache.setEntry id eviction", () => {
 		// A delta upserts a FILE at "data" with a different id and NO preceding delete.
 		cache.setEntry("data", dbxFile("f9", "/root/data"));
 
-		expect(cache.getEntry("data")?.id).toBe("id:f9");
+		expect(cache.getFile("data")?.id).toBe("id:f9");
 		expect(cache.isFolder("data")).toBe(false);
 		// The displaced folder's descendant is gone, not orphaned as a phantom path.
-		expect(cache.hasEntry("data/child.txt")).toBe(false);
+		expect(cache.hasFile("data/child.txt")).toBe(false);
 		expect(cache.getPathById("id:d1")).toBeUndefined();
 		expect(cache.getPathById("id:c1")).toBeUndefined();
 	});

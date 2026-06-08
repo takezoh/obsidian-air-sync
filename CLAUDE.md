@@ -11,6 +11,7 @@ This file is the **agent operating guide** for this repo. Where to look:
 | Design principles, module map, data models, interfaces | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | The enforced rules (lint / type / design guards) and how to declare an exception | [docs/code-enforcement.md](docs/code-enforcement.md) |
 | Subsystem deep dives (sync pipeline, conflicts, Drive, errors) | [docs/](docs/) |
+| Architecture Decision Records (why a design is the way it is — read before "optimizing" it) | [docs/adr/](docs/adr/) |
 | Generic Obsidian-plugin conventions (cross-tool baseline) | [AGENTS.md](AGENTS.md) |
 
 ## Commands
@@ -50,8 +51,12 @@ disabling a rule.**
 
 - **The vault index can under-report before layout-ready.** Read it only via
   `LocalFs.list()` (lint-enforced — `getAllLoadedFiles()` is restricted outside
-  `src/fs/local/`), and never derive a deletion from listing-absence alone — confirm
-  against the authoritative `LocalFs.stat()` (falls back to the adapter).
+  `src/fs/local/`). `LocalFs.list()` does NOT gate on layout-ready itself — it's a
+  pure low-level read; the **gate is the orchestrator** (`runSync`/`shouldSync`
+  early-return until `isLayoutReady`), and the only path to `list()` runs through it.
+  Any new caller of `list()` must likewise be in a layout-ready-gated context. Also
+  never derive a deletion from listing-absence alone — confirm against the
+  authoritative `LocalFs.stat()` (falls back to the adapter).
 - **Dot-prefixed/hidden paths** (`.airsync`, `.obsidian`, nested `foo/.bar`) are
   excluded from the vault index: `vault.createBinary()` returns `null` or throws
   `File already exists` for them. `LocalFs` routes any `isDotPrefixed()` path through

@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import type { RequestUrlParam } from "obsidian";
-import { spyRequestUrl, mockRes, dbxFile, dbxFolder, dbxDeleted, untagged } from "./test-helpers";
+import { spyRequestUrl, mockRes, dbxFile, dbxFolder, untagged } from "./test-helpers";
 import type { DropboxFsInternal } from "./test-helpers";
 import type { DropboxEntry } from "./types";
-import type { FileRecord, MetadataStore } from "../../store/metadata-store";
+import type { MetadataStore } from "../../store/metadata-store";
 
 vi.mock("obsidian");
 
@@ -46,7 +46,7 @@ describe("DropboxFs full scan", () => {
 		const fs = await makeFs();
 		const entities = await fs.list();
 		expect(entities.map((e) => e.path)).toEqual(["a.md"]);
-		expect(fs.cursor).toBe("C0");
+		expect(fs.changesPageToken).toBe("C0");
 
 		const cursorIdx = order.findIndex((u) => u.includes("get_latest_cursor"));
 		const listIdx = order.findIndex((u) => u.endsWith(PLAIN_LIST));
@@ -138,8 +138,8 @@ describe("DropboxFs.write", () => {
 describe("DropboxFs stale-cache guards (concurrent delta)", () => {
 	type CacheView = {
 		setEntry(path: string, entry: DropboxEntry): void;
-		getEntry(path: string): DropboxEntry | undefined;
-		hasEntry(path: string): boolean;
+		getFile(path: string): DropboxEntry | undefined;
+		hasFile(path: string): boolean;
 	};
 
 	async function makeFsWithWarn() {
@@ -169,24 +169,22 @@ describe("DropboxFs stale-cache guards (concurrent delta)", () => {
 
 		await fs.write("new.md", bytes("hi"), 0);
 
-		expect(cache.getEntry("new.md")?.id).toBe("id:delta");
+		expect(cache.getFile("new.md")?.id).toBe("id:delta");
 		expect(warn).toHaveBeenCalledWith("Skipping stale cache update for write", { path: "new.md" });
 	});
 
-	it("delete: keeps a concurrent replacement at an id-less path (reference identity, not undefined===undefined)", async () => {
+	it("delete: keeps a concurrent replacement that landed a DIFFERENT id at the path during the network delete", async () => {
 		const { fs, cache, warn } = await makeFsWithWarn();
-		// An id-less entry (Dropbox metadata can lack an id).
-		const idless = (): DropboxEntry => ({
-			".tag": "file", name: "x.md", path_lower: "/root/x.md", path_display: "/root/x.md",
-		});
-		cache.setEntry("x.md", idless());
+		// Cached file/folder entries always carry a stable id (only `deleted` tombstones
+		// lack one, and those are never cached), so the stale-guard keys on that id.
+		cache.setEntry("x.md", dbxFile("orig", "/root/x.md"));
 
 		(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
 			const url = typeof opts === "string" ? opts : opts.url;
 			if (url.includes("delete_v2")) {
 				// Phase 2 (delete) runs outside the mutex — a concurrent delta replaces the
-				// id-less entry at this path with a NEW (also id-less) object.
-				cache.setEntry("x.md", idless());
+				// entry at this path with a DIFFERENT file (new id).
+				cache.setEntry("x.md", dbxFile("delta", "/root/x.md"));
 				return Promise.resolve(mockRes({}));
 			}
 			return Promise.resolve(mockRes({}));
@@ -194,8 +192,10 @@ describe("DropboxFs stale-cache guards (concurrent delta)", () => {
 
 		await fs.delete("x.md");
 
-		// The replacement survives — the stale delete did not removeTree the wrong entry.
-		expect(cache.hasEntry("x.md")).toBe(true);
+		// The replacement survives — the stale delete did not removeTree the wrong entry
+		// (the path now resolves to id:delta, not the id:orig we deleted remotely).
+		expect(cache.hasFile("x.md")).toBe(true);
+		expect(cache.getFile("x.md")?.id).toBe("id:delta");
 		expect(warn).toHaveBeenCalledWith("Skipping stale cache update for delete", { path: "x.md" });
 	});
 });
@@ -224,87 +224,10 @@ describe("DropboxFs.rename", () => {
 	});
 });
 
-describe("DropboxFs checkpoint persistence (commit-last)", () => {
-	// A shared IndexedDB-like store that survives a simulated crash (two FS instances
-	// against the same backing rows).
-	function sharedStore(seed: Record<string, DropboxEntry>) {
-		const rows = new Map<string, FileRecord<DropboxEntry>>();
-		for (const [path, file] of Object.entries(seed)) {
-			rows.set(path, { path, file, isFolder: file[".tag"] === "folder" });
-		}
-		const store = {
-			open: () => Promise.resolve(),
-			loadAll: () => Promise.resolve({ files: [...rows.values()], meta: new Map<string, string>() }),
-			saveAll: (files: FileRecord<DropboxEntry>[]) => {
-				rows.clear();
-				for (const r of files) rows.set(r.path, r);
-				return Promise.resolve();
-			},
-			putFiles: (recs: FileRecord<DropboxEntry>[]) => {
-				for (const r of recs) rows.set(r.path, r);
-				return Promise.resolve();
-			},
-			deleteFiles: (paths: string[]) => {
-				for (const p of paths) rows.delete(p);
-				return Promise.resolve();
-			},
-			close: () => Promise.resolve(),
-		} as unknown as MetadataStore<DropboxEntry>;
-		return { store, rows };
-	}
-
-	function deltaDeletesA() {
-		return (opts: string | RequestUrlParam) => {
-			const url = typeof opts === "string" ? opts : opts.url;
-			if (url.includes("get_metadata")) return Promise.resolve(metaRes("/root"));
-			if (url.includes("list_folder/continue")) {
-				return Promise.resolve(mockRes({ entries: [dbxDeleted("/root/a.md")], cursor: "C1", has_more: false }));
-			}
-			return Promise.resolve(mockRes({}));
-		};
-	}
-
-	it("survives a crash mid-cycle: an un-committed cache stays at the committed cursor so the deletion replays", async () => {
-		// Regression: a remote deletion was persisted to IndexedDB the moment the delta
-		// was applied (eager), decoupled from the cursor (which commits only on success).
-		// A crash before commit then loaded a cache that had already dropped the file, and
-		// the replay from the committed cursor early-returned on the absent path — the
-		// deletion was lost (local copy never removed).
-		const { store, rows } = sharedStore({ "a.md": dbxFile("1", "/root/a.md") });
-		(await spyRequestUrl()).mockImplementation(deltaDeletesA());
-		const { DropboxFs } = await import("./index");
-		const { DropboxClient } = await import("./client");
-
-		// Cycle N (committed cursor C0): the remote deletes a.md. The delta surfaces it,
-		// but the cycle "crashes" before commitCheckpoint runs.
-		const fs1 = new DropboxFs(new DropboxClient(() => Promise.resolve("AT")), "id:root", undefined, store);
-		fs1.cursor = "C0";
-		expect((await fs1.getChangedPaths())?.deleted).toContain("a.md");
-		// Crash: commitCheckpoint NOT called → the store must still hold a.md.
-		expect(rows.has("a.md")).toBe(true);
-
-		// Cycle N+1 after restart: a fresh FS rebuilt from the committed cursor C0 must
-		// re-detect the deletion via replay.
-		const fs2 = new DropboxFs(new DropboxClient(() => Promise.resolve("AT")), "id:root", undefined, store);
-		fs2.cursor = "C0";
-		expect((await fs2.getChangedPaths())?.deleted).toContain("a.md");
-	});
-
-	it("commitCheckpoint flushes the delta to the store only after a clean cycle", async () => {
-		const { store, rows } = sharedStore({ "a.md": dbxFile("1", "/root/a.md") });
-		(await spyRequestUrl()).mockImplementation(deltaDeletesA());
-		const { DropboxFs } = await import("./index");
-		const { DropboxClient } = await import("./client");
-		const fs = new DropboxFs(new DropboxClient(() => Promise.resolve("AT")), "id:root", undefined, store);
-		fs.cursor = "C0";
-
-		await fs.getChangedPaths();
-		expect(rows.has("a.md")).toBe(true); // not yet committed
-
-		await fs.commitCheckpoint();
-		expect(rows.has("a.md")).toBe(false); // committed → store now matches the cache
-	});
-});
+// The checkpoint/commit-last crash-safety (ADR 0001) is owned by CachingRemoteFs and
+// pinned against the real DropboxFs by the shared base contract in
+// crash-safety-contract.test.ts (cursor co-located with the cache in IDB), so it is no
+// longer re-tested here with a hand-rolled store.
 
 describe("DropboxFs id-based addressing", () => {
 	async function scannedFs(rootDisplay = "/root", entries = [dbxFile("1", "/root/a.md")]) {
@@ -325,9 +248,14 @@ describe("DropboxFs id-based addressing", () => {
 		// anchor; list() reaches applyDelta without its own refreshRootPath, so a
 		// cold cursor-replay must re-anchor first or delta entries key to their full
 		// absolute path ("Apps/.../new.md") instead of "new.md".
+		// The committed cursor is co-located with the cache in the store's meta
+		// (CURSOR_META_KEY), so its presence is what makes loadFromCache replay.
 		const fakeStore = {
 			open: () => Promise.resolve(),
-			loadAll: () => Promise.resolve({ files: [{ path: "a.md", file: dbxFile("1", "/root/a.md") }] }),
+			loadAll: () => Promise.resolve({
+				files: [{ path: "a.md", file: dbxFile("1", "/root/a.md") }],
+				meta: new Map<string, string>([["changesStartPageToken", "C1"]]),
+			}),
 			saveAll: () => Promise.resolve(),
 			close: () => Promise.resolve(),
 		} as unknown as MetadataStore<DropboxEntry>;
@@ -342,7 +270,6 @@ describe("DropboxFs id-based addressing", () => {
 		const { DropboxFs } = await import("./index");
 		const { DropboxClient } = await import("./client");
 		const fs = new DropboxFs(new DropboxClient(() => Promise.resolve("AT")), "id:root", undefined, fakeStore);
-		fs.cursor = "C1"; // prior checkpoint → replay (loadFromCache) path
 
 		const entities = await fs.list();
 

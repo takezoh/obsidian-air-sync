@@ -1,8 +1,8 @@
 import type { FileEntity } from "../types";
 import type { DropboxEntry } from "./types";
-import { dropboxEntryToEntity, isFolderEntry } from "./types";
+import { dropboxEntryToEntity } from "./types";
 import type { Logger } from "../../logging/logger";
-import { INTERNAL_METADATA_PATH } from "../../sync/remote-vault";
+import { AbstractMetadataCache } from "../caching/metadata-cache";
 
 /** Split a path into its non-empty segments. */
 function segments(path: string): string[] {
@@ -10,34 +10,67 @@ function segments(path: string): string[] {
 }
 
 /**
- * In-memory metadata cache for Dropbox files, keyed by sync-relative path.
+ * Dropbox's metadata cache. All the data structures, the path↔id maps, the
+ * children index, and tree mutation (rename/move/delete-subtree) live in
+ * {@link AbstractMetadataCache}; this subclass supplies the two things that are
+ * genuinely Dropbox-specific:
  *
- * Dropbox addresses by path and its delta carries absolute paths (even for
- * deletes), so the cache is path-primary — simpler than pCloud's id-reverse
- * lookup. An `idToPath` side index is kept only to coalesce a Dropbox
- * `deleted`+`file` pair (same stable `id`, different path) back into a rename.
+ * - **Path resolution by relativizing `path_display`**, not by walking parent ids.
+ *   Dropbox's delta carries each entry's absolute path, so paths are resolved
+ *   against the vault root's CURRENT absolute path ({@link relativize}) rather than
+ *   the base's id→parent-chain join. {@link buildFromFiles} is overridden for the
+ *   same reason. This is why `extractParentIds` is empty — it would only be read by
+ *   the base's id-chain resolver, which Dropbox never uses.
+ * - **The relativize anchor**, refreshed each cycle from the stable folder id
+ *   ({@link setRootPath}), so a remote move/rename of the vault folder relativizes
+ *   correctly with no rebuild.
  */
-export class DropboxMetadataCache {
-	/** Maps relative path → Dropbox entry */
-	private pathToEntry = new Map<string, DropboxEntry>();
-	/** Maps Dropbox id ("id:…") → relative path (rename detection) */
-	private idToPath = new Map<string, string>();
-	/** Tracks which paths are folders */
-	private folders = new Set<string>();
-	/** Parent path → set of direct child paths */
-	private children = new Map<string, Set<string>>();
-
+export class DropboxMetadataCache extends AbstractMetadataCache<DropboxEntry> {
 	/** Case-folded segments of the remote vault root (for relativizing absolute paths). */
 	private rootSegmentsLower: string[];
-	private logger?: Logger;
 
-	// rootPath is optional: DropboxFs constructs the cache before the vault's
-	// absolute path is known (it addresses by id) and sets the relativize anchor
-	// each cycle via setRootPath. Tests may pass a root up front for convenience.
-	constructor(rootPath = "", logger?: Logger) {
+	// rootPath is the relativize anchor (the vault root's absolute path) and is the
+	// PRIMARY ctor arg. It is optional: DropboxFs constructs the cache before the vault's
+	// absolute path is known (it addresses by id) and sets the anchor each cycle via
+	// setRootPath; tests may pass a root up front. rootFolderId is the stable `id:…`,
+	// passed only to satisfy the base ctor — Dropbox resolves paths by relativizing, not
+	// by parent-id chains, so the base's id-chain resolver (which reads it) is never used.
+	constructor(rootPath = "", logger?: Logger, rootFolderId = "") {
+		super(rootFolderId, logger);
 		this.rootSegmentsLower = segments(rootPath.toLowerCase());
-		this.logger = logger;
 	}
+
+	// ── Per-backend seams ──
+
+	// Cached file/folder entries always carry a stable Dropbox `id` ("id:…"); only a
+	// `deleted` entry lacks one, and those are never cached. The `path_lower` fallback
+	// keeps `extractId` total for the type's optionality — and it is functional, not a
+	// dummy: a lowercased absolute path is itself a valid Dropbox address for
+	// download/delete. Rename coalescing (delta) only reverse-looks-up by a real id.
+	protected extractId(entry: DropboxEntry): string {
+		return entry.id ?? entry.path_lower;
+	}
+
+	// Dropbox entries carry no parent id — paths come from relativizing `path_display`
+	// (see buildFromFiles/relativize). Empty so the base's id-chain resolver, which
+	// Dropbox never invokes, has nothing to walk.
+	protected extractParentIds(): string[] {
+		return [];
+	}
+
+	protected extractName(entry: DropboxEntry): string {
+		return entry.name;
+	}
+
+	protected isFolderEntry(entry: DropboxEntry): boolean {
+		return entry[".tag"] === "folder";
+	}
+
+	toEntity(path: string, entry: DropboxEntry): FileEntity {
+		return dropboxEntryToEntity(path, entry);
+	}
+
+	// ── Dropbox-specific path resolution ──
 
 	/**
 	 * Re-anchor the cache to a new absolute root path (the vault folder's current
@@ -48,26 +81,11 @@ export class DropboxMetadataCache {
 		this.rootSegmentsLower = segments(rootPath.toLowerCase());
 	}
 
-	// ── Query methods ──
-
-	getEntry(path: string): DropboxEntry | undefined { return this.pathToEntry.get(path); }
-	hasEntry(path: string): boolean { return this.pathToEntry.has(path); }
-	isFolder(path: string): boolean { return this.folders.has(path); }
-	getPathById(id: string): string | undefined { return this.idToPath.get(id); }
-	getChildren(path: string): ReadonlySet<string> | undefined { return this.children.get(path); }
-	get size(): number { return this.pathToEntry.size; }
-	entries(): IterableIterator<[string, DropboxEntry]> { return this.pathToEntry.entries(); }
-
-	/** Build a FileEntity from cached metadata (no download). */
-	entryToEntity(path: string, entry: DropboxEntry): FileEntity {
-		return dropboxEntryToEntity(path, entry);
-	}
-
 	/**
-	 * Resolve a Dropbox entry's absolute path to a sync-relative path, or null if
-	 * it is outside the remote vault root. Matching is case-insensitive (via
-	 * `path_lower`); the returned path preserves the user's casing (`path_display`).
-	 * Returns `""` for the root folder itself.
+	 * Resolve a Dropbox entry's absolute path to a sync-relative path, or null if it
+	 * is outside the remote vault root. Matching is case-insensitive (via `path_lower`);
+	 * the returned path preserves the user's casing (`path_display`). Returns `""` for
+	 * the root folder itself.
 	 *
 	 * The anchor is the CURRENT root path, refreshed from the stable folder id each
 	 * sync cycle ({@link setRootPath}, driven by `DropboxFs.refreshRootPath`), so a
@@ -83,146 +101,37 @@ export class DropboxMetadataCache {
 		return display.slice(this.rootSegmentsLower.length).join("/");
 	}
 
-	// ── Mutation methods ──
-
-	/** Reserved backend paths are never tracked (see sync/remote-vault.ts). */
-	private isReserved(path: string): boolean {
-		return path === INTERNAL_METADATA_PATH;
-	}
-
-	/** Add or update an entry with full index maintenance. */
+	/**
+	 * Add or update an entry at a KNOWN (already-relativized) path. Unlike the base
+	 * `setFile` — which assumes a clean upsert — this evicts a different entry that
+	 * occupies the path with no preceding `deleted` tombstone (a delta that didn't emit
+	 * the delete first, or batched it out of order): its whole subtree if it was a
+	 * folder, and its stale id mapping either way, so phantom descendants don't linger
+	 * and the displaced id stops reverse-resolving to this live path.
+	 */
 	setEntry(path: string, entry: DropboxEntry): void {
-		if (this.isReserved(path)) return;
-		let prev = this.pathToEntry.get(path);
-		// A different entry now occupies this path with no preceding `deleted` tombstone
-		// (the provider didn't emit the delete first, or batched out of order). If the
-		// displaced entry was a folder, evict its whole cached subtree first so stale
-		// descendants don't linger as phantom paths.
-		if (prev && prev.id !== entry.id && this.folders.has(path)) {
-			this.removeTree(path); // clears prev + its subtree + idToPath + children index
-			prev = undefined;
+		const prev = this.getFile(path);
+		if (prev && this.extractId(prev) !== this.extractId(entry)) {
+			if (this.isFolder(path)) this.removeTree(path);
+			else this.removeEntry(path);
 		}
-		// Overwriting a path held by a DIFFERENT id must evict the stale id from
-		// idToPath, or a later delete for that id would reverse-resolve to this
-		// still-live path and removeTree the wrong entry.
-		if (prev && prev.id && prev.id !== entry.id) this.idToPath.delete(prev.id);
-		this.pathToEntry.set(path, entry);
-		if (entry.id) this.idToPath.set(entry.id, path);
-		if (isFolderEntry(entry)) this.folders.add(path);
-		else this.folders.delete(path);
-		if (!prev) this.addToIndex(path);
-	}
-
-	/** Remove a single entry from all indices. */
-	removeEntry(path: string): void {
-		const entry = this.pathToEntry.get(path);
-		if (entry?.id) this.idToPath.delete(entry.id);
-		this.removeFromIndex(path);
-		this.pathToEntry.delete(path);
-		this.folders.delete(path);
-	}
-
-	/** Bulk-load entries (e.g. restored from IndexedDB). */
-	bulkLoad(items: Iterable<[string, DropboxEntry]>): void {
-		for (const [path, entry] of items) {
-			if (this.isReserved(path)) continue;
-			this.pathToEntry.set(path, entry);
-			if (entry.id) this.idToPath.set(entry.id, path);
-			if (isFolderEntry(entry)) this.folders.add(path);
-		}
-		for (const path of this.pathToEntry.keys()) {
-			this.addToIndex(path);
-		}
-	}
-
-	/** Snapshot all records for persistence. */
-	exportRecords(): { path: string; file: DropboxEntry; isFolder: boolean }[] {
-		return [...this.pathToEntry.entries()].map(([path, file]) => ({
-			path,
-			file,
-			isFolder: this.folders.has(path),
-		}));
-	}
-
-	/** Extract the parent path ("" for root-level items). */
-	static parentPath(path: string): string {
-		const i = path.lastIndexOf("/");
-		return i === -1 ? "" : path.substring(0, i);
-	}
-
-	clear(): void {
-		this.pathToEntry.clear();
-		this.idToPath.clear();
-		this.folders.clear();
-		this.children.clear();
-	}
-
-	private addToIndex(path: string): void {
-		const parent = DropboxMetadataCache.parentPath(path);
-		let set = this.children.get(parent);
-		if (!set) { set = new Set(); this.children.set(parent, set); }
-		set.add(path);
-	}
-
-	private removeFromIndex(path: string): void {
-		const parent = DropboxMetadataCache.parentPath(path);
-		const set = this.children.get(parent);
-		if (set) { set.delete(path); if (set.size === 0) this.children.delete(parent); }
-	}
-
-	/** Collect all descendant paths via the children index. */
-	collectDescendants(path: string): string[] {
-		const result: string[] = [];
-		const stack = [path];
-		while (stack.length > 0) {
-			const cur = stack.pop()!;
-			const kids = this.children.get(cur);
-			if (kids) for (const c of kids) { result.push(c); stack.push(c); }
-		}
-		return result;
+		this.setFile(path, entry);
 	}
 
 	/**
-	 * Build the cache from a flat list of recursive `list_folder` entries.
-	 * Entries outside the root (or that fail to relativize) are skipped.
+	 * Build the cache from a flat list of recursive `list_folder` entries (Dropbox's
+	 * full-scan shape), relativizing each `path_display` against the current root.
+	 * Overrides the base id-chain build: Dropbox entries carry no parent id. Entries
+	 * outside the root, the root itself, or `deleted` tombstones are skipped. The
+	 * caller ({@link AbstractMetadataCache} consumers / `CachingRemoteFs.fullScan`)
+	 * clears first, so this only upserts.
 	 */
-	buildFromEntries(entries: Iterable<DropboxEntry>): void {
-		this.clear();
+	buildFromFiles(entries: DropboxEntry[]): void {
 		for (const entry of entries) {
 			if (entry[".tag"] === "deleted") continue;
 			const path = this.relativize(entry);
 			if (path === null || path === "") continue;
 			this.setEntry(path, entry);
 		}
-	}
-
-	/** Rewrite all cached child paths when a folder is renamed/moved. */
-	rewriteChildPaths(oldPath: string, newPath: string): void {
-		const oldPrefix = oldPath + "/";
-		const descendants = this.collectDescendants(oldPath);
-		for (const childPath of descendants) {
-			const childEntry = this.pathToEntry.get(childPath);
-			if (!childEntry) continue;
-			const newChildPath = newPath + "/" + childPath.substring(oldPrefix.length);
-			this.removeFromIndex(childPath);
-			this.pathToEntry.delete(childPath);
-			this.pathToEntry.set(newChildPath, childEntry);
-			if (childEntry.id) this.idToPath.set(childEntry.id, newChildPath);
-			this.addToIndex(newChildPath);
-			if (this.folders.delete(childPath)) this.folders.add(newChildPath);
-		}
-	}
-
-	/** Remove an entry and all its descendants. */
-	removeTree(path: string): void {
-		const descendants = this.collectDescendants(path);
-		for (const p of [path, ...descendants]) {
-			const e = this.pathToEntry.get(p);
-			if (e?.id) this.idToPath.delete(e.id);
-			this.removeFromIndex(p);
-			this.pathToEntry.delete(p);
-			this.folders.delete(p);
-		}
-		this.children.delete(path);
 	}
 }

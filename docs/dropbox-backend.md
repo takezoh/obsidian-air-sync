@@ -101,7 +101,8 @@ correctly seen as unchanged.
 In-plugin **Authorization Code + PKCE**, fully worker-less (`fs/dropbox/auth.ts`).
 The app key (`client_id`) is public and there is **no client secret** — the
 ephemeral `code_verifier` is the proof. The authorization code returns through
-the shared no-secret relay page (`pages/callback/`, served at
+the shared no-secret relay page (the `callback/` page in the
+[air-sync-auth](https://github.com/takezoh/air-sync-auth) repo, served at
 `airsync.takezo.dev`) which bounces `?code=…&state=…` to
 `obsidian://air-sync-auth`; the plugin then exchanges the code for tokens
 directly with Dropbox. Refreshing an access token needs only the `client_id`.
@@ -121,10 +122,14 @@ directly with Dropbox. Refreshing an access token needs only the `client_id`.
 
 - `isConnected` = a token is present **and** a `remoteVaultFolderId` is bound;
   `getIdentity` = `dropbox:<folderId>` (drives identity-change handling).
-- `hasCheckpoint` = `!!cursor`; `resetTargetState` deletes the cursor → the next
-  sync is a cold reconcile.
-- `readBackendState` advances the persisted cursor only on a fully-successful
-  cycle and writes back refreshed tokens. The remote path is never persisted.
+- The incremental checkpoint (delta cursor + file-map cache) is owned by the FS's
+  `checkpoint` capability (`hasCheckpoint` / `resetCheckpoint` / `commitCheckpoint`,
+  inherited from `CachingRemoteFs`): both live in the per-target IndexedDB store and
+  commit in **one transaction** (ADR 0001) — the cursor is no longer kept in settings.
+- `readBackendState` writes back refreshed tokens only; it never touches the cursor.
+  The remote path is never persisted (it is resolved from the folder id on demand).
+- `clearCheckpointStore` drops the per-target store by its settings key when there is
+  no live FS (e.g. an expired backend), so a stale checkpoint can't survive a disconnect.
 
 ### Remote vault resolution & default
 
@@ -139,7 +144,8 @@ advances so `BackendManager`'s name-equality short-circuit resumes.
 ### Choosing a different folder
 
 When connected, settings offers **Choose folder**, which opens the Dropbox
-**Chooser** hosted on the relay (`pages/dropbox-folder/`) and returns the
+**Chooser** hosted on the relay (the `dropbox-folder/` page in the
+[air-sync-auth](https://github.com/takezoh/air-sync-auth) repo) and returns the
 selection via the backend-agnostic `obsidian://air-sync-folder` deep link
 (`startWebFolderPick` / `completeWebFolderPick`):
 

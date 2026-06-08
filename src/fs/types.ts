@@ -54,3 +54,15 @@ export interface FileEntity {
 	/** Backend-specific metadata the sync engine does not interpret (e.g. Drive/pCloud file ID) */
 	backendMeta?: Record<string, unknown>;
 }
+
+/**
+ * A rename pair: source and destination paths. Part of the filesystem contract
+ * (it appears in `IFileSystem.getChangedPaths`), so it lives here in `fs/`; the
+ * sync engine re-exports it from `sync/types` for its own consumers.
+ */
+export interface RenamePair {
+	oldPath: string;
+	newPath: string;
+	/** When true, this pair represents a folder rename (not a file rename) */
+	isFolder?: boolean;
+}

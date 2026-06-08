@@ -87,6 +87,18 @@ describe("GoogleDriveProvider.startWebFolderPick", () => {
 	});
 });
 
+describe("GoogleDriveProvider.picker (capability accessor)", () => {
+	it("exposes the folder-pick flow via provider.picker — the path BackendManager uses", async () => {
+		// BackendManager reaches the flow through `provider.picker?.…`, never the methods
+		// at the provider root. The other tests call them directly on the concrete class,
+		// so this is the only coverage that the `get picker()` accessor itself is wired up.
+		const { provider } = await makeProvider(CONNECTED);
+		expect(provider.picker).toBeDefined();
+		expect(typeof provider.picker?.startWebFolderPick).toBe("function");
+		expect(typeof provider.picker?.completeWebFolderPick).toBe("function");
+	});
+});
+
 describe("GoogleDriveProvider.completeWebFolderPick", () => {
 	const PENDING = { pendingFolderPickState: "STATE-1", ...FRESH };
 
@@ -184,7 +196,6 @@ describe("GoogleDriveProvider detached auth refresh-token rotation", () => {
 	const expiredData = {
 		remoteVaultFolderId: "FID",
 		accessTokenExpiry: 0, // expired → the detached auth must refresh
-		changesStartPageToken: "",
 		pendingAuthState: "",
 		pendingFolderPickState: "",
 	};
