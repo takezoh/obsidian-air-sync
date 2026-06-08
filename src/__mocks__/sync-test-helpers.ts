@@ -178,6 +178,10 @@ export function createMockFs(name: string): IFileSystem & {
 					modified: [] as string[],
 					deleted: [] as string[],
 				}),
+			// Load-bearing default: true ⇒ orchestrator's `checkpoint ? !hasCheckpoint() : false`
+			// is false ⇒ no forced cold scan, so default tests stay WARM/COLD (mirroring the
+			// pre-capability mock, which had no hasCheckpoint and short-circuited to false).
+			// Flipping this to false would silently force every default test cold.
 			hasCheckpoint: () => Promise.resolve(true),
 			resetCheckpoint: () => Promise.resolve(),
 			commitCheckpoint: () => Promise.resolve(),

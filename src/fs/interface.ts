@@ -90,13 +90,10 @@ export interface IFileSystem {
 	rename(oldPath: string, newPath: string): Promise<void>;
 
 	/**
-	 * The backend's incremental delta cursor + crash-safe checkpoint, or `undefined`
-	 * for backends without incremental sync (e.g. the local vault). Bundled as one
-	 * capability so it is all-or-nothing: a backend that can detect deltas
-	 * (`getChangedPaths`) MUST also expose the full checkpoint lifecycle
-	 * (`hasCheckpoint`/`resetCheckpoint`/`commitCheckpoint`) — a half-implementation
-	 * would silently degrade crash recovery (ADR 0001). Check `fs.checkpoint` once;
-	 * its presence guarantees every method below.
+	 * The backend's incremental delta cursor + crash-safe checkpoint (see
+	 * {@link IncrementalCheckpoint} for what travels together and why), or `undefined`
+	 * for backends without incremental sync (e.g. the local vault). Check `fs.checkpoint`
+	 * once; its presence guarantees every method on the capability.
 	 */
 	checkpoint?: IncrementalCheckpoint;
 
@@ -110,8 +107,10 @@ export interface IFileSystem {
 /**
  * A backend's incremental-sync capability: a delta cursor for change detection and a
  * crash-safe, atomically-committed checkpoint (ADR 0001). Exposed as one object on
- * {@link IFileSystem.checkpoint} so the four methods travel together — implementing one
- * means implementing all (the type enforces it; B1-3).
+ * {@link IFileSystem.checkpoint} so the four methods travel together — a backend that
+ * can detect deltas (`getChangedPaths`) MUST also expose the full checkpoint lifecycle
+ * (`hasCheckpoint`/`resetCheckpoint`/`commitCheckpoint`), because a half-implementation
+ * would silently degrade crash recovery. The type enforces all-or-nothing (B1-3).
  */
 export interface IncrementalCheckpoint {
 	/**

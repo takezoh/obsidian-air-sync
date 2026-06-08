@@ -887,6 +887,26 @@ describe("GoogleDriveFs cursor consolidation (crash safety)", () => {
 
 		await store.close();
 	});
+
+	it("exposes the checkpoint lifecycle via fs.checkpoint — the path the sync engine uses", async () => {
+		// The orchestrator/change-detector reach the lifecycle through `fs.checkpoint?.…`,
+		// never the methods at the FS root. Every other test drives them directly on the
+		// concrete class, so this is the only coverage that the `get checkpoint()` accessor
+		// is wired up (returns a capability exposing all four methods).
+		const { GoogleDriveFs } = await import("./index");
+		const client = {
+			listAllFiles: vi.fn().mockResolvedValue([]),
+			getChangesStartToken: vi.fn().mockResolvedValue("token-A"),
+			listChanges: vi.fn().mockResolvedValue({ changes: [], newStartPageToken: "token-A" }),
+			getFile: vi.fn().mockResolvedValue({ id: "root", name: "vault", mimeType: FOLDER }),
+		} as never;
+		const fs = new GoogleDriveFs(client, "root", undefined, undefined);
+		expect(fs.checkpoint).toBeDefined();
+		expect(typeof fs.checkpoint?.getChangedPaths).toBe("function");
+		expect(typeof fs.checkpoint?.hasCheckpoint).toBe("function");
+		expect(typeof fs.checkpoint?.resetCheckpoint).toBe("function");
+		expect(typeof fs.checkpoint?.commitCheckpoint).toBe("function");
+	});
 });
 
 describe("GoogleDriveFs.getChangedPaths", () => {

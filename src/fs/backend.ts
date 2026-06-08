@@ -76,12 +76,10 @@ export interface IBackendProvider {
 
 	/**
 	 * The backend's web-hosted folder-pick flow (e.g. the Google Picker on the OAuth
-	 * relay), or `undefined` for backends without one. Bundled as one capability so the
-	 * two halves of the flow travel together: a backend that can start a pick MUST also
-	 * be able to complete it (and vice versa) — a half-implementation is a dead-end the
-	 * type now rejects. Check `provider.picker` once; its presence guarantees both
-	 * methods. (Display of the bound folder is a separate concern — see
-	 * {@link getRemoteVaultDisplayPath} — because a folder can be bound without a picker.)
+	 * relay; see {@link WebFolderPicker} for what travels together and why), or
+	 * `undefined` for backends without one. Check `provider.picker` once; its presence
+	 * guarantees both halves. (Display of the bound folder is the separate
+	 * {@link getRemoteVaultDisplayPath} — a folder can be bound without a picker.)
 	 */
 	picker?: WebFolderPicker;
 

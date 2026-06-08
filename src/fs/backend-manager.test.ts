@@ -60,8 +60,12 @@ beforeEach(() => {
 		mkdir: vi.fn(),
 		delete: vi.fn(),
 		rename: vi.fn(),
+		// A full checkpoint capability (all-or-nothing). BackendManager only calls
+		// resetCheckpoint; the other three are present so the object is a faithful
+		// IncrementalCheckpoint, and getChangedPaths matches createMockFs's empty-delta
+		// default (not null) so the two mocks model the capability the same way.
 		checkpoint: {
-			getChangedPaths: vi.fn().mockResolvedValue(null),
+			getChangedPaths: vi.fn().mockResolvedValue({ modified: [], deleted: [] }),
 			resetCheckpoint: fakeResetCheckpoint,
 			hasCheckpoint: vi.fn().mockResolvedValue(false),
 			commitCheckpoint: vi.fn().mockResolvedValue(undefined),

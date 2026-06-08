@@ -315,7 +315,7 @@ export class BackendManager {
 	 */
 	private async dropCheckpointStore(settings: AirSyncSettings): Promise<void> {
 		if (this.remoteFs) {
-			await this.remoteFs.checkpoint?.resetCheckpoint()?.catch((e: unknown) => {
+			await this.remoteFs.checkpoint?.resetCheckpoint().catch((e: unknown) => {
 				this.deps.getLogger().warn("Failed to clear checkpoint store", {
 					error: e instanceof Error ? e.message : String(e),
 				});
