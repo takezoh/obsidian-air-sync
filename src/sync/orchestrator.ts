@@ -5,7 +5,7 @@ import type { Logger } from "../logging/logger";
 import { AsyncMutex } from "../queue/async-queue";
 import { isIgnored, isSystemJunkFile } from "../utils/ignore";
 import { isDotPathOutOfScope } from "../utils/path";
-import { INTERNAL_METADATA_PATH } from "./remote-vault";
+import { INTERNAL_METADATA_PATH } from "../fs/remote-vault-contract";
 import { SyncStateStore } from "./state";
 import { LocalChangeTracker } from "./local-tracker";
 import { collectChanges } from "./change-detector";

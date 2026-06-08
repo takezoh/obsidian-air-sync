@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { resolveGDriveRemoteVault } from "./remote-vault";
-import { REMOTE_VAULT_ROOT } from "../../sync/remote-vault";
+import { REMOTE_VAULT_ROOT } from "../remote-vault-contract";
 import { FOLDER_MIME } from "./types";
 import type { DriveFile } from "./types";
 import type { DriveClient } from "./client";

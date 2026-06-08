@@ -1,12 +1,23 @@
 import type { DriveClient } from "./client";
 import type { Logger } from "../../logging/logger";
-import type { RemoteVaultResolution, RemoteVaultMetadata } from "../../sync/remote-vault";
-import { REMOTE_VAULT_ROOT } from "../../sync/remote-vault";
+import type { RemoteVaultResolution } from "../remote-vault-contract";
+import { REMOTE_VAULT_ROOT } from "../remote-vault-contract";
 import { FOLDER_MIME } from "./types";
 
 // Legacy layout only — read during migration of pre-existing vaults, never written.
 const AIRSYNC_DIR = ".airsync";
 const METADATA_FILE = "metadata.json";
+
+/**
+ * Metadata that the legacy `.airsync/metadata.json` layout stored inside each
+ * remote vault. Read-only: this is the *only* consumer (migration reads it to
+ * match a legacy folder to this vault, then drops the file), and no code path
+ * writes it anymore — so it lives here next to that reader rather than in the
+ * backend-agnostic contract.
+ */
+interface RemoteVaultMetadata {
+	vaultName: string;
+}
 
 /**
  * Resolve or create this vault's remote folder in Google Drive, by convention.

@@ -4,7 +4,7 @@ import { getBackendData } from "../backend";
 import type { ISecretStore } from "../secret-store";
 import type { AirSyncSettings } from "../../settings";
 import type { Logger } from "../../logging/logger";
-import type { RemoteVaultResolution } from "../../sync/remote-vault";
+import type { RemoteVaultResolution } from "../remote-vault-contract";
 import { GoogleAuthDirect } from "./auth";
 import type { IGoogleAuth } from "./auth";
 import { GoogleDriveAuthProviderBase, GoogleDriveProviderBase } from "./provider-base";

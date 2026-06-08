@@ -1,6 +1,6 @@
 import type { IFileSystem } from "../interface";
 import type { FileEntity } from "../types";
-import type { RenamePair } from "../../sync/types";
+import type { RenamePair } from "../types";
 import type { MetadataStore } from "../../store/metadata-store";
 import type { Logger } from "../../logging/logger";
 import { AsyncMutex } from "../../queue/async-queue";

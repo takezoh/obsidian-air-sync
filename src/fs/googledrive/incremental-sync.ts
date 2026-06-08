@@ -2,7 +2,7 @@ import { FOLDER_MIME } from "./types";
 import type { DriveFile } from "./types";
 import { LIST_PAGE_CAP } from "./client";
 import type { DriveClient } from "./client";
-import type { RenamePair } from "../../sync/types";
+import type { RenamePair } from "../types";
 import type { Logger } from "../../logging/logger";
 import type { AbstractMetadataCache } from "../caching/metadata-cache";
 import type { IncrementalChangesResult } from "../caching/remote-fs";

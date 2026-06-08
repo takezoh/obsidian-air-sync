@@ -1,5 +1,5 @@
 import type { FileEntity } from "./types";
-import type { RenamePair } from "../sync/types";
+import type { RenamePair } from "./types";
 
 /**
  * Abstract filesystem interface for sync operations.

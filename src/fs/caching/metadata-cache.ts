@@ -1,6 +1,6 @@
 import type { FileEntity } from "../types";
 import type { Logger } from "../../logging/logger";
-import { INTERNAL_METADATA_PATH } from "../../sync/remote-vault";
+import { INTERNAL_METADATA_PATH } from "../remote-vault-contract";
 
 export interface FileChangeResult {
 	oldPath: string | undefined;
@@ -84,7 +84,7 @@ export abstract class AbstractMetadataCache<TFile> {
 	/**
 	 * Reserved backend paths (e.g. the metadata file) are never tracked by the
 	 * cache, so they stay invisible to every cache-backed reader
-	 * (list/stat/read/listDir/getChangedPaths). See sync/remote-vault.ts.
+	 * (list/stat/read/listDir/getChangedPaths). See fs/remote-vault-contract.ts.
 	 */
 	private isReserved(path: string): boolean {
 		return path === INTERNAL_METADATA_PATH;

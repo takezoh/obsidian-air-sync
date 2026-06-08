@@ -6,7 +6,7 @@ import type { MetadataStore } from "../../store/metadata-store";
 import type { Logger } from "../../logging/logger";
 import { DriveMetadataCache } from "./metadata-cache";
 import { applyIncrementalChanges } from "./incremental-sync";
-import { INTERNAL_METADATA_PATH } from "../../sync/remote-vault";
+import { INTERNAL_METADATA_PATH } from "../remote-vault-contract";
 import { sha256 } from "../../utils/hash";
 import { CachingRemoteFs } from "../caching/remote-fs";
 import type { IncrementalChangesResult } from "../caching/remote-fs";

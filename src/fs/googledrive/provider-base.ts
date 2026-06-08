@@ -6,7 +6,7 @@ import type { ISecretStore } from "../secret-store";
 import type { IFileSystem } from "../interface";
 import type { AirSyncSettings } from "../../settings";
 import type { Logger } from "../../logging/logger";
-import type { RemoteVaultResolution } from "../../sync/remote-vault";
+import type { RemoteVaultResolution } from "../remote-vault-contract";
 import type { IGoogleAuth } from "./auth";
 import { DriveClient } from "./client";
 import { GoogleDriveFs } from "./index";
