@@ -69,6 +69,41 @@ describe("DropboxAuthProvider.startAuth", () => {
 	});
 });
 
+describe("DropboxAuthProvider app key (Preview)", () => {
+	it("uses the user-supplied appKey from backendData as the authorize client_id", async () => {
+		let openedUrl = "";
+		vi.stubGlobal("window", { open: (u: string) => { openedUrl = u; }, location: { href: "" } });
+
+		const { auth } = await makeProvider(); // embedded = "test-client-id"
+		await auth.startAuth({ appKey: "user-app-key" });
+
+		expect(new URL(openedUrl).searchParams.get("client_id")).toBe("user-app-key");
+	});
+
+	it("refuses to start auth when no app key is configured (placeholder embedded)", async () => {
+		const { DropboxAuthProvider } = await import("./auth");
+		const auth = new DropboxAuthProvider(createMockSecretStore({})); // embedded = placeholder
+		await expect(auth.startAuth({})).rejects.toThrow(/app key/i);
+	});
+
+	it("threads the appKey into the token exchange client_id on completeAuth", async () => {
+		const spy = (await spyRequestUrl()).mockResolvedValue(
+			mockRes({ access_token: "AT", refresh_token: "RT", expires_in: 14400 }),
+		);
+		const { auth } = await makeProvider();
+		await auth.completeAuth("obsidian://air-sync-auth?code=C&state=abc", {
+			pendingAuthState: "abc",
+			pendingCodeVerifier: "v",
+			appKey: "user-app-key",
+		});
+
+		const body = new URLSearchParams(
+			(spy.mock.calls[0]![0] as RequestUrlParam).body as string,
+		);
+		expect(body.get("client_id")).toBe("user-app-key");
+	});
+});
+
 describe("DropboxAuthProvider.completeAuth", () => {
 	it("verifies CSRF state, exchanges the code with PKCE, and stores both tokens", async () => {
 		const spy = (await spyRequestUrl()).mockResolvedValue(

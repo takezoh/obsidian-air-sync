@@ -2,7 +2,7 @@
 
 Your Obsidian notes, always up to date on every device — without ever thinking about sync. Edit on your laptop, pick up your phone, and it's caught up before you start typing.
 
-Works on desktop and mobile, powered by your own cloud storage — **Google Drive or Dropbox**.
+Works on desktop and mobile, powered by your own cloud storage — **Google Drive**, or **Dropbox** (Preview).
 
 > **Requires a Google or Dropbox account.**
 
@@ -19,7 +19,7 @@ Works on desktop and mobile, powered by your own cloud storage — **Google Driv
 > **Requires a Google or Dropbox account.**
 
 1. Open the plugin settings (**Settings → Air Sync**).
-2. Pick your backend (**Google Drive** or **Dropbox**) if more than one is available.
+2. Pick your backend (**Google Drive** or **Dropbox** (Preview)) if more than one is available.
 3. Click **Connect to …** (e.g. **Connect to Google Drive** or **Connect to Dropbox**), then approve access in your browser.
 4. Choose where to sync: use the **default folder** (named after your vault), or **pick an existing folder**.
 
@@ -29,7 +29,7 @@ The first sync scans your remote folder, so it may take a little while. After th
 
 > **Using more than one device?** Air Sync identifies your vault's folder by your vault's name. Connect the other device to the same account, give the vault the same name, and choose the default folder — they'll sync together. A different vault name uses a separate folder that won't sync with the others.
 
-> **Dropbox** keeps everything inside its own app folder (`Apps/Air Sync/`), so Air Sync only ever sees the folders it created — not the rest of your Dropbox. To sync into a different folder under there, use **Choose folder** in settings after connecting.
+> **Dropbox is in Preview.** While it's in Preview, you supply your own Dropbox **app key** in settings before connecting (Air Sync's own key isn't built in yet). It keeps everything inside its own app folder (`Apps/Air Sync/`), so Air Sync only ever sees the folders it created — not the rest of your Dropbox. To sync into a different folder under there, use **Choose folder** in settings after connecting.
 
 ## Settings
 
@@ -37,7 +37,7 @@ The defaults work for most people — you rarely need to change these.
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| Backend | Storage backend for sync | Google Drive, Google Drive (custom OAuth), or Dropbox |
+| Backend | Storage backend for sync | Google Drive, Google Drive (custom OAuth), or Dropbox (Preview) |
 | Conflict strategy | How conflicting edits are resolved (see [Conflict resolution strategies](#conflict-resolution-strategies)) | Auto merge |
 
 ## Commands

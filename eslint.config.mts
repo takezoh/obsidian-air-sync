@@ -202,5 +202,6 @@ export default tseslint.config(
 		"version-bump.mjs",
 		"versions.json",
 		"main.js",
+		".roost", // local agent/tooling git worktrees (not part of the plugin)
 	]),
 );

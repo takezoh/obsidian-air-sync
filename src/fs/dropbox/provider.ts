@@ -38,6 +38,13 @@ export interface DropboxBackendData {
 	pendingAuthState: string;
 	/** CSRF nonce for an in-flight web folder pick (Dropbox Chooser); cleared on completion. */
 	pendingFolderPickState: string;
+	/**
+	 * PREVIEW-ONLY: user-supplied Dropbox app key (public PKCE client id). Lets testers
+	 * connect with their own Dropbox app while Air Sync's official key isn't embedded
+	 * yet. Empty → fall back to the embedded `DROPBOX_CLIENT_ID`. Remove this (and the
+	 * settings field) once the real key is embedded at official release (see auth.ts).
+	 */
+	appKey: string;
 }
 
 const DEFAULT_DROPBOX_DATA: DropboxBackendData = {
@@ -46,6 +53,7 @@ const DEFAULT_DROPBOX_DATA: DropboxBackendData = {
 	pendingCodeVerifier: "",
 	pendingAuthState: "",
 	pendingFolderPickState: "",
+	appKey: "",
 };
 
 /**
@@ -78,7 +86,7 @@ function randomState(): string {
  */
 export class DropboxProvider implements IBackendProvider {
 	readonly type = BACKEND_TYPE;
-	readonly displayName = "Dropbox";
+	readonly displayName = "Dropbox (Preview)";
 	readonly auth: DropboxAuthProvider;
 
 	constructor(private secretStore: ISecretStore) {
@@ -91,7 +99,7 @@ export class DropboxProvider implements IBackendProvider {
 
 	/** Build a token-bearing client from the stored secrets + expiry. */
 	private makeClient(data: DropboxBackendData, logger?: Logger): DropboxClient {
-		return this.clientFromAuth(this.auth.getOrCreateAuth(logger), data, logger);
+		return this.clientFromAuth(this.auth.getOrCreateAuth(data.appKey, logger), data, logger);
 	}
 
 	/**
@@ -100,7 +108,7 @@ export class DropboxProvider implements IBackendProvider {
 	 * concurrently with a live sync and must not reset its in-memory tokens.
 	 */
 	private makeDetachedClient(data: DropboxBackendData, logger?: Logger): DropboxClient {
-		return this.clientFromAuth(this.auth.createDetachedAuth(logger), data, logger);
+		return this.clientFromAuth(this.auth.createDetachedAuth(data.appKey, logger), data, logger);
 	}
 
 	private clientFromAuth(auth: DropboxAuth, data: DropboxBackendData, logger?: Logger): DropboxClient {
