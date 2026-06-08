@@ -11,7 +11,7 @@ import type { RemoteVaultResolution } from "../remote-vault-contract";
 import { MetadataStore } from "../../store/metadata-store";
 import { DropboxClient } from "./client";
 import { DropboxFs } from "./index";
-import { DropboxAuthProvider, DropboxAuth } from "./auth";
+import { DropboxAuthProvider, DropboxAuth, DROPBOX_CLIENT_ID } from "./auth";
 import type { DropboxEntry } from "./types";
 import { DropboxApiError } from "./types";
 import { DropboxSettingsRenderer } from "../../ui/dropbox-settings";
@@ -220,9 +220,21 @@ export class DropboxProvider implements IBackendProvider {
 	 * selection returns via `obsidian://air-sync-folder` and is bound by
 	 * {@link completeWebFolderPick}. Returns the CSRF state to persist.
 	 */
-	startWebFolderPick(_settings: AirSyncSettings): Promise<Record<string, unknown>> {
+	startWebFolderPick(settings: AirSyncSettings): Promise<Record<string, unknown>> {
 		const state = randomState();
-		const url = `${FOLDER_PICKER_URL}?state=${encodeURIComponent(state)}`;
+		// The Chooser host page reads the (public, non-secret) app key from the URL
+		// rather than embedding it: the plugin is the single source of truth for the
+		// key, so the host page needs no build-time placeholder of its own. The real
+		// gate is the Chooser domain allowlist in the App Console, not key secrecy.
+		//
+		// PREVIEW: the picker must use the SAME key the user authed with, so the
+		// user-supplied key (DropboxBackendData.appKey) wins over the embedded
+		// placeholder — mirroring DropboxAuthProvider.effectiveClientId. Once the real
+		// key is embedded at GA, drop the override and pass DROPBOX_CLIENT_ID directly.
+		const appKey = this.getData(settings).appKey.trim() || DROPBOX_CLIENT_ID;
+		const url =
+			`${FOLDER_PICKER_URL}?state=${encodeURIComponent(state)}` +
+			`&appKey=${encodeURIComponent(appKey)}`;
 		if (Platform.isMobile) {
 			window.location.href = url;
 		} else {

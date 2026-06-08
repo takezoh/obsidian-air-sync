@@ -31,7 +31,7 @@ const PLACEHOLDER_APP_KEY = "REPLACE_WITH_DROPBOX_APP_KEY";
  * ephemeral proof. Register the app at https://www.dropbox.com/developers/apps,
  * add `https://airsync.takezo.dev/callback` as a redirect URI, and embed the key here.
  */
-const DROPBOX_CLIENT_ID = PLACEHOLDER_APP_KEY;
+export const DROPBOX_CLIENT_ID = PLACEHOLDER_APP_KEY;
 
 interface DropboxCallbackParams {
 	code: string;
