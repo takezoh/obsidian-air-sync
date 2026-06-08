@@ -19,6 +19,20 @@ converges by re-running.** One failed action ⇒ the cursor does not advance ⇒
 run re-detects the gap. An already-synced file is skipped; an incompletely-synced one is
 re-pushed/-pulled/-deleted ⇒ committed ⇒ converged.
 
+> **Note (provisional — full treatment deferred to roadmap P1-A5).** The "re-run
+> converges" account above covers the *crash* path (a restarted FS replays from the
+> **committed** cursor). It does **not** yet describe a *third* mechanism that is
+> load-bearing for **same-session** convergence. The live replay reads the backend's
+> **in-memory** cursor (`googledrive/index.ts`), which advances even on a failed cycle
+> and survives across cycles while the FS object lives — so after a transient failure the
+> in-memory cursor can sit *ahead* of the un-committed work. What recovers it is not the
+> committed cursor but `recoverViaColdScan = failed > 0` (`orchestrator.ts`), which forces
+> the **next** cycle to cold-reconcile (full list × `SyncRecord` baseline join), catching
+> the gap regardless of cursor position. This in-session path is pinned by
+> `orchestrator.test.ts` ("forces a cold reconcile on the cycle after a failure"); do not
+> remove it on the assumption that the committed cursor alone closes the gap. P1-A5 will
+> fold this into the Decision proper.
+
 The Google Drive backend additionally keeps an **IndexedDB metadata cache** (the
 `path↔id` map in `DriveMetadataCache`, persisted via `MetadataStore`). **This is a third
 thing, and it is _not_ authoritative.** It is a performance optimization that lets

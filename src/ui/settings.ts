@@ -138,8 +138,13 @@ export class AirSyncSettingTab extends PluginSettingTab {
 						this.plugin.settings.ignorePatterns.join("\n")
 					)
 					.onChange(async (value) => {
-						this.plugin.settings.ignorePatterns =
-							value.split("\n");
+						// Trim and drop blank lines (parallels syncDotPaths). Trailing
+						// slashes are meaningful in gitignore (dir-only), so unlike dot
+						// paths we deliberately do NOT strip them here.
+						this.plugin.settings.ignorePatterns = value
+							.split("\n")
+							.map((line) => line.trim())
+							.filter((line) => line.length > 0);
 						await this.plugin.saveSettings();
 					})
 			);

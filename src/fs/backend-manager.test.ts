@@ -389,8 +389,12 @@ describe("BackendManager — switchBackend (hard reset)", () => {
 });
 
 describe("BackendManager — isConnected false with prior connection", () => {
-	it("notifies when isConnected is false but remoteVaultFolderId exists", async () => {
+	it("notifies when isConnected is false but a target is bound (identity present)", async () => {
 		fakeProvider.isConnected = () => false;
+		// A bound target ⇒ the provider reports a non-null identity — the
+		// backend-agnostic equivalent of "a remote folder is set". The disconnect
+		// notice is gated on this identity, not on any one backend's settings field.
+		fakeProvider.getIdentity = () => "test:folder-123";
 
 		const settings = mockSettings({
 			backendData: { remoteVaultFolderId: "folder-123" },
@@ -406,8 +410,11 @@ describe("BackendManager — isConnected false with prior connection", () => {
 		expect(deps.onDisconnected).toHaveBeenCalled();
 	});
 
-	it("does not notify when isConnected is false and no prior connection", async () => {
+	it("does not notify when isConnected is false and no target is bound (no identity)", async () => {
 		fakeProvider.isConnected = () => false;
+		// No target bound ⇒ the provider reports a null identity, so a
+		// never-configured backend never nags about expired auth.
+		fakeProvider.getIdentity = () => null;
 
 		const settings = mockSettings();
 		const deps = createDeps(settings);

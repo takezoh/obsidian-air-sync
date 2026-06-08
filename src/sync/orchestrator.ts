@@ -221,7 +221,9 @@ export class SyncOrchestrator {
 				}
 				if (status === 403 && !isRateLimitError(err)) {
 					this.deps.onStatusChange("error");
-					this.deps.notify("Permission denied. Please check your Google Drive permissions.");
+					// Name the active backend via provider.displayName rather than
+					// hardcoding one backend's name into this agnostic layer.
+					this.deps.notify(`Permission denied. Please check your ${this.deps.backendProvider()?.displayName ?? "the remote backend"} permissions.`);
 					return null;
 				}
 				if (status === 404) break;

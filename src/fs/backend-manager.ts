@@ -81,7 +81,10 @@ export class BackendManager {
 			if (!provider.isConnected(settings)) {
 				this.remoteFs = null;
 				this.deps.onDisconnected();
-				if (settings.backendData.remoteVaultFolderId) {
+				// Only nag about expired auth when a target was actually bound. Use the
+				// backend-agnostic identity (computed above) instead of a Drive-specific
+				// settings field, so this layer stays free of any one backend's shape.
+				if (newIdentity) {
 					this.deps.notify("Authentication expired. Please reconnect in settings.");
 				}
 				return;

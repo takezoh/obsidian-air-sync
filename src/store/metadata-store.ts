@@ -22,7 +22,15 @@ export class MetadataStore<T> {
 		this.helper = new IDBHelper({
 			dbName: `${config.dbNamePrefix}-${sanitizeDbName(vaultId)}`,
 			version: config.version,
-			onUpgrade: (db) => {
+			onUpgrade: (db, oldVersion) => {
+				// Cold start: on any schema version change, drop all stores and
+				// recreate. The cache is non-authoritative and fully re-derivable by a
+				// fullScan, so we never migrate it (matches SyncStateStore / CLAUDE.md).
+				if (oldVersion > 0) {
+					for (const name of Array.from(db.objectStoreNames)) {
+						db.deleteObjectStore(name);
+					}
+				}
 				if (!db.objectStoreNames.contains(FILES_STORE)) {
 					db.createObjectStore(FILES_STORE, { keyPath: "path" });
 				}
