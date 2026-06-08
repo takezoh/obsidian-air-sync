@@ -12,7 +12,6 @@ import { SyncScheduler } from "./sync/scheduler";
 import { ScreenWakeLockManager } from "./sync/wake-lock";
 import { LocalChangeTracker } from "./sync/local-tracker";
 import { Logger, getDeviceName } from "./logging/logger";
-import type { LoggerAdapter } from "./logging/logger";
 import { ConflictHistory } from "./sync/conflict-history";
 
 export default class AirSyncPlugin extends Plugin {
@@ -44,8 +43,9 @@ export default class AirSyncPlugin extends Plugin {
 		this.localFs = new LocalFs(this.app, () => this.settings.syncDotPaths);
 
 		const deviceName = getDeviceName(Platform.isMobile, this.settings.vaultId);
+		// vault.adapter is a structural superset of RawFsAdapter — no cast needed.
 		this.logger = new Logger(
-			this.app.vault.adapter as unknown as LoggerAdapter,
+			this.app.vault.adapter,
 			() => this.settings,
 			deviceName,
 		);

@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import type { LoggerAdapter } from "../logging/logger";
+import type { RawFsAdapter } from "../fs/raw-fs";
 import type { ConflictRecord } from "./types";
 import { ConflictHistory } from "./conflict-history";
 
-function createMockAdapter(): LoggerAdapter & { files: Map<string, string>; dirs: Set<string> } {
+function createMockAdapter(): RawFsAdapter & { files: Map<string, string>; dirs: Set<string> } {
 	const files = new Map<string, string>();
 	const dirs = new Set<string>();
 	return {
