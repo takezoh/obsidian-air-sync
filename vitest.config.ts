@@ -25,6 +25,8 @@ export default defineConfig({
 				"src/**/test-helpers.ts",
 				"src/fs/remote-change-detection-contract.ts",
 				"src/fs/caching/remote-fs-contract.ts",
+				"src/fs/ifilesystem-contract.ts",
+				"src/fs/ifilesystem-contract-writes.ts",
 				"src/**/types.ts",
 				"src/main.ts",
 			],
