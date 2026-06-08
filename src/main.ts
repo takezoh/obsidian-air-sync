@@ -1,6 +1,6 @@
 import { Notice, Platform, Plugin, setIcon, setTooltip } from "obsidian";
 import { DEFAULT_SETTINGS, AirSyncSettings } from "./settings";
-import { liftActiveBackendData } from "./settings-normalize";
+import { liftActiveBackendData, normalizeConflictStrategy } from "./settings-normalize";
 import { AirSyncSettingTab } from "./ui/settings";
 import { LocalFs } from "./fs/local/index";
 import { BackendManager } from "./fs/backend-manager";
@@ -202,6 +202,11 @@ export default class AirSyncPlugin extends Plugin {
 
 		// Normalize a legacy per-type backendData map to the single active-backend bag.
 		if (liftActiveBackendData(this.settings, getAllBackendProviders().map((p) => p.type))) {
+			needsSave = true;
+		}
+
+		// Coerce a removed conflictStrategy (e.g. the retired "ask") to a valid one.
+		if (normalizeConflictStrategy(this.settings)) {
 			needsSave = true;
 		}
 

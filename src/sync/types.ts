@@ -31,7 +31,7 @@ export interface MixedEntity {
 }
 
 /** User-facing strategy for resolving conflicts */
-export type ConflictStrategy = "auto_merge" | "duplicate" | "ask";
+export type ConflictStrategy = "auto_merge" | "duplicate";
 
 /** A record of a conflict resolution for audit/history purposes */
 export interface ConflictRecord {

@@ -1,8 +1,30 @@
 import { describe, it, expect } from "vitest";
-import { liftActiveBackendData } from "./settings-normalize";
+import { liftActiveBackendData, normalizeConflictStrategy } from "./settings-normalize";
 import { mockSettings } from "./__mocks__/sync-test-helpers";
 
 const KNOWN = ["googledrive", "googledrive-custom"];
+
+describe("normalizeConflictStrategy", () => {
+	it("leaves a valid strategy untouched", () => {
+		for (const strategy of ["auto_merge", "duplicate"] as const) {
+			const settings = mockSettings({ conflictStrategy: strategy });
+			expect(normalizeConflictStrategy(settings)).toBe(false);
+			expect(settings.conflictStrategy).toBe(strategy);
+		}
+	});
+
+	it("maps the retired 'ask' to 'duplicate' (what it actually did)", () => {
+		const settings = mockSettings({ conflictStrategy: "ask" as never });
+		expect(normalizeConflictStrategy(settings)).toBe(true);
+		expect(settings.conflictStrategy).toBe("duplicate");
+	});
+
+	it("coerces any other unknown value to the default 'auto_merge'", () => {
+		const settings = mockSettings({ conflictStrategy: "nonsense" as never });
+		expect(normalizeConflictStrategy(settings)).toBe(true);
+		expect(settings.conflictStrategy).toBe("auto_merge");
+	});
+});
 
 describe("liftActiveBackendData", () => {
 	it("lifts the active backend's entry and drops the others", () => {

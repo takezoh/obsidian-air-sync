@@ -28,7 +28,6 @@ export class AirSyncSettingTab extends PluginSettingTab {
 				dropdown
 					.addOption("auto_merge", "Auto merge (recommended)")
 					.addOption("duplicate", "Always create duplicate")
-					.addOption("ask", "Ask each time")
 					.setValue(this.plugin.settings.conflictStrategy)
 					.onChange(async (value) => {
 						this.plugin.settings.conflictStrategy =
