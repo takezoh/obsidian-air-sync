@@ -120,7 +120,7 @@ describe("SyncOrchestrator", () => {
 		});
 
 		it("shows sync completion notice when logging is enabled", async () => {
-			const settings = { ...mockSettings(), enableLogging: true };
+			const settings = { ...mockSettings(), showSyncNotifications: true };
 			const deps = createDeps({ getSettings: () => settings });
 			const orchestrator = new SyncOrchestrator(deps);
 			await orchestrator.runSync();
@@ -283,7 +283,7 @@ describe("SyncOrchestrator", () => {
 
 		it("runs normally when backend is not connecting", async () => {
 			const settings = mockSettings();
-			settings.enableLogging = true;
+			settings.showSyncNotifications = true;
 			const deps = createDeps({
 				isBackendConnecting: () => false,
 				getSettings: () => settings,
@@ -295,7 +295,7 @@ describe("SyncOrchestrator", () => {
 		});
 
 		it("optimizes rename pair into rename_remote action", async () => {
-			const settings = { ...mockSettings(), enableLogging: true };
+			const settings = { ...mockSettings(), showSyncNotifications: true };
 			const deps = createDeps({ getSettings: () => settings });
 			const localFs = createMockFs("local");
 			const remoteFs = createMockFs("remote");

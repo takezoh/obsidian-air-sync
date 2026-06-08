@@ -341,6 +341,7 @@ export function mockSettings(
 		enableThreeWayMerge: true,
 		mobileMaxFileSizeMB: 10,
 		screenWakeLockOnSync: false,
+		showSyncNotifications: false,
 		enableLogging: false,
 		logLevel: "info",
 		backendData: {},

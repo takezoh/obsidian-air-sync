@@ -17,6 +17,8 @@ export interface AirSyncSettings {
 	mobileMaxFileSizeMB: number;
 	/** Hold a screen wake lock while syncing so mobile devices don't sleep mid-sync */
 	screenWakeLockOnSync: boolean;
+	/** Show a notice summarizing each completed sync cycle (independent of logging) */
+	showSyncNotifications: boolean;
 
 	/** Write sync logs to .airsync/logs/{device}/{date}.log */
 	enableLogging: boolean;
@@ -50,6 +52,7 @@ export const DEFAULT_SETTINGS: AirSyncSettings = {
 	enableThreeWayMerge: true,
 	mobileMaxFileSizeMB: 10,
 	screenWakeLockOnSync: false,
+	showSyncNotifications: false,
 	enableLogging: false,
 	logLevel: "info",
 	backendData: {},

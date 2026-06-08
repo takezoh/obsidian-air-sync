@@ -182,6 +182,20 @@ export class AirSyncSettingTab extends PluginSettingTab {
 		}
 
 		new Setting(containerEl)
+			.setName("Show sync notifications")
+			.setDesc(
+				"Show a brief notice summarizing each completed sync (files uploaded, downloaded, etc.)."
+			)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.showSyncNotifications)
+					.onChange(async (value) => {
+						this.plugin.settings.showSyncNotifications = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
 			.setName("Enable logging")
 			.setDesc(
 				"Write sync logs to .airsync/ in your vault for debugging."

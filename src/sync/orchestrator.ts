@@ -179,7 +179,9 @@ export class SyncOrchestrator {
 					this.deps.logger?.info("Sync completed", { succeeded, conflicts, failed });
 				}
 
-				if (this.deps.getSettings().enableLogging) {
+				// The per-cycle notice is gated on its OWN setting now — `enableLogging`
+				// controls only whether logs are written (it used to double as this gate).
+				if (this.deps.getSettings().showSyncNotifications) {
 					this.deps.notify(buildNotificationMessage(result));
 				}
 				await this.deps.logger?.flush();
