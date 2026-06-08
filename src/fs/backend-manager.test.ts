@@ -42,7 +42,7 @@ function createDeps(
 		getVaultName: () => "Test Vault",
 		onConnected: vi.fn(),
 		onDisconnected: vi.fn(),
-		onIdentityChanged: vi.fn().mockResolvedValue(undefined),
+		clearSyncBaseline: vi.fn().mockResolvedValue(undefined),
 		notify: vi.fn(),
 		refreshSettingsDisplay: vi.fn(),
 		...overrides,
@@ -104,19 +104,19 @@ beforeEach(() => {
 	};
 });
 
-describe("BackendManager — identity change triggers onIdentityChanged", () => {
-	it("does not call onIdentityChanged on first initBackend call", async () => {
+describe("BackendManager — identity change triggers clearSyncBaseline", () => {
+	it("does not call clearSyncBaseline on first initBackend call", async () => {
 		const settings = mockSettings();
 		const deps = createDeps(settings);
 		const mgr = new BackendManager(deps);
 
 		await mgr.initBackend();
 
-		expect(deps.onIdentityChanged).not.toHaveBeenCalled();
+		expect(deps.clearSyncBaseline).not.toHaveBeenCalled();
 		expect(deps.onConnected).toHaveBeenCalled();
 	});
 
-	it("calls onIdentityChanged when identity changes between initBackend calls", async () => {
+	it("calls clearSyncBaseline when identity changes between initBackend calls", async () => {
 		const settings = mockSettings();
 		const deps = createDeps(settings);
 		const mgr = new BackendManager(deps);
@@ -127,10 +127,10 @@ describe("BackendManager — identity change triggers onIdentityChanged", () => 
 		fakeProvider.getIdentity = () => "test:folder-B";
 		await mgr.initBackend();
 
-		expect(deps.onIdentityChanged).toHaveBeenCalledTimes(1);
+		expect(deps.clearSyncBaseline).toHaveBeenCalledTimes(1);
 	});
 
-	it("does not call onIdentityChanged when identity stays the same", async () => {
+	it("does not call clearSyncBaseline when identity stays the same", async () => {
 		const settings = mockSettings();
 		const deps = createDeps(settings);
 		const mgr = new BackendManager(deps);
@@ -138,10 +138,10 @@ describe("BackendManager — identity change triggers onIdentityChanged", () => 
 		await mgr.initBackend();
 		await mgr.initBackend();
 
-		expect(deps.onIdentityChanged).not.toHaveBeenCalled();
+		expect(deps.clearSyncBaseline).not.toHaveBeenCalled();
 	});
 
-	it("calls onIdentityChanged and resets identity on disconnect", async () => {
+	it("calls clearSyncBaseline and resets identity on disconnect", async () => {
 		const settings = mockSettings();
 		const deps = createDeps(settings);
 		const mgr = new BackendManager(deps);
@@ -149,16 +149,16 @@ describe("BackendManager — identity change triggers onIdentityChanged", () => 
 		await mgr.initBackend();
 		await mgr.disconnectBackend();
 
-		expect(deps.onIdentityChanged).toHaveBeenCalledTimes(1);
+		expect(deps.clearSyncBaseline).toHaveBeenCalledTimes(1);
 		// The per-target checkpoint store (cursor + cache) is cleared via the live FS,
 		// so no stale checkpoint survives the disconnect (works for custom OAuth too).
 		expect(fakeResetCheckpoint).toHaveBeenCalledTimes(1);
 
 		// After disconnect, re-init should not trigger another callback
 		// (lastBackendIdentity was reset to null)
-		(deps.onIdentityChanged as ReturnType<typeof vi.fn>).mockClear();
+		(deps.clearSyncBaseline as ReturnType<typeof vi.fn>).mockClear();
 		await mgr.initBackend();
-		expect(deps.onIdentityChanged).not.toHaveBeenCalled();
+		expect(deps.clearSyncBaseline).not.toHaveBeenCalled();
 	});
 
 	it("clears the orphaned checkpoint store on disconnect when there is no live FS", async () => {
@@ -211,7 +211,7 @@ describe("BackendManager — identity change triggers onIdentityChanged", () => 
 
 		await mgr.initBackend(); // first init of this instance
 
-		expect(deps.onIdentityChanged).toHaveBeenCalledTimes(1);
+		expect(deps.clearSyncBaseline).toHaveBeenCalledTimes(1);
 		expect(fakeResetCheckpoint).toHaveBeenCalledTimes(1);
 		expect(settings.lastSyncedIdentity).toBe("test:folder-NEW");
 	});
@@ -223,7 +223,7 @@ describe("BackendManager — identity change triggers onIdentityChanged", () => 
 
 		await mgr.initBackend();
 
-		expect(deps.onIdentityChanged).not.toHaveBeenCalled();
+		expect(deps.clearSyncBaseline).not.toHaveBeenCalled();
 		expect(settings.lastSyncedIdentity).toBe("test:folder-A");
 	});
 
@@ -290,21 +290,21 @@ describe("BackendManager — switchBackend (hard reset)", () => {
 	});
 
 	it("wipes backendData, clears identity, and clears sync state", async () => {
-		const onIdentityChanged = vi.fn().mockResolvedValue(undefined);
+		const clearSyncBaseline = vi.fn().mockResolvedValue(undefined);
 		const settings = mockSettings({
 			backendData: { remoteVaultFolderId: "FID", customClientId: "ref" },
 		});
-		const deps = createDeps(settings, { onIdentityChanged });
+		const deps = createDeps(settings, { clearSyncBaseline });
 		const mgr = new BackendManager(deps);
 		await mgr.initBackend();
-		onIdentityChanged.mockClear();
+		clearSyncBaseline.mockClear();
 
 		await mgr.switchBackend("other");
 
 		expect(settings.backendData).toEqual({});
 		expect(settings.lastSyncedIdentity).toBe("");
 		expect(settings.backendType).toBe("other");
-		expect(onIdentityChanged).toHaveBeenCalledTimes(1);
+		expect(clearSyncBaseline).toHaveBeenCalledTimes(1);
 	});
 
 	it("sweeps plugin-owned tokens for every registered backend", async () => {
@@ -383,13 +383,13 @@ describe("BackendManager — switchBackend (hard reset)", () => {
 		const blocker = new Promise<void>((r) => { release = r; });
 		// Resolves when switchBackend reaches the reset — robust to microtask timing.
 		const atReset = new Promise<void>((r) => { reached = r; });
-		const onIdentityChanged = vi.fn().mockImplementation(async () => {
+		const clearSyncBaseline = vi.fn().mockImplementation(async () => {
 			connectingDuringReset = mgr.isConnecting();
 			reached();
 			await blocker;
 		});
 		const settings = mockSettings();
-		const deps = createDeps(settings, { onIdentityChanged });
+		const deps = createDeps(settings, { clearSyncBaseline });
 		const mgr = new BackendManager(deps);
 		await mgr.initBackend();
 
@@ -445,24 +445,24 @@ describe("BackendManager — resetAll on connect (start cold)", () => {
 	it("completeBackendConnect resets both the baseline and the checkpoint so a connect starts cold", async () => {
 		// resetAll() runs at the connect boundary too (not just disconnect/switch): a
 		// reconnect to a still-bound target must never silently resume against a stale
-		// cursor/baseline. Both halves get cleared — SyncRecord baseline (onIdentityChanged)
+		// cursor/baseline. Both halves get cleared — SyncRecord baseline (clearSyncBaseline)
 		// and the checkpoint store (resetCheckpoint via the live FS).
 		const settings = mockSettings();
 		const deps = createDeps(settings);
 		const mgr = new BackendManager(deps);
 		await mgr.initBackend(); // sets backendProvider + remoteFs = fakeFs
 		fakeProvider.auth.completeAuth = () => Promise.resolve({});
-		vi.mocked(deps.onIdentityChanged).mockClear();
+		vi.mocked(deps.clearSyncBaseline).mockClear();
 		vi.mocked(deps.onConnected).mockClear();
 		fakeResetCheckpoint.mockClear();
 
 		await mgr.completeBackendConnect("auth-code");
 
-		expect(deps.onIdentityChanged).toHaveBeenCalledTimes(1);
+		expect(deps.clearSyncBaseline).toHaveBeenCalledTimes(1);
 		expect(fakeResetCheckpoint).toHaveBeenCalledTimes(1);
 		// The reset MUST run before the FS is rebuilt and handed to the orchestrator —
 		// otherwise it would wipe the freshly-built FS's checkpoint, not the prior binding's.
-		const resetOrder = vi.mocked(deps.onIdentityChanged).mock.invocationCallOrder[0]!;
+		const resetOrder = vi.mocked(deps.clearSyncBaseline).mock.invocationCallOrder[0]!;
 		const connectedOrder = vi.mocked(deps.onConnected).mock.invocationCallOrder[0]!;
 		expect(resetOrder).toBeLessThan(connectedOrder);
 	});

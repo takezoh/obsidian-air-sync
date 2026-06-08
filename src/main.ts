@@ -69,7 +69,7 @@ export default class AirSyncPlugin extends Plugin {
 				this.syncStatus = "not_connected";
 				this.updateStatusBar();
 			},
-			onIdentityChanged: async () => {
+			clearSyncBaseline: async () => {
 				await this.orchestrator?.clearSyncState();
 			},
 			notify: (message) => {

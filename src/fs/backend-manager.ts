@@ -14,7 +14,8 @@ export interface BackendManagerDeps {
 	getVaultName: () => string;
 	onConnected: (remoteFs: IFileSystem) => void;
 	onDisconnected: () => void;
-	onIdentityChanged: () => Promise<void>;
+	/** Clear the per-vault SyncRecord baseline (e.g. on identity change / connect / teardown). */
+	clearSyncBaseline: () => Promise<void>;
 	notify: (message: string) => void;
 	refreshSettingsDisplay: () => void;
 }
@@ -70,7 +71,7 @@ export class BackendManager {
 						from: storedIdentity,
 						to: newIdentity,
 					});
-					await this.deps.onIdentityChanged();
+					await this.deps.clearSyncBaseline();
 					identityChanged = true;
 				}
 				settings.lastSyncedIdentity = newIdentity;
@@ -337,7 +338,7 @@ export class BackendManager {
 		} else {
 			await this.backendProvider?.clearCheckpointStore?.(settings);
 		}
-		await this.deps.onIdentityChanged();
+		await this.deps.clearSyncBaseline();
 	}
 
 	/** Disconnect the current backend */
