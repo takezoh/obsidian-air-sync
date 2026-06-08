@@ -201,9 +201,5 @@ export default tseslint.config(
 		"version-bump.mjs",
 		"versions.json",
 		"main.js",
-		// Separate sub-projects with their own toolchains; not part of the plugin
-		// gate. oauth-worker/ is type-checked by its own tsconfig (wrangler).
-		"oauth-worker/**",
-		"pages/**",
 	]),
 );
