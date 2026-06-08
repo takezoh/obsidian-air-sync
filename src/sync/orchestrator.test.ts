@@ -517,6 +517,19 @@ describe("SyncOrchestrator", () => {
 			expect(orchestrator.isExcluded("notes/hello.md")).toBe(false);
 		});
 
+		it("always excludes OS-junk files on every backend, regardless of ignore/dot settings", () => {
+			const settings = mockSettings();
+			settings.ignorePatterns = [];
+			settings.syncDotPaths = [".DS_Store", "Anime"]; // even opted-in dot scope can't bring junk back
+			const deps = createDeps({ getSettings: () => settings });
+			const orchestrator = new SyncOrchestrator(deps);
+
+			expect(orchestrator.isExcluded("Anime/desktop.ini")).toBe(true);
+			expect(orchestrator.isExcluded("a/Thumbs.db")).toBe(true);
+			expect(orchestrator.isExcluded(".DS_Store")).toBe(true);
+			expect(orchestrator.isExcluded("notes/hello.md")).toBe(false);
+		});
+
 		it("excludes hidden paths not opted into syncDotPaths (scope gate)", () => {
 			const settings = mockSettings();
 			settings.syncDotPaths = [];

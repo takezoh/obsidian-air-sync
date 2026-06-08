@@ -1,9 +1,16 @@
 /**
  * Algorithm of a remote-provided content checksum.
+ *
+ * `"dropbox"` is Dropbox's `content_hash`: the file is split into 4 MiB blocks,
+ * each block is SHA-256'd, the raw block digests are concatenated, and the
+ * concatenation is SHA-256'd (hex). Unlike `"opaque"` it IS reproducible from
+ * local content, so it powers cross-side dedup; it is distinct from `"sha256"`
+ * (a plain hash of the whole file), hence its own algo tag.
+ *
  * `"opaque"` is a backend-internal value (e.g. pCloud's content hash) that
  * cannot be reproduced from local content.
  */
-export type ChecksumAlgo = "md5" | "sha1" | "sha256" | "opaque";
+export type ChecksumAlgo = "md5" | "sha1" | "sha256" | "dropbox" | "opaque";
 
 /** A content checksum provided by a remote backend, tagged with its algorithm. */
 export interface RemoteChecksum {

@@ -22,8 +22,9 @@ One row per directory; see the layer diagram and per-doc references for module d
 | `fs/` | Backend-agnostic contracts and lifecycle: `IFileSystem`, `IAuthProvider`, `IBackendProvider`, `FileEntity`, the provider registry, `AuthError`, `BackendManager`, and the `ISecretStore`/token-store wrappers over Obsidian SecretStorage. |
 | `fs/local/` | `LocalFs` (Obsidian Vault API wrapper) plus the raw adapter for dot-prefixed paths. |
 | `fs/googledrive/` | The Google Drive backend: `GoogleDriveFs` with metadata cache, the REST v3 `DriveClient`, server + PKCE auth, the path↔ID `DriveMetadataCache`, incremental sync (changes.list), resumable upload, remote-vault resolution, the Drive types, and the built-in / custom OAuth providers. |
+| `fs/dropbox/` | The Dropbox backend (App Folder scope): `DropboxFs` with a relative-path-keyed `DropboxMetadataCache`, the HTTP v2 `DropboxClient`, in-plugin Authorization Code + PKCE auth (worker-less), incremental sync (`list_folder/continue` + cursor), and the `"dropbox"` `content_hash` checksum. The vault is addressed solely by its **stable folder id** (`id:<id>/<subpath>` for every operation — no absolute path is stored), so a remote move/rename of the folder keeps syncing with no migration. The current absolute path is re-resolved from the id each cycle (`get_metadata`) only to relativize `list_folder`'s absolute results into vault-relative keys, and for the settings display. |
 | `fs/pcloud/` | The pCloud backend: `PCloudFs` with metadata cache, the JSON `PCloudClient` (hand-built multipart upload), code-flow OAuth (long-lived token, no refresh), the path↔id `PCloudMetadataCache`, incremental sync (account-wide `diff`), and the provider. Content change detection uses pCloud's opaque content hash (`remoteChecksum.algo === "opaque"`). |
-| `ui/` | Settings UI: the main settings tab, the backend-connection section, and the Google Drive / pCloud backend settings. |
+| `ui/` | Settings UI: the main settings tab, the backend-connection section, and the Google Drive / Dropbox / pCloud backend settings. |
 | `store/` | IndexedDB plumbing: the `IDBHelper` transaction wrapper and the generic `MetadataStore<T>` file-metadata cache. |
 | `logging/` | `Logger` — structured log writer (`.airsync/logs/`). |
 | `queue/` | Concurrency primitives: `AsyncPool` (bounded concurrency) and `AsyncMutex`. |
@@ -78,10 +79,10 @@ One row per directory; see the layer diagram and per-doc references for module d
      │  commitAction()  (per action)      │  StateCommitter
      └───────────────┬────────────────────┘
                      │
-         ┌───────────▼───────────┐
-         │      IFileSystem      │
-         │  LocalFs │ GoogleDriveFs │
-         └───────────────────────┘
+         ┌─────────────────────────────────────┐
+         │             IFileSystem             │
+         │  LocalFs │ GoogleDriveFs │ DropboxFs  │
+         └─────────────────────────────────────┘
 ```
 
 `runSync` early-returns when no remote backend is present, the backend is connecting, or layout is not ready; it serializes via an `AsyncMutex`. A sync arriving while one runs sets a `syncPending` flag and the running cycle re-runs via a `do/while` loop (coalescing). Each cycle retries up to `MAX_RETRIES = 3`: `AuthError` (status 401) and a non-rate-limit HTTP 403 abort the whole sync immediately; HTTP 404 breaks the retry loop without special handling. For 429 or a rate-limit 403 carrying a `Retry-After` header, delay = `retryAfter * 1000` ms; otherwise exponential backoff with jitter = `2^(attempt-1) * 1000 * (0.5 + Math.random())` ms. See [docs/error-handling.md](docs/error-handling.md) for the full classification/recovery table.
@@ -97,7 +98,7 @@ interface FileEntity {
   size: number;          // bytes (0 for directories)
   mtime: number;         // Unix epoch ms (0 = unknown)
   hash: string;          // SHA-256 hex ("" = not computed)
-  backendMeta?: Record<string, unknown>;  // e.g. { driveId, contentChecksum }
+  backendMeta?: Record<string, unknown>;  // backend-specific, e.g. { driveId } (Drive) or { dropboxId, rev } (Dropbox)
 }
 ```
 
@@ -224,8 +225,8 @@ interface IFileSystem {
 Key design points:
 
 - `list()` may return `hash: ""` for performance; use `stat()` when an accurate hash is needed. `LocalFs.stat()` is authoritative: on a vault-index miss it falls back to the filesystem adapter, so a not-yet-indexed file on disk is never reported absent (absence drives deletions).
-- **Dot-prefixed (hidden) paths bypass the indexed Vault API.** Obsidian's vault index excludes any hidden path (`.airsync`, `.obsidian`, nested `foo/.bar`), so `getAbstractFileByPath()` returns `null` and `vault.createBinary()` either returns `null` (→ NPE on `.stat`) or throws `File already exists`. `LocalFs` therefore routes every operation on a dot-prefixed path (`isDotPrefixed()`, `utils/path.ts`) through `DotPathAdapter` (the raw `vault.adapter`, which overwrites and is index-independent). This is a **mechanism** decision (which API to use) and is independent of sync **policy** (whether to sync it) — policy is `syncDotPaths` + `ignorePatterns`, enforced separately by `SyncOrchestrator.isExcluded()`. `list()` only enumerates hidden paths under configured `syncDotPaths` roots (it cannot scan every hidden folder, e.g. `.obsidian`), so a hidden path is synced only when opted in.
-- `getChangedPaths()` is optional and should be called before `list()`. When implemented (e.g. Google Drive changes.list) it supplies the remote-side changed/deleted/renamed paths consumed by both hot and warm change detection (the hot path is triggered by the local change tracker's dirty paths, not by this method). The `renamed` field lets backends report file moves for native rename optimization.
+- **Dot-prefixed (hidden) paths bypass the indexed Vault API.** Obsidian's vault index excludes any hidden path (`.airsync`, `.obsidian`, nested `foo/.bar`), so `getAbstractFileByPath()` returns `null` and `vault.createBinary()` either returns `null` (→ NPE on `.stat`) or throws `File already exists`. `LocalFs` therefore routes every operation on a dot-prefixed path (`isDotPrefixed()`, `utils/path.ts`) through `DotPathAdapter` (the raw `vault.adapter`, which overwrites and is index-independent). This is a **mechanism** decision (which API to use) and is independent of sync **policy** (whether to sync it) — policy is `syncDotPaths` + `ignorePatterns`, enforced separately by `SyncOrchestrator.isExcluded()`. `list()` only enumerates hidden paths under configured `syncDotPaths` roots (it cannot scan every hidden folder, e.g. `.obsidian`), so a hidden path is synced only when opted in. `isExcluded()` also drops OS-generated junk (`desktop.ini`, `thumbs.db`, `.DS_Store` — `isSystemJunkFile()`) unconditionally on every backend, like the reserved metadata path: these are never worth syncing and some backends (Dropbox) reject them outright, which would otherwise fail every cycle and block the delta checkpoint.
+- `getChangedPaths()` is optional and should be called before `list()`. When implemented (e.g. Google Drive `changes.list`, Dropbox `list_folder/continue`) it supplies the remote-side changed/deleted/renamed paths consumed by both hot and warm change detection (the hot path is triggered by the local change tracker's dirty paths, not by this method). The `renamed` field lets backends report file moves for native rename optimization.
 - `delete()` is idempotent (deleting a non-existent path is a no-op) and backends may use soft deletion (trash). Deleting a directory removes its children recursively; the caller must separately clean up the SyncRecord for each removed child path (`delete()` does not touch sync state).
 - `write()` auto-creates parent directories.
 - `rename(oldPath, newPath)` throws if `oldPath` does not exist or if `newPath` already exists (the rename optimizer relies on the latter to skip occupied destinations); it auto-creates parent directories. `mkdir()` is idempotent and throws if an intermediate component is an existing file.
@@ -238,7 +239,7 @@ Abstraction for a remote storage backend. main.ts and sync/ never import backend
 
 ```typescript
 interface IBackendProvider {
-  readonly type: string;             // "googledrive", "googledrive-custom". Stable, unique registry key;
+  readonly type: string;             // "googledrive", "googledrive-custom", "dropbox". Stable, unique registry key;
                                      // also indexes settings.backendData and per-backend secrets. Immutable once published.
   readonly displayName: string;
   readonly auth: IAuthProvider;
@@ -249,7 +250,7 @@ interface IBackendProvider {
   hasCheckpoint?(settings): boolean;       // is a committed delta cursor present? false ⇒ force a cold reconcile
   readBackendState?(fs, commitCheckpoint): Record<string, unknown>;  // advance the cursor only when commitCheckpoint (failed === 0)
   resolveRemoteVault?(app, settings, vaultName, logger?): Promise<RemoteVaultResolution>;  // find/create the default vault folder
-  startWebFolderPick?(settings): Promise<Record<string, unknown>>;            // open the web folder picker (Google Picker)
+  startWebFolderPick?(settings): Promise<Record<string, unknown>>;            // open the web folder picker (Google Picker / Dropbox Chooser)
   completeWebFolderPick?(params, settings, logger?): Promise<RemoteVaultResolution>;  // bind the picked folder (by id)
   getRemoteVaultDisplayPath?(settings, logger?): Promise<string | null>;      // resolve the bound folder's path for settings
   clearPluginSecrets?(): void;       // sweep this backend's plugin-owned secrets (used by the backend-switch reset)
@@ -273,12 +274,13 @@ interface IAuthProvider {
 }
 ```
 
-The provider registry (`fs/registry.ts`) maps backend types to provider instances. New backends register here; no changes needed elsewhere. `initRegistry(secretStore)` must be called once during plugin load (`main.ts` onload) before any `getBackendProvider` call; it injects `ISecretStore` into the provider constructors. Until then the registry is empty and `getBackendProvider` returns undefined. Built-in providers: `GoogleDriveProvider` (type `googledrive`), `GoogleDriveCustomProvider` (type `googledrive-custom`), and `PCloudProvider` (type `pcloud`). On a duplicate `type`, the first registration wins (later ones are skipped in the type lookup).
+The provider registry (`fs/registry.ts`) maps backend types to provider instances. New backends register here; no changes needed elsewhere. `initRegistry(secretStore)` must be called once during plugin load (`main.ts` onload) before any `getBackendProvider` call; it injects `ISecretStore` into the provider constructors. Until then the registry is empty and `getBackendProvider` returns undefined. Built-in providers: `GoogleDriveProvider` (type `googledrive`), `GoogleDriveCustomProvider` (type `googledrive-custom`), `DropboxProvider` (type `dropbox`), and `PCloudProvider` (type `pcloud`). On a duplicate `type`, the first registration wins (later ones are skipped in the type lookup).
 
 ## Detailed documentation
 
 - [Sync pipeline](docs/sync-pipeline.md) -- temperature modes, decision table, execution groups, deletion safety
 - [Conflict resolution](docs/conflict-resolution.md) -- strategies, 3-way merge, conflict history
 - [Google Drive backend](docs/google-drive-backend.md) -- metadata cache, authentication, and the sole owner of incremental sync / cache invalidation
+- [Dropbox backend](docs/dropbox-backend.md) -- App Folder scope, id-only addressing, worker-less PKCE auth, the web Chooser folder picker
 - [Error handling](docs/error-handling.md) -- resilience: error classification, retry, rate limiting (recovery scenarios cross-reference the sync pipeline)
-- [OAuth worker & auth site](https://github.com/takezoh/air-sync-auth) -- server-side Google token exchange plus the static site (privacy/terms, custom-OAuth callback), in the dedicated `air-sync-auth` repo (kept out of this plugin's tree)
+- [OAuth worker & auth site](https://github.com/takezoh/air-sync-auth) -- server-side Google token exchange plus the static site (privacy/terms, the shared custom-OAuth/Dropbox callback, and the Dropbox Chooser folder picker), in the dedicated `air-sync-auth` repo (kept out of this plugin's tree)

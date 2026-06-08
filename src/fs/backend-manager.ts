@@ -306,6 +306,7 @@ export class BackendManager {
 			this.connecting = false;
 		}
 
+		// Refresh once here (runs on both success and error paths after the finally).
 		this.deps.refreshSettingsDisplay();
 	}
 

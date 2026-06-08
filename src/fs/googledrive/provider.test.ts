@@ -43,7 +43,7 @@ describe("GoogleDriveProvider.isConnected / getIdentity", () => {
 });
 
 describe("GoogleDriveProvider.startWebFolderPick", () => {
-	it("opens the picker with the state in the query and the token in the fragment only", async () => {
+	it("opens the picker with the state + apiKey in the query and the token in the fragment only", async () => {
 		const openSpy = vi.fn();
 		vi.stubGlobal("window", { open: openSpy, location: { href: "" } });
 		const { provider } = await makeProvider(CONNECTED);
@@ -61,6 +61,9 @@ describe("GoogleDriveProvider.startWebFolderPick", () => {
 		// The access token rides the fragment (never the query → never sent to the relay host).
 		expect(fragment).toBe("token=AT");
 		expect(query).toContain(`state=${String(res.pendingFolderPickState)}`);
+		// The public, referrer-restricted Picker API key is supplied by the plugin (the
+		// host page falls back to its embedded copy only when this is absent).
+		expect(query).toMatch(/&apiKey=AIza[A-Za-z0-9_-]+/);
 		expect(query).not.toContain("token");
 		expect(query.startsWith("https://airsync.takezo.dev/googledrive-folder?")).toBe(true);
 	});

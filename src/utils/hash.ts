@@ -21,6 +21,33 @@ export async function sha1(data: ArrayBuffer): Promise<string> {
 	return toHex(await crypto.subtle.digest("SHA-1", data));
 }
 
+/** Dropbox content-hash block size: 4 MiB (4 * 1024 * 1024 bytes). */
+const DROPBOX_BLOCK_SIZE = 4 * 1024 * 1024;
+
+/**
+ * Compute Dropbox's `content_hash` (hex) for the given content.
+ *
+ * Algorithm (per the Dropbox content-hash reference): split the file into 4 MiB
+ * blocks, SHA-256 each block, concatenate the raw block digests, then SHA-256
+ * the concatenation. An empty file hashes the empty concatenation — i.e. it
+ * equals `sha256("")`. Reproducible locally, so it drives cross-side dedup.
+ */
+export async function dropboxContentHash(data: ArrayBuffer): Promise<string> {
+	const bytes = new Uint8Array(data);
+	const blockDigests: Uint8Array[] = [];
+	for (let offset = 0; offset < bytes.length; offset += DROPBOX_BLOCK_SIZE) {
+		const block = bytes.subarray(offset, Math.min(offset + DROPBOX_BLOCK_SIZE, bytes.length));
+		blockDigests.push(new Uint8Array(await crypto.subtle.digest("SHA-256", block)));
+	}
+	const concat = new Uint8Array(blockDigests.reduce((n, d) => n + d.length, 0));
+	let pos = 0;
+	for (const d of blockDigests) {
+		concat.set(d, pos);
+		pos += d.length;
+	}
+	return toHex(await crypto.subtle.digest("SHA-256", concat));
+}
+
 /** Whether a checksum algorithm can be reproduced from local file content. */
 export function isLocallyComputable(algo: ChecksumAlgo): boolean {
 	return algo !== "opaque";
@@ -39,6 +66,8 @@ export async function digest(data: ArrayBuffer, algo: ChecksumAlgo): Promise<str
 			return sha1(data);
 		case "sha256":
 			return sha256(data);
+		case "dropbox":
+			return dropboxContentHash(data);
 		case "opaque":
 			throw new Error("Cannot compute an opaque checksum locally");
 	}

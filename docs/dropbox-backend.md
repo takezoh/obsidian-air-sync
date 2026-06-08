@@ -1,0 +1,170 @@
+# Dropbox Backend
+
+The Dropbox backend (`fs/dropbox/`) syncs against a folder inside the app's
+**App Folder** (`/Apps/<App>/`). It is worker-less: authentication is in-plugin
+Authorization Code + PKCE, and the vault is addressed entirely by its **stable
+folder id** so a remote move/rename of the folder needs no migration.
+
+## DropboxFs
+
+`DropboxFs` (`fs/dropbox/index.ts`) implements `IFileSystem`. Like the Drive
+backend it keeps an in-memory metadata cache (`path`, `mtime`, `size`,
+`content_hash`) so `list()`/`stat()` never download; content is fetched only on
+`read()`.
+
+### Addressing: id, never a path
+
+Every remote operation is addressed by the vault's folder id, not an absolute
+path. Dropbox accepts a path of the form `id:<folderid>/<subpath>`, so
+`addr(rel)` returns `` `${rootFolderId}/${rel}` `` (or `rootFolderId` for the
+root). `read()`/`delete()` prefer each entry's own stable id; `write()`,
+`rename()` (`move_v2`), and folder creation use `addr()`. Consequences:
+
+- The remote vault path is **never stored**. `DropboxFs` takes no `rootPath` —
+  only the folder id. A remote move/rename of the folder keeps syncing because
+  the id is unchanged.
+- `list_folder` still returns each entry's **absolute** `path_display`, so to
+  produce vault-relative cache keys the cache needs the folder's current
+  absolute path. `refreshRootPath()` resolves it from the id via `get_metadata`
+  once per cycle and re-anchors the cache (`DropboxMetadataCache.setRootPath`).
+  This is the only use of the absolute path, and it is never persisted.
+
+### Initialization lifecycle
+
+The remote delta cursor lives in `settings.backendData.cursor`, seeded onto the
+FS by `createFs()`. The `MetadataStore` (IndexedDB, keyed
+`{vaultId}-{remoteVaultFolderId}`) caches **only the file map** — never the
+cursor or the root path.
+
+On the first operation, `ensureInitialized()` runs under the cache mutex:
+
+1. **Cursor present** → `loadFromCache()` restores the file map from IndexedDB
+   (relative keys only — it does **not** set the relativize anchor), then
+   `refreshRootPath()` re-anchors from the id so a subsequent `applyDelta()` (in
+   `list()`) relativizes new entries correctly. If the cache is empty, fall back
+   to `fullScan()` but restore the seeded cursor so the next delta spans the gap.
+2. **No cursor** (first sync / after rescan / after a folder change) →
+   `fullScan()`: clear the cache, `refreshRootPath()`, capture a baseline cursor
+   with `get_latest_cursor` BEFORE listing (so changes during the scan aren't
+   missed), drain `list_folder` recursively, build the cache, and
+   fire-and-forget `persistCache()` (files only).
+
+`getChangedPaths()` re-anchors (`refreshRootPath()`) then applies the delta;
+`list()` reuses the anchor set earlier in the same cycle. Both the cursor and
+the `list_folder` traversal are rooted at the folder **id**, so the cursor
+survives a remote rename of the vault folder.
+
+## DropboxMetadataCache
+
+`DropboxMetadataCache` (`fs/dropbox/metadata-cache.ts`) stores entries keyed by
+sync-relative path and answers `list`/`stat`/`getChildren`. `relativize()`
+strips the root's case-folded absolute segments from each entry's `path_display`
+(preserving the user's casing from `path_display` for the returned key). The
+anchor is set per cycle via `setRootPath()` (driven by `refreshRootPath`), so a
+remote move of the root only updates the anchor — no entry is rebuilt. The
+constructor takes no root up front (it is unknown until resolved from the id).
+
+## Incremental sync
+
+After the initial recursive scan, remote changes are tracked with
+`list_folder/continue` from the committed cursor (`fs/dropbox/incremental-sync.ts`).
+A delta yields modified/deleted/renamed paths consumed by warm change detection.
+A lost/expired cursor (`reset`) falls back to a fresh full scan diffed against
+the prior cache by id (`computeFullScanDelta`) to recover renames/deletes.
+
+Change detection is **checksum-based**: `stat()` returns `hash: ""` and the
+sync engine compares Dropbox's `content_hash` (4 MiB block SHA-256 tree) plus
+`server_modified` — so a metadata-only touch (same content, bumped mtime) is
+correctly seen as unchanged.
+
+## DropboxClient
+
+`DropboxClient` (`fs/dropbox/client.ts`) wraps Dropbox HTTP API v2 via Obsidian's
+`requestUrl` (never `fetch`), with `throw: false` + `assertOk`. RPC calls hit
+`api.dropboxapi.com/2` (JSON); content calls hit `content.dropboxapi.com/2`
+(octet-stream body + `Dropbox-API-Arg` header). Notes:
+
+- **401** triggers one forced token refresh-and-retry; **429** is retried with
+  backoff (honoring `Retry-After`, else exponential, always capped) up to
+  `MAX_RATE_LIMIT_RETRIES` — transient write-lock contention during a bulk first
+  sync doesn't fail the cycle.
+- `Dropbox-API-Arg` must be ASCII, so every code unit ≥ 0x7F is `\uXXXX`-escaped
+  (iterating UTF-16 code units) — this is what makes non-ASCII (e.g. Japanese)
+  paths work.
+- `create_folder_v2` / `upload` / `move_v2` return a **bare** metadata struct
+  with no `.tag`. The client stamps it for `create_folder_v2` / `upload`; for
+  `move_v2` the FS layer (`DropboxFs.rename`) stamps it from the known prior
+  type, so a moved folder stays classified as a folder.
+
+## Authentication
+
+In-plugin **Authorization Code + PKCE**, fully worker-less (`fs/dropbox/auth.ts`).
+The app key (`client_id`) is public and there is **no client secret** — the
+ephemeral `code_verifier` is the proof. The authorization code returns through
+the shared no-secret relay page (the `callback/` page in the
+[air-sync-auth](https://github.com/takezoh/air-sync-auth) repo, served at
+`airsync.takezo.dev`) which bounces `?code=…&state=…` to
+`obsidian://air-sync-auth`; the plugin then exchanges the code for tokens
+directly with Dropbox. Refreshing an access token needs only the `client_id`.
+
+- **Scope**: App Folder permission with `files.metadata.read`,
+  `files.content.read`, `files.content.write` — access is confined to
+  `/Apps/<App>/`.
+- **Token storage**: refresh + access tokens in Obsidian SecretStorage (keyed per
+  backend type); the access-token expiry lives in `settings.backendData`. Tokens
+  refreshed mid-sync are written back after the cycle.
+- The committed app key is a placeholder (`REPLACE_WITH_DROPBOX_APP_KEY`),
+  replaced at build/deploy time.
+
+## Provider model
+
+`DropboxProvider` (`fs/dropbox/provider.ts`, type `dropbox`):
+
+- `isConnected` = a token is present **and** a `remoteVaultFolderId` is bound;
+  `getIdentity` = `dropbox:<folderId>` (drives identity-change handling).
+- The incremental checkpoint (delta cursor + file-map cache) is owned by the FS's
+  `checkpoint` capability (`hasCheckpoint` / `resetCheckpoint` / `commitCheckpoint`,
+  inherited from `CachingRemoteFs`): both live in the per-target IndexedDB store and
+  commit in **one transaction** (ADR 0001) — the cursor is no longer kept in settings.
+- `readBackendState` writes back refreshed tokens only; it never touches the cursor.
+  The remote path is never persisted (it is resolved from the folder id on demand).
+- `clearCheckpointStore` drops the per-target store by its settings key when there is
+  no live FS (e.g. an expired backend), so a stale checkpoint can't survive a disconnect.
+
+### Remote vault resolution & default
+
+`resolveRemoteVault` binds the vault on first connect by creating
+`/<vaultName>` directly under the App Folder root — the **default sync folder is
+`App Folder/<vault>`** (the App Folder scope already namespaces the app, so there
+is no wrapper folder). `create_folder_v2` is idempotent, so a second device with
+the same vault name binds to the same folder. A LOCAL vault rename does not
+rename the remote folder (it is tracked by id); only `lastKnownVaultName`
+advances so `BackendManager`'s name-equality short-circuit resumes.
+
+### Choosing a different folder
+
+When connected, settings offers **Choose folder**, which opens the Dropbox
+**Chooser** hosted on the relay (the `dropbox-folder/` page in the
+[air-sync-auth](https://github.com/takezoh/air-sync-auth) repo) and returns the
+selection via the backend-agnostic `obsidian://air-sync-folder` deep link
+(`startWebFolderPick` / `completeWebFolderPick`):
+
+- The Chooser can't be embedded in Obsidian (remote script + origin allowlist)
+  and **always browses the whole Dropbox** (it can't be limited to the app
+  folder), so `completeWebFolderPick` verifies the picked id is reachable with
+  the App Folder token (`get_metadata`) and rejects anything outside
+  `Apps/<App>/` with a clear message instead of silently failing to sync.
+- A `state` nonce guards the deep link against CSRF.
+- Changing the folder resets the cursor (and, via the identity change, clears
+  per-path sync state), so the next sync is a cold reconcile against the new
+  folder.
+
+`getRemoteVaultDisplayPath` resolves the bound folder's current path from its id
+(`get_metadata`) for the read-only settings display — through a **detached** auth
+so the UI read can't reset the live sync's in-memory tokens.
+
+### createFs() contract
+
+`createFs()` returns `null` unless a token and a `remoteVaultFolderId` are both
+present; otherwise it builds a `DropboxFs` from the id (no path) and seeds the
+committed cursor.

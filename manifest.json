@@ -1,9 +1,9 @@
 {
 	"id": "air-sync",
 	"name": "Air Sync",
-	"version": "0.1.20",
+	"version": "0.1.23",
 	"minAppVersion": "1.11.4",
-	"description": "Sync your vault bidirectionally with Google Drive.",
+	"description": "Sync your Obsidian vault with cloud storage (Google Drive, Dropbox).",
 	"author": "Takehito Gondo",
 	"authorUrl": "https://github.com/takezoh",
 	"isDesktopOnly": false

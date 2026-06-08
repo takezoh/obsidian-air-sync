@@ -31,3 +31,9 @@ data.json
 .wrangler/
 .dev.vars
 dist/
+
+# local agent/tooling artifacts (not part of the plugin)
+.playwright-mcp/
+.mcp.json
+*.log
+.roost/
