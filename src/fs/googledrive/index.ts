@@ -304,7 +304,7 @@ export class GoogleDriveFs implements IFileSystem {
 
 			const entities: FileEntity[] = [];
 			for (const [path, driveFile] of this.cache.entries()) {
-				entities.push(this.cache.driveFileToEntity(path, driveFile));
+				entities.push(this.cache.toEntity(path, driveFile));
 			}
 			return entities;
 		});
@@ -326,7 +326,7 @@ export class GoogleDriveFs implements IFileSystem {
 			const driveFile = this.cache.getFile(path);
 			if (!driveFile) return null;
 
-			return this.cache.driveFileToEntity(path, driveFile);
+			return this.cache.toEntity(path, driveFile);
 		});
 	}
 
@@ -418,7 +418,7 @@ export class GoogleDriveFs implements IFileSystem {
 			for (const childPath of kids) {
 				const driveFile = this.cache.getFile(childPath);
 				if (driveFile) {
-					entities.push(this.cache.driveFileToEntity(childPath, driveFile));
+					entities.push(this.cache.toEntity(childPath, driveFile));
 				}
 			}
 			return entities;

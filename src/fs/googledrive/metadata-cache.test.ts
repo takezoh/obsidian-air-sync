@@ -381,15 +381,15 @@ describe("removeTree", () => {
 	});
 });
 
-// ── driveFileToEntity ──
+// ── toEntity ──
 
-describe("driveFileToEntity", () => {
+describe("toEntity", () => {
 	it("converts file to entity", () => {
 		const cache = makeCache();
 		const file = makeDriveFile({ id: "f1", name: "a.txt", modifiedTime: "2024-01-01T00:00:00.000Z", size: "100", md5Checksum: "abc" });
 		cache.setFile("a.txt", file);
 
-		const entity = cache.driveFileToEntity("a.txt", file);
+		const entity = cache.toEntity("a.txt", file);
 		expect(entity.path).toBe("a.txt");
 		expect(entity.isDirectory).toBe(false);
 		expect(entity.size).toBe(100);
@@ -404,7 +404,7 @@ describe("driveFileToEntity", () => {
 		const folder = makeFolder({ id: "d1", name: "docs" });
 		cache.setFile("docs", folder);
 
-		const entity = cache.driveFileToEntity("docs", folder);
+		const entity = cache.toEntity("docs", folder);
 		expect(entity.isDirectory).toBe(true);
 		expect(entity.size).toBe(0);
 	});
@@ -414,7 +414,7 @@ describe("driveFileToEntity", () => {
 		const file = makeDriveFile({ id: "f1", name: "a.txt" });
 		cache.setFile("a.txt", file);
 
-		const entity = cache.driveFileToEntity("a.txt", file);
+		const entity = cache.toEntity("a.txt", file);
 		expect(entity.mtime).toBe(0);
 		expect(entity.size).toBe(0);
 	});
