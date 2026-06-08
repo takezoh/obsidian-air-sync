@@ -441,6 +441,27 @@ describe("BackendManager — isConnected false with prior connection", () => {
 	});
 });
 
+describe("BackendManager — resetAll on connect (start cold)", () => {
+	it("completeBackendConnect resets both the baseline and the checkpoint so a connect starts cold", async () => {
+		// resetAll() runs at the connect boundary too (not just disconnect/switch): a
+		// reconnect to a still-bound target must never silently resume against a stale
+		// cursor/baseline. Both halves get cleared — SyncRecord baseline (onIdentityChanged)
+		// and the checkpoint store (resetCheckpoint via the live FS).
+		const settings = mockSettings();
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend(); // sets backendProvider + remoteFs = fakeFs
+		fakeProvider.auth.completeAuth = () => Promise.resolve({});
+		vi.mocked(deps.onIdentityChanged).mockClear();
+		fakeResetCheckpoint.mockClear();
+
+		await mgr.completeBackendConnect("auth-code");
+
+		expect(deps.onIdentityChanged).toHaveBeenCalledTimes(1);
+		expect(fakeResetCheckpoint).toHaveBeenCalledTimes(1);
+	});
+});
+
 describe("BackendManager — web folder pick", () => {
 	it("startBackendFolderPick persists the provider's returned state", async () => {
 		const settings = mockSettings();
