@@ -61,9 +61,12 @@ const PURE_TRANSFORMS = [
 // no-restricted-syntax selectors -------------------------------------------
 
 /**
- * Keep the vault index read centralized in LocalFs so there is a single,
- * layout-ready-gated entry point. getAllLoadedFiles() is an in-memory snapshot
- * that can under-report before the vault finishes loading.
+ * Keep the vault index read centralized in LocalFs.list() so there is a single
+ * entry point. getAllLoadedFiles() is an in-memory snapshot that can under-report
+ * before the vault finishes loading; the layout-ready GATE that makes it safe lives
+ * in the orchestrator (runSync/shouldSync early-return until isLayoutReady), NOT in
+ * list() itself — see LocalFs.list()'s contract. This rule centralizes the read so
+ * that gate has a single thing to protect.
  */
 const NO_GET_ALL_LOADED_FILES = {
 	selector: "CallExpression[callee.property.name='getAllLoadedFiles']",

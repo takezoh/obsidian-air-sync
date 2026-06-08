@@ -51,8 +51,12 @@ disabling a rule.**
 
 - **The vault index can under-report before layout-ready.** Read it only via
   `LocalFs.list()` (lint-enforced — `getAllLoadedFiles()` is restricted outside
-  `src/fs/local/`), and never derive a deletion from listing-absence alone — confirm
-  against the authoritative `LocalFs.stat()` (falls back to the adapter).
+  `src/fs/local/`). `LocalFs.list()` does NOT gate on layout-ready itself — it's a
+  pure low-level read; the **gate is the orchestrator** (`runSync`/`shouldSync`
+  early-return until `isLayoutReady`), and the only path to `list()` runs through it.
+  Any new caller of `list()` must likewise be in a layout-ready-gated context. Also
+  never derive a deletion from listing-absence alone — confirm against the
+  authoritative `LocalFs.stat()` (falls back to the adapter).
 - **Dot-prefixed/hidden paths** (`.airsync`, `.obsidian`, nested `foo/.bar`) are
   excluded from the vault index: `vault.createBinary()` returns `null` or throws
   `File already exists` for them. `LocalFs` routes any `isDotPrefixed()` path through

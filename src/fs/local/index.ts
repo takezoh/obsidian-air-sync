@@ -22,6 +22,17 @@ export class LocalFs implements IFileSystem {
 		);
 	}
 
+	/**
+	 * List the vault index. This returns the in-memory `getAllLoadedFiles()` snapshot,
+	 * which **can under-report before the workspace layout is ready**. It does NOT gate
+	 * on layout-ready itself — that is the CALLER's responsibility, and it is owned by
+	 * the sync engine: `SyncOrchestrator.runSync()` (and `shouldSync()`) early-return
+	 * until `isLayoutReady`, and the only path here runs through them
+	 * (runSync → executeSyncOnce → collectChanges → list). Keeping the gate in the
+	 * orchestrator (the timing authority) rather than in this low-level FS adapter
+	 * avoids coupling LocalFs to the workspace lifecycle. New callers of `list()` MUST
+	 * be in a layout-ready-gated context.
+	 */
 	async list(): Promise<FileEntity[]> {
 		const entities: FileEntity[] = [];
 		const allFiles = this.vault.getAllLoadedFiles();
