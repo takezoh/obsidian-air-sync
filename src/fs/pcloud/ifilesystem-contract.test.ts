@@ -2,11 +2,23 @@ import { vi } from "vitest";
 import type { PCloudClient } from "./client";
 import type { PCloudEntry } from "./types";
 import { PCloudFs } from "./index";
+import { pcFile, pcFolder } from "./test-helpers";
 import { runIFileSystemContract } from "../ifilesystem-contract";
 
 vi.mock("obsidian");
 
 const ROOT_FOLDER_ID = 0;
+
+/**
+ * A cheap CONTENT-deterministic digest standing in for pCloud's opaque 64-bit
+ * per-content hash: same bytes → same value, different bytes → (almost always)
+ * different. Faithfulness matters because pCloud's `hash` is the only content-change
+ * signal (stat reports hash:""), so a fake that left it stale across an overwrite
+ * would mask a change-detection regression.
+ */
+function pcloudContentHash(content: ArrayBuffer): number {
+	return new Uint8Array(content).reduce((h, b) => (Math.imul(h, 31) + b) | 0, content.byteLength) >>> 0;
+}
 
 interface FileNode {
 	fileid: number;
@@ -43,23 +55,11 @@ function makeFakePCloudClient(): PCloudClient {
 	const folders = new Map<number, FolderNode>(); // folderid → node
 	let idSeq = 0; // one counter for both id spaces, so no f<n>/d<n> can collide
 
-	const fileEntry = (n: FileNode): PCloudEntry => ({
-		id: `f${n.fileid}`,
-		name: n.name,
-		isfolder: false,
-		parentfolderid: n.parent,
-		fileid: n.fileid,
-		size: n.size,
-		modified: n.modified,
-		hash: n.hash,
-	});
-	const folderEntry = (n: FolderNode): PCloudEntry => ({
-		id: `d${n.folderid}`,
-		name: n.name,
-		isfolder: true,
-		parentfolderid: n.parent,
-		folderid: n.folderid,
-	});
+	// Reuse the shared entry builders (test-helpers) so the fake can't drift from the
+	// PCloudEntry shape the rest of the suite uses; the node carries the dynamic fields.
+	const fileEntry = (n: FileNode): PCloudEntry =>
+		pcFile(n.fileid, n.name, n.parent, { size: n.size, modified: n.modified, hash: n.hash });
+	const folderEntry = (n: FolderNode): PCloudEntry => pcFolder(n.folderid, n.name, n.parent);
 
 	/** Folder ids of `target` plus every folder transitively under it. */
 	const folderSubtree = (target: number): Set<number> => {
@@ -103,6 +103,7 @@ function makeFakePCloudClient(): PCloudClient {
 				node.content = content.slice(0);
 				node.size = content.byteLength;
 				node.modified = new Date(mtime).toISOString();
+				node.hash = pcloudContentHash(content); // overwrite → new content → new hash (like real pCloud)
 			} else {
 				node = {
 					fileid: ++idSeq,
@@ -111,7 +112,7 @@ function makeFakePCloudClient(): PCloudClient {
 					content: content.slice(0),
 					size: content.byteLength,
 					modified: new Date(mtime).toISOString(),
-					hash: idSeq,
+					hash: pcloudContentHash(content),
 				};
 				files.set(node.fileid, node);
 			}
