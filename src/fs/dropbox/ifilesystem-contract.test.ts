@@ -2,6 +2,7 @@ import { vi } from "vitest";
 import type { DropboxClient } from "./client";
 import type { DropboxEntry, DropboxListFolderResponse } from "./types";
 import { DropboxFs } from "./index";
+import { untagged } from "./test-helpers";
 import { sha256 } from "../../utils/hash";
 import { runIFileSystemContract } from "../ifilesystem-contract";
 
@@ -50,7 +51,7 @@ function makeFakeDropboxClient(): DropboxClient {
 		throw new Error(`Unexpected Dropbox address: ${addr}`);
 	};
 	const absOf = (rel: string): string => (rel ? `${ROOT_PATH}/${rel}` : ROOT_PATH);
-	const nameOf = (rel: string): string => rel.split("/").pop() ?? "root";
+	const nameOf = (rel: string): string => rel.split("/").pop()!;
 	const descendantsOf = (rel: string): string[] =>
 		[...nodes.keys()].filter((p) => p.startsWith(`${rel}/`));
 
@@ -116,8 +117,13 @@ function makeFakeDropboxClient(): DropboxClient {
 				nodes.set(dst, n);
 				byId.set(n.id, dst);
 			}
+			// `move_v2` returns BARE metadata with no `.tag` discriminator — mirror
+			// DropboxClient.move's `return res.metadata` (unlike upload/createFolder,
+			// which the real client DOES re-stamp). DropboxFs.rename re-stamps `.tag`
+			// from the known prior type, so returning it untagged here keeps that stamp
+			// load-bearing instead of letting the fake mask its removal.
 			const moved = nodes.get(toRel)!;
-			return Promise.resolve(toEntry(toRel, moved));
+			return Promise.resolve(untagged(toEntry(toRel, moved)) as DropboxEntry);
 		},
 		download: (fileId: string): Promise<ArrayBuffer> => {
 			const rel = byId.get(fileId);
