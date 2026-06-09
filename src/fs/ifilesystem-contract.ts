@@ -119,6 +119,16 @@ function registerRenameAndReadContract(ctx: IFileSystemContractCtx): void {
 			expect(await readText("renamed/sub/b.txt")).toBe("bbb");
 			expect(await exists("renamed")).toBe(true);
 			expect(await exists("renamed/sub")).toBe(true);
+			// The renamed path must stay a DIRECTORY, not get silently re-typed as a
+			// file, AND stay writable as one. A backend that re-caches a moved folder
+			// from a rename response lacking a folder/file discriminator passes every
+			// check above (exists() is true for a file too, and the children were
+			// re-keyed independently of the folder's own type) yet throws "is a file"
+			// on the next write into it. Pin both the type and the write so that gap
+			// can't reopen.
+			expect((await ctx.fs().stat("renamed"))!.isDirectory).toBe(true);
+			await ctx.fs().write("renamed/new.txt", bytes("ccc"), 1000);
+			expect(await readText("renamed/new.txt")).toBe("ccc");
 		});
 
 		it("does not affect entries that share a prefix but are not children", async () => {
