@@ -31,7 +31,7 @@ export const LIST_PAGE_CAP = 10_000;
 
 /** Pauses execution; injectable so tests run instantly. */
 export type SleepFn = (ms: number) => Promise<void>;
-const defaultSleep: SleepFn = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const defaultSleep: SleepFn = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
 /** Backoff for a 429: honor `Retry-After` (seconds) when present, else exponential; always capped. */
 function rateLimitDelayMs(res: RequestUrlResponse, attempt: number): number {

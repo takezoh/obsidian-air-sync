@@ -87,6 +87,19 @@ const NO_MATH_RANDOM = {
 		"Design principle #4 (pipeline as data): pure transforms must be deterministic. No Math.random() — derive variation from the input.",
 };
 
+/**
+ * Submission-validator guard for manifest.json: the Obsidian Community Hub
+ * rejects the words "obsidian"/"plugin" in the name/description/id (redundant —
+ * implied by context). Matched on the typescript-eslint JSON AST: a Property
+ * whose key is one of those fields and whose string value contains the word.
+ */
+const NO_FORBIDDEN_MANIFEST_WORDS = {
+	selector:
+		"Property[key.value=/^(name|description|id)$/][value.value=/\\b(obsidian|plugin)\\b/i]",
+	message:
+		"The Obsidian submission validator rejects 'obsidian'/'plugin' in the manifest name, description, or id — it's implied by context. Remove the word.",
+};
+
 export default tseslint.config(
 	{
 		languageOptions: {
@@ -192,6 +205,27 @@ export default tseslint.config(
 	{
 		files: ["src/sync/orchestrator.ts"],
 		rules: { "max-lines": ["error", { max: 332, skipBlankLines: true, skipComments: true }] },
+	},
+	{
+		// Lint manifest.json for the words the Obsidian submission validator
+		// HARD-rejects in name/description/id ("obsidian"/"plugin" — redundant,
+		// implied by context). The typescript-eslint parser turns .json into an
+		// ObjectExpression AST (hence the extraFileExtensions: ['.json'] /
+		// allowDefaultProject above), so no-restricted-syntax can match the
+		// offending property literal.
+		//
+		// We deliberately do NOT use obsidianmd/validate-manifest here: its
+		// descriptionFormat sub-check forbids parentheses (regex
+		// ^[A-Za-z0-9\s.,!?'"-]+$, same on master), which the actual dashboard
+		// ACCEPTS — our shipped "… (Google Drive, Dropbox)." passes the bot but
+		// would false-positive on that rule, and the rule has no options to
+		// disable just that sub-check. Matching the forbidden words directly
+		// keeps the local gate aligned with what the bot really blocks.
+		files: ["manifest.json"],
+		languageOptions: { parser: tseslint.parser },
+		rules: {
+			"no-restricted-syntax": ["error", NO_FORBIDDEN_MANIFEST_WORDS],
+		},
 	},
 	globalIgnores([
 		"node_modules",
