@@ -471,6 +471,33 @@ describe("emitted SyncAction structure", () => {
 	});
 });
 
+describe("one plan action per path (ADR 0001 T7 invariant)", () => {
+	// The `withCacheMutex` stale-guard is dormant only because no two CONCURRENT
+	// (Group-A: push/pull/match/cleanup) actions ever target the same path — a parallel
+	// write then can't re-key another write's guarded path mid-upload. The source of
+	// that uniqueness is here: planSync mints exactly one action per changeset entry,
+	// and entries are unique by path. (refinePlan only removes/reclassifies Group-A
+	// actions into Group-B renames — see rename-optimizer.test.ts — so it preserves it.)
+	it("emits exactly one action per path across every action type", () => {
+		const entries: MixedEntity[] = [
+			{ path: "push.md", local: local({ mtime: 2000, hash: "h-local" }), remote: remote(), prevSync: baseline() },
+			{ path: "pull.md", local: local(), remote: remote({ mtime: 3000, hash: "h-remote" }), prevSync: baseline() },
+			{ path: "match.md", local: local(), remote: remote() },
+			{ path: "del-remote.md", remote: remote(), prevSync: baseline() },
+			{ path: "del-local.md", local: local(), prevSync: baseline() },
+			{ path: "cleanup.md", prevSync: baseline() },
+		];
+		const actions = planSync(entries).actions;
+
+		// Every entry produced exactly one action (none collapsed two onto one path).
+		expect(actions).toHaveLength(entries.length);
+		const paths = actions.map((a) => a.path);
+		expect(new Set(paths).size).toBe(paths.length);
+		// Sanity: this changeset really did exercise the parallel Group-A op (push).
+		expect(actions.some((a) => a.action === "push")).toBe(true);
+	});
+});
+
 describe("cold safety: no baseline never deletes", () => {
 	// The volume-based safety-check was removed (it caused §2-1 data loss by
 	// aborting legitimate all-deletion batches). The decision rules are now the

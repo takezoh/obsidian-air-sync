@@ -130,14 +130,22 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 		await this.cacheMutex.run(() => {
 			const { path, expectedId } = opts.staleGuard(resolved);
 			const currentId = this.cache.idAt(path);
-			// Guard the phase-3 cache write against a concurrent delta that touched
-			// this path while the network op (phase 2) ran:
+			// This is the compare-and-swap of an optimistic protocol: phase 2 (the
+			// network op above) ran with the mutex RELEASED, so the phase-1 view of the
+			// cache may be stale by now. Re-read idAt(path) and write only if it still
+			// matches what phase 1 saw:
 			//  - expectedId set (operating on a known file): skip if the path now
 			//    resolves to a different id — it was replaced/moved out from under us.
 			//  - expectedId undefined (creating a NEW path): skip if the path is now
-			//    occupied at all. A concurrent delta created it, and overwriting would
-			//    drop that change; the in-memory cursor already advanced past it, so the
-			//    next cycle re-detects our write — no data loss.
+			//    occupied at all. Overwriting would drop the concurrent change; the
+			//    in-memory cursor already advanced past it, so the next cycle re-detects
+			//    our write — no data loss.
+			// A concurrent re-keyer during phase 2 is currently UNREACHABLE (ADR 0001,
+			// T7): deltas run only in the detect phase, never during execute, so the
+			// only producer would be a parallel Group-A write — and those target
+			// disjoint file paths. The guard is retained as defense-in-depth for those
+			// type-unenforced invariants; it degrades a future violation from silent
+			// cache corruption to a logged skip.
 			const stale = expectedId === undefined ? currentId !== undefined : currentId !== expectedId;
 			if (stale) {
 				this.logger?.warn(`Skipping stale cache update for ${opts.operationName}`, { path });
@@ -486,8 +494,11 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 		// Phase 2: remote delete outside the mutex (network I/O).
 		await this.deleteRemote(fileId);
 
-		// Phase 3: update the cache under the mutex with an id guard (a concurrent delta
-		// may have updated the cache during phase 2).
+		// Phase 3: update the cache under the mutex with an id guard — the inline twin of
+		// withCacheMutex's CAS (delete needs no `update` callback, so it guards here). Skip
+		// the removeTree if a concurrent op re-keyed this path during phase 2. Like the
+		// shared guard this is currently unreachable (ADR 0001, T7: delete_remote runs
+		// serially in Group B, deltas never run during execute) — kept as defense-in-depth.
 		await this.cacheMutex.run(() => {
 			if (this.cache.idAt(path) === fileId) {
 				this.cache.removeTree(path);

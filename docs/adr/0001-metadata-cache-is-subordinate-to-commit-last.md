@@ -1,6 +1,6 @@
 # ADR 0001 — The remote metadata cache is subordinate to commit-last state
 
-**Status:** Accepted · 2026-06-07 · **Revised 2026-06-07** (cursor single-holding: co-located with the cache; supersedes the earlier "keep the cursor in settings" tradeoff) · **Revised 2026-06-08** (convergence theory: documents state **C** and the third, runtime convergence mechanism `recoverViaColdScan` for same-session failures; corrects the concurrency claim — `cacheMutex` guards a real Group-A race; stale-guard reachability pending T7)
+**Status:** Accepted · 2026-06-07 · **Revised 2026-06-07** (cursor single-holding: co-located with the cache; supersedes the earlier "keep the cursor in settings" tradeoff) · **Revised 2026-06-08** (convergence theory: documents state **C** and the third, runtime convergence mechanism `recoverViaColdScan` for same-session failures; corrects the concurrency claim — `cacheMutex` guards a real Group-A race; stale-guard reachability pending T7) · **Revised 2026-06-09** (T7 concluded: the `withCacheMutex` stale-guard is **retained** — it is the compare-and-swap of the mutex-released-during-I/O protocol, not a phantom lock; currently unreachable, kept as defense-in-depth; the phantom "concurrent delta" justification is corrected to the real invariant — one plan action per path)
 **Context area:** sync pipeline / Google Drive backend
 **Related:** [sync-pipeline.md → Crash recovery](../sync-pipeline.md), [google-drive-backend.md](../google-drive-backend.md)
 
@@ -133,12 +133,38 @@ FS (`resetCheckpoint()`), not by editing settings.
   *within* a cycle, and Group A (push/pull/match/cleanup) runs under `AsyncPool(5)` — so
   concurrent `ensureFolder`/cache mutations on the live `path↔id` map are real and
   `cacheMutex` is **required**. (The earlier claim here that "concurrent writers do not
-  exist" was wrong.) What *is* unconfirmed is the three-phase `withCacheMutex`
-  **stale-guard**'s specific scenario — a concurrent delta re-pointing the *same* path
-  during a phase-2 network call: under the current detect/execute phase split with
-  non-overlapping Group-A paths it appears unreachable. Its disposition — remove as a
-  phantom guard, or document a real path that reaches it — is **pending investigation
-  (roadmap T7)**; do not delete it before T7 concludes.
+  exist" was wrong.)
+
+  The three-phase `withCacheMutex` **stale-guard** is **not** a phantom lock either, and
+  is **retained** (T7 concluded — 2026-06-09). It is not a lock at all: it is the
+  **compare-and-swap of an optimistic protocol**. The phase split releases `cacheMutex`
+  during the phase-2 network call (so Group-A uploads run concurrently instead of
+  serializing on the mutex for the duration of each upload); that release is what makes
+  the phase-1 view of the cache potentially stale by phase 3. The guard is the *compare*
+  — re-read `idAt(path)` under the mutex phase 3 already holds, write only if it still
+  equals the phase-1 `expectedId`. It adds **zero** serialization beyond that phase-3
+  acquisition and cannot deadlock, so it is categorically unlike the prohibited
+  "lockstep machinery."
+
+  T7's finding on **reachability**: under the current architecture the guard is
+  **unreachable** — it never fires in production. The proof is a chain of invariants the
+  *types do not enforce*: (1) `syncMutex` serializes cycles; (2) within a cycle, detect
+  (`collectChanges` → `list`/`getChangedPaths`, the **only** delta re-key path) is fully
+  awaited **before** execute (`executePlan`), so **no delta ever runs during a phase-2
+  network call** — the scenario the old comments named ("a concurrent delta re-pointing
+  the same path") *cannot occur*; (3) in execute only Group A is parallel, and its only
+  cache-*mutating* op is `push`=`write`; concurrent writes target **disjoint file paths**
+  (one plan action per path), and a write's only cross-path cache mutation is
+  `ensureFolder` on **ancestor folder paths**, which can never coincide with another
+  write's *file* path (no path is both a file and a folder in one consistent vault
+  state); (4) `rename_remote`/`delete_remote` run **serially** in Group B. So keep it as
+  **defense-in-depth for invariants the type system can't express**: if a future change
+  violates one (parallelizing Group B, a concurrent remote-browse outside `syncMutex`, or
+  a plan that emits two actions for one path), the guard degrades the failure from
+  **silent cache corruption** to a logged skip + next-cycle re-detect. Do not re-justify
+  it with the phantom "concurrent delta" story; the real (current) producer it would
+  guard against is a concurrent Group-A write, and the load-bearing invariant that keeps
+  it dormant is **one plan action per path**.
 
 **Pinned by tests** (keep these green; extend them, do not weaken them):
 - `orchestrator.test.ts` → *"does not advance the committed cursor when the checkpoint
@@ -157,3 +183,11 @@ FS (`resetCheckpoint()`), not by editing settings.
   *"cursor consolidation (crash safety)"* suite.
 - `metadata-store.test.ts` → *"commitIncremental upserts, deletes, and writes meta in one
   transaction"* (the atomic cache+cursor co-commit).
+- **T7 stale-guard disposition.** The guard *mechanism* is pinned by
+  `googledrive/index.test.ts` / `dropbox/index.test.ts` → the *"stale-cache guard(s)"*
+  suites (a cache re-key injected mid-phase-2 ⇒ the phase-3 write is skipped with a
+  warning). Its *dormancy* rests on **one plan action per path**, pinned by
+  `decision-engine.test.ts` → *"emits exactly one action per path across every action
+  type"* and `rename-optimizer.test.ts` → *"keeps concurrent Group-A actions on distinct
+  paths"*. Breaking that invariant (a plan emitting two Group-A actions for one path) is
+  what would wake the guard — these tests fail the day it does.

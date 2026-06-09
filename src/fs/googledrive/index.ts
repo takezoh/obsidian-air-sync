@@ -185,12 +185,14 @@ export class GoogleDriveFs extends CachingRemoteFs<DriveFile> {
 			update: (r, result) => {
 				// The shared stale-guard only validates the SOURCE (oldPath still resolves
 				// to our file id). The destination is checked in resolve() (phase 1), but a
-				// concurrent delta can land a DIFFERENT file at newPath during the phase-2
-				// network op (run outside the mutex). Overwriting it via setFile would strand
-				// that delta's id in idToPath (and orphan its subtree, since setFile only
-				// re-indexes a NEW path). Skip instead — symmetric with write()'s new-path
-				// guard; the in-memory cursor advanced past the delta, so the next cycle
-				// re-detects our rename.
+				// concurrent re-keyer could land a DIFFERENT file at newPath during the
+				// phase-2 network op (run outside the mutex). Overwriting it via setFile
+				// would strand that id in idToPath (and orphan its subtree, since setFile
+				// only re-indexes a NEW path). Skip instead — symmetric with write()'s
+				// new-path guard; the in-memory cursor advanced past it, so the next cycle
+				// re-detects our rename. Like the shared guard, this is currently
+				// unreachable (ADR 0001, T7: rename_remote runs serially in Group B, and
+				// deltas never run during execute) — retained as defense-in-depth.
 				const occupant = this.cache.getFile(newPath);
 				if (occupant && occupant.id !== result.id) {
 					this.logger?.warn("Skipping stale cache update for rename", { path: newPath });

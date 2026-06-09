@@ -135,7 +135,11 @@ describe("DropboxFs.write", () => {
 	});
 });
 
-describe("DropboxFs stale-cache guards (concurrent delta)", () => {
+// These exercise the guard's CAS MECHANISM by injecting a cache re-key during the
+// phase-2 network op. In production the re-key is unreachable (ADR 0001, T7: deltas
+// run only in the detect phase; the only execute-phase producer would be a parallel
+// Group-A write on a disjoint path) — the guard is retained as defense-in-depth.
+describe("DropboxFs stale-cache guards (CAS mechanism)", () => {
 	type CacheView = {
 		setEntry(path: string, entry: DropboxEntry): void;
 		getFile(path: string): DropboxEntry | undefined;
@@ -154,13 +158,13 @@ describe("DropboxFs stale-cache guards (concurrent delta)", () => {
 		return { fs, cache, warn };
 	}
 
-	it("write: does not clobber a concurrent delta that created the same NEW path during upload", async () => {
+	it("write: does not clobber a concurrent re-key that created the same NEW path during upload", async () => {
 		const { fs, cache, warn } = await makeFsWithWarn();
 		(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
 			const url = typeof opts === "string" ? opts : opts.url;
 			if (url.includes("/files/upload")) {
-				// Phase 2 (upload) runs outside the mutex — simulate a concurrent delta
-				// landing a DIFFERENT entry at the same path.
+				// Phase 2 (upload) runs outside the mutex — inject a re-key landing a
+				// DIFFERENT entry at the same path to exercise the guard's CAS.
 				cache.setEntry("new.md", dbxFile("delta", "/root/new.md"));
 				return Promise.resolve(mockRes(untagged(dbxFile("uploaded", "/root/new.md"))));
 			}
@@ -182,8 +186,8 @@ describe("DropboxFs stale-cache guards (concurrent delta)", () => {
 		(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
 			const url = typeof opts === "string" ? opts : opts.url;
 			if (url.includes("delete_v2")) {
-				// Phase 2 (delete) runs outside the mutex — a concurrent delta replaces the
-				// entry at this path with a DIFFERENT file (new id).
+				// Phase 2 (delete) runs outside the mutex — inject a re-key that replaces
+				// the entry at this path with a DIFFERENT file (new id).
 				cache.setEntry("x.md", dbxFile("delta", "/root/x.md"));
 				return Promise.resolve(mockRes({}));
 			}
@@ -206,7 +210,7 @@ describe("DropboxFs stale-cache guards (concurrent delta)", () => {
 		(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
 			const url = typeof opts === "string" ? opts : opts.url;
 			if (url.includes("move_v2")) {
-				// Phase 2 (move) runs outside the mutex — a concurrent delta lands a
+				// Phase 2 (move) runs outside the mutex — inject a re-key landing a
 				// DIFFERENT entry at the destination before our phase-3 cache update.
 				cache.setEntry("new.md", dbxFile("delta", "/root/new.md"));
 				return Promise.resolve(mockRes({ metadata: untagged(dbxFile("src", "/root/new.md")) }));

@@ -163,11 +163,13 @@ export class DropboxFs extends CachingRemoteFs<DropboxEntry> {
 			staleGuard: (r) => ({ path: oldPath, expectedId: r.expectedId }),
 			update: (r, result) => {
 				// The shared staleGuard only validates the SOURCE (oldPath still resolves to
-				// our id). A concurrent delta can land a DIFFERENT entry at newPath during the
-				// phase-2 move (run outside the mutex); setEntry would evict and overwrite it,
-				// dropping that change. Skip instead — symmetric with write()'s new-path guard
-				// and GoogleDriveFs.rename; the in-memory cursor advanced past the delta, so the
-				// next cycle re-detects our rename.
+				// our id). A concurrent re-keyer could land a DIFFERENT entry at newPath during
+				// the phase-2 move (run outside the mutex); setEntry would evict and overwrite
+				// it, dropping that change. Skip instead — symmetric with write()'s new-path
+				// guard and GoogleDriveFs.rename; the in-memory cursor advanced past it, so the
+				// next cycle re-detects our rename. Currently unreachable (ADR 0001, T7:
+				// rename runs serially in Group B, deltas never run during execute) — retained
+				// as defense-in-depth.
 				const occupant = this.cache.getFile(newPath);
 				if (occupant && occupant.id !== result.id) {
 					this.logger?.warn("Skipping stale cache update for rename", { path: newPath });
