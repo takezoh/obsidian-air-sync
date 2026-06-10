@@ -21,6 +21,10 @@ main.js
 # env
 .env
 
+# e2e harness secrets + build artifacts (local-only, never committed)
+.env.e2e
+e2e/.bootstrap.bundle.mjs
+
 # obsidian
 data.json
 

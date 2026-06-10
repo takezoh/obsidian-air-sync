@@ -237,5 +237,10 @@ export default tseslint.config(
 		"versions.json",
 		"main.js",
 		".roost", // local agent/tooling git worktrees (not part of the plugin)
+		// Opt-in real-cloud e2e harness (ADR 0003): local/manual only, never
+		// bundled. It deliberately uses Node APIs (fetch, fs, readline) and real
+		// network — forbidden in shipped src/ by the mobile-compat / restricted-
+		// globals rules — so it is exempt from the plugin lint here.
+		"e2e",
 	]),
 );

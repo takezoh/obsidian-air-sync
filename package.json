@@ -11,7 +11,9 @@
 		"lint": "eslint --max-warnings 0 .",
 		"test": "vitest run",
 		"test:watch": "vitest",
-		"test:coverage": "vitest run --coverage"
+		"test:coverage": "vitest run --coverage",
+		"test:e2e": "vitest run --config e2e/vitest.e2e.config.ts",
+		"e2e:bootstrap": "node e2e/run-bootstrap.mjs"
 	},
 	"keywords": [],
 	"license": "MIT",

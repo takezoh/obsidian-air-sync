@@ -38,7 +38,7 @@ export function registerWriteContract(ctx: IFileSystemContractCtx): void {
 			expect(entity.size).toBe(
 				new TextEncoder().encode("a longer body").byteLength,
 			);
-			expect(entity.mtime).toBe(2000);
+			ctx.expectMtime(entity.mtime, 2000);
 		});
 
 		it("creates parent directories automatically", async () => {
@@ -59,7 +59,7 @@ export function registerWriteContract(ctx: IFileSystemContractCtx): void {
 
 		it("uses provided mtime", async () => {
 			const entity = await ctx.fs().write("a.txt", bytes("data"), 12345);
-			expect(entity.mtime).toBe(12345);
+			ctx.expectMtime(entity.mtime, 12345);
 		});
 	});
 

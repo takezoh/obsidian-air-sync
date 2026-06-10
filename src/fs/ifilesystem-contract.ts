@@ -40,6 +40,16 @@ export interface IFileSystemContractOpts {
 	 * that return `hash: ""` plus a `remoteChecksum`. Default: true.
 	 */
 	computesHashOnStat?: boolean;
+	/**
+	 * Granularity (ms) at which the backend preserves a written `mtime`. The
+	 * second sanctioned backend-class knob (alongside `computesHashOnStat`): it
+	 * relaxes ONLY the mtime-equality assertions to compare at this precision.
+	 * Local/Drive round-trip full milliseconds → 1 (default); the real Dropbox
+	 * truncates `client_modified` to whole seconds → 1000. Used by the opt-in
+	 * real-cloud e2e (ADR 0003); the in-memory fakes keep the default since they
+	 * return full-ms timestamps (ADR 0002, "Documented intentional divergences").
+	 */
+	mtimePrecisionMs?: number;
 }
 
 /**
@@ -51,6 +61,12 @@ export interface IFileSystemContractCtx {
 	fs: () => IFileSystem;
 	/** Whether `stat()` returns a non-empty content hash for files. */
 	computesHashOnStat: boolean;
+	/**
+	 * Assert an observed `mtime` equals the expected value at the backend's
+	 * precision (see {@link IFileSystemContractOpts.mtimePrecisionMs}) — floors
+	 * both sides so a second-truncating backend still passes a sub-second seed.
+	 */
+	expectMtime: (actual: number, expected: number) => void;
 	/** Seed a file through the public `write()` — every backend's real entry point. */
 	seed: (path: string, text: string, mtime?: number) => Promise<void>;
 	/** A path exists iff `stat()` resolves to a non-null entity (file OR directory). */
@@ -81,9 +97,15 @@ export function runIFileSystemContract(
 			current = await makeFs();
 		});
 
+		const mtimePrecisionMs = opts.mtimePrecisionMs ?? 1;
 		const ctx: IFileSystemContractCtx = {
 			fs: () => current,
 			computesHashOnStat: opts.computesHashOnStat ?? true,
+			expectMtime: (actual, expected) => {
+				const floor = (ms: number) =>
+					Math.floor(ms / mtimePrecisionMs) * mtimePrecisionMs;
+				expect(floor(actual)).toBe(floor(expected));
+			},
 			seed: async (path, text, mtime = 1000) => {
 				await current.write(path, bytes(text), mtime);
 			},
@@ -179,7 +201,7 @@ function registerRenameAndReadContract(ctx: IFileSystemContractCtx): void {
 			await ctx.fs().rename("old.txt", "new.txt");
 			const entity = await ctx.fs().stat("new.txt");
 			expect(entity).not.toBeNull();
-			expect(entity!.mtime).toBe(12345);
+			ctx.expectMtime(entity!.mtime, 12345);
 			expect(await readText("new.txt")).toBe("content");
 		});
 	});
@@ -209,7 +231,7 @@ function registerRenameAndReadContract(ctx: IFileSystemContractCtx): void {
 		it("returns correct size and mtime", async () => {
 			await seed("a.txt", "hello", 99999);
 			const file = (await ctx.fs().list()).find((e) => e.path === "a.txt");
-			expect(file!.mtime).toBe(99999);
+			ctx.expectMtime(file!.mtime, 99999);
 			expect(file!.size).toBe(
 				new TextEncoder().encode("hello").byteLength,
 			);

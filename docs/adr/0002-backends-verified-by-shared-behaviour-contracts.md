@@ -2,7 +2,7 @@
 
 **Status:** Accepted · 2026-06-09
 **Context area:** testing / `fs/` backends (multi-FS foundation)
-**Related:** [ADR 0001](0001-metadata-cache-is-subordinate-to-commit-last.md) (the crash-safety contract pins it), [ARCHITECTURE.md](../../ARCHITECTURE.md) (principle 2: a backend changes nothing outside `fs/`), [code-enforcement.md](../code-enforcement.md)
+**Related:** [ADR 0001](0001-metadata-cache-is-subordinate-to-commit-last.md) (the crash-safety contract pins it), [ADR 0003](0003-opt-in-e2e-validates-fakes-against-real-backends.md) (the opt-in e2e that backstops fake fidelity against the live APIs), [ARCHITECTURE.md](../../ARCHITECTURE.md) (principle 2: a backend changes nothing outside `fs/`), [code-enforcement.md](../code-enforcement.md)
 
 ## Context
 
@@ -31,7 +31,9 @@ because they are the ways a contract can look green and still be worthless:
    `upload`/`createFolder`, which the real client *does* re-stamp). So
    `DropboxFs.rename`'s load-bearing `.tag` re-stamp — the line that keeps a moved folder
    classified as a folder — was **dead against the fake**: deleting it left the contract
-   green. Found in code review; the fake was corrected to return untagged metadata.
+   green. Found in code review; the fake was corrected to return untagged metadata. (This
+   review-only catch is exactly what the opt-in real-cloud e2e in [ADR 0003](0003-opt-in-e2e-validates-fakes-against-real-backends.md)
+   now backstops — the same contract, run against the live API, fails on a drifted fake.)
 
 2. **An assertion that is not load-bearing gives false confidence.** The shared
    rename-directory case only checked `exists("renamed")`, and `exists()` is defined as
@@ -102,7 +104,13 @@ purpose and consistent across the Drive/Dropbox/pCloud fakes: the IFileSystem co
 tests **FS-layer fidelity** (the FS does not mangle the time the backend reports), not the
 backend's wire-format timestamp precision — that truncation lives in the client, outside
 this contract's scope. A divergence like this is allowed only when it is written down at
-the fake and does not weaken what the contract is *for*.
+the fake and does not weaken what the contract is *for*. The opt-in real-cloud e2e
+([ADR 0003](0003-opt-in-e2e-validates-fakes-against-real-backends.md)) runs this same
+contract against the live backends, where the truncation is real; the
+`mtimePrecisionMs` opt — a second sanctioned backend-class knob alongside
+`computesHashOnStat` — relaxes **only** the mtime-equality assertions to the backend's
+precision (Drive `1`, Dropbox `1000`) so the divergence is exercised end-to-end without
+weakening the unit-level contract (the fakes keep the default full-ms precision).
 
 **The orchestrator-level convergence path is deliberately out of the FS contracts.** ADR
 0001 **path 2** (state C — a live FS whose in-memory cursor overtook the committed one
