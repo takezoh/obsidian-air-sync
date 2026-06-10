@@ -16,10 +16,6 @@ Works on desktop and mobile, powered by your own cloud storage — **Google Driv
 
 ## Getting started
 
-Supported backends: **Google Drive** and **Dropbox** (Preview).
-
-> **Requires a Google or Dropbox account.**
-
 1. Open the plugin settings (**Settings → Air Sync**).
 2. Pick your backend if more than one is available.
 3. Click **Connect**, then approve access in your browser.
