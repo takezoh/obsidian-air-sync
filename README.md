@@ -16,13 +16,13 @@ Works on desktop and mobile, powered by your own cloud storage — **Google Driv
 
 ## Getting started
 
+Supported backends: **Google Drive** and **Dropbox** (Preview).
+
 > **Requires a Google or Dropbox account.**
 
-> **Dropbox support is in Preview.**
-
 1. Open the plugin settings (**Settings → Air Sync**).
-2. Pick your backend (**Google Drive** or **Dropbox** (Preview)) if more than one is available.
-3. Click **Connect to …** (e.g. **Connect to Google Drive** or **Connect to Dropbox**), then approve access in your browser.
+2. Pick your backend if more than one is available.
+3. Click **Connect**, then approve access in your browser.
 4. Choose where to sync: use the **default folder** (named after your vault), or **pick an existing folder**.
 
 That's it — Air Sync syncs into that folder from then on.
