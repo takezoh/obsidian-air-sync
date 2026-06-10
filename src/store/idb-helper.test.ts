@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import "fake-indexeddb/auto";
-import { IDBHelper, isConnectionClosingError, sanitizeDbName } from "./idb-helper";
+import { IDBHelper, IDBTransactionError, isConnectionClosingError, sanitizeDbName } from "./idb-helper";
 
 describe("IDBHelper", () => {
 	let helper: IDBHelper;
@@ -104,11 +104,44 @@ describe("IDBHelper", () => {
 	});
 });
 
+describe("IDBTransactionError", () => {
+	it("preserves the DOMException name and message", () => {
+		const dom = new DOMException("The database connection is closing.", "InvalidStateError");
+		const err = new IDBTransactionError("abort", dom);
+		expect(err.name).toBe("IDBTransactionError");
+		expect(err.phase).toBe("abort");
+		expect(err.domName).toBe("InvalidStateError");
+		expect(err.cause).toBe(dom);
+		expect(err.message).toContain("The database connection is closing.");
+	});
+
+	it("tolerates a missing DOMException", () => {
+		const err = new IDBTransactionError("error", null);
+		expect(err.domName).toBeNull();
+		expect(err.message).toContain("unknown");
+	});
+});
+
 describe("isConnectionClosingError", () => {
 	it("matches InvalidStateError by name", () => {
 		const err = new Error("boom");
 		err.name = "InvalidStateError";
 		expect(isConnectionClosingError(err)).toBe(true);
+	});
+
+	it("matches a typed transaction error by its DOMException name", () => {
+		const dom = new DOMException("anything", "InvalidStateError");
+		expect(isConnectionClosingError(new IDBTransactionError("abort", dom))).toBe(true);
+	});
+
+	it("matches a typed transaction error by message fallback when name is unusable", () => {
+		const dom = new DOMException("The database connection is closing.", "AbortError");
+		expect(isConnectionClosingError(new IDBTransactionError("abort", dom))).toBe(true);
+	});
+
+	it("ignores a typed transaction error that is neither", () => {
+		const dom = new DOMException("Quota exceeded", "QuotaExceededError");
+		expect(isConnectionClosingError(new IDBTransactionError("abort", dom))).toBe(false);
 	});
 
 	it("matches wrapped errors by message", () => {

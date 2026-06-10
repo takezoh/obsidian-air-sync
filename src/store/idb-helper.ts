@@ -140,23 +140,58 @@ export class IDBHelper {
 			}
 			const getResult = fn(tx);
 			tx.oncomplete = () => resolve(getResult());
-			tx.onerror = () =>
-				reject(new Error(`Transaction failed: ${tx.error?.message ?? "unknown"}`));
-			tx.onabort = () =>
-				reject(new Error(`Transaction aborted: ${tx.error?.message ?? "unknown"}`));
+			tx.onerror = () => reject(new IDBTransactionError("error", tx.error));
+			tx.onabort = () => reject(new IDBTransactionError("abort", tx.error));
 		});
 	}
 }
 
 /**
+ * A failed IndexedDB transaction, surfaced from `tx.onerror`/`tx.onabort`.
+ *
+ * The browser hands us a {@link DOMException} on `tx.error` whose `name`
+ * (`"InvalidStateError"`, `"AbortError"`, `"QuotaExceededError"`, …) is the
+ * structured signal callers should classify on — so we preserve it as
+ * {@link domName} (and the original exception as `cause`) instead of flattening
+ * to a string message that downstream code then has to re-parse.
+ */
+export class IDBTransactionError extends Error {
+	/** Which lifecycle hook fired: `tx.onerror` vs `tx.onabort`. */
+	readonly phase: "error" | "abort";
+	/** The underlying `DOMException.name`, or `null` when the browser gave us none. */
+	readonly domName: string | null;
+	/** The original `DOMException`, preserved for callers that want the raw cause. */
+	readonly cause?: DOMException;
+	constructor(phase: "error" | "abort", domError: DOMException | null) {
+		const verb = phase === "error" ? "failed" : "aborted";
+		super(`Transaction ${verb}: ${domError?.message ?? "unknown"}`);
+		this.name = "IDBTransactionError";
+		this.phase = phase;
+		this.domName = domError?.name ?? null;
+		if (domError) this.cause = domError;
+	}
+}
+
+/** The `DOMException.name` raised when an IndexedDB connection is closing. */
+const CONNECTION_CLOSING_DOM_NAME = "InvalidStateError";
+
+/**
  * Detect the "database connection is closing" failure that iOS Safari raises
- * when it closes an IndexedDB connection out from under us. Matches both the
- * raw `InvalidStateError` thrown by `transaction()` and the wrapped error
- * surfaced via `tx.onerror`/`tx.onabort` when the connection dies mid-flight.
+ * when it closes an IndexedDB connection out from under us. Covers both the
+ * raw `InvalidStateError` thrown synchronously by `transaction()` and the
+ * {@link IDBTransactionError} surfaced via `tx.onerror`/`tx.onabort` when the
+ * connection dies mid-flight.
+ *
+ * Classification is by DOMException `name` (`domName` for the wrapped case,
+ * `err.name` for the raw throw); the message regex is retained only as a
+ * cross-browser fallback for engines that report no usable `name`.
  */
 export function isConnectionClosingError(err: unknown): boolean {
+	if (err instanceof IDBTransactionError) {
+		return err.domName === CONNECTION_CLOSING_DOM_NAME || /connection is closing/i.test(err.message);
+	}
 	if (!(err instanceof Error)) return false;
-	return err.name === "InvalidStateError" || /connection is closing/i.test(err.message);
+	return err.name === CONNECTION_CLOSING_DOM_NAME || /connection is closing/i.test(err.message);
 }
 
 export function sanitizeDbName(name: string): string {
