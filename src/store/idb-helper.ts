@@ -99,6 +99,11 @@ export class IDBHelper {
 	 * Run an IndexedDB transaction with automatic promise wrapping.
 	 * `fn` receives the transaction, performs IDB operations, and returns
 	 * a thunk `() => T` that is called on `tx.oncomplete` to safely read results.
+	 *
+	 * `fn` must be idempotent: on a "connection is closing" failure the
+	 * transaction is retried once on a fresh connection, so it may run twice.
+	 * Every caller here issues only keyed put/get/delete/clear/getAll ops, which
+	 * are safe to repeat; read-modify-write counters would not be.
 	 */
 	async runTransaction<T>(
 		storeNames: string | string[],
