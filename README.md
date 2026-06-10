@@ -64,16 +64,6 @@ Example:
 .obsidian/plugins/*/data.json
 ```
 
-### Advanced settings
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Dot-prefixed paths to sync | Dot-prefixed folders to include in sync (e.g. `.templates`) | (none) |
-| Ignore patterns | Glob patterns to exclude (one per line) | Desktop: (none), Mobile: `.md`/`.canvas`/`.base` only |
-| Mobile max file size | Skip files larger than this on mobile | 10 MB |
-| Enable logging | Write sync logs to `.airsync/` in your vault | Off |
-| Log level | Minimum log level (debug / info / warn / error) | info |
-
 ### Custom OAuth (Google Drive)
 
 The built-in Google Drive connection uses the `drive.file` scope, which only allows access to files the plugin itself created. With custom OAuth, you can use your own Google Cloud OAuth client and manage authorization independently.
