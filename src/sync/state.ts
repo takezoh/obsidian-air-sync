@@ -148,12 +148,22 @@ export class SyncStateStore {
 
 	/** Get prevSyncContent for a path (decompressed via content-codec) */
 	async getContent(path: string): Promise<ArrayBuffer | undefined> {
-		return this.helper.runTransaction(CONTENT_STORE_NAME, "readonly", (tx) => {
+		const stored = await this.helper.runTransaction(CONTENT_STORE_NAME, "readonly", (tx) => {
 			const req = tx.objectStore(CONTENT_STORE_NAME).get(path);
 			return () => {
 				const result = req.result as { path: string; content: ArrayBuffer } | undefined;
-				return result ? decodeContent(result.content) : undefined;
+				return result?.content;
 			};
 		});
+		// Decode outside the transaction: the thunk runs inside tx.oncomplete, where a
+		// throw would escape the promise (hanging getContent) rather than reject. Corrupt
+		// or unknown-format base content is non-authoritative — treat it as absent so the
+		// merge falls back gracefully and the entry re-baselines on the next sync.
+		if (!stored) return undefined;
+		try {
+			return decodeContent(stored);
+		} catch {
+			return undefined;
+		}
 	}
 }
