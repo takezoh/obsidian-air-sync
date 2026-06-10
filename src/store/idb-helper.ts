@@ -63,6 +63,23 @@ export class IDBHelper {
 		return this.db;
 	}
 
+	/**
+	 * Discard the cached connection so the next `getDb()` opens a fresh one.
+	 * iOS Safari closes IndexedDB connections out from under us when the app is
+	 * backgrounded or under memory pressure; the stale handle then throws
+	 * "The database connection is closing" on every transaction until it is
+	 * dropped — which is why the plugin previously needed a task-kill to recover.
+	 */
+	private resetConnection(): void {
+		try {
+			this.db?.close();
+		} catch {
+			// already closing/closed — nothing to do
+		}
+		this.db = null;
+		this.openPromise = null;
+	}
+
 	async close(): Promise<void> {
 		if (this.openPromise) {
 			try {
@@ -88,9 +105,34 @@ export class IDBHelper {
 		mode: IDBTransactionMode,
 		fn: (tx: IDBTransaction) => () => T,
 	): Promise<T> {
+		try {
+			return await this.attemptTransaction(storeNames, mode, fn);
+		} catch (err) {
+			if (!isConnectionClosingError(err)) throw err;
+			// The cached connection was closed under us (typically iOS backgrounding
+			// the app). Drop it and retry once with a freshly opened connection so the
+			// next sync recovers without a task-kill.
+			this.resetConnection();
+			return this.attemptTransaction(storeNames, mode, fn);
+		}
+	}
+
+	private async attemptTransaction<T>(
+		storeNames: string | string[],
+		mode: IDBTransactionMode,
+		fn: (tx: IDBTransaction) => () => T,
+	): Promise<T> {
 		const db = await this.getDb();
 		return new Promise<T>((resolve, reject) => {
-			const tx = db.transaction(storeNames, mode);
+			let tx: IDBTransaction;
+			try {
+				tx = db.transaction(storeNames, mode);
+			} catch (err) {
+				// `transaction()` throws synchronously when the connection is closing;
+				// surface it as a rejection so runTransaction can decide to recover.
+				reject(err instanceof Error ? err : new Error(String(err)));
+				return;
+			}
 			const getResult = fn(tx);
 			tx.oncomplete = () => resolve(getResult());
 			tx.onerror = () =>
@@ -99,6 +141,17 @@ export class IDBHelper {
 				reject(new Error(`Transaction aborted: ${tx.error?.message ?? "unknown"}`));
 		});
 	}
+}
+
+/**
+ * Detect the "database connection is closing" failure that iOS Safari raises
+ * when it closes an IndexedDB connection out from under us. Matches both the
+ * raw `InvalidStateError` thrown by `transaction()` and the wrapped error
+ * surfaced via `tx.onerror`/`tx.onabort` when the connection dies mid-flight.
+ */
+export function isConnectionClosingError(err: unknown): boolean {
+	if (!(err instanceof Error)) return false;
+	return err.name === "InvalidStateError" || /connection is closing/i.test(err.message);
 }
 
 export function sanitizeDbName(name: string): string {
