@@ -82,7 +82,7 @@ The authorization code exchange is protected by PKCE — the code cannot be used
 Air Sync connects only to the cloud storage you choose, to sync your files:
 
 - **Google Drive** — `googleapis.com` for sync; sign-in happens on `accounts.google.com`, and a small auth server (`auth-airsync.takezo.dev`) performs the sign-in token exchange.
-- **Dropbox** — `api.dropboxapi.com` / `content.dropboxapi.com` for sync; sign-in happens on `dropbox.com` and returns directly to Obsidian, and the folder picker is hosted on a helper page on `airsync.takezo.dev`.
+- **Dropbox** — `api.dropboxapi.com` / `content.dropboxapi.com` for sync; sign-in happens on `dropbox.com` and returns directly to Obsidian (no relay or picker page — the folder is chosen in-app).
 - **OneDrive** — `graph.microsoft.com` for sync; sign-in happens on `login.microsoftonline.com` and returns directly to Obsidian (no relay or picker page — the folder is chosen in-app). Personal Microsoft accounts only.
 
 Your vault data is sent only to your chosen storage provider — never to the auth, redirect, or picker pages.

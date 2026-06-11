@@ -132,28 +132,32 @@ with Dropbox. Refreshing an access token needs only the `client_id`.
 
 ### Remote vault resolution & default
 
-`resolveRemoteVault` binds the vault on first connect by creating
-`/<vaultName>` directly under the App Folder root — the **default sync folder is
-`App Folder/<vault>`** (the App Folder scope already namespaces the app, so there
-is no wrapper folder). `create_folder_v2` is idempotent, so a second device with
-the same vault name binds to the same folder. A LOCAL vault rename does not
+`resolveRemoteVault` binds the vault on first connect by find-or-creating
+`/<name>` directly under the App Folder root, where `name` is the folder name
+queued by the in-app modal (`pendingPickedFolderPath`) or, by default, the vault
+name — so the **default sync folder is `App Folder/<vault>`** (the App Folder
+scope already namespaces the app, so there is no wrapper folder).
+`create_folder_v2` is idempotent, so a picked existing folder (or a second device
+with the same vault name) binds to that same folder. A LOCAL vault rename does not
 rename the remote folder (it is tracked by id); only `lastKnownVaultName`
 advances so `BackendManager`'s name-equality short-circuit resumes.
 
 ### Choosing a different folder
 
-When connected, settings offers **Choose folder**, which opens the Dropbox
-**Chooser** hosted on the relay (the `dropbox-folder/` page in the
-[air-sync-auth](https://github.com/takezoh/air-sync-auth) repo) and returns the
-selection via the backend-agnostic `obsidian://air-sync-folder` deep link
-(`startWebFolderPick` / `completeWebFolderPick`):
+When connected, settings offers **Choose folder**, which opens an **in-app modal**
+(`DropboxFolderModal`) — the same pattern as OneDrive, no web Chooser or relay
+page:
 
-- The Chooser can't be embedded in Obsidian (remote script + origin allowlist)
-  and **always browses the whole Dropbox** (it can't be limited to the app
-  folder), so `completeWebFolderPick` verifies the picked id is reachable with
-  the App Folder token (`get_metadata`) and rejects anything outside
-  `Apps/<App>/` with a clear message instead of silently failing to sync.
-- A `state` nonce guards the deep link against CSRF.
+- The modal lists the folders directly under the App Folder root
+  (`client.listAppRootFolders()`, i.e. `list_folder` on path `""`) and lets the
+  user pick an existing one or type a new name. Because the App Folder scope only
+  ever sees folders under the App Folder, an in-app list is honest — the old
+  Chooser browsed the whole Dropbox and then had to reject picks outside the app
+  folder.
+- On confirm, the chosen name is written to `pendingPickedFolderPath` and the
+  default-bind action runs, so `resolveRemoteVault` find-or-creates `/<name>`
+  (idempotent `create_folder_v2`) and binds its id. No CSRF nonce or deep link is
+  involved — there is no browser round-trip.
 - Changing the folder resets the cursor (and, via the identity change, clears
   per-path sync state), so the next sync is a cold reconcile against the new
   folder.

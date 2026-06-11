@@ -5,8 +5,9 @@ import type {
 	BackendConnectionActions,
 	IBackendSettingsRenderer,
 } from "../fs/settings-renderer";
-import type { DropboxBackendData } from "../fs/dropbox/provider";
+import type { DropboxBackendData, DropboxProvider } from "../fs/dropbox/provider";
 import { getBackendProvider } from "../fs/registry";
+import { DropboxFolderModal } from "./dropbox-folder-modal";
 
 /**
  * Renders Dropbox-specific settings UI: connection status, the in-plugin PKCE
@@ -25,7 +26,7 @@ export class DropboxSettingsRenderer implements IBackendSettingsRenderer {
 		actions: BackendConnectionActions,
 		app: App,
 	): void {
-		const provider = getBackendProvider("dropbox");
+		const provider = getBackendProvider("dropbox") as DropboxProvider | undefined;
 		// Gate on auth alone (not isConnected): after auth but before a folder is bound,
 		// the user still needs the connected UI to choose a remote folder.
 		const authed = provider?.auth.isAuthenticated(settings.backendData ?? {}) ?? false;
@@ -84,14 +85,26 @@ export class DropboxSettingsRenderer implements IBackendSettingsRenderer {
 						.setButtonText(defaultPath)
 						.setCta()
 						.onClick(async () => {
+							// Clear any folder name queued by the modal first: the default
+							// button always binds the vault name. Otherwise a pick whose bind
+							// failed would leave a stale pendingPickedFolderPath this button
+							// would silently reuse.
+							await onSave({ pendingPickedFolderPath: "" });
 							await actions.bindDefaultFolder();
 						}),
 				)
 				.addButton((button) =>
 					button
 						.setButtonText("Choose folder")
-						.onClick(async () => {
-							await actions.startFolderPick();
+						.onClick(() => {
+							if (!provider) return;
+							new DropboxFolderModal(
+								app,
+								provider,
+								settings,
+								onSave,
+								() => actions.bindDefaultFolder(),
+							).open();
 						}),
 				);
 		}

@@ -249,7 +249,7 @@ interface IBackendProvider {
   hasCheckpoint?(settings): boolean;       // is a committed delta cursor present? false ⇒ force a cold reconcile
   readBackendState?(fs, commitCheckpoint): Record<string, unknown>;  // advance the cursor only when commitCheckpoint (failed === 0)
   resolveRemoteVault?(app, settings, vaultName, logger?): Promise<RemoteVaultResolution>;  // find/create the default vault folder
-  startWebFolderPick?(settings): Promise<Record<string, unknown>>;            // open the web folder picker (Google Picker / Dropbox Chooser)
+  startWebFolderPick?(settings): Promise<Record<string, unknown>>;            // open the web folder picker (Google Picker); OneDrive/Dropbox use an in-app modal instead
   completeWebFolderPick?(params, settings, logger?): Promise<RemoteVaultResolution>;  // bind the picked folder (by id)
   getRemoteVaultDisplayPath?(settings, logger?): Promise<string | null>;      // resolve the bound folder's path for settings
   clearPluginSecrets?(): void;       // sweep this backend's plugin-owned secrets (used by the backend-switch reset)
@@ -280,6 +280,6 @@ The provider registry (`fs/registry.ts`) maps backend types to provider instance
 - [Sync pipeline](docs/sync-pipeline.md) -- temperature modes, decision table, execution groups, deletion safety
 - [Conflict resolution](docs/conflict-resolution.md) -- strategies, 3-way merge, conflict history
 - [Google Drive backend](docs/google-drive-backend.md) -- metadata cache, authentication, and the sole owner of incremental sync / cache invalidation
-- [Dropbox backend](docs/dropbox-backend.md) -- App Folder scope, id-only addressing, worker-less PKCE auth, the web Chooser folder picker
+- [Dropbox backend](docs/dropbox-backend.md) -- App Folder scope, id-only addressing, worker-less PKCE auth, in-app folder modal
 - [Error handling](docs/error-handling.md) -- resilience: error classification, retry, rate limiting (recovery scenarios cross-reference the sync pipeline)
-- [OAuth worker & auth site](https://github.com/takezoh/air-sync-auth) -- server-side Google token exchange plus the static site (privacy/terms, the shared custom-OAuth/Dropbox callback, and the Dropbox Chooser folder picker), in the dedicated `air-sync-auth` repo (kept out of this plugin's tree)
+- [OAuth worker & auth site](https://github.com/takezoh/air-sync-auth) -- server-side Google token exchange plus the static site (privacy/terms, the Google custom-OAuth callback, and the Google Drive Picker page), in the dedicated `air-sync-auth` repo (kept out of this plugin's tree). Dropbox no longer uses this site — its OAuth returns straight to `obsidian://air-sync-auth` and its folder pick is an in-app modal.
