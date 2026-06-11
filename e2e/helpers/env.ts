@@ -40,3 +40,25 @@ export function readCreds(envVar: string): BackendCreds | null {
 	const refreshToken = process.env[envVar];
 	return refreshToken ? { refreshToken } : null;
 }
+
+export interface PCloudCreds {
+	/** Long-lived OAuth access token (pCloud issues no refresh token). */
+	accessToken: string;
+	/** Region-pinned API host (api.pcloud.com US / eapi.pcloud.com EU). */
+	apiHost: string;
+}
+
+/**
+ * pCloud's credential shape is intentionally NOT `BackendCreds`: unlike the
+ * refresh-token backends, pCloud issues a single LONG-LIVED access token (no
+ * refresh, no expiry) plus a region-pinned API host, so there is no token dance
+ * and no bootstrap — the token is pasted into `.env.e2e` once. Return `null`
+ * (→ warn + skip) when the access token is absent; the host falls back to the US
+ * default so only the token is mandatory.
+ */
+export function readPCloudCreds(): PCloudCreds | null {
+	loadDotEnvE2e();
+	const accessToken = process.env.AIRSYNC_E2E_PCLOUD_ACCESS_TOKEN;
+	if (!accessToken) return null;
+	return { accessToken, apiHost: process.env.AIRSYNC_E2E_PCLOUD_API_HOST || "api.pcloud.com" };
+}

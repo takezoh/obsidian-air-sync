@@ -1,6 +1,8 @@
 import type { DriveClient } from "../../src/fs/googledrive/client";
 import type { DropboxClient } from "../../src/fs/dropbox/client";
 import type { OneDriveClient } from "../../src/fs/onedrive/client";
+import type { PCloudClient } from "../../src/fs/pcloud/client";
+import { folderIdOf } from "../../src/fs/pcloud/types";
 
 /**
  * Per-test isolation for the real-cloud contract run.
@@ -135,4 +137,34 @@ export async function cleanupOneDriveParent(
 	parentId: string,
 ): Promise<void> {
 	await client.deleteItem(parentId);
+}
+
+// ── pCloud ────────────────────────────────────────────────────────────────────
+//
+// pCloud is folder-id addressed (numeric `folderid`; "0" is the account root). The
+// per-run parent is created under the root and a fresh child per test under it;
+// createfolderifnotexists returns the entry whose `folderid` roots the FS. Ids are
+// usable immediately (no Dropbox-style warm-up), like Drive/OneDrive.
+
+/** Create the per-run parent under the account root ("0"); returns its folder id. */
+export async function makePCloudParent(client: PCloudClient): Promise<string> {
+	const folder = await client.createFolderIfNotExists("0", uniqueName("airsync-e2e"));
+	return folderIdOf(folder);
+}
+
+/** Create a fresh empty child folder under the parent; returns its id (per-test root). */
+export async function makePCloudChild(
+	client: PCloudClient,
+	parentId: string,
+): Promise<string> {
+	const folder = await client.createFolderIfNotExists(parentId, uniqueName("t"));
+	return folderIdOf(folder);
+}
+
+/** Recursively delete the parent and everything under it. */
+export async function cleanupPCloudParent(
+	client: PCloudClient,
+	parentId: string,
+): Promise<void> {
+	await client.deleteFolderRecursive(parentId);
 }
