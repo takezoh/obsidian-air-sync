@@ -60,8 +60,11 @@ export async function uploadSession(
 			{
 				url: uploadUrl,
 				method: "PUT",
+				// NO manual Content-Length: Obsidian's requestUrl (Electron net) derives it
+				// from the body, and a hand-set one makes net throw ERR_INVALID_ARGUMENT
+				// (same lesson as googledrive/resumable-upload.ts). Content-Range is required
+				// by Graph and is fine.
 				headers: {
-					"Content-Length": String(end - start),
 					"Content-Range": `bytes ${start}-${end - 1}/${total}`,
 				},
 				body: content.slice(start, end),
