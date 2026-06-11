@@ -173,14 +173,23 @@ export class OneDriveClient {
 		return items;
 	}
 
-	/** List immediate folders directly under the App Folder root. */
+	/** List immediate folders directly under the App Folder root (paginated). */
 	async listAppRootFolders(): Promise<OneDriveItem[]> {
-		const res = await this.json<OneDriveChildrenResponse>(
-			"listAppRootFolders",
-			`${GRAPH_API}/me/drive/special/approot/children`,
-			"GET",
-		);
-		return res.value.filter((item) => !!item.folder);
+		const folders: OneDriveItem[] = [];
+		// Drain @odata.nextLink: Graph pages /children (~200/page), so a single GET
+		// would silently truncate the folder list shown in the picker modal.
+		let url: string | undefined = `${GRAPH_API}/me/drive/special/approot/children`;
+		for (let guard = 0; url; guard++) {
+			if (guard >= LIST_PAGE_CAP) {
+				throw new Error(`listAppRootFolders: pagination exceeded ${LIST_PAGE_CAP} pages`);
+			}
+			const res: OneDriveChildrenResponse = await this.json<OneDriveChildrenResponse>("listAppRootFolders", url, "GET");
+			for (const item of res.value) {
+				if (item.folder) folders.push(item);
+			}
+			url = res["@odata.nextLink"];
+		}
+		return folders;
 	}
 
 	/** Get the App Folder root item (its id is the anchor for find-or-create). */

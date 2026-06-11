@@ -1,5 +1,5 @@
 import type { FileEntity } from "../types";
-import { toRemoteChecksum, itemMtime } from "./types";
+import { toRemoteChecksum, itemMtime, GraphApiError } from "./types";
 import type { OneDriveItem } from "./types";
 import type { OneDriveClient } from "./client";
 import type { MetadataStore } from "../../store/metadata-store";
@@ -43,12 +43,19 @@ export class OneDriveFs extends CachingRemoteFs<OneDriveItem> {
 
 	protected async assertRootAlive(): Promise<void> {
 		// An empty full enumeration is ambiguous (genuinely empty vault vs deleted
-		// root). getItem throws (404 → GraphApiError) if the folder is gone, so an
-		// empty list of a deleted root aborts here rather than letting a cold reconcile
-		// read every file as remotely deleted and plan a mass delete_local.
-		const root = await this.client.getItem(this.rootFolderId);
-		if (root.deleted) {
-			throw new Error(`Remote vault folder was deleted (id: ${this.rootFolderId})`);
+		// root), so confirm the root still exists before the base reconciles an empty
+		// list — otherwise a cold reconcile would read every file as remotely deleted
+		// and plan a mass delete_local. A deleted/recycled folder makes getItem 404
+		// (→ GraphApiError); translate that to the descriptive message. (Graph's
+		// `deleted` facet only appears on /delta tombstones, never on a direct item
+		// GET, so there is nothing to inspect on a successful response.)
+		try {
+			await this.client.getItem(this.rootFolderId);
+		} catch (err) {
+			if (err instanceof GraphApiError && err.status === 404) {
+				throw new Error(`Remote vault folder was deleted (id: ${this.rootFolderId})`);
+			}
+			throw err;
 		}
 	}
 

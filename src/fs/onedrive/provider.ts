@@ -107,21 +107,23 @@ export class OneDriveProvider implements IBackendProvider {
 		return new MetadataStore<OneDriveItem>(`${settings.vaultId}-${id}`, { dbNamePrefix: "air-sync-onedrive", version: 1 });
 	}
 
+	/** A usable token exists if either secret is present (a refresh OR a live access token). */
+	private hasAnyToken(): boolean {
+		return (
+			hasBackendSecret(this.secretStore, BACKEND_TYPE, "refresh") ||
+			hasBackendSecret(this.secretStore, BACKEND_TYPE, "access")
+		);
+	}
+
 	createFs(_app: App, settings: AirSyncSettings, logger?: Logger): IFileSystem | null {
 		const data = this.getData(settings);
-		const hasToken =
-			hasBackendSecret(this.secretStore, BACKEND_TYPE, "refresh") ||
-			hasBackendSecret(this.secretStore, BACKEND_TYPE, "access");
-		if (!hasToken || !data.remoteVaultFolderId) return null;
+		if (!this.hasAnyToken() || !data.remoteVaultFolderId) return null;
 		const client = this.makeClient(data, logger);
 		return new OneDriveFs(client, data.remoteVaultFolderId, logger, this.metadataStoreFor(settings) ?? undefined);
 	}
 
 	isConnected(settings: AirSyncSettings): boolean {
-		const hasToken =
-			hasBackendSecret(this.secretStore, BACKEND_TYPE, "refresh") ||
-			hasBackendSecret(this.secretStore, BACKEND_TYPE, "access");
-		return hasToken && !!this.getData(settings).remoteVaultFolderId;
+		return this.hasAnyToken() && !!this.getData(settings).remoteVaultFolderId;
 	}
 
 	getIdentity(settings: AirSyncSettings): string | null {

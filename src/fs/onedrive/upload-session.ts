@@ -71,5 +71,12 @@ export async function uploadSession(
 		);
 	}
 	if (!last) throw new Error("OneDrive upload session produced no final response (empty content?)");
-	return last.json as OneDriveItem;
+	// The completed driveItem only comes back on the final chunk (200/201). A 202
+	// (server still expecting bytes) or any id-less 2xx body would otherwise be cast
+	// to an OneDriveItem and cache-keyed by an undefined id — fail loudly instead.
+	const item = last.json as OneDriveItem;
+	if (!item?.id) {
+		throw new Error(`OneDrive upload session did not complete: no driveItem id in the final response for "${name}"`);
+	}
+	return item;
 }
