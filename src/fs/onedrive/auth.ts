@@ -19,14 +19,13 @@ const BACKEND_TYPE = "onedrive";
 /**
  * Public OAuth client id for the Air Sync OneDrive app (Files.ReadWrite.AppFolder).
  *
- * PLACEHOLDER — the maintainer MUST replace this with the real Entra (Azure AD)
- * application (client) id registered at https://entra.microsoft.com with
- * `obsidian://air-sync-auth` as a redirect URI and "Personal Microsoft accounts
- * only" as the supported account type. PKCE means there is NO client secret
- * anywhere — the `code_verifier` is the ephemeral proof. The contract tests pass a
- * fake client id, so they are green regardless of this value.
+ * The real Entra (Azure AD) application (client) id, registered at
+ * https://entra.microsoft.com with `obsidian://air-sync-auth` as a redirect URI and
+ * "Personal Microsoft accounts only" as the supported account type. PKCE means there
+ * is NO client secret anywhere — the `code_verifier` is the ephemeral proof. The
+ * contract tests pass a fake client id, so they are green regardless of this value.
  */
-export const ONEDRIVE_CLIENT_ID = "REPLACE_ME";
+export const ONEDRIVE_CLIENT_ID = "71cd9a2a-a701-4ec2-b7d0-2352e0e84e9f";
 
 /**
  * Build the OneDrive authorization-code + PKCE authorize URL. The single source of
