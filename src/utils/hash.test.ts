@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { sha1, sha256, digest, dropboxContentHash, isLocallyComputable } from "./hash";
+import { quickXorHashBase64 } from "./quickxor";
 
 function buf(s: string): ArrayBuffer {
 	return new TextEncoder().encode(s).buffer as ArrayBuffer;
@@ -24,6 +25,7 @@ describe("hash utils", () => {
 		expect(await digest(buf("abc"), "sha1")).toBe("a9993e364706816aba3e25717850c26c9cd0d89d");
 		expect(await digest(buf("abc"), "sha256")).toBe(await sha256(buf("abc")));
 		expect(await digest(buf("abc"), "dropbox")).toBe(await dropboxContentHash(buf("abc")));
+		expect(await digest(buf("abc"), "quickxor")).toBe(quickXorHashBase64(buf("abc")));
 	});
 
 	it("digest throws for opaque (not locally computable)", async () => {
@@ -35,6 +37,7 @@ describe("hash utils", () => {
 		expect(isLocallyComputable("sha1")).toBe(true);
 		expect(isLocallyComputable("sha256")).toBe(true);
 		expect(isLocallyComputable("dropbox")).toBe(true);
+		expect(isLocallyComputable("quickxor")).toBe(true);
 		expect(isLocallyComputable("opaque")).toBe(false);
 	});
 });

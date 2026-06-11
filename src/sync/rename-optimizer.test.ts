@@ -213,6 +213,40 @@ describe("refinePlan", () => {
 		]);
 	});
 
+	it("keeps concurrent Group-A actions on distinct paths (ADR 0001 T7 invariant)", () => {
+		// The withCacheMutex stale-guard stays dormant only because no two CONCURRENT
+		// (Group-A: push/pull/match/cleanup) actions share a target path — so a parallel
+		// write can never re-key another's guarded path mid-upload. Group A is the only
+		// parallel group; renames are Group B (serial). Pin that refinePlan — the most
+		// complex plan transform — preserves this: it consumes Group-A actions INTO
+		// Group-B renames and never mints a duplicate-path Group-A action. Here a remote
+		// folder rename (A → B) is coalesced while three independent Group-A actions on
+		// distinct paths survive untouched.
+		const p = plan([
+			{ path: "A/f1.md", action: "delete_local", local: entity("A/f1.md", "h1"), baseline: baseline("A/f1.md", "h1") },
+			{ path: "B/f1.md", action: "pull", remote: entity("B/f1.md", "h1") },
+			{ path: "A/f2.md", action: "delete_local", local: entity("A/f2.md", "h2"), baseline: baseline("A/f2.md", "h2") },
+			{ path: "B/f2.md", action: "pull", remote: entity("B/f2.md", "h2") },
+			{ path: "doc.md", action: "push", local: entity("doc.md", "h3") },
+			{ path: "notes/a.md", action: "push", local: entity("notes/a.md", "h4") },
+			{ path: "img.png", action: "pull", remote: entity("img.png", "h5") },
+		]);
+		const remotePairs = [{ oldPath: "A", newPath: "B", isFolder: true }];
+		const result = refinePlan(p, new Map(), new Map(), remotePairs);
+
+		const groupA = result.actions.filter((a) =>
+			["push", "pull", "match", "cleanup"].includes(a.action),
+		);
+		const groupAPaths = groupA.map((a) => a.path);
+		// The load-bearing property: concurrent (Group-A) actions never collide on a path.
+		expect(new Set(groupAPaths).size).toBe(groupAPaths.length);
+		// The three independents survived the folder-rename coalesce intact.
+		expect(groupAPaths.sort()).toEqual(["doc.md", "img.png", "notes/a.md"]);
+		// And the whole plan carries no duplicate target path either.
+		const allPaths = result.actions.map((a) => a.path);
+		expect(new Set(allPaths).size).toBe(allPaths.length);
+	});
+
 	it("coalesces a remote folder rename into a single rename_local", () => {
 		const p = plan([
 			{

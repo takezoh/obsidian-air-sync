@@ -209,3 +209,23 @@ describe("DropboxClient.listFolderAll", () => {
 		expect(entries.map((e) => e.id)).toEqual(["id:1", "id:2"]);
 	});
 });
+
+describe("DropboxClient.listAppRootFolders", () => {
+	it("lists the app-folder root (path '') non-recursively, returning only folders", async () => {
+		const spy = (await spyRequestUrl()).mockResolvedValue(
+			mockRes({
+				entries: [dbxFolder("a", "/Alpha"), dbxFile("n", "/note.md"), dbxFolder("b", "/Beta")],
+				cursor: "c",
+				has_more: false,
+			}),
+		);
+		const client = await makeClient();
+		const folders = await client.listAppRootFolders();
+
+		// Files are filtered out — the picker modal only offers folders.
+		expect(folders.map((f) => f.name)).toEqual(["Alpha", "Beta"]);
+		// Queried the app-folder root ("") non-recursively.
+		const body = JSON.parse((spy.mock.calls[0]![0] as RequestUrlParam).body as string) as { path: string; recursive: boolean };
+		expect(body).toMatchObject({ path: "", recursive: false });
+	});
+});

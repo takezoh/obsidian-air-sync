@@ -234,9 +234,10 @@ async function collectCold(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): 
  * modes to handle partial initial syncs and simultaneous file creation.
  *
  * Only fires when the remote checksum's algorithm is locally computable
- * (md5/sha1/sha256). Backends whose checksum is "opaque" (e.g. pCloud's
- * internal content hash) cannot be matched against local content, so their
- * entries are skipped here and left to the normal conflict path.
+ * (everything except `"opaque"` — md5/sha1/sha256/dropbox/quickxor). Backends
+ * whose checksum is "opaque" (e.g. pCloud's internal content hash) cannot be
+ * matched against local content, so their entries are skipped here and left to
+ * the normal conflict path.
  */
 async function enrichHashesForInitialMatch(
 	entries: MixedEntity[],

@@ -11,6 +11,7 @@ This file is the **agent operating guide** for this repo. Where to look:
 | Design principles, module map, data models, interfaces | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | The enforced rules (lint / type / design guards) and how to declare an exception | [docs/code-enforcement.md](docs/code-enforcement.md) |
 | Subsystem deep dives (sync pipeline, conflicts, Drive, errors) | [docs/](docs/) |
+| Running the opt-in e2e against the real Drive/Dropbox APIs | [docs/e2e-testing.md](docs/e2e-testing.md) |
 | Architecture Decision Records (why a design is the way it is — read before "optimizing" it) | [docs/adr/](docs/adr/) |
 | Generic Obsidian-plugin conventions (cross-tool baseline) | [AGENTS.md](AGENTS.md) |
 
@@ -23,6 +24,9 @@ npm run build      # Production build (tsc -noEmit && esbuild)
 npm test           # vitest
 npm run test:watch # vitest watch
 npm run lint       # eslint --max-warnings 0
+npm run test:e2e   # opt-in e2e vs real Drive/Dropbox (creds-gated; NOT in the gate/CI; backends run in parallel — see docs/e2e-testing.md)
+npm run test:e2e:google   # …only Google Drive
+npm run test:e2e:dropbox  # …only Dropbox
 ```
 
 ## The gate

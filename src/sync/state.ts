@@ -1,12 +1,15 @@
 import type { RenamePair, SyncRecord } from "./types";
 import { IDBHelper, sanitizeDbName } from "../store/idb-helper";
+import { encodeContent, decodeContent } from "../store/content-codec";
 
 const DB_NAME_PREFIX = "air-sync";
 const STORE_NAME = "sync-records";
 const CONTENT_STORE_NAME = "sync-content";
 // v4: SyncRecord checksum moved from backendMeta.contentChecksum to a typed
 // remoteChecksum field — cold-start drops old records so they re-baseline.
-const DB_VERSION = 4;
+// v5: content store now holds codec-prefixed bytes (see content-codec.ts);
+// cold-start drops old un-prefixed entries so they re-baseline compressed.
+const DB_VERSION = 5;
 
 /** Persistent store for sync records using IndexedDB */
 export class SyncStateStore {
@@ -134,22 +137,33 @@ export class SyncStateStore {
 		});
 	}
 
-	/** Store prevSyncContent separately for a path */
+	/** Store prevSyncContent separately for a path (compressed via content-codec) */
 	async putContent(path: string, content: ArrayBuffer): Promise<void> {
+		const encoded = encodeContent(content);
 		await this.helper.runTransaction(CONTENT_STORE_NAME, "readwrite", (tx) => {
-			tx.objectStore(CONTENT_STORE_NAME).put({ path, content });
+			tx.objectStore(CONTENT_STORE_NAME).put({ path, content: encoded });
 			return () => {};
 		});
 	}
 
-	/** Get prevSyncContent for a path */
+	/** Get prevSyncContent for a path (decompressed via content-codec) */
 	async getContent(path: string): Promise<ArrayBuffer | undefined> {
-		return this.helper.runTransaction(CONTENT_STORE_NAME, "readonly", (tx) => {
+		const stored = await this.helper.runTransaction(CONTENT_STORE_NAME, "readonly", (tx) => {
 			const req = tx.objectStore(CONTENT_STORE_NAME).get(path);
 			return () => {
 				const result = req.result as { path: string; content: ArrayBuffer } | undefined;
 				return result?.content;
 			};
 		});
+		// Decode outside the transaction: the thunk runs inside tx.oncomplete, where a
+		// throw would escape the promise (hanging getContent) rather than reject. Corrupt
+		// or unknown-format base content is non-authoritative — treat it as absent so the
+		// merge falls back gracefully and the entry re-baselines on the next sync.
+		if (!stored) return undefined;
+		try {
+			return decodeContent(stored);
+		} catch {
+			return undefined;
+		}
 	}
 }

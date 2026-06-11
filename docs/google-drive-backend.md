@@ -32,6 +32,8 @@ All cache reads and writes are protected by `cacheMutex` (an `AsyncMutex`). Writ
 2. Executes network I/O outside the mutex
 3. Re-acquires the mutex and skips the cache update (logging a warning) if `expectedId` is set and the cache's current Drive ID for that path no longer equals `expectedId` -- i.e. a concurrent operation re-keyed the path during the I/O
 
+This step 3 is the **compare-and-swap** of an optimistic protocol: releasing the mutex in step 2 (so uploads run concurrently) is what makes the step-1 view potentially stale by step 3. Under the current architecture the guard is **dormant** -- it never fires in production, because no two concurrent (Group-A) ops ever target the same path. It is retained as defense-in-depth; see [ADR 0001 → T7](adr/0001-metadata-cache-is-subordinate-to-commit-last.md) for the reachability proof and disposition.
+
 ### stat() and hash
 
 `stat()` always returns `hash: ""`. The sync engine uses `backendMeta.contentChecksum` (Drive's `md5Checksum`) for remote change detection via `hasRemoteChanged()`. This avoids downloading file content just to compute a hash.

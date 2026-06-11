@@ -39,12 +39,12 @@ describe("DropboxAuthProvider.startAuth", () => {
 		expect(url.searchParams.get("token_access_type")).toBe("offline");
 		expect(url.searchParams.get("code_challenge_method")).toBe("S256");
 		expect(url.searchParams.get("code_challenge")).toBeTruthy();
-		expect(url.searchParams.get("redirect_uri")).toBe("https://airsync.takezo.dev/callback");
+		expect(url.searchParams.get("redirect_uri")).toBe("obsidian://air-sync-auth");
 		expect(url.searchParams.get("scope")).toContain("files.content.write");
 
 		expect(typeof out.pendingCodeVerifier).toBe("string");
 		expect((out.pendingCodeVerifier as string).length).toBe(64);
-		// The CSRF state is the relay-compatible {app, nonce} blob, now base64url
+		// The CSRF state is the shared {app, nonce} blob, base64url-encoded
 		// (URL-transit safe); normalize back to standard base64 to decode.
 		const raw = out.pendingAuthState as string;
 		expect(raw).not.toMatch(/[+/=]/);

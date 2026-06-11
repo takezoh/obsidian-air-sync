@@ -51,6 +51,11 @@ npm run lint && npm run build && npm test
 - `npm test` — Vitest. `npm run test:coverage` enforces ratchet coverage floors; raise
   them as coverage improves, never lower them.
 
+There is also an **opt-in** `npm run test:e2e` that runs the same `IFileSystem` contract
+against the **real** Google Drive / Dropbox APIs to catch drift in the in-memory fakes. It is
+credentials-gated (warns and skips without them) and is **not** part of the gate or CI — see
+[docs/e2e-testing.md](docs/e2e-testing.md).
+
 ## Coding conventions
 
 The conventions, and the lint/test rules that enforce them, are documented in:

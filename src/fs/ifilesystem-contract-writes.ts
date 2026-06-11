@@ -38,7 +38,7 @@ export function registerWriteContract(ctx: IFileSystemContractCtx): void {
 			expect(entity.size).toBe(
 				new TextEncoder().encode("a longer body").byteLength,
 			);
-			expect(entity.mtime).toBe(2000);
+			ctx.expectMtime(entity.mtime, 2000);
 		});
 
 		it("creates parent directories automatically", async () => {
@@ -59,7 +59,45 @@ export function registerWriteContract(ctx: IFileSystemContractCtx): void {
 
 		it("uses provided mtime", async () => {
 			const entity = await ctx.fs().write("a.txt", bytes("data"), 12345);
-			expect(entity.mtime).toBe(12345);
+			ctx.expectMtime(entity.mtime, 12345);
+		});
+
+		it("round-trips a zero-byte file", async () => {
+			// Empty content is real (a freshly-created/`touch`ed note). A backend whose
+			// upload path mishandles an empty body would silently fail to create the
+			// file — so assert the full create → exists → read-back → stat round-trip.
+			const entity = await ctx.fs().write("empty.txt", bytes(""), 1000);
+			expect(entity.isDirectory).toBe(false);
+			expect(entity.size).toBe(0);
+			expect(await exists("empty.txt")).toBe(true);
+			expect(await readText("empty.txt")).toBe("");
+			const stat = await ctx.fs().stat("empty.txt");
+			expect(stat).not.toBeNull();
+			expect(stat!.size).toBe(0);
+		});
+
+		it("round-trips a large file via the chunked/resumable upload path", async () => {
+			// 5 MiB exceeds every backend's simple-upload threshold (OneDrive's is 4 MiB).
+			// Against the in-memory FAKES (unit run) this only asserts large round-trip
+			// integrity — the fakes store the buffer whole and never chunk. The real
+			// chunked/resumable PUT path is exercised only by the opt-in Electron-net e2e
+			// (real client), and that is where the OneDrive bug lived: each chunk PUT set a
+			// hand-set Content-Length, which Electron net rejects with ERR_INVALID_ARGUMENT
+			// (a fetch-backed e2e silently drops the header, so only the Electron-net e2e
+			// reproduces it). Sentinel bytes at both ends + the middle verify nothing is
+			// truncated or reordered across chunk boundaries (chunks are 320 KiB-aligned).
+			const size = 5 * 1024 * 1024;
+			const buf = new Uint8Array(size).fill(0x41);
+			buf[0] = 0x02;
+			buf[Math.floor(size / 2)] = 0x03;
+			buf[size - 1] = 0x04;
+			const entity = await ctx.fs().write("big.bin", buf.buffer, 1000);
+			expect(entity.size).toBe(size);
+			const read = new Uint8Array(await ctx.fs().read("big.bin"));
+			expect(read.byteLength).toBe(size);
+			expect(read[0]).toBe(0x02);
+			expect(read[Math.floor(size / 2)]).toBe(0x03);
+			expect(read[size - 1]).toBe(0x04);
 		});
 	});
 
@@ -202,7 +240,8 @@ export function registerWriteContract(ctx: IFileSystemContractCtx): void {
 			listed.mtime = 99999;
 			listed.hash = "tampered";
 			const fresh = await ctx.fs().stat("a.txt");
-			expect(fresh!.mtime).toBe(1000);
+			ctx.expectMtime(fresh!.mtime, 1000);
+			expect(fresh!.mtime).not.toBe(99999); // the tampered value must not have leaked
 			expect(fresh!.hash).not.toBe("tampered");
 		});
 	});

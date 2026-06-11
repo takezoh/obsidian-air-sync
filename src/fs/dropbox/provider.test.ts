@@ -70,6 +70,53 @@ describe("DropboxProvider.resolveRemoteVault", () => {
 		expect((JSON.parse((createCalls[0]![0] as RequestUrlParam).body as string) as { path: string }).path).toBe("/v");
 	});
 
+	it("binds the pending-picked folder name instead of the vault name, and clears the pending field", async () => {
+		const spy = (await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
+			const url = typeof opts === "string" ? opts : opts.url;
+			if (url.includes("create_folder_v2")) {
+				// create_folder_v2 is idempotent, so a picked existing folder resolves here too.
+				const body = JSON.parse((opts as RequestUrlParam).body as string) as { path: string };
+				return Promise.resolve(mockRes({ metadata: dbxFolder("picked", body.path) }));
+			}
+			return Promise.resolve(mockRes({}));
+		});
+		const { provider } = await makeProvider(CONNECTED);
+		const res = await provider.resolveRemoteVault(
+			{} as never,
+			settingsWith({ accessTokenExpiry: Date.now() + 3_600_000, pendingPickedFolderPath: "Picked" }),
+			"vaultName",
+		);
+
+		expect(res.backendUpdates).toMatchObject({
+			remoteVaultFolderId: "id:picked",
+			pendingPickedFolderPath: "",
+		});
+		// The picked name (not the vault name) drove the find-or-create path.
+		const createCall = spy.mock.calls.find((c) => String((c[0] as RequestUrlParam).url).includes("create_folder_v2"));
+		expect((JSON.parse((createCall![0] as RequestUrlParam).body as string) as { path: string }).path).toBe("/Picked");
+	});
+
+	it("rejects binding when the chosen name collides with an existing FILE (not a folder)", async () => {
+		// create_folder_v2 conflicts with an existing file; createFolder's idempotent path
+		// then resolves to that FILE's metadata. resolveRemoteVault must NOT bind a file id.
+		(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
+			const url = typeof opts === "string" ? opts : opts.url;
+			if (url.includes("create_folder_v2")) {
+				return Promise.resolve(mockRes({ error_summary: "path/conflict/file/..", error: { ".tag": "path" } }, { status: 409 }));
+			}
+			if (url.includes("get_metadata")) return Promise.resolve(mockRes(dbxFile("collide", "/Notes")));
+			return Promise.resolve(mockRes({}));
+		});
+		const { provider } = await makeProvider(CONNECTED);
+		await expect(
+			provider.resolveRemoteVault(
+				{} as never,
+				settingsWith({ accessTokenExpiry: Date.now() + 3_600_000, pendingPickedFolderPath: "Notes" }),
+				"vaultName",
+			),
+		).rejects.toThrow(/already exists in the app folder/);
+	});
+
 	it("does NOT touch the remote folder on a local vault rename (id binds them)", async () => {
 		const spy = await spyRequestUrl(); // no impl needed — no request should be made
 		const { provider } = await makeProvider(CONNECTED);
@@ -92,80 +139,6 @@ describe("DropboxProvider.resolveRemoteVault", () => {
 		// An empty/whitespace name would make rootPath "/" and ingest the whole App Folder.
 		await expect(provider.resolveRemoteVault({} as never, settingsWith({}), "   ")).rejects.toThrow(/vault name is empty/);
 		expect(createSpy).not.toHaveBeenCalled(); // refused before any folder is created
-	});
-});
-
-describe("DropboxProvider.completeWebFolderPick", () => {
-	// Future expiry → getAccessToken returns the cached token without a refresh call,
-	// so the mocked requestUrl only ever serves the get_metadata request under test.
-	const PENDING = { pendingFolderPickState: "STATE-1", accessTokenExpiry: Date.now() + 3_600_000 };
-
-	it("binds an accessible folder, normalizing a bare id and clearing the state", async () => {
-		const spy = (await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
-			const url = typeof opts === "string" ? opts : opts.url;
-			if (url.includes("get_metadata")) return Promise.resolve(mockRes(dbxFolder("vault", "/MyVault")));
-			return Promise.resolve(mockRes({}));
-		});
-		const { provider } = await makeProvider(CONNECTED);
-		const res = await provider.completeWebFolderPick(
-			{ id: "vault", name: "MyVault", state: "STATE-1" }, // bare id (no "id:" prefix)
-			settingsWith(PENDING),
-		);
-
-		expect(res.backendUpdates).toMatchObject({
-			remoteVaultFolderId: "id:vault",
-			pendingFolderPickState: "",
-		});
-		// The path is not persisted — only the id is bound.
-		expect(res.backendUpdates).not.toHaveProperty("remoteVaultRootPath");
-		// get_metadata was queried with the normalized id.
-		const call = spy.mock.calls.find((c) => String((c[0] as RequestUrlParam).url).includes("get_metadata"));
-		expect((JSON.parse((call![0] as RequestUrlParam).body as string) as { path: string }).path).toBe("id:vault");
-	});
-
-	it("rejects a CSRF state mismatch before any network call", async () => {
-		const spy = await spyRequestUrl();
-		const { provider } = await makeProvider(CONNECTED);
-		await expect(
-			provider.completeWebFolderPick({ id: "id:x", state: "WRONG" }, settingsWith(PENDING)),
-		).rejects.toThrow(/State mismatch/);
-		expect(spy).not.toHaveBeenCalled();
-	});
-
-	it("rejects a folder outside the app folder (get_metadata not_found) with a clear message", async () => {
-		(await spyRequestUrl()).mockResolvedValue(
-			mockRes({ error_summary: "path/not_found/..", error: { ".tag": "path" } }, { status: 409 }),
-		);
-		const { provider } = await makeProvider(CONNECTED);
-		await expect(
-			provider.completeWebFolderPick({ id: "id:outside", state: "STATE-1" }, settingsWith(PENDING)),
-		).rejects.toThrow(/Apps\/Air Sync/);
-	});
-
-	it("rethrows a non-not_found error (e.g. server error) instead of the app-folder message", async () => {
-		// A transient/server error must surface as itself, not be misreported as
-		// "pick a folder under Apps/Air Sync/" (which would send the user chasing a
-		// non-existent scope problem). 500 does not trigger the client's 429 retry.
-		(await spyRequestUrl()).mockResolvedValue(mockRes({ error_summary: "internal_error/.." }, { status: 500 }));
-		const { provider } = await makeProvider(CONNECTED);
-		const call = provider.completeWebFolderPick({ id: "id:x", state: "STATE-1" }, settingsWith(PENDING));
-		await expect(call).rejects.toThrow(/500|internal_error/);
-		await expect(call).rejects.not.toThrow(/Apps\/Air Sync/);
-	});
-
-	it("rejects when the selected item is a file, not a folder", async () => {
-		(await spyRequestUrl()).mockResolvedValue(mockRes(dbxFile("f", "/note.md")));
-		const { provider } = await makeProvider(CONNECTED);
-		await expect(
-			provider.completeWebFolderPick({ id: "id:f", state: "STATE-1" }, settingsWith(PENDING)),
-		).rejects.toThrow(/select a folder/);
-	});
-
-	it("rejects when no folder id is provided", async () => {
-		const { provider } = await makeProvider(CONNECTED);
-		await expect(
-			provider.completeWebFolderPick({ state: "STATE-1" }, settingsWith(PENDING)),
-		).rejects.toThrow(/No folder/);
 	});
 });
 

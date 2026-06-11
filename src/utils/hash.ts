@@ -1,5 +1,6 @@
 import type { ChecksumAlgo } from "../fs/types";
 import { md5 } from "./md5";
+import { quickXorHashBase64 } from "./quickxor";
 
 /** Convert a digest ArrayBuffer to a lowercase hex string. */
 function toHex(buffer: ArrayBuffer): string {
@@ -68,6 +69,8 @@ export async function digest(data: ArrayBuffer, algo: ChecksumAlgo): Promise<str
 			return sha256(data);
 		case "dropbox":
 			return dropboxContentHash(data);
+		case "quickxor":
+			return quickXorHashBase64(data);
 		case "opaque":
 			throw new Error("Cannot compute an opaque checksum locally");
 	}

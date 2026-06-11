@@ -7,10 +7,14 @@
  * local content, so it powers cross-side dedup; it is distinct from `"sha256"`
  * (a plain hash of the whole file), hence its own algo tag.
  *
+ * `"quickxor"` is Microsoft's QuickXorHash (base64) — the only content hash a
+ * personal OneDrive returns. Like `"dropbox"` it IS reproducible from local
+ * content (see {@link ../utils/quickxor}), so it powers cross-side dedup.
+ *
  * `"opaque"` is a backend-internal value (e.g. pCloud's content hash) that
  * cannot be reproduced from local content.
  */
-export type ChecksumAlgo = "md5" | "sha1" | "sha256" | "dropbox" | "opaque";
+export type ChecksumAlgo = "md5" | "sha1" | "sha256" | "dropbox" | "quickxor" | "opaque";
 
 /** A content checksum provided by a remote backend, tagged with its algorithm. */
 export interface RemoteChecksum {

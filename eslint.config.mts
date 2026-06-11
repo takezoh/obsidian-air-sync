@@ -100,6 +100,22 @@ const NO_FORBIDDEN_MANIFEST_WORDS = {
 		"The Obsidian submission validator rejects 'obsidian'/'plugin' in the manifest name, description, or id — it's implied by context. Remove the word.",
 };
 
+/**
+ * Cross-backend Electron-net guard: NEVER hand-set a `Content-Length` header on a
+ * requestUrl call. Obsidian's requestUrl (Electron `net`) derives Content-Length from
+ * the body; a manual one makes net throw `net::ERR_INVALID_ARGUMENT` at request time —
+ * a failure NO test layer reproduces (unit mocks requestUrl; the e2e shim is fetch,
+ * which silently drops the header). This already bit Google Drive (see the comment in
+ * googledrive/resumable-upload.ts) and then OneDrive's upload session. The header name
+ * contains a hyphen, so it is always a string-literal property key. Enforced repo-wide
+ * so the lesson can't be re-learned per backend.
+ */
+const NO_MANUAL_CONTENT_LENGTH = {
+	selector: "Property[key.value=/^content-length$/i]",
+	message:
+		"Do not set Content-Length manually — Obsidian's requestUrl (Electron net) computes it and throws net::ERR_INVALID_ARGUMENT when it is hand-set. Remove the header.",
+};
+
 export default tseslint.config(
 	{
 		languageOptions: {
@@ -139,7 +155,10 @@ export default tseslint.config(
 		files: ["src/**/*.ts"],
 		ignores: ["src/fs/local/**", "src/__mocks__/**"],
 		rules: {
-			"no-restricted-syntax": ["error", NO_GET_ALL_LOADED_FILES],
+			// NO_MANUAL_CONTENT_LENGTH is appended HERE (not a separate src/** block):
+			// flat-config rule options REPLACE rather than merge, so an overlapping
+			// later block setting no-restricted-syntax would silently drop these.
+			"no-restricted-syntax": ["error", NO_GET_ALL_LOADED_FILES, NO_MANUAL_CONTENT_LENGTH],
 		},
 	},
 	{
@@ -178,6 +197,7 @@ export default tseslint.config(
 				NO_GET_ALL_LOADED_FILES,
 				NO_DATE_NOW,
 				NO_MATH_RANDOM,
+				NO_MANUAL_CONTENT_LENGTH,
 			],
 		},
 	},
@@ -237,5 +257,10 @@ export default tseslint.config(
 		"versions.json",
 		"main.js",
 		".roost", // local agent/tooling git worktrees (not part of the plugin)
+		// Opt-in real-cloud e2e harness (ADR 0003): local/manual only, never
+		// bundled. It deliberately uses Node APIs (fetch, fs, readline) and real
+		// network — forbidden in shipped src/ by the mobile-compat / restricted-
+		// globals rules — so it is exempt from the plugin lint here.
+		"e2e",
 	]),
 );

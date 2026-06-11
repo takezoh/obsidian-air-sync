@@ -190,7 +190,7 @@ describe("GoogleDriveFs.write remoteChecksum", () => {
 });
 
 describe("GoogleDriveFs.write stale-cache guard for new paths", () => {
-	it("does not clobber a concurrent delta that created the same path during upload", async () => {
+	it("does not clobber a concurrent re-key that created the same path during upload", async () => {
 		const uploadResult: DriveFile = {
 			id: "uploaded-id",
 			name: "new.md",
@@ -222,8 +222,10 @@ describe("GoogleDriveFs.write stale-cache guard for new paths", () => {
 			(opts: string | { url: string }) => {
 				const url = typeof opts === "string" ? opts : opts.url;
 				if (url.includes("uploadType=")) {
-					// Phase 2 (upload) runs outside the cache mutex. Simulate a concurrent
-					// delta landing a DIFFERENT file at the same path while it is in flight.
+					// Phase 2 (upload) runs outside the cache mutex. Inject a cache re-key
+					// at the same path while it is in flight to exercise the guard's CAS
+					// mechanism. (In production this is unreachable — ADR 0001, T7; the real
+					// producer the guard defends against would be a parallel Group-A write.)
 					cache.setFile("new.md", {
 						id: "delta-id",
 						name: "new.md",
@@ -239,9 +241,8 @@ describe("GoogleDriveFs.write stale-cache guard for new paths", () => {
 		const content = new TextEncoder().encode("hello").buffer.slice(0);
 		await fs.write("new.md", content, Date.now());
 
-		// The concurrent delta's entry survives — the upload did not overwrite it.
-		// (The in-memory cursor advanced past the delta, so the next cycle re-detects
-		// our write; no data is lost.)
+		// The injected entry survives — the upload did not overwrite it. (The in-memory
+		// cursor advanced past it, so the next cycle re-detects our write; no data lost.)
 		expect(cache.getFile("new.md")?.id).toBe("delta-id");
 		expect(mockLogger.warn).toHaveBeenCalledWith(
 			"Skipping stale cache update for write",
@@ -253,7 +254,7 @@ describe("GoogleDriveFs.write stale-cache guard for new paths", () => {
 });
 
 describe("GoogleDriveFs.rename stale-cache guard for the destination", () => {
-	it("does not clobber a concurrent delta that occupied newPath during the move", async () => {
+	it("does not clobber a concurrent re-key that occupied newPath during the move", async () => {
 		const { GoogleDriveFs } = await import("./index");
 		const { DriveClient } = await import("./client");
 		const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
@@ -281,8 +282,9 @@ describe("GoogleDriveFs.rename stale-cache guard for the destination", () => {
 			(opts: string | { url: string }) => {
 				const url = typeof opts === "string" ? opts : opts.url;
 				if (url.includes("/files/f1")) {
-					// Phase 2 (the PATCH move) runs outside the cache mutex. Simulate a
-					// concurrent delta landing a DIFFERENT file at the destination path.
+					// Phase 2 (the PATCH move) runs outside the cache mutex. Inject a
+					// re-key at the destination path to exercise the guard mechanism.
+					// (Unreachable in production — ADR 0001, T7.)
 					cache.setFile("new.md", {
 						id: "delta-id", name: "new.md", mimeType: "text/plain", modifiedTime: "2024-02-02T00:00:00.000Z",
 					});
@@ -296,8 +298,8 @@ describe("GoogleDriveFs.rename stale-cache guard for the destination", () => {
 
 		await fs.rename("old.md", "new.md");
 
-		// The concurrent delta's entry survives and its id stays correctly mapped —
-		// the move did not overwrite it or strand "delta-id" in idToPath.
+		// The injected entry survives and its id stays correctly mapped — the move did
+		// not overwrite it or strand "delta-id" in idToPath.
 		expect(cache.getFile("new.md")?.id).toBe("delta-id");
 		expect(cache.getPathById("delta-id")).toBe("new.md");
 		expect(mockLogger.warn).toHaveBeenCalledWith(

@@ -3,6 +3,7 @@ import type { ISecretStore } from "./secret-store";
 import { GoogleDriveProvider } from "./googledrive/provider";
 import { GoogleDriveCustomProvider } from "./googledrive/provider-custom";
 import { DropboxProvider } from "./dropbox/provider";
+import { OneDriveProvider } from "./onedrive/provider";
 import { PCloudProvider } from "./pcloud/provider";
 
 /**
@@ -19,6 +20,7 @@ export function initRegistry(secretStore: ISecretStore): void {
 		new GoogleDriveProvider(secretStore),
 		new GoogleDriveCustomProvider(secretStore),
 		new DropboxProvider(secretStore),
+		new OneDriveProvider(secretStore),
 		new PCloudProvider(secretStore),
 	];
 	providerMap = new Map<string, IBackendProvider>();
