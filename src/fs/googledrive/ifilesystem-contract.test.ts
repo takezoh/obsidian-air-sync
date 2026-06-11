@@ -136,8 +136,12 @@ function makeFakeDriveClient(): DriveClient {
 			if (addParents) {
 				node.file.parents = [...(node.file.parents ?? []), addParents];
 			}
-			// modifiedTime is intentionally left untouched: a metadata rename/move
-			// preserves it (the IFileSystem contract pins mtime through rename).
+			// This fake leaves modifiedTime untouched on a rename/move. The REAL Drive
+			// does NOT — files.update bumps modifiedTime to "now" (verified by the
+			// opt-in e2e, ADR 0003). The contract therefore pins mtime-through-rename
+			// only for local-storage backends (computesHashOnStat); for remotes (this
+			// fake included) it just requires a finite timestamp, so this divergence is
+			// unchecked here, not a contradiction.
 			return Promise.resolve(copy(node.file));
 		},
 		deleteFile: (fileId: string, _permanent?: boolean): Promise<void> => {

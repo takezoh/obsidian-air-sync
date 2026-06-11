@@ -4,7 +4,7 @@ Your Obsidian notes, always up to date on every device — without ever thinking
 
 Works on desktop and mobile, powered by your own cloud storage — **Google Drive**, **Dropbox** (Preview), or **OneDrive** (Preview).
 
-> **Requires a Google, Dropbox, or Microsoft account.**
+> **Requires a Google, Dropbox, or Microsoft account.** OneDrive supports personal Microsoft accounts only.
 
 ## What you get
 
@@ -16,13 +16,9 @@ Works on desktop and mobile, powered by your own cloud storage — **Google Driv
 
 ## Getting started
 
-> **Requires a Google, Dropbox, or Microsoft account.**
-
-> **Dropbox and OneDrive support are in Preview.** OneDrive supports personal Microsoft accounts only.
-
 1. Open the plugin settings (**Settings → Air Sync**).
-2. Pick your backend (**Google Drive**, **Dropbox** (Preview), or **OneDrive** (Preview)) if more than one is available.
-3. Click **Connect to …** (e.g. **Connect to Google Drive**, **Connect to Dropbox**, or **Connect to OneDrive**), then approve access in your browser.
+2. Pick your backend if more than one is available.
+3. Click **Connect**, then approve access in your browser.
 4. Choose where to sync: use the **default folder** (named after your vault), or **pick an existing folder**.
 
 That's it — Air Sync syncs into that folder from then on.
@@ -63,16 +59,6 @@ Example:
 !.obsidian/plugins/**
 .obsidian/plugins/*/data.json
 ```
-
-### Advanced settings
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Dot-prefixed paths to sync | Dot-prefixed folders to include in sync (e.g. `.templates`) | (none) |
-| Ignore patterns | Glob patterns to exclude (one per line) | Desktop: (none), Mobile: `.md`/`.canvas`/`.base` only |
-| Mobile max file size | Skip files larger than this on mobile | 10 MB |
-| Enable logging | Write sync logs to `.airsync/` in your vault | Off |
-| Log level | Minimum log level (debug / info / warn / error) | info |
 
 ### Custom OAuth (Google Drive)
 

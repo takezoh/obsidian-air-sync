@@ -38,7 +38,7 @@ export function registerWriteContract(ctx: IFileSystemContractCtx): void {
 			expect(entity.size).toBe(
 				new TextEncoder().encode("a longer body").byteLength,
 			);
-			expect(entity.mtime).toBe(2000);
+			ctx.expectMtime(entity.mtime, 2000);
 		});
 
 		it("creates parent directories automatically", async () => {
@@ -59,7 +59,7 @@ export function registerWriteContract(ctx: IFileSystemContractCtx): void {
 
 		it("uses provided mtime", async () => {
 			const entity = await ctx.fs().write("a.txt", bytes("data"), 12345);
-			expect(entity.mtime).toBe(12345);
+			ctx.expectMtime(entity.mtime, 12345);
 		});
 	});
 
@@ -202,7 +202,8 @@ export function registerWriteContract(ctx: IFileSystemContractCtx): void {
 			listed.mtime = 99999;
 			listed.hash = "tampered";
 			const fresh = await ctx.fs().stat("a.txt");
-			expect(fresh!.mtime).toBe(1000);
+			ctx.expectMtime(fresh!.mtime, 1000);
+			expect(fresh!.mtime).not.toBe(99999); // the tampered value must not have leaked
 			expect(fresh!.hash).not.toBe("tampered");
 		});
 	});

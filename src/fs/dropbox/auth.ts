@@ -26,6 +26,31 @@ const BACKEND_TYPE = "dropbox";
  */
 export const DROPBOX_CLIENT_ID = "icsyogaens93hde";
 
+/**
+ * Build the Dropbox authorization-code + PKCE authorize URL. The single source of
+ * the authorize params for both the in-plugin flow ({@link DropboxAuthProvider.startAuth})
+ * and the opt-in e2e token bootstrap (ADR 0003), which passes a `http://localhost`
+ * loopback `redirectUri` — so the two can never drift on scope/PKCE params.
+ */
+export function buildDropboxAuthorizeUrl(opts: {
+	clientId: string;
+	codeChallenge: string;
+	state: string;
+	redirectUri?: string;
+}): string {
+	const params = new URLSearchParams({
+		client_id: opts.clientId,
+		response_type: "code",
+		token_access_type: "offline",
+		code_challenge: opts.codeChallenge,
+		code_challenge_method: "S256",
+		scope: SCOPES,
+		redirect_uri: opts.redirectUri ?? REDIRECT_URI,
+		state: opts.state,
+	});
+	return `${AUTHORIZE_URL}?${params.toString()}`;
+}
+
 interface DropboxCallbackParams {
 	code: string;
 	state: string | undefined;
@@ -67,8 +92,15 @@ export class DropboxAuth extends BaseOAuthTokenManager {
 		return "Dropbox session expired. Please reconnect in settings.";
 	}
 
-	/** Exchange an authorization code for tokens (PKCE — no client secret). */
-	async exchangeCode(code: string, codeVerifier: string): Promise<void> {
+	/**
+	 * Exchange an authorization code for tokens (PKCE — no client secret).
+	 *
+	 * `redirectUri` must match the one used in the authorize request and defaults
+	 * to the shipped relay ({@link REDIRECT_URI}). The opt-in e2e bootstrap (ADR
+	 * 0003) overrides it with a `http://localhost:<port>` loopback so a headless
+	 * CLI can capture the redirect directly.
+	 */
+	async exchangeCode(code: string, codeVerifier: string, redirectUri: string = REDIRECT_URI): Promise<void> {
 		const res = await requestUrl({
 			url: TOKEN_URL,
 			method: "POST",
@@ -79,7 +111,7 @@ export class DropboxAuth extends BaseOAuthTokenManager {
 				code,
 				code_verifier: codeVerifier,
 				client_id: this.clientId,
-				redirect_uri: REDIRECT_URI,
+				redirect_uri: redirectUri,
 			}).toString(),
 		});
 		if (res.status < 200 || res.status >= 300) {
@@ -202,17 +234,7 @@ export class DropboxAuthProvider implements IAuthProvider {
 		// base64url state (URL-transit safe) via the shared builder; the callback
 		// relay page (air-sync-auth) decodes both base64url and legacy base64.
 		const state = buildOAuthState();
-		const params = new URLSearchParams({
-			client_id: this.clientId,
-			response_type: "code",
-			token_access_type: "offline",
-			code_challenge: codeChallenge,
-			code_challenge_method: "S256",
-			scope: SCOPES,
-			redirect_uri: REDIRECT_URI,
-			state,
-		});
-		const url = `${AUTHORIZE_URL}?${params.toString()}`;
+		const url = buildDropboxAuthorizeUrl({ clientId: this.clientId, codeChallenge, state });
 		if (Platform.isMobile) {
 			window.location.href = url;
 		} else {

@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import "fake-indexeddb/auto";
-import { IDBHelper, sanitizeDbName } from "./idb-helper";
+import { IDBHelper, IDBTransactionError, isConnectionClosingError, sanitizeDbName } from "./idb-helper";
 
 describe("IDBHelper", () => {
 	let helper: IDBHelper;
@@ -61,6 +61,98 @@ describe("IDBHelper", () => {
 		// getDb() should re-open
 		const db = await h.getDb();
 		expect(db).toBeTruthy();
+	});
+
+	it("recovers when transaction() throws 'connection is closing'", async () => {
+		const h = createHelper();
+		await h.runTransaction("items", "readwrite", (tx) => {
+			tx.objectStore("items").put({ id: "a", value: 42 });
+			return () => {};
+		});
+
+		// Simulate iOS closing the connection under us: the cached db handle throws
+		// on the first transaction() call, then the helper must drop it and reopen.
+		const internal = h as unknown as { db: IDBDatabase | null };
+		const realDb = internal.db!;
+		let threw = false;
+		internal.db = new Proxy(realDb, {
+			get(target, prop, receiver) {
+				if (prop === "transaction" && !threw) {
+					return () => {
+						threw = true;
+						const err = new Error(
+							"Failed to execute 'transaction' on 'IDBDatabase': The database connection is closing.",
+						);
+						err.name = "InvalidStateError";
+						throw err;
+					};
+				}
+				const value: unknown = Reflect.get(target, prop, receiver);
+				return typeof value === "function"
+					? (value as (...args: unknown[]) => unknown).bind(target)
+					: value;
+			},
+		});
+
+		const result = await h.runTransaction("items", "readonly", (tx) => {
+			const req = tx.objectStore("items").get("a");
+			return () => req.result as { id: string; value: number };
+		});
+
+		expect(threw).toBe(true);
+		expect(result).toEqual({ id: "a", value: 42 });
+	});
+});
+
+describe("IDBTransactionError", () => {
+	it("preserves the DOMException name and message", () => {
+		const dom = new DOMException("The database connection is closing.", "InvalidStateError");
+		const err = new IDBTransactionError("abort", dom);
+		expect(err.name).toBe("IDBTransactionError");
+		expect(err.phase).toBe("abort");
+		expect(err.domName).toBe("InvalidStateError");
+		expect(err.cause).toBe(dom);
+		expect(err.message).toContain("The database connection is closing.");
+	});
+
+	it("tolerates a missing DOMException", () => {
+		const err = new IDBTransactionError("error", null);
+		expect(err.domName).toBeNull();
+		expect(err.message).toContain("unknown");
+	});
+});
+
+describe("isConnectionClosingError", () => {
+	it("matches InvalidStateError by name", () => {
+		const err = new Error("boom");
+		err.name = "InvalidStateError";
+		expect(isConnectionClosingError(err)).toBe(true);
+	});
+
+	it("matches a typed transaction error by its DOMException name", () => {
+		const dom = new DOMException("anything", "InvalidStateError");
+		expect(isConnectionClosingError(new IDBTransactionError("abort", dom))).toBe(true);
+	});
+
+	it("matches a typed transaction error by message fallback when name is unusable", () => {
+		const dom = new DOMException("The database connection is closing.", "AbortError");
+		expect(isConnectionClosingError(new IDBTransactionError("abort", dom))).toBe(true);
+	});
+
+	it("ignores a typed transaction error that is neither", () => {
+		const dom = new DOMException("Quota exceeded", "QuotaExceededError");
+		expect(isConnectionClosingError(new IDBTransactionError("abort", dom))).toBe(false);
+	});
+
+	it("matches wrapped errors by message", () => {
+		expect(
+			isConnectionClosingError(new Error("Transaction aborted: The database connection is closing.")),
+		).toBe(true);
+	});
+
+	it("ignores unrelated errors and non-errors", () => {
+		expect(isConnectionClosingError(new Error("network down"))).toBe(false);
+		expect(isConnectionClosingError("connection is closing")).toBe(false);
 	});
 });
 

@@ -2,7 +2,7 @@
 
 **Status:** Accepted · 2026-06-09
 **Context area:** testing / `fs/` backends (multi-FS foundation)
-**Related:** [ADR 0001](0001-metadata-cache-is-subordinate-to-commit-last.md) (the crash-safety contract pins it), [ARCHITECTURE.md](../../ARCHITECTURE.md) (principle 2: a backend changes nothing outside `fs/`), [code-enforcement.md](../code-enforcement.md)
+**Related:** [ADR 0001](0001-metadata-cache-is-subordinate-to-commit-last.md) (the crash-safety contract pins it), [ADR 0003](0003-opt-in-e2e-validates-fakes-against-real-backends.md) (the opt-in e2e that backstops fake fidelity against the live APIs), [ARCHITECTURE.md](../../ARCHITECTURE.md) (principle 2: a backend changes nothing outside `fs/`), [code-enforcement.md](../code-enforcement.md)
 
 ## Context
 
@@ -31,7 +31,9 @@ because they are the ways a contract can look green and still be worthless:
    `upload`/`createFolder`, which the real client *does* re-stamp). So
    `DropboxFs.rename`'s load-bearing `.tag` re-stamp — the line that keeps a moved folder
    classified as a folder — was **dead against the fake**: deleting it left the contract
-   green. Found in code review; the fake was corrected to return untagged metadata.
+   green. Found in code review; the fake was corrected to return untagged metadata. (This
+   review-only catch is exactly what the opt-in real-cloud e2e in [ADR 0003](0003-opt-in-e2e-validates-fakes-against-real-backends.md)
+   now backstops — the same contract, run against the live API, fails on a drifted fake.)
 
 2. **An assertion that is not load-bearing gives false confidence.** The shared
    rename-directory case only checked `exists("renamed")`, and `exists()` is defined as
@@ -95,14 +97,32 @@ chore bolted on afterward.
 
 ## Consequences
 
-**Documented intentional divergences.** The CRUD fakes return **full-millisecond**
-timestamps so a written `mtime` round-trips exactly, even though the real
-`DropboxClient`/`PCloudClient` truncate the upload time to **seconds**. This is on
-purpose and consistent across the Drive/Dropbox/pCloud fakes: the IFileSystem contract
-tests **FS-layer fidelity** (the FS does not mangle the time the backend reports), not the
-backend's wire-format timestamp precision — that truncation lives in the client, outside
-this contract's scope. A divergence like this is allowed only when it is written down at
-the fake and does not weaken what the contract is *for*.
+**Documented intentional divergences.** The Dropbox CRUD fake sets `server_modified` to
+the **written `mtime`** so a write round-trips exactly, even though the real `DropboxFs`
+reports `server_modified` — the **upload wall-clock**, the canonical remote timestamp (see
+`dropbox/types.ts`) — which is unrelated to the value written. (Drive genuinely does
+preserve the written `modifiedTime` at full ms.) This is on purpose: the IFileSystem
+contract tests **FS-layer fidelity** (the FS does not mangle the time the backend reports),
+and the fake supplies a deterministic, checkable timestamp for that. A divergence like this
+is allowed only when it is written down at the fake and does not weaken what the contract is
+*for*. The opt-in real-cloud e2e
+([ADR 0003](0003-opt-in-e2e-validates-fakes-against-real-backends.md)) runs this same
+contract against the live backends, where `server_modified` is the real upload time; the
+`preservesWrittenMtime` opt — a second sanctioned backend-class knob alongside
+`computesHashOnStat` — drops the mtime-equality assertions to "a plausible (finite,
+positive) timestamp" for the real Dropbox (`false`), while mock/LocalFs/Drive and all the
+fakes keep the default (`true`). This empirically surfaced the fake's generosity: an earlier
+`mtimePrecisionMs` knob (assuming Dropbox merely *truncated* the written mtime to seconds)
+was wrong — the real value is the server's clock, not the written one rounded — and the e2e
+caught it. mtime is **not** Dropbox's change-detection signal anyway; that is the
+content-hash `remoteChecksum` (the change-detection contract is `checksumBased`).
+
+A second divergence the e2e surfaced the same way: the **Drive** CRUD fake leaves
+`modifiedTime` untouched on a rename/move, but the real `files.update` **bumps it to
+"now"** (a metadata write counts as a modification). So mtime survives a rename only on
+local-storage backends; the rename test pins exact mtime-through-rename when
+`computesHashOnStat` (mock/LocalFs) and only requires a finite timestamp otherwise. (Drive
+still preserves the written `modifiedTime` on a plain *write* — that is unaffected.)
 
 **The orchestrator-level convergence path is deliberately out of the FS contracts.** ADR
 0001 **path 2** (state C — a live FS whose in-memory cursor overtook the committed one

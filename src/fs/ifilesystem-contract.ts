@@ -40,6 +40,22 @@ export interface IFileSystemContractOpts {
 	 * that return `hash: ""` plus a `remoteChecksum`. Default: true.
 	 */
 	computesHashOnStat?: boolean;
+	/**
+	 * Whether a written `mtime` round-trips through this backend. The second
+	 * sanctioned backend-class knob (alongside `computesHashOnStat`): when false,
+	 * the mtime-equality assertions only require a plausible (finite, positive)
+	 * timestamp instead of the exact written value.
+	 *
+	 * Default true: mock/LocalFs and Google Drive preserve the value. The real
+	 * Dropbox does NOT — `DropboxFs` reports `server_modified` (the upload
+	 * wall-clock, the canonical remote timestamp; see `dropbox/types.ts`), so the
+	 * value the engine sees is the server's, not the one written. The in-memory
+	 * Dropbox fake sets `server_modified` to the written mtime so the round-trip
+	 * is deterministically checkable at the unit level (ADR 0002, "Documented
+	 * intentional divergences"); the opt-in real-cloud e2e (ADR 0003) sets this
+	 * false to match the live backend.
+	 */
+	preservesWrittenMtime?: boolean;
 }
 
 /**
@@ -51,6 +67,12 @@ export interface IFileSystemContractCtx {
 	fs: () => IFileSystem;
 	/** Whether `stat()` returns a non-empty content hash for files. */
 	computesHashOnStat: boolean;
+	/**
+	 * Assert an observed `mtime` matches a written value. Exact when the backend
+	 * preserves written mtime; otherwise only requires a plausible (finite,
+	 * positive) timestamp (see {@link IFileSystemContractOpts.preservesWrittenMtime}).
+	 */
+	expectMtime: (actual: number, expected: number) => void;
 	/** Seed a file through the public `write()` — every backend's real entry point. */
 	seed: (path: string, text: string, mtime?: number) => Promise<void>;
 	/** A path exists iff `stat()` resolves to a non-null entity (file OR directory). */
@@ -81,9 +103,19 @@ export function runIFileSystemContract(
 			current = await makeFs();
 		});
 
+		const preservesWrittenMtime = opts.preservesWrittenMtime ?? true;
 		const ctx: IFileSystemContractCtx = {
 			fs: () => current,
 			computesHashOnStat: opts.computesHashOnStat ?? true,
+			expectMtime: (actual, expected) => {
+				if (preservesWrittenMtime) {
+					expect(actual).toBe(expected);
+				} else {
+					// Backend assigns its own timestamp (e.g. Dropbox server_modified):
+					// the written value cannot round-trip, so require only a plausible one.
+					expect(Number.isFinite(actual) && actual > 0).toBe(true);
+				}
+			},
 			seed: async (path, text, mtime = 1000) => {
 				await current.write(path, bytes(text), mtime);
 			},
@@ -179,7 +211,16 @@ function registerRenameAndReadContract(ctx: IFileSystemContractCtx): void {
 			await ctx.fs().rename("old.txt", "new.txt");
 			const entity = await ctx.fs().stat("new.txt");
 			expect(entity).not.toBeNull();
-			expect(entity!.mtime).toBe(12345);
+			// mtime survives a rename only on local-storage backends. A remote rename
+			// is a server-side metadata op that reassigns the timestamp — Google Drive
+			// bumps modifiedTime to "now" (verified by the opt-in e2e, ADR 0003);
+			// Dropbox reports server_modified. computesHashOnStat marks the
+			// local-storage backends (mock, LocalFs), which DO preserve it.
+			if (ctx.computesHashOnStat) {
+				ctx.expectMtime(entity!.mtime, 12345);
+			} else {
+				expect(Number.isFinite(entity!.mtime)).toBe(true);
+			}
 			expect(await readText("new.txt")).toBe("content");
 		});
 	});
@@ -209,7 +250,7 @@ function registerRenameAndReadContract(ctx: IFileSystemContractCtx): void {
 		it("returns correct size and mtime", async () => {
 			await seed("a.txt", "hello", 99999);
 			const file = (await ctx.fs().list()).find((e) => e.path === "a.txt");
-			expect(file!.mtime).toBe(99999);
+			ctx.expectMtime(file!.mtime, 99999);
 			expect(file!.size).toBe(
 				new TextEncoder().encode("hello").byteLength,
 			);
