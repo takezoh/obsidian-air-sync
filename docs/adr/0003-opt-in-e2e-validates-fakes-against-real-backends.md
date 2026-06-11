@@ -42,9 +42,16 @@ is **opt-in**.
    can never break anything.
 
 4. **Reuse the shipped auth; store only a refresh token.** The harness authenticates through
-   the production auth code — built-in `GoogleAuth` (refresh via the auth server, no client
-   secret) and `DropboxAuth` (PKCE, public client id) — seeded with a refresh token obtained
-   once via `npm run e2e:bootstrap`. This exercises the real auth path, not a test-only shortcut.
+   the production auth code (`GoogleAuthDirect` / `GoogleAuth`, `DropboxAuth`), seeded with a
+   refresh token obtained once via `npm run e2e:bootstrap`. The bootstrap captures the OAuth
+   redirect on a **localhost loopback** server (no copy-paste) and writes the token to
+   `.env.e2e`. Because the built-in Google auth server returns tokens to `obsidian://` — which
+   a loopback can't capture — the Google bootstrap uses the developer's **own** GCP OAuth
+   client (`GoogleAuthDirect` with a loopback redirect), and the Google e2e refreshes with that
+   same client; with only a refresh token and no client id/secret it falls back to the built-in
+   `GoogleAuth`. Dropbox uses the public PKCE client id with a loopback redirect URI registered
+   on the app. The exact auth path is incidental to what this e2e validates (the real
+   `DriveClient`/`DropboxClient` CRUD surface vs. the fakes), so a custom Google client is fine.
 
 5. **The real `requestUrl` is the only swapped seam.** The shipped `obsidian` test mock rejects
    every `requestUrl`; the e2e config aliases `obsidian` to a shim whose `requestUrl` performs

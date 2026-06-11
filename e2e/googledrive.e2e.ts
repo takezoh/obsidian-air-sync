@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe } from "vitest";
-import { GoogleAuth } from "../src/fs/googledrive/auth";
+import type { IGoogleAuth } from "../src/fs/googledrive/auth";
+import { GoogleAuth, GoogleAuthDirect } from "../src/fs/googledrive/auth";
 import { DriveClient } from "../src/fs/googledrive/client";
 import { GoogleDriveFs } from "../src/fs/googledrive/index";
 import { runIFileSystemContract } from "../src/fs/ifilesystem-contract";
@@ -19,6 +20,8 @@ import {
  * via `npm run e2e:bootstrap -- google`. See docs/e2e-testing.md.
  */
 const creds = readCreds("AIRSYNC_E2E_GOOGLE_REFRESH_TOKEN");
+const clientId = process.env.AIRSYNC_E2E_GOOGLE_CLIENT_ID;
+const clientSecret = process.env.AIRSYNC_E2E_GOOGLE_CLIENT_SECRET;
 
 if (!creds) {
 	console.warn(
@@ -29,10 +32,14 @@ if (!creds) {
 		/* skipped */
 	});
 } else {
-	// Built-in GoogleAuth: refresh goes through the auth server with only the
-	// refresh token (no client secret). Seeding an empty access token + expiry 0
-	// forces a refresh on the first getAccessToken().
-	const auth = new GoogleAuth();
+	// A refresh token is bound to the OAuth client that issued it, so refresh with
+	// the matching client: GoogleAuthDirect (your own GCP client) when the loopback
+	// bootstrap was used, else the built-in GoogleAuth (auth server, no secret).
+	// Seeding an empty access token + expiry 0 forces a refresh on first use.
+	const auth: IGoogleAuth =
+		clientId && clientSecret
+			? new GoogleAuthDirect({ clientId, clientSecret })
+			: new GoogleAuth();
 	auth.setTokens(creds.refreshToken, "", 0);
 	const client = new DriveClient((force) => auth.getAccessToken(force));
 	let parentId = "";

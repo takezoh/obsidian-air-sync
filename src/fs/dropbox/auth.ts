@@ -67,8 +67,15 @@ export class DropboxAuth extends BaseOAuthTokenManager {
 		return "Dropbox session expired. Please reconnect in settings.";
 	}
 
-	/** Exchange an authorization code for tokens (PKCE — no client secret). */
-	async exchangeCode(code: string, codeVerifier: string): Promise<void> {
+	/**
+	 * Exchange an authorization code for tokens (PKCE — no client secret).
+	 *
+	 * `redirectUri` must match the one used in the authorize request and defaults
+	 * to the shipped relay ({@link REDIRECT_URI}). The opt-in e2e bootstrap (ADR
+	 * 0003) overrides it with a `http://localhost:<port>` loopback so a headless
+	 * CLI can capture the redirect directly.
+	 */
+	async exchangeCode(code: string, codeVerifier: string, redirectUri: string = REDIRECT_URI): Promise<void> {
 		const res = await requestUrl({
 			url: TOKEN_URL,
 			method: "POST",
@@ -79,7 +86,7 @@ export class DropboxAuth extends BaseOAuthTokenManager {
 				code,
 				code_verifier: codeVerifier,
 				client_id: this.clientId,
-				redirect_uri: REDIRECT_URI,
+				redirect_uri: redirectUri,
 			}).toString(),
 		});
 		if (res.status < 200 || res.status >= 300) {
