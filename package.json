@@ -1,7 +1,7 @@
 {
 	"name": "obsidian-air-sync",
-	"version": "0.1.26",
-	"description": "Sync your vault with cloud storage (Google Drive, Dropbox).",
+	"version": "0.1.27",
+	"description": "Sync your vault with cloud storage (Google Drive, Dropbox, OneDrive).",
 	"main": "main.js",
 	"type": "module",
 	"scripts": {
