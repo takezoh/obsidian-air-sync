@@ -1,6 +1,6 @@
 # ADR 0003 — Fake fidelity is backstopped by an opt-in e2e that runs the IFileSystem contract against the real backends
 
-**Status:** Accepted · 2026-06-10
+**Status:** Accepted · 2026-06-10 · amended 2026-06-11 (OneDrive extension → `mtimePrecisionMs`, point 8)
 **Context area:** testing / `fs/` backends (multi-FS foundation)
 **Related:** [ADR 0002](0002-backends-verified-by-shared-behaviour-contracts.md) (the contracts this reuses; the fake-fidelity rule this automates), [docs/e2e-testing.md](../e2e-testing.md) (how to run it), [code-enforcement.md](../code-enforcement.md), [ARCHITECTURE.md](../../ARCHITECTURE.md) (principle 2)
 
@@ -73,8 +73,25 @@ is **opt-in**.
    LocalFs/Drive and all fakes keep the default `true`. This knob *replaced* an initial
    `mtimePrecisionMs` guess (that Dropbox merely truncated the written mtime to seconds) — the
    e2e proved the real value is the server's clock, not the written one rounded, so a
-   precision relaxation could never have matched. mtime is not Dropbox's change-detection
-   signal (that is the content-hash `remoteChecksum`), so nothing load-bearing is relaxed.
+   precision relaxation could never have matched *Dropbox*. (OneDrive later turned out to be
+   exactly the case the precision guess was meant for — see point 8.) mtime is not Dropbox's
+   change-detection signal (that is the content-hash `remoteChecksum`), so nothing load-bearing
+   is relaxed.
+
+8. **A sanctioned `mtimePrecisionMs` knob models a coarser-but-faithful mtime (OneDrive).** Added
+   when the OneDrive e2e went red on exact mtime: `OneDriveFs` PATCHes
+   `fileSystemInfo.lastModifiedDateTime` after the content PUT, so the written value *is*
+   preserved — but Microsoft Graph stores it at **whole-second** precision (`12345 → 12000`,
+   `99999 → 99000`). This is a third behaviour class, distinct from both Drive (exact) and
+   Dropbox (server clock): the value round-trips, just floored. So rather than relax it to
+   Dropbox's "any plausible timestamp" (which would discard the true, checkable fact that
+   OneDrive keeps the written second), a third backend-class knob compares the observed and
+   written mtimes *floored to `mtimePrecisionMs`* (default `1` = exact; OneDrive `1000`). This is
+   the `mtimePrecisionMs` relaxation point 7 floated and dropped for Dropbox — now empirically
+   justified, by the e2e, for a backend that genuinely truncates. Like Dropbox's divergence, the
+   OneDrive fake echoes full-ms mtime, so its unit contract stays at the exact default and only
+   the live run carries the knob. Second precision is not load-bearing for sync (change detection
+   is `remoteChecksum`), though it does collapse same-second edits to the conflict-duplicate path.
 
 ## Consequences
 
@@ -87,11 +104,15 @@ is **opt-in**.
 - **It is deliberately not a CI gate.** Credentials, quota, network flake, and runtime make it
   unsuitable for every push; it backstops, it does not replace, the fast fake-based contracts.
 
-- **`preservesWrittenMtime` is the second sanctioned backend-class knob** (after `computesHashOnStat`).
-  Like that one, it encodes an intrinsic interface-level difference, not an opt-out of a behaviour
-  — it drops only the mtime *value* check (never the assertion's intent), and only at the
-  non-default `false`.
+- **`preservesWrittenMtime` and `mtimePrecisionMs` are the second and third sanctioned
+  backend-class knobs** (after `computesHashOnStat`). Each encodes an intrinsic interface-level
+  difference, not an opt-out of a behaviour: `preservesWrittenMtime: false` drops only the mtime
+  *value* check (server-clock Dropbox); `mtimePrecisionMs` keeps the value check but at the
+  backend's storage granularity (whole-second OneDrive). Both relax only the mtime assertion, and
+  only at their non-default settings.
 
 - **Adding a new backend extends the e2e in one block**, mirroring its fake-based contract call:
   authenticate a real client, create/clean an isolated folder, run `runIFileSystemContract` with
-  the right `computesHashOnStat`/`preservesWrittenMtime`.
+  the right `computesHashOnStat`/`preservesWrittenMtime`/`mtimePrecisionMs`. OneDrive (Microsoft
+  Graph, App Folder scope) was the first such addition — and the first to surface a new knob
+  (`mtimePrecisionMs`) from a live failure, which is the backstop working as intended.

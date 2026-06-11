@@ -67,8 +67,11 @@ if (!creds || !clientId) {
 		"OneDriveFs (real)",
 		async () => new OneDriveFs(client, await makeOneDriveChild(client, parentId)),
 		// OneDriveFs PATCHes fileSystemInfo.lastModifiedDateTime after the content PUT,
-		// so a written mtime round-trips (like Drive, unlike Dropbox) → preservesWrittenMtime
-		// keeps its default true.
-		{ computesHashOnStat: false },
+		// so the written mtime IS preserved (preservesWrittenMtime stays true, unlike
+		// Dropbox's server clock) — but Microsoft Graph stores it at WHOLE-SECOND
+		// precision (this e2e proved 12345 → 12000), so it round-trips only to the
+		// second: mtimePrecisionMs 1000. The OneDrive fake echoes full ms, hence the
+		// unit contract stays exact and only this live run carries the precision knob.
+		{ computesHashOnStat: false, mtimePrecisionMs: 1000 },
 	);
 }

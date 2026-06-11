@@ -115,9 +115,15 @@ npm run test:e2e:onedrive  # OneDrive only
   `remoteChecksum`), so nothing load-bearing is dropped. This is the documented divergence
   from ADR 0002, surfaced by this e2e.
 - **OneDrive mtime.** Unlike Dropbox, `OneDriveFs` PATCHes `fileSystemInfo.lastModifiedDateTime`
-  right after the content PUT, so a written mtime *does* round-trip (like Drive). The OneDrive
-  suite therefore keeps the default `preservesWrittenMtime: true`. OneDrive runs under the App
-  Folder scope, so the throwaway `airsync-e2e-*` tree is created inside `special/approot`.
+  right after the content PUT, so the written mtime *is* preserved (not a server clock) — but
+  this e2e proved Microsoft Graph stores it at **whole-second** precision (`12345 → 12000`,
+  `99999 → 99000`). So the suite runs with `mtimePrecisionMs: 1000` (the written value must
+  round-trip, floored to the second) rather than the exact default or Dropbox's
+  `preservesWrittenMtime: false`. mtime is not OneDrive's change-detection signal (that is the
+  content hash `remoteChecksum`), so the second-precision floor is not load-bearing for sync —
+  though it does mean two edits within the same second are mtime-indistinguishable, falling to
+  the duplicate path in conflict resolution. OneDrive runs under the App Folder scope, so the
+  throwaway `airsync-e2e-*` tree is created inside `special/approot`.
 - **Leftover folders.** Cleanup runs in `afterAll` but is **best-effort** — it warns instead
   of failing the run (Drive's `drive.file` scope can't hard-delete and may 403 on trash under
   load). Folders are uniquely named, so delete any stray `airsync-e2e-*` from the test account

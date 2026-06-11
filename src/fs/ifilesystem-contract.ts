@@ -56,6 +56,22 @@ export interface IFileSystemContractOpts {
 	 * false to match the live backend.
 	 */
 	preservesWrittenMtime?: boolean;
+	/**
+	 * The granularity (ms) at which a written `mtime` round-trips. Default 1 (the
+	 * backend preserves the value exactly: mock/LocalFs/Drive). Set 1000 for a
+	 * backend that stores whole-second mtimes: real OneDrive — Microsoft Graph
+	 * truncates `fileSystemInfo.lastModifiedDateTime` to the second, proven by the
+	 * ADR-0003 e2e (12345 → 12000, 99999 → 99000).
+	 *
+	 * Distinct from `preservesWrittenMtime: false`: the written value IS preserved
+	 * (not replaced by a server clock), just floored to this precision — so the
+	 * mtime assertion keeps its teeth (the floored values must match) instead of
+	 * relaxing to "any plausible timestamp." Ignored when `preservesWrittenMtime`
+	 * is false. Only meaningful at the real-cloud e2e: the OneDrive fake echoes the
+	 * written ms back, so its unit contract stays at the exact default (mirroring
+	 * how the Dropbox fake echoes its mtime).
+	 */
+	mtimePrecisionMs?: number;
 }
 
 /**
@@ -69,8 +85,11 @@ export interface IFileSystemContractCtx {
 	computesHashOnStat: boolean;
 	/**
 	 * Assert an observed `mtime` matches a written value. Exact when the backend
-	 * preserves written mtime; otherwise only requires a plausible (finite,
-	 * positive) timestamp (see {@link IFileSystemContractOpts.preservesWrittenMtime}).
+	 * preserves written mtime at full precision; floored to
+	 * {@link IFileSystemContractOpts.mtimePrecisionMs} when it stores a coarser
+	 * granularity (whole-second OneDrive); only requires a plausible (finite,
+	 * positive) timestamp when {@link IFileSystemContractOpts.preservesWrittenMtime}
+	 * is false (server-clock Dropbox).
 	 */
 	expectMtime: (actual: number, expected: number) => void;
 	/** Seed a file through the public `write()` — every backend's real entry point. */
@@ -104,17 +123,22 @@ export function runIFileSystemContract(
 		});
 
 		const preservesWrittenMtime = opts.preservesWrittenMtime ?? true;
+		const mtimePrecisionMs = opts.mtimePrecisionMs ?? 1;
 		const ctx: IFileSystemContractCtx = {
 			fs: () => current,
 			computesHashOnStat: opts.computesHashOnStat ?? true,
 			expectMtime: (actual, expected) => {
-				if (preservesWrittenMtime) {
-					expect(actual).toBe(expected);
-				} else {
+				if (!preservesWrittenMtime) {
 					// Backend assigns its own timestamp (e.g. Dropbox server_modified):
 					// the written value cannot round-trip, so require only a plausible one.
 					expect(Number.isFinite(actual) && actual > 0).toBe(true);
+					return;
 				}
+				// The written value round-trips, but only at the backend's mtime
+				// granularity (OneDrive/Graph floors to whole seconds → 1000). Compare
+				// both floored to that precision; the default 1 is exact equality.
+				const floorToPrecision = (t: number) => Math.floor(t / mtimePrecisionMs) * mtimePrecisionMs;
+				expect(floorToPrecision(actual)).toBe(floorToPrecision(expected));
 			},
 			seed: async (path, text, mtime = 1000) => {
 				await current.write(path, bytes(text), mtime);
