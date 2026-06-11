@@ -24,7 +24,9 @@ npm run build      # Production build (tsc -noEmit && esbuild)
 npm test           # vitest
 npm run test:watch # vitest watch
 npm run lint       # eslint --max-warnings 0
-npm run test:e2e   # opt-in e2e vs real Drive/Dropbox (creds-gated; NOT in the gate/CI — see docs/e2e-testing.md)
+npm run test:e2e   # opt-in e2e vs real Drive/Dropbox (creds-gated; NOT in the gate/CI; backends run in parallel — see docs/e2e-testing.md)
+npm run test:e2e:google   # …only Google Drive
+npm run test:e2e:dropbox  # …only Dropbox
 ```
 
 ## The gate

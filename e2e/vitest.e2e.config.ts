@@ -18,8 +18,10 @@ export default defineConfig({
 		// per-test timeout can trip on rate-limit backoff alone under sequential load.
 		testTimeout: 180_000,
 		hookTimeout: 180_000,
-		// Avoid hammering both backends' rate limits in parallel.
-		fileParallelism: false,
+		// Run the per-backend files in PARALLEL (different services = different
+		// rate-limit buckets), while tests WITHIN each file stay sequential (vitest
+		// default), so a single backend is never hammered concurrently.
+		fileParallelism: true,
 	},
 	resolve: {
 		alias: {

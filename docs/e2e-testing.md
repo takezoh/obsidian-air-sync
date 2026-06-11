@@ -72,16 +72,26 @@ Read from the real environment or a gitignored `.env.e2e` at the repo root (real
 
 ## Running
 
+It is **never** part of `npm test`, the lint gate, or CI — run it explicitly, when needed:
+
 ```bash
-npm run test:e2e
+npm run test:e2e          # both backends — the two run IN PARALLEL
+npm run test:e2e:google   # Google Drive only
+npm run test:e2e:dropbox  # Dropbox only
 ```
 
-- **Both tokens present** → the full `runIFileSystemContract` runs against each live API. A
-  fresh child folder is created per test (the contract assumes an empty start) under one
-  per-run parent folder, which is deleted recursively in `afterAll`. A green run is the proof
-  that the fakes still match reality.
+- `npm run test:e2e` runs the two per-backend files **concurrently** (different services =
+  different rate-limit buckets); tests **within** a backend stay sequential, so a single
+  backend is never hammered.
+- The full `runIFileSystemContract` runs against each live API. A fresh child folder is created
+  per test (the contract assumes an empty start) under one per-run parent folder, removed in
+  `afterAll`. A green run is the proof that the fakes still match reality.
 - **One token missing** → that backend warns and skips; the other runs.
 - **No tokens** → both warn and skip; exit 0.
+
+> Running Google individually needs `AIRSYNC_E2E_GOOGLE_CLIENT_ID`/`_CLIENT_SECRET` in
+> `.env.e2e` (the refresh token alone falls back to the built-in auth server, which can't
+> refresh a token minted by your own OAuth client).
 
 ## Notes
 
