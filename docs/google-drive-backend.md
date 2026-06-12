@@ -106,7 +106,7 @@ Key methods:
 
 ## Authentication
 
-Two OAuth implementations share a common base class (`GoogleAuthBase`). The server side of the built-in flow — the `auth-airsync.takezo.dev` endpoints — lives in the dedicated [air-sync-auth](https://github.com/takezoh/air-sync-auth) repo.
+Two OAuth implementations share a common base class (`GoogleAuthBase`). The server side of the built-in flow — the `auth-airsync.takezo.dev` endpoints — lives in the dedicated [obsidian-air-sync-auth](https://github.com/takezoh/obsidian-air-sync-auth) repo.
 
 ### GoogleAuth (server-side, built-in)
 
