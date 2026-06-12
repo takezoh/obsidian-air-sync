@@ -15,12 +15,11 @@ The **opt-in e2e** runs that *same* contract against the **live** APIs to catch 
 ## TL;DR
 
 ```bash
-cp .env.e2e.example .env.e2e          # gitignored; fill the Google + OneDrive client ids first
+cp .env.e2e.example .env.e2e          # gitignored; fill the Google / OneDrive / pCloud client ids first
 npm run e2e:bootstrap -- google       # authorize in the browser → token auto-written to .env.e2e
 npm run e2e:bootstrap -- dropbox      # authorize in the browser → token auto-written to .env.e2e
 npm run e2e:bootstrap -- onedrive     # authorize in the browser → token auto-written to .env.e2e
-# pCloud has no bootstrap (its token is long-lived, no refresh): paste
-# AIRSYNC_E2E_PCLOUD_ACCESS_TOKEN into .env.e2e by hand (see below).
+npm run e2e:bootstrap -- pcloud       # authorize in the browser → access token auto-written to .env.e2e
 npm run test:e2e                      # runs the contract against the live APIs
 ```
 
@@ -55,30 +54,35 @@ redirect URI once:
   desktop"); put its application (client) id in `.env.e2e` (`AIRSYNC_E2E_ONEDRIVE_CLIENT_ID`).
   PKCE means no secret. The OneDrive e2e refreshes with this same client (the refresh token is
   bound to it), so — unlike Dropbox — the client id is required even when a token is present.
-- **pCloud** — the **exception: no loopback bootstrap**. pCloud issues a single long-lived
-  access token (no refresh, no expiry), so there is nothing to refresh and the loopback dance
-  buys nothing — you obtain a token once and paste it. Register an app at
-  <https://docs.pcloud.com/> ("My Applications") with any redirect URI, run its OAuth flow in a
-  browser, and copy the `access_token` from the redirect into `.env.e2e` as
-  `AIRSYNC_E2E_PCLOUD_ACCESS_TOKEN`. The redirect also carries the region (`hostname` /
-  `locationid`); for an **EU** account set `AIRSYNC_E2E_PCLOUD_API_HOST=eapi.pcloud.com` (US
-  `api.pcloud.com` is the default).
+- **pCloud** — like Google/OneDrive, the production flow returns to `obsidian://` (via the auth
+  worker, which holds the client secret), so the e2e uses **your own** dev OAuth client with the
+  loopback redirect. Register an app at <https://docs.pcloud.com/> ("My Applications"), add
+  `http://localhost:53682/callback` as a redirect URI, and put its client id **and secret** in
+  `.env.e2e` (`AIRSYNC_E2E_PCLOUD_CLIENT_ID` / `_CLIENT_SECRET`). The bootstrap runs the
+  `oauth2_token` exchange itself (the step the worker owns in production) and writes the
+  long-lived access token (no refresh) plus the region host (`AIRSYNC_E2E_PCLOUD_API_HOST`,
+  derived from the redirect's `hostname` / `locationid`) into `.env.e2e`. *Alternative:* because
+  the token is long-lived, you can skip the bootstrap and client secret entirely and paste a
+  token obtained any other way into `AIRSYNC_E2E_PCLOUD_ACCESS_TOKEN` by hand (set
+  `AIRSYNC_E2E_PCLOUD_API_HOST=eapi.pcloud.com` for an EU account; US `api.pcloud.com` is the default).
 
-## Obtaining refresh tokens
+## Obtaining tokens
 
-`npm run e2e:bootstrap -- <google|dropbox|onedrive>` reuses the shipped auth code
-(`GoogleAuthDirect` / `DropboxAuth` / `OneDriveAuth`) and:
+`npm run e2e:bootstrap -- <google|dropbox|onedrive|pcloud>`:
 
 1. Starts a localhost loopback server and prints an authorization URL.
 2. You open it and approve — the browser is redirected back to the loopback, which captures the
    code automatically (no copy-paste).
-3. The code is exchanged for tokens and the refresh token is written straight into `.env.e2e`.
+3. The code is exchanged for tokens and the credential is written straight into `.env.e2e`.
 
-Tokens are long-lived; redo the bootstrap only if one is revoked.
+Google/Dropbox/OneDrive reuse the shipped auth code (`GoogleAuthDirect` / `DropboxAuth` /
+`OneDriveAuth`) and mint a **refresh token**. pCloud has no shipped exchange to reuse (the auth
+worker owns it in production), so its bootstrap does the `oauth2_token` exchange inline and writes
+a **long-lived access token** (no refresh) plus `AIRSYNC_E2E_PCLOUD_API_HOST`.
 
-**pCloud is the exception** — it has no bootstrap subcommand. Its access token is long-lived
-with no refresh, so paste `AIRSYNC_E2E_PCLOUD_ACCESS_TOKEN` (and, for EU, `AIRSYNC_E2E_PCLOUD_API_HOST`)
-into `.env.e2e` by hand, as described in the setup section above.
+Tokens are long-lived; redo the bootstrap only if one is revoked. For pCloud you can also skip the
+bootstrap and paste `AIRSYNC_E2E_PCLOUD_ACCESS_TOKEN` (and, for EU, `AIRSYNC_E2E_PCLOUD_API_HOST`)
+into `.env.e2e` by hand — the token is long-lived, so a one-time paste works just as well.
 
 ## Environment variables
 
@@ -92,8 +96,10 @@ Read from the real environment or a gitignored `.env.e2e` at the repo root (real
 | `AIRSYNC_E2E_DROPBOX_REFRESH_TOKEN` | Dropbox — minted by the bootstrap |
 | `AIRSYNC_E2E_ONEDRIVE_CLIENT_ID` | OneDrive — your Entra app client id (for loopback + refresh) |
 | `AIRSYNC_E2E_ONEDRIVE_REFRESH_TOKEN` | OneDrive — minted by the bootstrap |
-| `AIRSYNC_E2E_PCLOUD_ACCESS_TOKEN` | pCloud — long-lived access token, pasted by hand (no bootstrap) |
-| `AIRSYNC_E2E_PCLOUD_API_HOST` | pCloud — optional region host (default `api.pcloud.com`; EU `eapi.pcloud.com`) |
+| `AIRSYNC_E2E_PCLOUD_CLIENT_ID` | pCloud — your dev OAuth client id (for the loopback bootstrap) |
+| `AIRSYNC_E2E_PCLOUD_CLIENT_SECRET` | pCloud — your dev OAuth client secret (bootstrap-only; the `oauth2_token` exchange) |
+| `AIRSYNC_E2E_PCLOUD_ACCESS_TOKEN` | pCloud — long-lived access token, minted by the bootstrap (or pasted by hand) |
+| `AIRSYNC_E2E_PCLOUD_API_HOST` | pCloud — region host, set by the bootstrap (default `api.pcloud.com`; EU `eapi.pcloud.com`) |
 | `AIRSYNC_E2E_OAUTH_PORT` | Optional loopback port (default 53682) |
 
 ## Running
@@ -150,10 +156,16 @@ npm run test:e2e:pcloud    # pCloud only
   by the live run; confirm/adjust it the first time you run the pCloud e2e. pCloud addresses by
   numeric `folderid`, so the throwaway `airsync-e2e-*` tree is created under the account root
   (folder id `0`).
-- **pCloud auth.** Unlike the other backends, pCloud has **no bootstrap and no refresh token** —
-  its access token is long-lived and pasted into `.env.e2e` directly (`AIRSYNC_E2E_PCLOUD_ACCESS_TOKEN`).
-  The token is used verbatim; the region host is read from `AIRSYNC_E2E_PCLOUD_API_HOST` (default
-  `api.pcloud.com`).
+- **pCloud auth.** pCloud issues a **long-lived access token with no refresh token**. Its
+  bootstrap therefore has no shipped exchange to reuse (the auth worker owns the `oauth2_token`
+  exchange in production), so it talks to pCloud directly with a dev OAuth client and runs that
+  exchange inline, writing `AIRSYNC_E2E_PCLOUD_ACCESS_TOKEN` (used verbatim — no refresh) and the
+  region host `AIRSYNC_E2E_PCLOUD_API_HOST` (default `api.pcloud.com`). Because the token is
+  long-lived, a hand-pasted token works just as well.
+- **pCloud access mode.** If your pCloud app is **Specific folder only**, the account-wide `diff`
+  feed returns result 2096, so `PCloudFs` runs delta-less (cold reconcile each cycle); a
+  **Full-access** app exercises the incremental `diff` path instead. The contract passes under
+  either mode (the only difference is whether `getStartCursor()` returns a real cursor or `""`).
 - **Leftover folders.** Cleanup runs in `afterAll` but is **best-effort** — it warns instead
   of failing the run (Google Drive's `drive.file` scope can't hard-delete and may 403 on trash under
   load). Folders are uniquely named, so delete any stray `airsync-e2e-*` from the test account
