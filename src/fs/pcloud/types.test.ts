@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { assertOk, pcloudEntryToEntity, parsePCloudTime, folderIdOf, withoutContents } from "./types";
+import { assertOk, PCloudApiError, pcloudEntryToEntity, parsePCloudTime, folderIdOf, withoutContents } from "./types";
 import { AuthError } from "../errors";
 import { pcFile, pcFolder } from "./test-helpers";
 
@@ -8,10 +8,16 @@ describe("assertOk", () => {
 		expect(() => assertOk({ result: 0 }, "listFolder")).not.toThrow();
 	});
 
-	it("throws a generic Error for a non-auth result code", () => {
-		expect(() => assertOk({ result: 2005, error: "Directory does not exist." }, "listFolder")).toThrow(
-			"pCloud API listFolder failed: 2005 Directory does not exist.",
-		);
+	it("throws a PCloudApiError carrying the result code for a non-auth result", () => {
+		let caught: unknown;
+		try {
+			assertOk({ result: 2005, error: "Directory does not exist." }, "listFolder");
+		} catch (e) {
+			caught = e;
+		}
+		expect(caught).toBeInstanceOf(PCloudApiError);
+		expect((caught as PCloudApiError).result).toBe(2005);
+		expect((caught as Error).message).toBe("pCloud API listFolder failed: 2005 Directory does not exist.");
 	});
 
 	it("throws AuthError for authentication-class result codes", () => {

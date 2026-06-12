@@ -15,12 +15,18 @@ interface Routes {
 }
 
 /** Route pCloud API calls by URL; `routes.root` is the listfolder tree. */
-async function makeFs(routes: Routes) {
+async function makeFs(routes: Routes, opts: { diffFullAccessRequired?: boolean } = {}) {
 	const calls: string[] = [];
-	(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
-		const url = typeof opts === "string" ? opts : opts.url;
+	(await spyRequestUrl()).mockImplementation((reqOpts: string | RequestUrlParam) => {
+		const url = typeof reqOpts === "string" ? reqOpts : reqOpts.url;
 		calls.push(url);
-		if (url.includes("/diff?")) return Promise.resolve(mockRes({ result: 0, diffid: 100, entries: [] }));
+		if (url.includes("/diff?")) {
+			return opts.diffFullAccessRequired
+				? Promise.resolve(
+						mockRes({ result: 2096, error: "This method is only supported for applications with full access." }),
+					)
+				: Promise.resolve(mockRes({ result: 0, diffid: 100, entries: [] }));
+		}
 		if (url.includes("/listfolder")) return Promise.resolve(mockRes({ result: 0, metadata: routes.root }));
 		if (url.includes("/createfolderifnotexists")) {
 			return Promise.resolve(mockRes({ result: 0, metadata: pcFolder(2, "sub", 0) }));
@@ -54,6 +60,21 @@ describe("PCloudFs full scan", () => {
 
 	it("returns null from getChangedPaths on the initial scan (no delta yet)", async () => {
 		const { fs } = await makeFs({ root: pcFolder(0, "/", 0, []) });
+		expect(await fs.getChangedPaths()).toBeNull();
+	});
+
+	it("falls back to a full-scan reconcile when diff returns 2096 (Specific-folder-only app)", async () => {
+		const { fs, calls } = await makeFs(
+			{ root: pcFolder(0, "/", 0, [pcFile(1, "a.md", 0)]) },
+			{ diffFullAccessRequired: true },
+		);
+		// getStartCursor swallows the 2096 → empty cursor; listfolder still builds the tree.
+		const entities = await fs.list();
+		expect(entities.map((e) => e.path)).toEqual(["a.md"]);
+		expect(calls.some((u) => u.includes("/listfolder"))).toBe(true);
+		// Empty cursor ⇒ permanently no checkpoint ⇒ the orchestrator cold-reconciles every
+		// cycle, and there is no incremental delta to report.
+		expect(await fs.checkpoint.hasCheckpoint()).toBe(false);
 		expect(await fs.getChangedPaths()).toBeNull();
 	});
 });

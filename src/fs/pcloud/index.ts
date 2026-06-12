@@ -1,6 +1,6 @@
 import type { FileEntity } from "../types";
 import type { PCloudEntry } from "./types";
-import { parsePCloudTime } from "./types";
+import { parsePCloudTime, PCloudApiError, PCLOUD_FULL_ACCESS_REQUIRED } from "./types";
 import type { PCloudClient } from "./client";
 import type { MetadataStore } from "../../store/metadata-store";
 import type { Logger } from "../../logging/logger";
@@ -15,6 +15,16 @@ import type { IncrementalChangesResult } from "../caching/remote-fs";
 /** A file's pCloud numeric id ("fileid"/"folderid"), used for API addressing. */
 function numericIdOf(entry: PCloudEntry): string {
 	return String(entry.isfolder ? entry.folderid : entry.fileid);
+}
+
+/**
+ * True when an error is pCloud's "this method needs a full-access app" (result 2096).
+ * The account-wide `diff` feed raises it for a "Specific folder only" app, so both
+ * entry points to `diff` (getStartCursor's baseline and fetchChanges' replay) treat
+ * it as "no delta available → fall back to a full-scan reconcile".
+ */
+function isFullAccessRequired(err: unknown): boolean {
+	return err instanceof PCloudApiError && err.result === PCLOUD_FULL_ACCESS_REQUIRED;
 }
 
 /**
@@ -37,8 +47,24 @@ export class PCloudFs extends CachingRemoteFs<PCloudEntry> {
 
 	// ── pCloud-specific seams ──
 
-	protected getStartCursor(): Promise<string> {
-		return this.client.getDiffBaseline();
+	protected async getStartCursor(): Promise<string> {
+		// The account-wide `diff` feed is only available to "full access" pCloud apps;
+		// a "Specific folder only" app gets result 2096. When that happens there is no
+		// usable delta, so return an EMPTY cursor: the base treats that as "no checkpoint"
+		// (hasCheckpoint() === false), and the orchestrator cold-reconciles every cycle via
+		// the recursive listfolder (which a folder-scoped app CAN call) — fetchChanges()
+		// is then never reached (the empty-cursor guard in _applyIncrementalChanges short-
+		// circuits it). Full-access apps (and the crash-safety contract's fake) get a real
+		// cursor and keep the incremental `diff` path.
+		try {
+			return await this.client.getDiffBaseline();
+		} catch (err) {
+			if (isFullAccessRequired(err)) {
+				this.logger?.info("pCloud diff unavailable (folder-scoped app); reconciling by full scan each cycle");
+				return "";
+			}
+			throw err;
+		}
 	}
 
 	protected async fullList(): Promise<PCloudEntry[]> {
@@ -57,8 +83,23 @@ export class PCloudFs extends CachingRemoteFs<PCloudEntry> {
 		return Promise.resolve();
 	}
 
-	protected fetchChanges(cursor: string): Promise<IncrementalChangesResult> {
-		return applyPCloudDiff({ cache: this.cache, client: this.client, logger: this.logger }, cursor);
+	protected async fetchChanges(cursor: string): Promise<IncrementalChangesResult> {
+		// The incremental `diff` delta — reached only for a full-access app (or the
+		// crash-safety contract's fake), since getStartCursor() returns "" for a
+		// folder-scoped app and the empty-cursor guard then skips this.
+		try {
+			return await applyPCloudDiff({ cache: this.cache, client: this.client, logger: this.logger }, cursor);
+		} catch (err) {
+			if (isFullAccessRequired(err)) {
+				// A full-access app was downgraded to "Specific folder only" mid-life: a real
+				// cursor was restored from IDB, but `diff` now 2096s. Force a full scan — the
+				// ensuing fullScan()→getStartCursor() returns "" and the FS drops to a
+				// cold-reconcile from here on (no stuck retry loop).
+				this.logger?.info("pCloud diff became unavailable (folder-scoped); forcing a full scan");
+				return { needsFullScan: true, changedPaths: new Set<string>() };
+			}
+			throw err;
+		}
 	}
 
 	protected downloadFile(fileId: string): Promise<ArrayBuffer> {

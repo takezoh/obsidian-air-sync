@@ -103,6 +103,30 @@ export interface PCloudTokenResponse extends PCloudResult {
 const PCLOUD_AUTH_ERROR_CODES = new Set([1000, 2000, 2012, 2094, 2095, 4000]);
 
 /**
+ * pCloud result code: the called method is only available to a "full access" app.
+ * A "Specific folder only" app gets this for account-wide methods like `diff`
+ * (confirmed against the live API). Callers branch on it to disable the delta feed
+ * and fall back to a full-scan reconcile — see `PCloudFs.getStartCursor`.
+ */
+export const PCLOUD_FULL_ACCESS_REQUIRED = 2096;
+
+/**
+ * A non-auth pCloud logical error (HTTP 200 + `result != 0`). Carries the numeric
+ * `result` so callers can branch on a specific code (e.g. {@link PCLOUD_FULL_ACCESS_REQUIRED})
+ * WITHOUT fragile message matching. Auth-class codes throw {@link AuthError} instead
+ * (see {@link assertOk}).
+ */
+export class PCloudApiError extends Error {
+	constructor(
+		message: string,
+		readonly result: number,
+	) {
+		super(message);
+		this.name = "PCloudApiError";
+	}
+}
+
+/**
  * Assert a pCloud response is logically OK. pCloud returns HTTP 200 even for
  * logical errors, signalling them via `result != 0`, so every call must check.
  *
@@ -120,7 +144,7 @@ export function assertOk(json: unknown, op: string): asserts json is PCloudResul
 	if (PCLOUD_AUTH_ERROR_CODES.has(result)) {
 		throw new AuthError(message, 401);
 	}
-	throw new Error(message);
+	throw new PCloudApiError(message, result);
 }
 
 /** Parse a pCloud `modified`/`created` datetime to epoch ms (0 when absent/invalid). */
