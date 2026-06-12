@@ -13,13 +13,19 @@ resolver in `AbstractMetadataCache` therefore drives it unchanged. Only the wire
 protocol (pCloud's HTTP JSON API) and the auth (long-lived token, no refresh) are
 pCloud-specific.
 
-> **Account-wide access.** Unlike Dropbox and OneDrive (App Folder scope) or
-> Google Drive (`drive.file`), pCloud's OAuth has **no app-folder / restricted
-> scope** — the access token grants access to the whole account. Air Sync only
-> ever reads or writes the `obsidian-air-sync/<vault>` folder it creates, and its
-> account-wide `diff` feed is filtered to that subtree client-side, but nothing at
-> the API-permission layer confines it. This is called out in the README's
-> privacy section.
+> **Access mode & the `diff` feed.** pCloud OAuth apps have an access mode —
+> **Specific folder only** or **Full access** — set on the app (not via an
+> authorize-time scope param). The account-wide `diff` change feed is available
+> **only to Full-access apps**: a Specific-folder-only app gets result `2096`
+> ("only supported for applications with full access", confirmed against the live
+> API). Air Sync's app is **Specific folder only**, so this backend can't use
+> `diff`. `getStartCursor()` catches the `2096` and returns an **empty cursor**;
+> the base treats that as "no checkpoint", so the orchestrator **cold-reconciles
+> every cycle** (a recursive `listfolder` × SyncRecord baseline join — see
+> [Incremental sync](#incremental-sync)). A Full-access app (and the crash-safety
+> contract's fake, which never returns 2096) keeps the incremental `diff` path
+> unchanged. Either way Air Sync only ever addresses the bound vault folder and its
+> descendants.
 
 ## PCloudFs
 
@@ -29,7 +35,7 @@ supplies the pCloud-specific seams and the mutating ops:
 
 | Seam | pCloud API call |
 |---|---|
-| `getStartCursor()` | `diff?last=0` → the latest `diffid` (a baseline that emits no past events) |
+| `getStartCursor()` | `diff?last=0` → the latest `diffid` (Full-access apps). On result `2096` (Specific-folder-only) it returns an **empty cursor** ⇒ no checkpoint ⇒ the orchestrator cold-reconciles every cycle |
 | `fullList()` | recursive `listfolder?recursive=1` of the root, flattened to a flat `PCloudEntry[]` |
 | `assertRootAlive()` | **no-op** — `listfolder` *errors* (result 2005) on a missing root, so the `fullList()` the base just ran already proved the root is alive (an empty result is a genuinely empty folder, not a trashed root) |
 | `fetchChanges(cursor)` | drain the account-wide `diff` feed from the cursor; a `reset` event → `needsFullScan` |
@@ -81,6 +87,18 @@ cache expects, stamping each child's `parentfolderid` from its position in the
 tree and dropping the `contents` array so cached/persisted entries stay flat.
 
 ## Incremental sync
+
+**Folder-scoped apps have no incremental delta.** When `getStartCursor()` returns
+an empty cursor (the Specific-folder-only `2096` case above), `hasCheckpoint()` is
+permanently false, so the orchestrator forces a **cold reconcile every cycle**:
+`fullList()` (one recursive `listfolder`) rebuilt into the cache, then a full join
+against the SyncRecord baselines via `hasRemoteChanged` (mtime/size → opaque
+content hash). This re-derives every add/delete/edit/rename per cycle without a
+server delta — correct (it is the same path used on first sync / after a Rescan),
+at the cost of re-listing the folder's metadata each cycle. The sync engine,
+orchestrator and change-detector are untouched; only the FS reports "no
+checkpoint". `applyPCloudDiff` below is therefore reached **only** for a
+Full-access app (or the crash-safety contract's fake).
 
 `applyPCloudDiff` (`fs/pcloud/incremental-sync.ts`) drains pCloud's account-wide
 `diff` event log — a chronological feed keyed by ascending `diffid`. Entries are
@@ -139,8 +157,10 @@ for a token and redirects back through the existing
 callback is pCloud-specific because it carries `hostname` for **region pinning**
 (stored in `backendData.apiHost`).
 
-- **No scope.** The authorize request sends no `scope` param — pCloud grants
-  account-wide access (see the note at the top).
+- **No scope param; access is app-level.** The authorize request sends no `scope`
+  param — pCloud access is governed by the app's **access mode** (Specific folder
+  only / Full access; see the note at the top), set on the app rather than at
+  authorize time.
 - **Long-lived token, no refresh.** pCloud issues a long-lived access token with
   no refresh token and no expiry, so only the `access` secret is stored (Obsidian
   SecretStorage, keyed per backend type `pcloud`). Expiry is handled reactively:

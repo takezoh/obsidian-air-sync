@@ -89,7 +89,7 @@ Air Sync connects only to the cloud storage you choose, to sync your files:
 
 Your vault data is sent only to your chosen storage provider — never to the auth, redirect, or picker pages.
 
-Air Sync only ever sees the folders it created — never the rest of your Google Drive, Dropbox, or OneDrive. (On OneDrive it uses the App Folder, so it can only access its own folder.) pCloud is the exception: its sign-in grants account-wide access because pCloud offers no app-folder scope. Air Sync only reads and writes file contents inside the `obsidian-air-sync/<your vault>` folder it creates; to detect remote changes it polls pCloud's account-wide change feed — which can surface the names of items changed elsewhere in your account — and ignores everything outside its own folder.
+Air Sync only ever sees the folders it created — never the rest of your Google Drive, Dropbox, OneDrive, or pCloud. (On OneDrive it uses the App Folder, so it can only access its own folder.) On pCloud, Air Sync reads and writes only the `obsidian-air-sync/<your vault>` folder it creates, and detects remote changes by listing that folder — not your whole account.
 
 ## Disclaimer
 
