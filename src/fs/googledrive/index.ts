@@ -1,10 +1,10 @@
 import type { FileEntity } from "../types";
 import { FOLDER_MIME, toRemoteChecksum } from "./types";
-import type { DriveFile } from "./types";
-import type { DriveClient } from "./client";
+import type { GoogleDriveFile } from "./types";
+import type { GoogleDriveClient } from "./client";
 import type { MetadataStore } from "../../store/metadata-store";
 import type { Logger } from "../../logging/logger";
-import { DriveMetadataCache } from "./metadata-cache";
+import { GoogleDriveMetadataCache } from "./metadata-cache";
 import { applyIncrementalChanges } from "./incremental-sync";
 import { INTERNAL_METADATA_PATH } from "../remote-vault-contract";
 import { sha256 } from "../../utils/hash";
@@ -16,26 +16,26 @@ import type { IncrementalChangesResult } from "../caching/remote-fs";
  * IFileSystem implementation backed by Google Drive.
  *
  * The crash-safe cache/checkpoint machinery lives in {@link CachingRemoteFs}; this
- * subclass supplies the Drive-specific seams (changes.list delta, listAllFiles,
+ * subclass supplies the Google Drive-specific seams (changes.list delta, listAllFiles,
  * download/delete by id, root-liveness) and the mutating ops (write/mkdir/rename),
- * whose Drive API calls and multi-parent handling are backend-specific.
+ * whose Google Drive API calls and multi-parent handling are backend-specific.
  */
-export class GoogleDriveFs extends CachingRemoteFs<DriveFile> {
+export class GoogleDriveFs extends CachingRemoteFs<GoogleDriveFile> {
 	readonly name = "googledrive";
-	private client: DriveClient;
+	private client: GoogleDriveClient;
 
-	constructor(client: DriveClient, rootFolderId: string, logger?: Logger, metadataStore?: MetadataStore<DriveFile>) {
-		super(rootFolderId, new DriveMetadataCache(rootFolderId, logger), metadataStore, logger);
+	constructor(client: GoogleDriveClient, rootFolderId: string, logger?: Logger, metadataStore?: MetadataStore<GoogleDriveFile>) {
+		super(rootFolderId, new GoogleDriveMetadataCache(rootFolderId, logger), metadataStore, logger);
 		this.client = client;
 	}
 
-	// ── Drive-specific seams ──
+	// ── Google Drive-specific seams ──
 
 	protected getStartCursor(): Promise<string> {
 		return this.client.getChangesStartToken();
 	}
 
-	protected fullList(): Promise<DriveFile[]> {
+	protected fullList(): Promise<GoogleDriveFile[]> {
 		return this.client.listAllFiles(this.rootFolderId);
 	}
 
@@ -67,7 +67,7 @@ export class GoogleDriveFs extends CachingRemoteFs<DriveFile> {
 		return this.client.deleteFile(fileId);
 	}
 
-	// ── Mutating ops (Drive API + multi-parent handling) ──
+	// ── Mutating ops (Google Drive API + multi-parent handling) ──
 
 	async write(
 		path: string,
@@ -78,10 +78,10 @@ export class GoogleDriveFs extends CachingRemoteFs<DriveFile> {
 		if (path === INTERNAL_METADATA_PATH) {
 			// The backend manages its metadata out-of-band; it must never be pushed
 			// through the sync engine (the orchestrator excludes it too). Fail loudly
-			// rather than fabricating a baseline for a file that never reached Drive.
+			// rather than fabricating a baseline for a file that never reached Google Drive.
 			throw new Error(`Refusing to write reserved backend path: ${path}`);
 		}
-		const { result: driveFile } = await this.withCacheMutex({
+		const { result: googleDriveFile } = await this.withCacheMutex({
 			operationName: "write",
 			resolve: async () => {
 				if (this.cache.isFolder(path)) {
@@ -110,12 +110,12 @@ export class GoogleDriveFs extends CachingRemoteFs<DriveFile> {
 			path,
 			isDirectory: false,
 			size: content.byteLength,
-			mtime: driveFile.modifiedTime
-				? new Date(driveFile.modifiedTime).getTime()
+			mtime: googleDriveFile.modifiedTime
+				? new Date(googleDriveFile.modifiedTime).getTime()
 				: 0,
 			hash,
-			remoteChecksum: toRemoteChecksum(driveFile),
-			backendMeta: { driveId: driveFile.id },
+			remoteChecksum: toRemoteChecksum(googleDriveFile),
+			backendMeta: { googleDriveId: googleDriveFile.id },
 		};
 	}
 
@@ -130,7 +130,7 @@ export class GoogleDriveFs extends CachingRemoteFs<DriveFile> {
 				size: 0,
 				mtime: 0,
 				hash: "",
-				backendMeta: { driveId: folderId },
+				backendMeta: { googleDriveId: folderId },
 			};
 		});
 	}
@@ -142,8 +142,8 @@ export class GoogleDriveFs extends CachingRemoteFs<DriveFile> {
 		await this.withCacheMutex({
 			operationName: "rename",
 			resolve: async () => {
-				const driveFile = this.cache.getFile(oldPath);
-				if (!driveFile)
+				const googleDriveFile = this.cache.getFile(oldPath);
+				if (!googleDriveFile)
 					throw new Error(`File not found: ${oldPath}`);
 				if (this.cache.hasFile(newPath))
 					throw new Error(`Destination already exists: ${newPath}`);
@@ -162,8 +162,8 @@ export class GoogleDriveFs extends CachingRemoteFs<DriveFile> {
 					addParents = newParentPath
 						? await this.ensureFolder(newParentPath)
 						: this.rootFolderId;
-					removeParents = (driveFile.parents && driveFile.parents.length > 0
-						? this.cache.findRelevantParentId(driveFile.parents, { has: (id: string) => this.cache.hasId(id) })
+					removeParents = (googleDriveFile.parents && googleDriveFile.parents.length > 0
+						? this.cache.findRelevantParentId(googleDriveFile.parents, { has: (id: string) => this.cache.hasId(id) })
 						: undefined)
 						?? (oldParentPath
 							? this.cache.getFile(oldParentPath)?.id ?? this.rootFolderId
@@ -171,7 +171,7 @@ export class GoogleDriveFs extends CachingRemoteFs<DriveFile> {
 				}
 
 				return {
-					fileId: driveFile.id,
+					fileId: googleDriveFile.id,
 					metadata,
 					addParents,
 					removeParents,
@@ -228,7 +228,7 @@ export class GoogleDriveFs extends CachingRemoteFs<DriveFile> {
 				throw new Error(`Cannot create directory "${path}": "${currentPath}" is a file`);
 			} else {
 				// Guard against Google Drive's same-name folder creation:
-				// check Drive before creating a potentially duplicate folder
+				// check Google Drive before creating a potentially duplicate folder
 				const existing = await this.client.findChildByName(parentId, part, FOLDER_MIME);
 				if (existing) {
 					this.cache.setFile(currentPath, existing);

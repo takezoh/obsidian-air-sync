@@ -15,7 +15,7 @@ import type { FileEntity, RemoteChecksum } from "../fs/types";
 /**
  * Reduce an entity to a comparable `{algo, value}` content key, or `null` if it
  * has none. A populated `hash` is SHA-256; a remote backend that returns
- * `hash: ""` exposes its `remoteChecksum` (e.g. Drive md5) instead.
+ * `hash: ""` exposes its `remoteChecksum` (e.g. Google Drive md5) instead.
  */
 export function contentKey(e: FileEntity): RemoteChecksum | null {
 	if (e.hash) return { algo: "sha256", value: e.hash };

@@ -73,7 +73,7 @@ After any temperature mode collects entries, `collectChanges()` runs `enrichHash
 
 1. Filters to entries where `local.size === remote.size` and `remote.backendMeta.contentChecksum` is available
 2. Reads local file content and computes MD5 (via `js-md5`)
-3. Compares with Drive's `contentChecksum` (MD5 from the files.list API response)
+3. Compares with Google Drive's `contentChecksum` (MD5 from the files.list API response)
 4. If match: computes SHA-256 from the same content and sets it on both entities so the decision engine returns `match`
 5. If mismatch: leaves hashes empty → decision engine returns `conflict`
 
@@ -108,7 +108,7 @@ Folder renames are tracked separately: a `rename` event whose target is a `TFold
 `hasRemoteChanged(file, record)` -- remote file vs baseline:
 
 1. mtime + size comparison
-2. If mtime/size differ, check `backendMeta.contentChecksum` (e.g. Drive md5Checksum)
+2. If mtime/size differ, check `backendMeta.contentChecksum` (e.g. Google Drive md5Checksum)
 3. Fall back to hash comparison
 4. Conservative: treat as changed if undeterminable
 

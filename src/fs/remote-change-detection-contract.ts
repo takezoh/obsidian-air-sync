@@ -22,7 +22,7 @@ export async function statOrThrow(
  *
  * `remote` is the only Decision-table column whose correctness is backend-specific:
  * `hasRemoteChanged()` consumes `mtime`, `size` and `remoteChecksum`,
- * each of which every backend populates differently (Drive uses md5Checksum and a
+ * each of which every backend populates differently (Google Drive uses md5Checksum and a
  * server-assigned modifiedTime; a mock uses local mtime + sha256). A backend that
  * gets this wrong causes either an infinite re-sync loop (always "changed") or
  * silent staleness (never "changed").
@@ -35,7 +35,7 @@ export async function statOrThrow(
  * but content is identical. Without it a dropped/garbled md5 ships undetected.
  *
  * Note: this exercises the plumbing through mocked transport. Properties needing a
- * live backend (e.g. whether Drive's modifiedTime is truly stable) are out of scope.
+ * live backend (e.g. whether Google Drive's modifiedTime is truly stable) are out of scope.
  */
 export interface RemoteChangeHarness {
 	/** Observe the remote entity for a freshly written file, as the sync cycle would (via stat/list). */

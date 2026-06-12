@@ -1,35 +1,35 @@
 import { describe, it, expect, vi } from "vitest";
-import { DriveMetadataCache } from "./metadata-cache";
-import type { DriveFile } from "./types";
+import { GoogleDriveMetadataCache } from "./metadata-cache";
+import type { GoogleDriveFile } from "./types";
 import { FOLDER_MIME } from "./types";
 
-function makeDriveFile(overrides: Partial<DriveFile> & { id: string; name: string }): DriveFile {
+function makeGoogleDriveFile(overrides: Partial<GoogleDriveFile> & { id: string; name: string }): GoogleDriveFile {
 	return { mimeType: "text/plain", ...overrides };
 }
 
-function makeFolder(overrides: Partial<DriveFile> & { id: string; name: string }): DriveFile {
+function makeFolder(overrides: Partial<GoogleDriveFile> & { id: string; name: string }): GoogleDriveFile {
 	return { ...overrides, mimeType: FOLDER_MIME };
 }
 
 const ROOT = "root-id";
 
-function makeCache(logger?: Parameters<typeof DriveMetadataCache.prototype.applyFileChange>[0] extends DriveFile ? never : unknown) {
-	return new DriveMetadataCache(ROOT, logger as never);
+function makeCache(logger?: Parameters<typeof GoogleDriveMetadataCache.prototype.applyFileChange>[0] extends GoogleDriveFile ? never : unknown) {
+	return new GoogleDriveMetadataCache(ROOT, logger as never);
 }
 
 // ── static parentPath ──
 
-describe("DriveMetadataCache.parentPath", () => {
+describe("GoogleDriveMetadataCache.parentPath", () => {
 	it("returns empty string for root-level items", () => {
-		expect(DriveMetadataCache.parentPath("file.txt")).toBe("");
+		expect(GoogleDriveMetadataCache.parentPath("file.txt")).toBe("");
 	});
 
 	it("returns parent for one-level nesting", () => {
-		expect(DriveMetadataCache.parentPath("docs/file.txt")).toBe("docs");
+		expect(GoogleDriveMetadataCache.parentPath("docs/file.txt")).toBe("docs");
 	});
 
 	it("returns parent for deep nesting", () => {
-		expect(DriveMetadataCache.parentPath("a/b/c/d.txt")).toBe("a/b/c");
+		expect(GoogleDriveMetadataCache.parentPath("a/b/c/d.txt")).toBe("a/b/c");
 	});
 });
 
@@ -53,7 +53,7 @@ describe("empty cache queries", () => {
 describe("setFile", () => {
 	it("adds file to all indices", () => {
 		const cache = makeCache();
-		const file = makeDriveFile({ id: "f1", name: "a.txt" });
+		const file = makeGoogleDriveFile({ id: "f1", name: "a.txt" });
 		cache.setFile("a.txt", file);
 
 		expect(cache.getFile("a.txt")).toBe(file);
@@ -70,8 +70,8 @@ describe("setFile", () => {
 
 	it("overwrites existing entry", () => {
 		const cache = makeCache();
-		cache.setFile("a.txt", makeDriveFile({ id: "f1", name: "a.txt" }));
-		const updated = makeDriveFile({ id: "f2", name: "a.txt" });
+		cache.setFile("a.txt", makeGoogleDriveFile({ id: "f1", name: "a.txt" }));
+		const updated = makeGoogleDriveFile({ id: "f2", name: "a.txt" });
 		cache.setFile("a.txt", updated);
 
 		expect(cache.getFile("a.txt")).toBe(updated);
@@ -82,7 +82,7 @@ describe("setFile", () => {
 	it("maintains children index", () => {
 		const cache = makeCache();
 		cache.setFile("docs", makeFolder({ id: "d1", name: "docs" }));
-		cache.setFile("docs/a.txt", makeDriveFile({ id: "f1", name: "a.txt" }));
+		cache.setFile("docs/a.txt", makeGoogleDriveFile({ id: "f1", name: "a.txt" }));
 
 		const kids = cache.getChildren("docs");
 		expect(kids?.has("docs/a.txt")).toBe(true);
@@ -94,7 +94,7 @@ describe("setFile", () => {
 describe("removeEntry", () => {
 	it("removes from all indices", () => {
 		const cache = makeCache();
-		cache.setFile("a.txt", makeDriveFile({ id: "f1", name: "a.txt" }));
+		cache.setFile("a.txt", makeGoogleDriveFile({ id: "f1", name: "a.txt" }));
 		cache.removeEntry("a.txt");
 
 		expect(cache.hasFile("a.txt")).toBe(false);
@@ -105,7 +105,7 @@ describe("removeEntry", () => {
 	it("cleans up empty children set", () => {
 		const cache = makeCache();
 		cache.setFile("docs", makeFolder({ id: "d1", name: "docs" }));
-		cache.setFile("docs/a.txt", makeDriveFile({ id: "f1", name: "a.txt" }));
+		cache.setFile("docs/a.txt", makeGoogleDriveFile({ id: "f1", name: "a.txt" }));
 		cache.removeEntry("docs/a.txt");
 
 		expect(cache.getChildren("docs")).toBeUndefined();
@@ -123,9 +123,9 @@ describe("bulkLoad", () => {
 	it("loads multiple files with correct indices", () => {
 		const cache = makeCache();
 		cache.bulkLoad([
-			["a.txt", makeDriveFile({ id: "f1", name: "a.txt" })],
+			["a.txt", makeGoogleDriveFile({ id: "f1", name: "a.txt" })],
 			["docs", makeFolder({ id: "d1", name: "docs" })],
-			["docs/b.txt", makeDriveFile({ id: "f2", name: "b.txt" })],
+			["docs/b.txt", makeGoogleDriveFile({ id: "f2", name: "b.txt" })],
 		]);
 
 		expect(cache.size).toBe(3);
@@ -139,7 +139,7 @@ describe("bulkLoad", () => {
 describe("clear", () => {
 	it("empties all data structures", () => {
 		const cache = makeCache();
-		cache.setFile("a.txt", makeDriveFile({ id: "f1", name: "a.txt" }));
+		cache.setFile("a.txt", makeGoogleDriveFile({ id: "f1", name: "a.txt" }));
 		cache.clear();
 
 		expect(cache.size).toBe(0);
@@ -154,7 +154,7 @@ describe("exportRecords", () => {
 	it("exports with isFolder flag", () => {
 		const cache = makeCache();
 		cache.setFile("docs", makeFolder({ id: "d1", name: "docs" }));
-		cache.setFile("a.txt", makeDriveFile({ id: "f1", name: "a.txt" }));
+		cache.setFile("a.txt", makeGoogleDriveFile({ id: "f1", name: "a.txt" }));
 
 		const records = cache.exportRecords();
 		expect(records).toHaveLength(2);
@@ -170,15 +170,15 @@ describe("exportRecords", () => {
 describe("collectDescendants", () => {
 	it("returns empty for leaf node", () => {
 		const cache = makeCache();
-		cache.setFile("a.txt", makeDriveFile({ id: "f1", name: "a.txt" }));
+		cache.setFile("a.txt", makeGoogleDriveFile({ id: "f1", name: "a.txt" }));
 		expect(cache.collectDescendants("a.txt")).toEqual([]);
 	});
 
 	it("returns direct children", () => {
 		const cache = makeCache();
 		cache.setFile("docs", makeFolder({ id: "d1", name: "docs" }));
-		cache.setFile("docs/a.txt", makeDriveFile({ id: "f1", name: "a.txt" }));
-		cache.setFile("docs/b.txt", makeDriveFile({ id: "f2", name: "b.txt" }));
+		cache.setFile("docs/a.txt", makeGoogleDriveFile({ id: "f1", name: "a.txt" }));
+		cache.setFile("docs/b.txt", makeGoogleDriveFile({ id: "f2", name: "b.txt" }));
 
 		const desc = cache.collectDescendants("docs");
 		expect(desc.sort()).toEqual(["docs/a.txt", "docs/b.txt"]);
@@ -188,7 +188,7 @@ describe("collectDescendants", () => {
 		const cache = makeCache();
 		cache.setFile("a", makeFolder({ id: "d1", name: "a" }));
 		cache.setFile("a/b", makeFolder({ id: "d2", name: "b" }));
-		cache.setFile("a/b/c.txt", makeDriveFile({ id: "f1", name: "c.txt" }));
+		cache.setFile("a/b/c.txt", makeGoogleDriveFile({ id: "f1", name: "c.txt" }));
 
 		const desc = cache.collectDescendants("a");
 		expect(desc.sort()).toEqual(["a/b", "a/b/c.txt"]);
@@ -227,25 +227,25 @@ describe("findRelevantParentId", () => {
 describe("resolvePathFromCache", () => {
 	it("resolves root-level file", () => {
 		const cache = makeCache();
-		const file = makeDriveFile({ id: "f1", name: "a.txt", parents: [ROOT] });
+		const file = makeGoogleDriveFile({ id: "f1", name: "a.txt", parents: [ROOT] });
 		expect(cache.resolvePathFromCache(file)).toBe("a.txt");
 	});
 
 	it("resolves nested file", () => {
 		const cache = makeCache();
 		cache.setFile("docs", makeFolder({ id: "d1", name: "docs" }));
-		const file = makeDriveFile({ id: "f1", name: "a.txt", parents: ["d1"] });
+		const file = makeGoogleDriveFile({ id: "f1", name: "a.txt", parents: ["d1"] });
 		expect(cache.resolvePathFromCache(file)).toBe("docs/a.txt");
 	});
 
 	it("returns null for empty parents", () => {
 		const cache = makeCache();
-		expect(cache.resolvePathFromCache(makeDriveFile({ id: "f1", name: "a.txt", parents: [] }))).toBeNull();
+		expect(cache.resolvePathFromCache(makeGoogleDriveFile({ id: "f1", name: "a.txt", parents: [] }))).toBeNull();
 	});
 
 	it("returns null for unknown parent", () => {
 		const cache = makeCache();
-		expect(cache.resolvePathFromCache(makeDriveFile({ id: "f1", name: "a.txt", parents: ["unknown"] }))).toBeNull();
+		expect(cache.resolvePathFromCache(makeGoogleDriveFile({ id: "f1", name: "a.txt", parents: ["unknown"] }))).toBeNull();
 	});
 });
 
@@ -255,7 +255,7 @@ describe("resolveFilePathCached", () => {
 	it("memoizes resolved paths", () => {
 		const cache = makeCache();
 		const parent = makeFolder({ id: "d1", name: "docs", parents: [ROOT] });
-		const child = makeDriveFile({ id: "f1", name: "a.txt", parents: ["d1"] });
+		const child = makeGoogleDriveFile({ id: "f1", name: "a.txt", parents: ["d1"] });
 		const byId = new Map([["d1", parent], ["f1", child]]);
 		const resolved = new Map<string, string>();
 
@@ -266,7 +266,7 @@ describe("resolveFilePathCached", () => {
 
 	it("detects circular references (A→B→A)", () => {
 		const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
-		const cache = new DriveMetadataCache(ROOT, logger as never);
+		const cache = new GoogleDriveMetadataCache(ROOT, logger as never);
 
 		const a = makeFolder({ id: "a", name: "folderA", parents: ["b"] });
 		const b = makeFolder({ id: "b", name: "folderB", parents: ["a"] });
@@ -282,7 +282,7 @@ describe("resolveFilePathCached", () => {
 
 	it("detects self-referencing parent", () => {
 		const cache = makeCache();
-		const file = makeDriveFile({ id: "x", name: "self", parents: ["x"] });
+		const file = makeGoogleDriveFile({ id: "x", name: "self", parents: ["x"] });
 		const byId = new Map([["x", file]]);
 
 		const path = cache.resolveFilePathCached(file, byId, new Map(), new Set());
@@ -297,7 +297,7 @@ describe("buildFromFiles", () => {
 		const cache = makeCache();
 		cache.buildFromFiles([
 			makeFolder({ id: "d1", name: "docs", parents: [ROOT] }),
-			makeDriveFile({ id: "f1", name: "a.txt", parents: ["d1"] }),
+			makeGoogleDriveFile({ id: "f1", name: "a.txt", parents: ["d1"] }),
 		]);
 
 		expect(cache.size).toBe(2);
@@ -307,7 +307,7 @@ describe("buildFromFiles", () => {
 
 	it("handles circular references gracefully", () => {
 		const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
-		const cache = new DriveMetadataCache(ROOT, logger as never);
+		const cache = new GoogleDriveMetadataCache(ROOT, logger as never);
 
 		cache.buildFromFiles([
 			makeFolder({ id: "a", name: "folderA", parents: ["b"] }),
@@ -324,7 +324,7 @@ describe("rewriteChildPaths", () => {
 	it("rewrites direct children", () => {
 		const cache = makeCache();
 		cache.setFile("old", makeFolder({ id: "d1", name: "old" }));
-		cache.setFile("old/a.txt", makeDriveFile({ id: "f1", name: "a.txt" }));
+		cache.setFile("old/a.txt", makeGoogleDriveFile({ id: "f1", name: "a.txt" }));
 
 		cache.rewriteChildPaths("old", "new");
 
@@ -337,7 +337,7 @@ describe("rewriteChildPaths", () => {
 		const cache = makeCache();
 		cache.setFile("top", makeFolder({ id: "d1", name: "top" }));
 		cache.setFile("top/mid", makeFolder({ id: "d2", name: "mid" }));
-		cache.setFile("top/mid/leaf.txt", makeDriveFile({ id: "f1", name: "leaf.txt" }));
+		cache.setFile("top/mid/leaf.txt", makeGoogleDriveFile({ id: "f1", name: "leaf.txt" }));
 
 		cache.rewriteChildPaths("top", "renamed");
 
@@ -355,7 +355,7 @@ describe("rewriteChildPaths", () => {
 describe("removeTree", () => {
 	it("removes leaf entry", () => {
 		const cache = makeCache();
-		cache.setFile("a.txt", makeDriveFile({ id: "f1", name: "a.txt" }));
+		cache.setFile("a.txt", makeGoogleDriveFile({ id: "f1", name: "a.txt" }));
 		cache.removeTree("a.txt");
 
 		expect(cache.hasFile("a.txt")).toBe(false);
@@ -366,8 +366,8 @@ describe("removeTree", () => {
 		const cache = makeCache();
 		cache.setFile("a", makeFolder({ id: "d1", name: "a" }));
 		cache.setFile("a/b", makeFolder({ id: "d2", name: "b" }));
-		cache.setFile("a/b/c.txt", makeDriveFile({ id: "f1", name: "c.txt" }));
-		cache.setFile("a/d.txt", makeDriveFile({ id: "f2", name: "d.txt" }));
+		cache.setFile("a/b/c.txt", makeGoogleDriveFile({ id: "f1", name: "c.txt" }));
+		cache.setFile("a/d.txt", makeGoogleDriveFile({ id: "f2", name: "d.txt" }));
 
 		cache.removeTree("a");
 
@@ -386,7 +386,7 @@ describe("removeTree", () => {
 describe("toEntity", () => {
 	it("converts file to entity", () => {
 		const cache = makeCache();
-		const file = makeDriveFile({ id: "f1", name: "a.txt", modifiedTime: "2024-01-01T00:00:00.000Z", size: "100", md5Checksum: "abc" });
+		const file = makeGoogleDriveFile({ id: "f1", name: "a.txt", modifiedTime: "2024-01-01T00:00:00.000Z", size: "100", md5Checksum: "abc" });
 		cache.setFile("a.txt", file);
 
 		const entity = cache.toEntity("a.txt", file);
@@ -396,7 +396,7 @@ describe("toEntity", () => {
 		expect(entity.mtime).toBe(new Date("2024-01-01T00:00:00.000Z").getTime());
 		expect(entity.hash).toBe("");
 		expect(entity.remoteChecksum).toEqual({ algo: "md5", value: "abc" });
-		expect(entity.backendMeta?.driveId).toBe("f1");
+		expect(entity.backendMeta?.googleDriveId).toBe("f1");
 	});
 
 	it("converts folder to entity", () => {
@@ -411,7 +411,7 @@ describe("toEntity", () => {
 
 	it("handles missing modifiedTime, size, md5", () => {
 		const cache = makeCache();
-		const file = makeDriveFile({ id: "f1", name: "a.txt" });
+		const file = makeGoogleDriveFile({ id: "f1", name: "a.txt" });
 		cache.setFile("a.txt", file);
 
 		const entity = cache.toEntity("a.txt", file);
@@ -426,7 +426,7 @@ describe("applyFileChange", () => {
 	it("adds new file", () => {
 		const cache = makeCache();
 		cache.setFile("docs", makeFolder({ id: "d1", name: "docs", parents: [ROOT] }));
-		const file = makeDriveFile({ id: "f1", name: "a.txt", parents: ["d1"] });
+		const file = makeGoogleDriveFile({ id: "f1", name: "a.txt", parents: ["d1"] });
 
 		cache.applyFileChange(file);
 		expect(cache.getFile("docs/a.txt")).toBe(file);
@@ -434,20 +434,20 @@ describe("applyFileChange", () => {
 
 	it("updates metadata for existing file", () => {
 		const cache = makeCache();
-		const file = makeDriveFile({ id: "f1", name: "a.txt", parents: [ROOT], size: "100" });
+		const file = makeGoogleDriveFile({ id: "f1", name: "a.txt", parents: [ROOT], size: "100" });
 		cache.setFile("a.txt", file);
 
-		const updated = makeDriveFile({ id: "f1", name: "a.txt", parents: [ROOT], size: "200" });
+		const updated = makeGoogleDriveFile({ id: "f1", name: "a.txt", parents: [ROOT], size: "200" });
 		cache.applyFileChange(updated);
 		expect(cache.getFile("a.txt")?.size).toBe("200");
 	});
 
 	it("handles rename (same parent, different name)", () => {
 		const cache = makeCache();
-		const file = makeDriveFile({ id: "f1", name: "old.txt", parents: [ROOT] });
+		const file = makeGoogleDriveFile({ id: "f1", name: "old.txt", parents: [ROOT] });
 		cache.setFile("old.txt", file);
 
-		const renamed = makeDriveFile({ id: "f1", name: "new.txt", parents: [ROOT] });
+		const renamed = makeGoogleDriveFile({ id: "f1", name: "new.txt", parents: [ROOT] });
 		cache.applyFileChange(renamed);
 
 		expect(cache.hasFile("old.txt")).toBe(false);
@@ -459,10 +459,10 @@ describe("applyFileChange", () => {
 		const cache = makeCache();
 		cache.setFile("docs", makeFolder({ id: "d1", name: "docs", parents: [ROOT] }));
 		cache.setFile("archive", makeFolder({ id: "d2", name: "archive", parents: [ROOT] }));
-		const file = makeDriveFile({ id: "f1", name: "a.txt", parents: ["d1"] });
+		const file = makeGoogleDriveFile({ id: "f1", name: "a.txt", parents: ["d1"] });
 		cache.setFile("docs/a.txt", file);
 
-		const moved = makeDriveFile({ id: "f1", name: "a.txt", parents: ["d2"] });
+		const moved = makeGoogleDriveFile({ id: "f1", name: "a.txt", parents: ["d2"] });
 		cache.applyFileChange(moved);
 
 		expect(cache.hasFile("docs/a.txt")).toBe(false);
@@ -472,7 +472,7 @@ describe("applyFileChange", () => {
 	it("rewrites child paths on folder rename", () => {
 		const cache = makeCache();
 		cache.setFile("old", makeFolder({ id: "d1", name: "old", parents: [ROOT] }));
-		cache.setFile("old/a.txt", makeDriveFile({ id: "f1", name: "a.txt", parents: ["d1"] }));
+		cache.setFile("old/a.txt", makeGoogleDriveFile({ id: "f1", name: "a.txt", parents: ["d1"] }));
 
 		const renamed = makeFolder({ id: "d1", name: "new", parents: [ROOT] });
 		cache.applyFileChange(renamed);
@@ -485,10 +485,10 @@ describe("applyFileChange", () => {
 
 	it("removes stale entry when path cannot be resolved", () => {
 		const cache = makeCache();
-		const file = makeDriveFile({ id: "f1", name: "a.txt", parents: [ROOT] });
+		const file = makeGoogleDriveFile({ id: "f1", name: "a.txt", parents: [ROOT] });
 		cache.setFile("a.txt", file);
 
-		const unresolvable = makeDriveFile({ id: "f1", name: "a.txt", parents: ["unknown"] });
+		const unresolvable = makeGoogleDriveFile({ id: "f1", name: "a.txt", parents: ["unknown"] });
 		cache.applyFileChange(unresolvable);
 
 		expect(cache.hasFile("a.txt")).toBe(false);
@@ -500,9 +500,9 @@ describe("applyFileChange", () => {
 		// A folder "data" with a child, then a delta upserts a FILE at "data" with a
 		// different id and NO preceding `deleted` tombstone for the old folder.
 		cache.setFile("data", makeFolder({ id: "d1", name: "data", parents: [ROOT] }));
-		cache.setFile("data/child.txt", makeDriveFile({ id: "c1", name: "child.txt", parents: ["d1"] }));
+		cache.setFile("data/child.txt", makeGoogleDriveFile({ id: "c1", name: "child.txt", parents: ["d1"] }));
 
-		const replacement = makeDriveFile({ id: "f9", name: "data", parents: [ROOT] });
+		const replacement = makeGoogleDriveFile({ id: "f9", name: "data", parents: [ROOT] });
 		cache.applyFileChange(replacement);
 
 		// The new file is installed and the old folder's descendant is gone (not orphaned).
@@ -516,11 +516,11 @@ describe("applyFileChange", () => {
 
 	it("clears the displaced id when a file is replaced by a different file at the same path", () => {
 		const cache = makeCache();
-		// Drive allows two files with the same name (path) but different ids; a delta
+		// Google Drive allows two files with the same name (path) but different ids; a delta
 		// for the second displaces the first in the cache.
-		cache.setFile("a.txt", makeDriveFile({ id: "old", name: "a.txt", parents: [ROOT] }));
+		cache.setFile("a.txt", makeGoogleDriveFile({ id: "old", name: "a.txt", parents: [ROOT] }));
 
-		const replacement = makeDriveFile({ id: "new", name: "a.txt", parents: [ROOT] });
+		const replacement = makeGoogleDriveFile({ id: "new", name: "a.txt", parents: [ROOT] });
 		cache.applyFileChange(replacement);
 
 		expect(cache.getFile("a.txt")).toBe(replacement);
@@ -533,9 +533,9 @@ describe("applyFileChange", () => {
 describe("applyFileChangeDetectMove", () => {
 	it("detects file rename (same parent, different name)", () => {
 		const cache = makeCache();
-		cache.setFile("old.txt", makeDriveFile({ id: "f1", name: "old.txt", parents: [ROOT] }));
+		cache.setFile("old.txt", makeGoogleDriveFile({ id: "f1", name: "old.txt", parents: [ROOT] }));
 
-		const renamed = makeDriveFile({ id: "f1", name: "new.txt", parents: [ROOT] });
+		const renamed = makeGoogleDriveFile({ id: "f1", name: "new.txt", parents: [ROOT] });
 		const result = cache.applyFileChangeDetectMove(renamed);
 
 		expect(result.oldPath).toBe("old.txt");
@@ -548,9 +548,9 @@ describe("applyFileChangeDetectMove", () => {
 		const cache = makeCache();
 		cache.setFile("docs", makeFolder({ id: "d1", name: "docs", parents: [ROOT] }));
 		cache.setFile("archive", makeFolder({ id: "d2", name: "archive", parents: [ROOT] }));
-		cache.setFile("docs/a.txt", makeDriveFile({ id: "f1", name: "a.txt", parents: ["d1"] }));
+		cache.setFile("docs/a.txt", makeGoogleDriveFile({ id: "f1", name: "a.txt", parents: ["d1"] }));
 
-		const moved = makeDriveFile({ id: "f1", name: "a.txt", parents: ["d2"] });
+		const moved = makeGoogleDriveFile({ id: "f1", name: "a.txt", parents: ["d2"] });
 		const result = cache.applyFileChangeDetectMove(moved);
 
 		expect(result.oldPath).toBe("docs/a.txt");
@@ -561,8 +561,8 @@ describe("applyFileChangeDetectMove", () => {
 	it("detects folder move with descendants", () => {
 		const cache = makeCache();
 		cache.setFile("src", makeFolder({ id: "d1", name: "src", parents: [ROOT] }));
-		cache.setFile("src/a.txt", makeDriveFile({ id: "f1", name: "a.txt", parents: ["d1"] }));
-		cache.setFile("src/b.txt", makeDriveFile({ id: "f2", name: "b.txt", parents: ["d1"] }));
+		cache.setFile("src/a.txt", makeGoogleDriveFile({ id: "f1", name: "a.txt", parents: ["d1"] }));
+		cache.setFile("src/b.txt", makeGoogleDriveFile({ id: "f2", name: "b.txt", parents: ["d1"] }));
 		cache.setFile("lib", makeFolder({ id: "d2", name: "lib", parents: [ROOT] }));
 
 		const moved = makeFolder({ id: "d1", name: "src", parents: ["d2"] });
@@ -578,7 +578,7 @@ describe("applyFileChangeDetectMove", () => {
 	it("returns undefined oldPath for new file", () => {
 		const cache = makeCache();
 
-		const file = makeDriveFile({ id: "f1", name: "new.txt", parents: [ROOT] });
+		const file = makeGoogleDriveFile({ id: "f1", name: "new.txt", parents: [ROOT] });
 		const result = cache.applyFileChangeDetectMove(file);
 
 		expect(result.oldPath).toBeUndefined();
@@ -589,9 +589,9 @@ describe("applyFileChangeDetectMove", () => {
 
 	it("returns undefined newPath when moved outside sync root", () => {
 		const cache = makeCache();
-		cache.setFile("a.txt", makeDriveFile({ id: "f1", name: "a.txt", parents: [ROOT] }));
+		cache.setFile("a.txt", makeGoogleDriveFile({ id: "f1", name: "a.txt", parents: [ROOT] }));
 
-		const movedOut = makeDriveFile({ id: "f1", name: "a.txt", parents: ["unknown"] });
+		const movedOut = makeGoogleDriveFile({ id: "f1", name: "a.txt", parents: ["unknown"] });
 		const result = cache.applyFileChangeDetectMove(movedOut);
 
 		expect(result.oldPath).toBe("a.txt");

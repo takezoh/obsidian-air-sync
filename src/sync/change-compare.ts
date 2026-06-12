@@ -60,7 +60,7 @@ export function hasRemoteChanged(file: FileEntity, record: SyncRecord): boolean 
 		}
 		return true;
 	}
-	// Use backend-provided checksum when comparable (e.g. Drive md5, pCloud content hash)
+	// Use backend-provided checksum when comparable (e.g. Google Drive md5, pCloud content hash)
 	if (checksumChanged !== undefined) {
 		return checksumChanged;
 	}

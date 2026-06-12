@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { applyIncrementalChanges } from "./incremental-sync";
 import type { IncrementalSyncContext } from "./incremental-sync";
-import type { DriveFile } from "./types";
+import type { GoogleDriveFile } from "./types";
 import { FOLDER_MIME } from "./types";
-import type { DriveMetadataCache, FileChangeResult } from "./metadata-cache";
-import type { DriveClient } from "./client";
+import type { GoogleDriveMetadataCache, FileChangeResult } from "./metadata-cache";
+import type { GoogleDriveClient } from "./client";
 
 vi.mock("obsidian");
 
@@ -19,8 +19,8 @@ describe("applyIncrementalChanges", () => {
 	let applyFileChangeDetectMove: ReturnType<typeof vi.fn>;
 	let loggerInfo: ReturnType<typeof vi.fn>;
 	let loggerWarn: ReturnType<typeof vi.fn>;
-	let mockClient: DriveClient;
-	let mockCache: DriveMetadataCache;
+	let mockClient: GoogleDriveClient;
+	let mockCache: GoogleDriveMetadataCache;
 	let ctx: IncrementalSyncContext;
 
 	beforeEach(() => {
@@ -31,19 +31,19 @@ describe("applyIncrementalChanges", () => {
 		applyFileChange = vi.fn();
 		isFolder = vi.fn().mockReturnValue(false);
 		getFile = vi.fn().mockReturnValue(undefined);
-		applyFileChangeDetectMove = vi.fn<(file: DriveFile) => FileChangeResult>().mockImplementation((file) => {
+		applyFileChangeDetectMove = vi.fn<(file: GoogleDriveFile) => FileChangeResult>().mockImplementation((file) => {
 			const oldPath = (getPathById as (id: string) => string | undefined)(file.id);
 			const wasFolderVal = oldPath ? (isFolder as (p: string) => boolean)(oldPath) : false;
 			const oldDescendants = (oldPath && wasFolderVal)
 				? (collectDescendants as (p: string) => string[])(oldPath) : [];
-			(applyFileChange as (f: DriveFile) => void)(file);
+			(applyFileChange as (f: GoogleDriveFile) => void)(file);
 			const newPath = (getPathById as (id: string) => string | undefined)(file.id);
 			return { oldPath, newPath, wasFolder: wasFolderVal, oldDescendants };
 		});
 		loggerInfo = vi.fn();
 		loggerWarn = vi.fn();
 
-		mockClient = { listChanges } as unknown as DriveClient;
+		mockClient = { listChanges } as unknown as GoogleDriveClient;
 		mockCache = {
 			getPathById,
 			collectDescendants,
@@ -52,7 +52,7 @@ describe("applyIncrementalChanges", () => {
 			applyFileChangeDetectMove,
 			isFolder,
 			getFile,
-		} as unknown as DriveMetadataCache;
+		} as unknown as GoogleDriveMetadataCache;
 
 		ctx = {
 			client: mockClient,
@@ -67,7 +67,7 @@ describe("applyIncrementalChanges", () => {
 	});
 
 	it("applies incremental changes successfully", async () => {
-		const mockFile: DriveFile = {
+		const mockFile: GoogleDriveFile = {
 			id: "file-1",
 			name: "test.txt",
 			mimeType: "text/plain",
@@ -142,7 +142,7 @@ describe("applyIncrementalChanges", () => {
 	});
 
 	it("reports old path as deleted when file is moved/renamed", async () => {
-		const mockFile: DriveFile = {
+		const mockFile: GoogleDriveFile = {
 			id: "file-1",
 			name: "renamed.txt",
 			mimeType: "text/plain",
@@ -174,7 +174,7 @@ describe("applyIncrementalChanges", () => {
 	});
 
 	it("reports old descendant paths as deleted when folder is moved", async () => {
-		const mockFolder: DriveFile = {
+		const mockFolder: GoogleDriveFile = {
 			id: "folder-1",
 			name: "moved-folder",
 			mimeType: FOLDER_MIME,
@@ -198,7 +198,7 @@ describe("applyIncrementalChanges", () => {
 			.mockReturnValueOnce(["old/folder/child.txt"])
 			.mockReturnValueOnce(["new/moved-folder/child.txt"]);
 
-		const childFile: DriveFile = {
+		const childFile: GoogleDriveFile = {
 			id: "child-1",
 			name: "child.txt",
 			mimeType: "text/plain",
@@ -234,7 +234,7 @@ describe("applyIncrementalChanges", () => {
 	});
 
 	it("reports old path as deleted when file is moved outside sync root", async () => {
-		const mockFile: DriveFile = {
+		const mockFile: GoogleDriveFile = {
 			id: "file-1",
 			name: "moved-out.txt",
 			mimeType: "text/plain",

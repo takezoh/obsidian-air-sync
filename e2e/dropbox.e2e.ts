@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe } from "vitest";
 import { DROPBOX_CLIENT_ID, DropboxAuth } from "../src/fs/dropbox/auth";
-import { DropboxClient } from "../src/fs/dropbox/client";
 import { DropboxFs } from "../src/fs/dropbox/index";
 import { runIFileSystemContract } from "../src/fs/ifilesystem-contract";
+import { RetryingDropboxClient } from "./helpers/dropbox-retry-client";
 import { readCreds } from "./helpers/env";
 import {
 	cleanupDropboxParent,
@@ -36,8 +36,9 @@ if (!creds) {
 	// Inject a node-safe sleep: the client's default sleep uses window.setTimeout,
 	// which is undefined under vitest's node environment — a 429 backoff (the very
 	// reason this suite runs fileParallelism:false) would otherwise crash with
-	// "window is not defined" instead of retrying.
-	const client = new DropboxClient(
+	// "window is not defined" instead of retrying. RetryingDropboxClient adds a
+	// retry for the fresh-folder-id propagation transient (see its docstring).
+	const client = new RetryingDropboxClient(
 		(force) => auth.getAccessToken(force),
 		undefined,
 		(ms) => new Promise((r) => setTimeout(r, ms)),

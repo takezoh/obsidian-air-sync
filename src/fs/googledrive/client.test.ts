@@ -1,20 +1,20 @@
 import { describe, it, expect, vi } from "vitest";
 import { spyRequestUrl, mockRes } from "./test-helpers";
-import type { DriveClientInternal } from "./test-helpers";
+import type { GoogleDriveClientInternal } from "./test-helpers";
 
 vi.mock("obsidian");
 
-describe("DriveClient error wrapping", () => {
+describe("GoogleDriveClient error wrapping", () => {
 	it("wraps errors with operation name", async () => {
 		const mockRequestUrl = (await spyRequestUrl()).mockRejectedValue(
 			new Error("Request failed")
 		);
 
-		const { DriveClient } = await import("./client");
+		const { GoogleDriveClient } = await import("./client");
 
-		const client = new DriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
 		await expect(client.listFiles("folder-id")).rejects.toThrow(
-			"Drive API listFiles failed: Request failed"
+			"Google Drive API listFiles failed: Request failed"
 		);
 
 		mockRequestUrl.mockRestore();
@@ -27,15 +27,15 @@ describe("DriveClient error wrapping", () => {
 		});
 		const mockRequestUrl = (await spyRequestUrl()).mockRejectedValue(originalError);
 
-		const { DriveClient } = await import("./client");
+		const { GoogleDriveClient } = await import("./client");
 
-		const client = new DriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
 		try {
 			await client.downloadFile("file-id");
 			expect.fail("should have thrown");
 		} catch (err) {
 			expect(err).toBeInstanceOf(Error);
-			expect((err as Error).message).toContain("Drive API downloadFile failed");
+			expect((err as Error).message).toContain("Google Drive API downloadFile failed");
 			const errObj = err as Record<string, unknown>;
 			expect(errObj.status).toBe(403);
 			expect(errObj.headers).toEqual({ "retry-after": "30" });
@@ -45,15 +45,15 @@ describe("DriveClient error wrapping", () => {
 	});
 });
 
-describe("DriveClient.uploadFile modifiedTime default", () => {
+describe("GoogleDriveClient.uploadFile modifiedTime default", () => {
 	it("does not send epoch (1970) when modifiedTime is omitted", async () => {
 		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(
 			() => Promise.resolve(mockRes({ id: "f1", name: "test.txt", mimeType: "text/plain" }))
 		);
 
-		const { DriveClient } = await import("./client");
+		const { GoogleDriveClient } = await import("./client");
 
-		const client = new DriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
 		const content = new TextEncoder().encode("hello").buffer.slice(0);
 
 		// Call without modifiedTime parameter
@@ -71,9 +71,9 @@ describe("DriveClient.uploadFile modifiedTime default", () => {
 	});
 });
 
-describe("DriveClient.listAllFiles parallelization", () => {
+describe("GoogleDriveClient.listAllFiles parallelization", () => {
 	it("fetches nested folders concurrently via AsyncPool(3)", async () => {
-		const { DriveClient } = await import("./client");
+		const { GoogleDriveClient } = await import("./client");
 
 		// Track concurrent calls to detect parallelism
 		let concurrent = 0;
@@ -110,7 +110,7 @@ describe("DriveClient.listAllFiles parallelization", () => {
 			});
 		});
 
-		const client = new DriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
 		const result = await client.listAllFiles("root");
 
 		// 3 folders + 3 files = 6 total
@@ -123,7 +123,7 @@ describe("DriveClient.listAllFiles parallelization", () => {
 	});
 
 	it("collects all files from deeply nested structure", async () => {
-		const { DriveClient } = await import("./client");
+		const { GoogleDriveClient } = await import("./client");
 
 		const mockRequestUrl = (await spyRequestUrl()).mockImplementation((req) => {
 			const url = typeof req === "string" ? req : (req as { url: string }).url;
@@ -142,7 +142,7 @@ describe("DriveClient.listAllFiles parallelization", () => {
 			return Promise.resolve(mockRes({ files }));
 		});
 
-		const client = new DriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
 		const result = await client.listAllFiles("root");
 
 		expect(result).toHaveLength(3);
@@ -154,7 +154,7 @@ describe("DriveClient.listAllFiles parallelization", () => {
 	});
 
 	it("propagates errors from parallel folder fetches", async () => {
-		const { DriveClient } = await import("./client");
+		const { GoogleDriveClient } = await import("./client");
 
 		const mockRequestUrl = (await spyRequestUrl()).mockImplementation((req) => {
 			const url = typeof req === "string" ? req : (req as { url: string }).url;
@@ -175,14 +175,14 @@ describe("DriveClient.listAllFiles parallelization", () => {
 			return Promise.resolve(mockRes({ files: [] }));
 		});
 
-		const client = new DriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
 		await expect(client.listAllFiles("root")).rejects.toThrow();
 
 		mockRequestUrl.mockRestore();
 	});
 
 	it("throws (does not loop forever) when the server never clears nextPageToken", async () => {
-		const { DriveClient, LIST_PAGE_CAP } = await import("./client");
+		const { GoogleDriveClient, LIST_PAGE_CAP } = await import("./client");
 
 		let calls = 0;
 		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(() => {
@@ -191,7 +191,7 @@ describe("DriveClient.listAllFiles parallelization", () => {
 			return Promise.resolve(mockRes({ files: [], nextPageToken: "more" }));
 		});
 
-		const client = new DriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
 		await expect(client.listAllFiles("root")).rejects.toThrow(/pagination exceeded/);
 		// Bounded at the cap rather than spinning forever.
 		expect(calls).toBe(LIST_PAGE_CAP);
@@ -200,9 +200,9 @@ describe("DriveClient.listAllFiles parallelization", () => {
 	});
 });
 
-describe("DriveClient resumable upload", () => {
+describe("GoogleDriveClient resumable upload", () => {
 	it("uploads large file via resumable session (init + single PUT)", async () => {
-		const { DriveClient } = await import("./client");
+		const { GoogleDriveClient } = await import("./client");
 
 		let callCount = 0;
 		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(() => {
@@ -218,7 +218,7 @@ describe("DriveClient resumable upload", () => {
 			}));
 		});
 
-		const client = new DriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
 		const content = new ArrayBuffer(12 * 1024 * 1024);
 		const result = await client.uploadFile(
 			"large.bin",
@@ -236,7 +236,7 @@ describe("DriveClient resumable upload", () => {
 	});
 
 	it("caches resume URL on upload failure and resumes on retry", async () => {
-		const { DriveClient } = await import("./client");
+		const { GoogleDriveClient } = await import("./client");
 
 		const fileSize = 6 * 1024 * 1024;
 		const content = new ArrayBuffer(fileSize);
@@ -269,7 +269,7 @@ describe("DriveClient resumable upload", () => {
 			return Promise.reject(new Error("Unexpected call"));
 		});
 
-		const client = new DriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
 
 		// First attempt: should fail and cache the resume URL
 		await expect(
@@ -277,7 +277,7 @@ describe("DriveClient resumable upload", () => {
 		).rejects.toThrow();
 
 		// Verify cache was populated
-		const cache = (client as unknown as DriveClientInternal).resumableUploader.resumeCache;
+		const cache = (client as unknown as GoogleDriveClientInternal).resumableUploader.resumeCache;
 		expect(cache.size).toBe(1);
 		expect(cache.get("parent/file.bin")?.uploadUrl).toBe("https://upload.example.com/session-abc");
 
@@ -293,7 +293,7 @@ describe("DriveClient resumable upload", () => {
 	});
 
 	it("falls back to fresh upload when status query fails", async () => {
-		const { DriveClient } = await import("./client");
+		const { GoogleDriveClient } = await import("./client");
 
 		const fileSize = 6 * 1024 * 1024;
 		const content = new ArrayBuffer(fileSize);
@@ -323,7 +323,7 @@ describe("DriveClient resumable upload", () => {
 			return Promise.reject(new Error("Unexpected call"));
 		});
 
-		const client = new DriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
 
 		// First attempt fails
 		await expect(client.uploadFile("file.bin", "parent", content)).rejects.toThrow();
@@ -337,7 +337,7 @@ describe("DriveClient resumable upload", () => {
 	});
 
 	it("returns completed file when status query returns 200", async () => {
-		const { DriveClient } = await import("./client");
+		const { GoogleDriveClient } = await import("./client");
 
 		const fileSize = 6 * 1024 * 1024;
 		const content = new ArrayBuffer(fileSize);
@@ -361,7 +361,7 @@ describe("DriveClient resumable upload", () => {
 			return Promise.reject(new Error("Unexpected call"));
 		});
 
-		const client = new DriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
 
 		await expect(client.uploadFile("file.bin", "parent", content)).rejects.toThrow();
 
@@ -373,7 +373,7 @@ describe("DriveClient resumable upload", () => {
 	});
 
 	it("ignores expired cache entries", async () => {
-		const { DriveClient } = await import("./client");
+		const { GoogleDriveClient } = await import("./client");
 
 		const fileSize = 6 * 1024 * 1024;
 		const content = new ArrayBuffer(fileSize);
@@ -391,8 +391,8 @@ describe("DriveClient resumable upload", () => {
 			}));
 		});
 
-		const client = new DriveClient(() => Promise.resolve("access"));
-		const cache = (client as unknown as DriveClientInternal).resumableUploader.resumeCache;
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
+		const cache = (client as unknown as GoogleDriveClientInternal).resumableUploader.resumeCache;
 
 		// Manually insert an expired cache entry (7 hours old)
 		cache.set("parent/file.bin", {
@@ -410,7 +410,7 @@ describe("DriveClient resumable upload", () => {
 	});
 
 	it("ignores cache when file size differs", async () => {
-		const { DriveClient } = await import("./client");
+		const { GoogleDriveClient } = await import("./client");
 
 		let callCount = 0;
 		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(() => {
@@ -425,8 +425,8 @@ describe("DriveClient resumable upload", () => {
 			}));
 		});
 
-		const client = new DriveClient(() => Promise.resolve("access"));
-		const cache = (client as unknown as DriveClientInternal).resumableUploader.resumeCache;
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
+		const cache = (client as unknown as GoogleDriveClientInternal).resumableUploader.resumeCache;
 
 		// Cache entry with different totalSize
 		cache.set("parent/file.bin", {
@@ -444,7 +444,7 @@ describe("DriveClient resumable upload", () => {
 	});
 
 	it("uses existingFileId as cache key when provided", async () => {
-		const { DriveClient } = await import("./client");
+		const { GoogleDriveClient } = await import("./client");
 
 		const fileSize = 6 * 1024 * 1024;
 		const content = new ArrayBuffer(fileSize);
@@ -461,12 +461,12 @@ describe("DriveClient resumable upload", () => {
 			return Promise.reject(new Error("Unexpected call"));
 		});
 
-		const client = new DriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
 		await expect(
 			client.uploadFile("file.bin", "parent", content, "application/octet-stream", "existing-id-123")
 		).rejects.toThrow();
 
-		const cache = (client as unknown as DriveClientInternal).resumableUploader.resumeCache;
+		const cache = (client as unknown as GoogleDriveClientInternal).resumableUploader.resumeCache;
 		expect(cache.has("existing-id-123")).toBe(true);
 		expect(cache.has("parent/file.bin")).toBe(false);
 
@@ -474,7 +474,7 @@ describe("DriveClient resumable upload", () => {
 	});
 
 	it("propagates errors during resumable upload", async () => {
-		const { DriveClient } = await import("./client");
+		const { GoogleDriveClient } = await import("./client");
 
 		let callCount = 0;
 		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(() => {
@@ -487,7 +487,7 @@ describe("DriveClient resumable upload", () => {
 			}));
 		});
 
-		const client = new DriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
 		const content = new ArrayBuffer(6 * 1024 * 1024);
 
 		await expect(
@@ -498,7 +498,7 @@ describe("DriveClient resumable upload", () => {
 	});
 
 	it("handles file just over threshold", async () => {
-		const { DriveClient } = await import("./client");
+		const { GoogleDriveClient } = await import("./client");
 
 		let callCount = 0;
 		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(() => {
@@ -513,7 +513,7 @@ describe("DriveClient resumable upload", () => {
 			}));
 		});
 
-		const client = new DriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
 		const content = new ArrayBuffer(5 * 1024 * 1024 + 1);
 		const result = await client.uploadFile("medium.bin", "parent", content);
 
@@ -524,10 +524,10 @@ describe("DriveClient resumable upload", () => {
 	});
 
 	it("clearResumeCache removes all entries", async () => {
-		const { DriveClient } = await import("./client");
+		const { GoogleDriveClient } = await import("./client");
 
-		const client = new DriveClient(() => Promise.resolve("access"));
-		const cache = (client as unknown as DriveClientInternal).resumableUploader.resumeCache;
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
+		const cache = (client as unknown as GoogleDriveClientInternal).resumableUploader.resumeCache;
 
 		cache.set("key1", { uploadUrl: "url1", totalSize: 100, createdAt: Date.now() });
 		cache.set("key2", { uploadUrl: "url2", totalSize: 200, createdAt: Date.now() });
@@ -538,7 +538,7 @@ describe("DriveClient resumable upload", () => {
 	});
 });
 
-describe("DriveClient 401 retry", () => {
+describe("GoogleDriveClient 401 retry", () => {
 	it("retries once with forceRefresh on 401", async () => {
 		let callCount = 0;
 		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(async () => {
@@ -549,9 +549,9 @@ describe("DriveClient 401 retry", () => {
 			return await Promise.resolve(mockRes({ startPageToken: "token123" }));
 		});
 
-		const { DriveClient } = await import("./client");
+		const { GoogleDriveClient } = await import("./client");
 		const getToken = vi.fn().mockResolvedValue("access");
-		const client = new DriveClient(getToken);
+		const client = new GoogleDriveClient(getToken);
 
 		const result = await client.getChangesStartToken();
 		expect(result).toBe("token123");
@@ -568,11 +568,11 @@ describe("DriveClient 401 retry", () => {
 			throw Object.assign(new Error("Unauthorized"), { status: 401 });
 		});
 
-		const { DriveClient } = await import("./client");
+		const { GoogleDriveClient } = await import("./client");
 		const getToken = vi.fn().mockResolvedValue("access");
-		const client = new DriveClient(getToken);
+		const client = new GoogleDriveClient(getToken);
 
-		await expect(client.getChangesStartToken()).rejects.toThrow("Drive API getChangesStartToken failed");
+		await expect(client.getChangesStartToken()).rejects.toThrow("Google Drive API getChangesStartToken failed");
 		expect(getToken).toHaveBeenCalledTimes(2);
 
 		mockRequestUrl.mockRestore();
@@ -583,11 +583,11 @@ describe("DriveClient 401 retry", () => {
 			throw Object.assign(new Error("Server Error"), { status: 500 });
 		});
 
-		const { DriveClient } = await import("./client");
+		const { GoogleDriveClient } = await import("./client");
 		const getToken = vi.fn().mockResolvedValue("access");
-		const client = new DriveClient(getToken);
+		const client = new GoogleDriveClient(getToken);
 
-		await expect(client.getChangesStartToken()).rejects.toThrow("Drive API getChangesStartToken failed");
+		await expect(client.getChangesStartToken()).rejects.toThrow("Google Drive API getChangesStartToken failed");
 		expect(getToken).toHaveBeenCalledTimes(1);
 
 		mockRequestUrl.mockRestore();

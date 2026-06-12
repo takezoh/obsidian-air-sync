@@ -1,7 +1,7 @@
 import type { RequestUrlParam, RequestUrlResponse } from "obsidian";
 import type { Logger } from "../../logging/logger";
-import type { DriveFile } from "./types";
-import { assertDriveFile, buildUploadMetadata } from "./types";
+import type { GoogleDriveFile } from "./types";
+import { assertGoogleDriveFile, buildUploadMetadata } from "./types";
 
 const UPLOAD_API = "https://www.googleapis.com/upload/drive/v3";
 const FILE_FIELDS = "id,name,mimeType,size,modifiedTime,parents,md5Checksum";
@@ -14,7 +14,7 @@ interface ResumeCacheEntry {
 	createdAt: number;
 }
 
-/** Dependencies injected by DriveClient */
+/** Dependencies injected by GoogleDriveClient */
 export interface ResumableUploadDeps {
 	getToken: (forceRefresh?: boolean) => Promise<string>;
 	request: (
@@ -44,7 +44,7 @@ export class ResumableUploader {
 		mimeType = "application/octet-stream",
 		existingFileId?: string,
 		modifiedTime: number = Date.now()
-	): Promise<DriveFile> {
+	): Promise<GoogleDriveFile> {
 		const cacheKey = existingFileId ?? `${parentId}/${name}`;
 
 		// Check resume cache for a previous failed upload
@@ -107,9 +107,9 @@ export class ResumableUploader {
 					body: content.byteLength > 0 ? content : new ArrayBuffer(0),
 				}
 			);
-			const driveFile: unknown = uploadResponse.json;
-			assertDriveFile(driveFile);
-			return driveFile;
+			const googleDriveFile: unknown = uploadResponse.json;
+			assertGoogleDriveFile(googleDriveFile);
+			return googleDriveFile;
 		} catch (err) {
 			// Cache the resume URL so the next retry can continue from where we left off
 			this.resumeCache.set(cacheKey, {
@@ -123,14 +123,14 @@ export class ResumableUploader {
 
 	/**
 	 * Attempt to resume a previously failed upload.
-	 * Returns DriveFile on success, or null if resume is not possible (caller should do fresh upload).
+	 * Returns GoogleDriveFile on success, or null if resume is not possible (caller should do fresh upload).
 	 */
 	private async tryResumeUpload(
 		uploadUrl: string,
 		content: ArrayBuffer,
 		totalSize: number,
 		mimeType: string
-	): Promise<DriveFile | null> {
+	): Promise<GoogleDriveFile | null> {
 		const status = await this.queryUploadStatus(uploadUrl, totalSize);
 		if (!status) return null;
 
@@ -154,9 +154,9 @@ export class ResumableUploader {
 				},
 				body: remaining,
 			});
-			const driveFile: unknown = response.json;
-			assertDriveFile(driveFile);
-			return driveFile;
+			const googleDriveFile: unknown = response.json;
+			assertGoogleDriveFile(googleDriveFile);
+			return googleDriveFile;
 		} catch {
 			// Resume PUT failed — fall back to fresh upload
 			return null;
@@ -170,7 +170,7 @@ export class ResumableUploader {
 	private async queryUploadStatus(
 		uploadUrl: string,
 		totalSize: number
-	): Promise<{ bytesReceived: number } | { file: DriveFile } | null> {
+	): Promise<{ bytesReceived: number } | { file: GoogleDriveFile } | null> {
 		try {
 			// A successful response means the upload is already complete
 			const response = await this.deps.request(
@@ -184,9 +184,9 @@ export class ResumableUploader {
 					body: new ArrayBuffer(0),
 				}
 			);
-			const driveFile: unknown = response.json;
-			assertDriveFile(driveFile);
-			return { file: driveFile };
+			const googleDriveFile: unknown = response.json;
+			assertGoogleDriveFile(googleDriveFile);
+			return { file: googleDriveFile };
 		} catch (err) {
 			// 308 Resume Incomplete — parse Range header for bytes received
 			if (

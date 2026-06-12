@@ -41,3 +41,4 @@ dist/
 .mcp.json
 *.log
 .roost/
+.agent-reactor/

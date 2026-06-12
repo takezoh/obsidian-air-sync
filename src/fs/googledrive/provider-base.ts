@@ -8,39 +8,39 @@ import type { AirSyncSettings } from "../../settings";
 import type { Logger } from "../../logging/logger";
 import type { RemoteVaultResolution } from "../remote-vault-contract";
 import type { IGoogleAuth } from "./auth";
-import { DriveClient } from "./client";
+import { GoogleDriveClient } from "./client";
 import { GoogleDriveFs } from "./index";
 import { MetadataStore } from "../../store/metadata-store";
-import { resolveGDriveRemoteVault } from "./remote-vault";
+import { resolveGoogleDriveRemoteVault } from "./remote-vault";
 import { resolveFolderPath } from "./folder-path";
 import { isHttpError } from "./incremental-sync";
-import { classifyDriveError } from "./errors";
+import { classifyGoogleDriveError } from "./errors";
 import { FOLDER_MIME } from "./types";
-import type { DriveFile } from "./types";
+import type { GoogleDriveFile } from "./types";
 import type { GoogleDriveBackendData } from "./provider";
 import { setBackendSecret, getBackendSecret, hasBackendSecret, clearBackendSecrets } from "../token-store";
 
-interface DriveTokens {
+interface GoogleDriveTokens {
 	refreshToken: string;
 	accessToken: string;
 }
 
-/** Read the Drive refresh+access tokens from SecretStorage. */
-function readDriveTokens(store: ISecretStore, type: string): DriveTokens {
+/** Read the Google Drive refresh+access tokens from SecretStorage. */
+function readGoogleDriveTokens(store: ISecretStore, type: string): GoogleDriveTokens {
 	return {
 		refreshToken: getBackendSecret(store, type, "refresh"),
 		accessToken: getBackendSecret(store, type, "access"),
 	};
 }
 
-/** Persist the Drive refresh+access tokens to SecretStorage (empty values are skipped). */
-function storeDriveTokens(store: ISecretStore, type: string, tokens: DriveTokens): void {
+/** Persist the Google Drive refresh+access tokens to SecretStorage (empty values are skipped). */
+function storeGoogleDriveTokens(store: ISecretStore, type: string, tokens: GoogleDriveTokens): void {
 	setBackendSecret(store, type, "refresh", tokens.refreshToken);
 	setBackendSecret(store, type, "access", tokens.accessToken);
 }
 
-/** Plugin-owned secret names every Drive backend stores under air-sync-<type>-<name>-token. */
-const DRIVE_SECRET_NAMES = ["refresh", "access"];
+/** Plugin-owned secret names every Google Drive backend stores under air-sync-<type>-<name>-token. */
+const GOOGLE_DRIVE_SECRET_NAMES = ["refresh", "access"];
 
 /**
  * Web page (on the OAuth relay domain) that hosts the Google Picker. The plugin opens
@@ -48,7 +48,7 @@ const DRIVE_SECRET_NAMES = ["refresh", "access"];
  * bounces the selection back to `obsidian://air-sync-folder?id=…&name=…&state=…` (a
  * backend-agnostic scheme, not the auth one), mirroring the auth relay. The plugin's
  * current access token is passed in the URL fragment so the Picker can render the
- * user's Drive — the fragment never reaches the relay host.
+ * user's Google Drive — the fragment never reaches the relay host.
  */
 const FOLDER_PICKER_URL = "https://airsync.takezo.dev/googledrive-folder";
 
@@ -68,9 +68,9 @@ function randomState(): string {
 	return out;
 }
 
-/** A Drive file id is a URL-safe base64 token; reject anything else so a crafted
+/** A Google Drive file id is a URL-safe base64 token; reject anything else so a crafted
  *  deep link can't inject path/query segments into the getFile URL. */
-const DRIVE_ID_RE = /^[A-Za-z0-9_-]+$/;
+const GOOGLE_DRIVE_ID_RE = /^[A-Za-z0-9_-]+$/;
 
 /**
  * Parse auth callback input (URL from auth server containing tokens or code).
@@ -174,7 +174,7 @@ export abstract class GoogleDriveAuthProviderBase implements IAuthProvider {
 		const tokens = auth.getTokenState();
 
 		// Store tokens in SecretStorage instead of returning them for backendData
-		storeDriveTokens(this.secretStore, this.backendType, tokens);
+		storeGoogleDriveTokens(this.secretStore, this.backendType, tokens);
 
 		return {
 			accessTokenExpiry: tokens.accessTokenExpiry,
@@ -246,40 +246,40 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 		this.secretStore = secretStore;
 	}
 
-	/** Build a token-bearing DriveClient on the given auth, seeded from stored secrets. */
-	private clientFor(googleAuth: IGoogleAuth, data: GoogleDriveBackendData, logger?: Logger): DriveClient {
-		const tokens = readDriveTokens(this.secretStore, this.type);
+	/** Build a token-bearing GoogleDriveClient on the given auth, seeded from stored secrets. */
+	private clientFor(googleAuth: IGoogleAuth, data: GoogleDriveBackendData, logger?: Logger): GoogleDriveClient {
+		const tokens = readGoogleDriveTokens(this.secretStore, this.type);
 		googleAuth.setTokens(tokens.refreshToken, tokens.accessToken, data.accessTokenExpiry);
-		return new DriveClient((force) => googleAuth.getAccessToken(force), logger);
+		return new GoogleDriveClient((force) => googleAuth.getAccessToken(force), logger);
 	}
 
 	/** A client on the SHARED auth (persists refreshes). Safe during init/rebind, which
 	 *  BackendManager gates with `connecting` so no sync runs concurrently. */
-	protected makeClient(settings: AirSyncSettings, logger?: Logger): DriveClient {
+	protected makeClient(settings: AirSyncSettings, logger?: Logger): GoogleDriveClient {
 		const data = this.getData(settings);
 		return this.clientFor(this.auth.getOrCreateGoogleAuth(data, logger), data, logger);
 	}
 
 	/** A client on a FRESH, unshared auth — for one-off settings reads that must not
 	 *  reset the live sync's in-memory tokens. */
-	protected makeDetachedClient(settings: AirSyncSettings, logger?: Logger): DriveClient {
+	protected makeDetachedClient(settings: AirSyncSettings, logger?: Logger): GoogleDriveClient {
 		const data = this.getData(settings);
 		return this.clientFor(this.auth.createDetachedGoogleAuth(data, logger), data, logger);
 	}
 
 	/** Open the per-target IndexedDB cache store, or null if no folder is bound. */
-	private metadataStoreFor(settings: AirSyncSettings): MetadataStore<DriveFile> | null {
+	private metadataStoreFor(settings: AirSyncSettings): MetadataStore<GoogleDriveFile> | null {
 		const data = this.getData(settings);
 		if (!data.remoteVaultFolderId) return null;
-		return new MetadataStore<DriveFile>(`${settings.vaultId}-${data.remoteVaultFolderId}`, {
-			dbNamePrefix: "air-sync-drive",
+		return new MetadataStore<GoogleDriveFile>(`${settings.vaultId}-${data.remoteVaultFolderId}`, {
+			dbNamePrefix: "air-sync-googledrive",
 			version: 1,
 		});
 	}
 
 	createFs(app: App, settings: AirSyncSettings, logger?: Logger): IFileSystem | null {
 		const data = this.getData(settings);
-		const tokens = readDriveTokens(this.secretStore, this.type);
+		const tokens = readGoogleDriveTokens(this.secretStore, this.type);
 		if (!tokens.refreshToken || !data.remoteVaultFolderId) return null;
 
 		const client = this.makeClient(settings, logger);
@@ -298,7 +298,7 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 		return `${this.type}:${data.remoteVaultFolderId}`;
 	}
 
-	classifyError(err: unknown) { return classifyDriveError(err); }
+	classifyError(err: unknown) { return classifyGoogleDriveError(err); }
 
 	readBackendState(): Record<string, unknown> {
 		const result: Record<string, unknown> = {};
@@ -311,7 +311,7 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 		// because a later file op failed.)
 		const tokens = this.auth.getTokenState();
 		if (tokens && tokens.refreshToken) {
-			storeDriveTokens(this.secretStore, this.type, tokens);
+			storeGoogleDriveTokens(this.secretStore, this.type, tokens);
 			result.accessTokenExpiry = tokens.accessTokenExpiry;
 		}
 
@@ -332,7 +332,7 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 		const data = this.getData(settings);
 		const client = this.makeClient(settings, logger);
 		const cachedFolderId = data.remoteVaultFolderId || undefined;
-		return resolveGDriveRemoteVault(client, vaultName, cachedFolderId, logger);
+		return resolveGoogleDriveRemoteVault(client, vaultName, cachedFolderId, logger);
 	}
 
 	/**
@@ -347,7 +347,7 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 	/**
 	 * Open the Google Picker (hosted on the relay domain) in the browser. The current
 	 * access token is passed in the URL fragment (never the query) so the Picker can
-	 * render the user's Drive without a second sign-in; the selection returns via
+	 * render the user's Google Drive without a second sign-in; the selection returns via
 	 * `obsidian://air-sync-folder` and is bound by {@link completeWebFolderPick}.
 	 * Returns the CSRF state to persist.
 	 */
@@ -362,7 +362,7 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 		// the live sync's shared in-memory tokens.
 		const data = this.getData(settings);
 		const auth = this.auth.createDetachedGoogleAuth(data, undefined);
-		const tokens = readDriveTokens(this.secretStore, this.type);
+		const tokens = readGoogleDriveTokens(this.secretStore, this.type);
 		auth.setTokens(tokens.refreshToken, tokens.accessToken, data.accessTokenExpiry);
 		const token = await auth.getAccessToken(false);
 
@@ -397,12 +397,12 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 		}
 		const id = params.id?.trim();
 		if (!id) throw new Error("No folder was selected.");
-		if (!DRIVE_ID_RE.test(id)) throw new Error("Invalid folder id.");
+		if (!GOOGLE_DRIVE_ID_RE.test(id)) throw new Error("Invalid folder id.");
 
 		// Detached client (like the other picker reads) so validating the selection
 		// can't reset a concurrently-running sync's in-memory tokens.
 		const client = this.makeDetachedClient(settings, logger);
-		let file: DriveFile;
+		let file: GoogleDriveFile;
 		try {
 			file = await client.getFile(id);
 		} catch (err) {
@@ -411,7 +411,7 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 			// possible for some selections (e.g. shared drives). Both mean "re-pick";
 			// anything else (auth/rate-limit/server) surfaces as-is.
 			if (isHttpError(err, 404) || isHttpError(err, 403)) {
-				logger?.warn("Picked Drive folder is not accessible under the granted scope", { id });
+				logger?.warn("Picked Google Drive folder is not accessible under the granted scope", { id });
 				throw new Error(
 					"That folder isn't accessible to Air Sync. Re-pick it in the Google Picker so access is granted.",
 				);
@@ -474,7 +474,7 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 	}
 
 	clearPluginSecrets(): void {
-		clearBackendSecrets(this.secretStore, this.type, DRIVE_SECRET_NAMES);
+		clearBackendSecrets(this.secretStore, this.type, GOOGLE_DRIVE_SECRET_NAMES);
 	}
 
 	protected abstract getData(settings: AirSyncSettings): GoogleDriveBackendData;

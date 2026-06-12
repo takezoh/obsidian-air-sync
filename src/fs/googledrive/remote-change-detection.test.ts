@@ -9,7 +9,7 @@ import {
 
 vi.mock("obsidian");
 
-interface DriveUploadResult {
+interface GoogleDriveUploadResult {
 	id: string;
 	name: string;
 	mimeType: string;
@@ -19,13 +19,13 @@ interface DriveUploadResult {
 }
 
 // GoogleDriveFs returns hash:"" from stat() and relies entirely on
-// remoteChecksum (Drive md5) + modifiedTime for change detection.
+// remoteChecksum (Google Drive md5) + modifiedTime for change detection.
 // checksumBased: the metadata-touch case (mtime bumped, identical md5) makes the
 // remoteChecksum plumbing load-bearing — mtime+size alone cannot decide it.
 runRemoteChangeDetectionContract(
 	"GoogleDriveFs",
 	async () => {
-		let uploadResult: DriveUploadResult = {
+		let uploadResult: GoogleDriveUploadResult = {
 			id: "file1",
 			name: "note.md",
 			mimeType: "text/plain",
@@ -44,8 +44,8 @@ runRemoteChangeDetectionContract(
 		);
 
 		const { GoogleDriveFs } = await import("./index");
-		const { DriveClient } = await import("./client");
-		const client = new DriveClient(() => Promise.resolve("access"));
+		const { GoogleDriveClient } = await import("./client");
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
 		const fs = new GoogleDriveFs(client, "root");
 		(fs as unknown as GoogleDriveFsInternal).initialized = true;
 
@@ -60,7 +60,7 @@ runRemoteChangeDetectionContract(
 				return statOrThrow(fs, path);
 			},
 			async observeAfterEdit() {
-				// A real content edit on Drive: new md5 + bumped modifiedTime + new size.
+				// A real content edit on Google Drive: new md5 + bumped modifiedTime + new size.
 				uploadResult = {
 					...uploadResult,
 					modifiedTime: "2024-06-01T00:00:00.000Z",
@@ -71,7 +71,7 @@ runRemoteChangeDetectionContract(
 				return statOrThrow(fs, path);
 			},
 			async observeTouchedSameContent() {
-				// Metadata-only touch: Drive bumps modifiedTime but md5 + size are identical.
+				// Metadata-only touch: Google Drive bumps modifiedTime but md5 + size are identical.
 				// Only the contentChecksum comparison can prove this is "unchanged".
 				uploadResult = {
 					...uploadResult,

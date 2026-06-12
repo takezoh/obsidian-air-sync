@@ -7,7 +7,7 @@ folder id** so a remote move/rename of the folder needs no migration.
 
 ## DropboxFs
 
-`DropboxFs` (`fs/dropbox/index.ts`) implements `IFileSystem`. Like the Drive
+`DropboxFs` (`fs/dropbox/index.ts`) implements `IFileSystem`. Like the Google Drive
 backend it keeps an in-memory metadata cache (`path`, `mtime`, `size`,
 `content_hash`) so `list()`/`stat()` never download; content is fetched only on
 `read()`.

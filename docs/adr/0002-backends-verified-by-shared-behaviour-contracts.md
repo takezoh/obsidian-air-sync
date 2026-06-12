@@ -71,7 +71,7 @@ chore bolted on afterward.
    opt-out of a behaviour.
 
 3. **Run the contract against the REAL FS** over a fake at its **I/O boundary** — the
-   typed client (`DriveClient`/`DropboxClient`/`PCloudClient`), the mock `Vault` for
+   typed client (`GoogleDriveClient`/`DropboxClient`/`PCloudClient`), the mock `Vault` for
    `LocalFs`, or, where the change-detection contract needs it, the raw transport
    (`requestUrl`). Never against a re-implementation of the FS itself.
 
@@ -100,7 +100,7 @@ chore bolted on afterward.
 **Documented intentional divergences.** The Dropbox CRUD fake sets `server_modified` to
 the **written `mtime`** so a write round-trips exactly, even though the real `DropboxFs`
 reports `server_modified` — the **upload wall-clock**, the canonical remote timestamp (see
-`dropbox/types.ts`) — which is unrelated to the value written. (Drive genuinely does
+`dropbox/types.ts`) — which is unrelated to the value written. (Google Drive genuinely does
 preserve the written `modifiedTime` at full ms.) This is on purpose: the IFileSystem
 contract tests **FS-layer fidelity** (the FS does not mangle the time the backend reports),
 and the fake supplies a deterministic, checkable timestamp for that. A divergence like this
@@ -110,18 +110,18 @@ is allowed only when it is written down at the fake and does not weaken what the
 contract against the live backends, where `server_modified` is the real upload time; the
 `preservesWrittenMtime` opt — a second sanctioned backend-class knob alongside
 `computesHashOnStat` — drops the mtime-equality assertions to "a plausible (finite,
-positive) timestamp" for the real Dropbox (`false`), while mock/LocalFs/Drive and all the
+positive) timestamp" for the real Dropbox (`false`), while mock/LocalFs/Google Drive and all the
 fakes keep the default (`true`). This empirically surfaced the fake's generosity: an earlier
 `mtimePrecisionMs` knob (assuming Dropbox merely *truncated* the written mtime to seconds)
 was wrong — the real value is the server's clock, not the written one rounded — and the e2e
 caught it. mtime is **not** Dropbox's change-detection signal anyway; that is the
 content-hash `remoteChecksum` (the change-detection contract is `checksumBased`).
 
-A second divergence the e2e surfaced the same way: the **Drive** CRUD fake leaves
+A second divergence the e2e surfaced the same way: the **Google Drive** CRUD fake leaves
 `modifiedTime` untouched on a rename/move, but the real `files.update` **bumps it to
 "now"** (a metadata write counts as a modification). So mtime survives a rename only on
 local-storage backends; the rename test pins exact mtime-through-rename when
-`computesHashOnStat` (mock/LocalFs) and only requires a finite timestamp otherwise. (Drive
+`computesHashOnStat` (mock/LocalFs) and only requires a finite timestamp otherwise. (Google Drive
 still preserves the written `modifiedTime` on a plain *write* — that is unaffected.)
 
 **The orchestrator-level convergence path is deliberately out of the FS contracts.** ADR
@@ -143,7 +143,7 @@ parameterization is **optional belt-and-suspenders**, not a coverage gap.
   shape;
 - adding an assertion **without confirming it is load-bearing** (RED-first or mutation);
 - **opting a backend out** of a contract case because it "doesn't apply" — if the engine
-  drives that backend through `IFileSystem`, the case applies; FIX the backend (as Drive
+  drives that backend through `IFileSystem`, the case applies; FIX the backend (as Google Drive
   was hardened for path normalization / `read(dir)` / `validateRename`), do not relax the
   contract.
 

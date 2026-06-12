@@ -58,7 +58,7 @@ export interface IFileSystemContractOpts {
 	preservesWrittenMtime?: boolean;
 	/**
 	 * The granularity (ms) at which a written `mtime` round-trips. Default 1 (the
-	 * backend preserves the value exactly: mock/LocalFs/Drive). Set 1000 for a
+	 * backend preserves the value exactly: mock/LocalFs/Google Drive). Set 1000 for a
 	 * backend that stores whole-second mtimes: real OneDrive — Microsoft Graph
 	 * truncates `fileSystemInfo.lastModifiedDateTime` to the second, proven by the
 	 * ADR-0003 e2e (12345 → 12000, 99999 → 99000).

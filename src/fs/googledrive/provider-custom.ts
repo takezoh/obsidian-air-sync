@@ -23,7 +23,7 @@ export interface GoogleDriveCustomBackendData extends GoogleDriveBackendData {
 	customIncludeGrantedScopes: boolean;
 }
 
-const DEFAULT_GDRIVE_CUSTOM_DATA: GoogleDriveCustomBackendData = {
+const DEFAULT_GOOGLE_DRIVE_CUSTOM_DATA: GoogleDriveCustomBackendData = {
 	remoteVaultFolderId: "",
 	accessTokenExpiry: 0,
 	pendingAuthState: "",
@@ -35,9 +35,9 @@ const DEFAULT_GDRIVE_CUSTOM_DATA: GoogleDriveCustomBackendData = {
 	customIncludeGrantedScopes: false,
 };
 
-function getGDriveCustomData(settings: AirSyncSettings): GoogleDriveCustomBackendData {
+function getGoogleDriveCustomData(settings: AirSyncSettings): GoogleDriveCustomBackendData {
 	return {
-		...DEFAULT_GDRIVE_CUSTOM_DATA,
+		...DEFAULT_GOOGLE_DRIVE_CUSTOM_DATA,
 		...getBackendData<GoogleDriveCustomBackendData>(settings),
 	};
 }
@@ -160,9 +160,9 @@ export class GoogleDriveCustomProvider extends GoogleDriveProviderBase {
 	async disconnect(settings: AirSyncSettings): Promise<Record<string, unknown>> {
 		await this.auth.revokeAuth();
 		this.clearPluginSecrets();
-		const data = getGDriveCustomData(settings);
+		const data = getGoogleDriveCustomData(settings);
 		return {
-			...DEFAULT_GDRIVE_CUSTOM_DATA,
+			...DEFAULT_GOOGLE_DRIVE_CUSTOM_DATA,
 			customClientId: data.customClientId,
 			customClientSecret: data.customClientSecret,
 			customScope: data.customScope,
@@ -173,10 +173,10 @@ export class GoogleDriveCustomProvider extends GoogleDriveProviderBase {
 	}
 
 	protected getData(settings: AirSyncSettings): GoogleDriveBackendData {
-		return getGDriveCustomData(settings);
+		return getGoogleDriveCustomData(settings);
 	}
 
 	protected getDefaultData(): GoogleDriveBackendData {
-		return DEFAULT_GDRIVE_CUSTOM_DATA;
+		return DEFAULT_GOOGLE_DRIVE_CUSTOM_DATA;
 	}
 }

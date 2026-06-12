@@ -38,7 +38,7 @@ describe("collectChanges — temperature selection", () => {
 		localTracker = new LocalChangeTracker();
 	});
 
-	/** Add a file to mock FS with a remote-provided checksum (e.g. Drive md5). */
+	/** Add a file to mock FS with a remote-provided checksum (e.g. Google Drive md5). */
 	function addFileWithChecksum(
 		fs: ReturnType<typeof createMockFs>,
 		path: string,

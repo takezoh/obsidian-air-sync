@@ -1,6 +1,6 @@
 import "fake-indexeddb/auto";
 import { describe, it, expect, vi } from "vitest";
-import type { DriveFile } from "./types";
+import type { GoogleDriveFile } from "./types";
 import { spyRequestUrl, mockRes } from "./test-helpers";
 import type { GoogleDriveFsInternal, GoogleDriveFsCacheInternal } from "./test-helpers";
 
@@ -128,7 +128,7 @@ describe("GoogleDriveFs.ensureFolder file collision", () => {
 });
 
 describe("GoogleDriveFs.write remoteChecksum", () => {
-	it("includes remoteChecksum (md5) when returned by Drive API", async () => {
+	it("includes remoteChecksum (md5) when returned by Google Drive API", async () => {
 		const uploadResult = {
 			id: "file1",
 			name: "test.md",
@@ -142,8 +142,8 @@ describe("GoogleDriveFs.write remoteChecksum", () => {
 		);
 
 		const { GoogleDriveFs } = await import("./index");
-		const { DriveClient } = await import("./client");
-		const client = new DriveClient(() => Promise.resolve("access"));
+		const { GoogleDriveClient } = await import("./client");
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
 		const fs = new GoogleDriveFs(client, "root");
 
 		(fs as unknown as GoogleDriveFsInternal).initialized = true;
@@ -152,7 +152,7 @@ describe("GoogleDriveFs.write remoteChecksum", () => {
 		const result = await fs.write("test.md", content, Date.now());
 
 		expect(result.remoteChecksum).toEqual({ algo: "md5", value: "abc123hash" });
-		expect(result.backendMeta?.driveId).toBe("file1");
+		expect(result.backendMeta?.googleDriveId).toBe("file1");
 
 		mockRequestUrl.mockRestore();
 	});
@@ -173,8 +173,8 @@ describe("GoogleDriveFs.write remoteChecksum", () => {
 		);
 
 		const { GoogleDriveFs } = await import("./index");
-		const { DriveClient } = await import("./client");
-		const client = new DriveClient(() => Promise.resolve("access"));
+		const { GoogleDriveClient } = await import("./client");
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
 		const fs = new GoogleDriveFs(client, "root");
 
 		(fs as unknown as GoogleDriveFsInternal).initialized = true;
@@ -183,7 +183,7 @@ describe("GoogleDriveFs.write remoteChecksum", () => {
 		const result = await fs.write("doc.gdoc", content, Date.now());
 
 		expect(result.remoteChecksum).toBeUndefined();
-		expect(result.backendMeta?.driveId).toBe("doc1");
+		expect(result.backendMeta?.googleDriveId).toBe("doc1");
 
 		mockRequestUrl.mockRestore();
 	});
@@ -191,7 +191,7 @@ describe("GoogleDriveFs.write remoteChecksum", () => {
 
 describe("GoogleDriveFs.write stale-cache guard for new paths", () => {
 	it("does not clobber a concurrent re-key that created the same path during upload", async () => {
-		const uploadResult: DriveFile = {
+		const uploadResult: GoogleDriveFile = {
 			id: "uploaded-id",
 			name: "new.md",
 			mimeType: "text/plain",
@@ -200,10 +200,10 @@ describe("GoogleDriveFs.write stale-cache guard for new paths", () => {
 		};
 
 		const { GoogleDriveFs } = await import("./index");
-		const { DriveClient } = await import("./client");
+		const { GoogleDriveClient } = await import("./client");
 		const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 
-		const client = new DriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
 		const fs = new GoogleDriveFs(
 			client,
 			"root",
@@ -213,8 +213,8 @@ describe("GoogleDriveFs.write stale-cache guard for new paths", () => {
 
 		const cache = (fs as unknown as {
 			cache: {
-				setFile(p: string, f: DriveFile): void;
-				getFile(p: string): DriveFile | undefined;
+				setFile(p: string, f: GoogleDriveFile): void;
+				getFile(p: string): GoogleDriveFile | undefined;
 			};
 		}).cache;
 
@@ -256,10 +256,10 @@ describe("GoogleDriveFs.write stale-cache guard for new paths", () => {
 describe("GoogleDriveFs.rename stale-cache guard for the destination", () => {
 	it("does not clobber a concurrent re-key that occupied newPath during the move", async () => {
 		const { GoogleDriveFs } = await import("./index");
-		const { DriveClient } = await import("./client");
+		const { GoogleDriveClient } = await import("./client");
 		const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 
-		const client = new DriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
 		const fs = new GoogleDriveFs(
 			client,
 			"root",
@@ -269,8 +269,8 @@ describe("GoogleDriveFs.rename stale-cache guard for the destination", () => {
 
 		const cache = (fs as unknown as {
 			cache: {
-				setFile(p: string, f: DriveFile): void;
-				getFile(p: string): DriveFile | undefined;
+				setFile(p: string, f: GoogleDriveFile): void;
+				getFile(p: string): GoogleDriveFile | undefined;
 				getPathById(id: string): string | undefined;
 			};
 		}).cache;
@@ -314,7 +314,7 @@ describe("GoogleDriveFs.rename stale-cache guard for the destination", () => {
 describe("GoogleDriveFs.commitCheckpoint persistence-failure safety", () => {
 	it("propagates a failed flush and keeps the buffer so the cursor is not committed ahead of the cache", async () => {
 		const { GoogleDriveFs } = await import("./index");
-		type Store = import("../../store/metadata-store").MetadataStore<DriveFile>;
+		type Store = import("../../store/metadata-store").MetadataStore<GoogleDriveFile>;
 
 		const allFiles = [
 			{ id: "f1", name: "docs", mimeType: "application/vnd.google-apps.folder", parents: ["root"] },
@@ -646,7 +646,7 @@ describe("GoogleDriveFs cache persistence", () => {
 			getChangesStartToken: vi.fn().mockResolvedValue("token-abc"),
 		} as never;
 
-		const store = new MetadataStore<DriveFile>("persist-test", { dbNamePrefix: "air-sync-drive", version: 1 });
+		const store = new MetadataStore<GoogleDriveFile>("persist-test", { dbNamePrefix: "air-sync-googledrive", version: 1 });
 
 		// First instance: fullScan populates the in-memory cache; persistence is
 		// deferred to the checkpoint commit (a clean cycle), not eager.
@@ -694,7 +694,7 @@ describe("GoogleDriveFs cursor consolidation (crash safety)", () => {
 	it("re-reports an un-pulled remote change after a crash (cursor from #3)", async () => {
 		const { GoogleDriveFs } = await import("./index");
 		const { MetadataStore } = await import("../../store/metadata-store");
-		const store = new MetadataStore<DriveFile>("crash-consol", { dbNamePrefix: "air-sync-drive", version: 1 });
+		const store = new MetadataStore<GoogleDriveFile>("crash-consol", { dbNamePrefix: "air-sync-googledrive", version: 1 });
 
 		const change = {
 			type: "file",
@@ -753,7 +753,7 @@ describe("GoogleDriveFs cursor consolidation (crash safety)", () => {
 		// still sees the file and re-surfaces the delete.
 		const { GoogleDriveFs } = await import("./index");
 		const { MetadataStore } = await import("../../store/metadata-store");
-		const store = new MetadataStore<DriveFile>("crash-consol-del", { dbNamePrefix: "air-sync-drive", version: 1 });
+		const store = new MetadataStore<GoogleDriveFile>("crash-consol-del", { dbNamePrefix: "air-sync-googledrive", version: 1 });
 
 		const initialFiles = [
 			{ id: "f1", name: "notes", mimeType: FOLDER, parents: ["root"] },
@@ -800,7 +800,7 @@ describe("GoogleDriveFs cursor consolidation (crash safety)", () => {
 		// SyncRecord baseline.
 		const { GoogleDriveFs } = await import("./index");
 		const { MetadataStore } = await import("../../store/metadata-store");
-		const store = new MetadataStore<DriveFile>("edge-empty-cache", { dbNamePrefix: "air-sync-drive", version: 1 });
+		const store = new MetadataStore<GoogleDriveFile>("edge-empty-cache", { dbNamePrefix: "air-sync-googledrive", version: 1 });
 
 		const listAllFiles = vi.fn().mockResolvedValue([
 			{ id: "f1", name: "notes", mimeType: FOLDER, parents: ["root"] },
@@ -834,7 +834,7 @@ describe("GoogleDriveFs cursor consolidation (crash safety)", () => {
 		// keyed identically on the cursor (ADR 0001).
 		const { GoogleDriveFs } = await import("./index");
 		const { MetadataStore } = await import("../../store/metadata-store");
-		const store = new MetadataStore<DriveFile>("empty-synced", { dbNamePrefix: "air-sync-drive", version: 1 });
+		const store = new MetadataStore<GoogleDriveFile>("empty-synced", { dbNamePrefix: "air-sync-googledrive", version: 1 });
 
 		// Session 1: an empty remote vault — fullScan finds 0 files but acquires a cursor.
 		const client1 = {
@@ -865,7 +865,7 @@ describe("GoogleDriveFs cursor consolidation (crash safety)", () => {
 	it("resetCheckpoint clears the persisted checkpoint so a fresh FS full-scans", async () => {
 		const { GoogleDriveFs } = await import("./index");
 		const { MetadataStore } = await import("../../store/metadata-store");
-		const store = new MetadataStore<DriveFile>("reset-cp", { dbNamePrefix: "air-sync-drive", version: 1 });
+		const store = new MetadataStore<GoogleDriveFile>("reset-cp", { dbNamePrefix: "air-sync-googledrive", version: 1 });
 
 		const initialFiles = [{ id: "f1", name: "notes", mimeType: FOLDER, parents: ["root"] }];
 		const client = {
@@ -996,7 +996,7 @@ describe("GoogleDriveFs.getChangedPaths", () => {
 		expect(listAllFiles).toHaveBeenCalledTimes(2);
 	});
 
-	it("propagates auth errors from the Drive API", async () => {
+	it("propagates auth errors from the Google Drive API", async () => {
 		const { GoogleDriveFs } = await import("./index");
 
 		const authError = { status: 401, message: "Unauthorized" };
@@ -1075,7 +1075,7 @@ describe("GoogleDriveFs ignores .airsync/metadata.json (backend-internal)", () =
 		expect(uploadFile).not.toHaveBeenCalled();
 	});
 
-	it("ignores delete: delete() does not call the Drive API", async () => {
+	it("ignores delete: delete() does not call the Google Drive API", async () => {
 		const { GoogleDriveFs } = await import("./index");
 		const { mockClient, deleteFile } = makeFs();
 		const fs = new GoogleDriveFs(mockClient, "root");

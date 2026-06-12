@@ -10,9 +10,9 @@ const RATE_LIMIT_REASONS = new Set([
 /**
  * Google Drive returns **403** for both genuine permission failures AND rate limits;
  * only a rate-limit carries one of {@link RATE_LIMIT_REASONS} in `error.errors[].reason`.
- * This is the one Drive-specific wrinkle the backend-neutral classifier can't know.
+ * This is the one Google Drive-specific wrinkle the backend-neutral classifier can't know.
  */
-function isDriveRateLimit(err: unknown): boolean {
+function isGoogleDriveRateLimit(err: unknown): boolean {
 	if (!err || typeof err !== "object" || !("json" in err)) return false;
 	try {
 		const json = (err as Record<string, unknown>).json;
@@ -39,9 +39,9 @@ function isDriveRateLimit(err: unknown): boolean {
  * is actually a rate-limit is re-tagged `rateLimit` (retry) instead of `permission`
  * (abort). Everything else defers to {@link classifyHttpError}.
  */
-export function classifyDriveError(err: unknown): ErrorClassification {
+export function classifyGoogleDriveError(err: unknown): ErrorClassification {
 	const base = classifyHttpError(err);
-	if (base.kind === "permission" && isDriveRateLimit(err)) {
+	if (base.kind === "permission" && isGoogleDriveRateLimit(err)) {
 		return { kind: "rateLimit", retryAfterMs: base.retryAfterMs };
 	}
 	return base;

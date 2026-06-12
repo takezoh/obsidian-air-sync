@@ -16,7 +16,7 @@ const connectedSecretStore: ISecretStore = {
 };
 
 // A "connected" settings: a bound folder + a future token expiry, plus custom-OAuth
-// fields so the custom backend builds too. Generic enough for every Drive-family
+// fields so the custom backend builds too. Generic enough for every Google Drive-family
 // backend; extend it when a backend needs more to produce a non-null createFs().
 function connectedSettings(): AirSyncSettings {
 	return {

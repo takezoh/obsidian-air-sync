@@ -32,7 +32,7 @@ const CURSOR_META_KEY = "changesStartPageToken";
  * Shared base for an id-addressed remote backend with an incremental delta cursor
  * and a crash-safe, co-located metadata checkpoint (ADR 0001).
  *
- * Owns every part that is identical across Drive/Dropbox/pCloud: the cache mutex
+ * Owns every part that is identical across Google Drive/Dropbox/pCloud: the cache mutex
  * and its three-phase `withCacheMutex` protocol, full-scan / cursor-restore / fresh
  * lifecycle, the atomic checkpoint commit (cache + cursor in one transaction),
  * incremental-replay buffering, the 410-style full-scan-and-diff-by-id fallback,
@@ -327,7 +327,7 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 		const result = await this.fetchChanges(this._changesPageToken);
 
 		if (result.needsFullScan) {
-			// Cursor expired (e.g. Drive 410): snapshot-diff a fresh full scan for the delta.
+			// Cursor expired (e.g. Google Drive 410): snapshot-diff a fresh full scan for the delta.
 			return this.fullScanWithDelta();
 		}
 

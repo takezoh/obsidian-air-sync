@@ -1,4 +1,4 @@
-import type { DriveClient } from "./client";
+import type { GoogleDriveClient } from "./client";
 import type { Logger } from "../../logging/logger";
 import type { RemoteVaultResolution } from "../remote-vault-contract";
 import { REMOTE_VAULT_ROOT } from "../remote-vault-contract";
@@ -7,7 +7,7 @@ import { FOLDER_MIME } from "./types";
 /**
  * Resolve or create this vault's remote folder in Google Drive, by convention.
  *
- * Layout: Drive root / obsidian-air-sync / <Vault Name>
+ * Layout: Google Drive root / obsidian-air-sync / <Vault Name>
  *
  * The folder name IS the vault name — there is no `.airsync/metadata.json`. Called
  * explicitly when the user binds the default folder (not automatically on connect).
@@ -16,8 +16,8 @@ import { FOLDER_MIME } from "./types";
  *  1. cached id present → verify it still exists, keep it.
  *  2. otherwise find-or-create obsidian-air-sync/<Vault Name> and bind it.
  */
-export async function resolveGDriveRemoteVault(
-	client: DriveClient,
+export async function resolveGoogleDriveRemoteVault(
+	client: GoogleDriveClient,
 	vaultName: string,
 	cachedFolderId: string | undefined,
 	logger?: Logger,
@@ -33,7 +33,7 @@ export async function resolveGDriveRemoteVault(
 }
 
 async function resolveLinked(
-	client: DriveClient,
+	client: GoogleDriveClient,
 	cachedFolderId: string,
 ): Promise<RemoteVaultResolution> {
 	// Verify the cached folder still exists and is accessible.
@@ -47,7 +47,7 @@ async function resolveLinked(
 }
 
 async function resolveByName(
-	client: DriveClient,
+	client: GoogleDriveClient,
 	rootFolderId: string,
 	vaultName: string,
 	logger?: Logger,
@@ -58,7 +58,7 @@ async function resolveByName(
 }
 
 async function findOrCreateFolder(
-	client: DriveClient,
+	client: GoogleDriveClient,
 	parentId: string,
 	name: string,
 ): Promise<{ id: string }> {
