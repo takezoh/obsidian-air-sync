@@ -160,6 +160,42 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.close();
 		});
 
+		it("notifies once for a coalesced burst (no duplicate up-to-date notice)", async () => {
+			// A second trigger arriving mid-sync (e.g. mobile resume firing both
+			// focus and visibilitychange) sets syncPending and runs another cycle.
+			// The burst must emit a single notice, not one per cycle.
+			const settings = { ...mockSettings(), showSyncNotifications: true };
+			const deps = createDeps({ getSettings: () => settings });
+			const localFs = createMockFs("local");
+			const remoteFs = createMockFs("remote");
+			deps.localFs = () => localFs;
+			deps.remoteFs = () => remoteFs;
+
+			let callCount = 0;
+			let unblockFirst!: () => void;
+			const blocker = new Promise<void>((res) => {
+				unblockFirst = res;
+			});
+			vi.spyOn(localFs, "list").mockImplementation(async () => {
+				callCount++;
+				if (callCount === 1) await blocker;
+				return [];
+			});
+
+			const orchestrator = new SyncOrchestrator(deps);
+			const first = orchestrator.runSync();
+			await new Promise((res) => setTimeout(res, 10));
+			const second = orchestrator.runSync(); // sets syncPending while locked
+			unblockFirst();
+			await first;
+			await second;
+
+			expect(callCount).toBeGreaterThanOrEqual(2);
+			expect(deps.notify).toHaveBeenCalledTimes(1);
+			expect(deps.notify).toHaveBeenCalledWith("Everything up to date");
+			await orchestrator.close();
+		});
+
 		it("sets status to error and notifies on AuthError", async () => {
 			const deps = createDeps();
 			const localFs = createMockFs("local");

@@ -17,7 +17,7 @@ import { classifyHttpError } from "../fs/errors";
 import { decideRetry, sleep } from "./error";
 import type { ConflictRecord, SyncStatus } from "./types";
 import { buildSyncRecord } from "./state-committer";
-import { buildNotificationMessage } from "./sync-notification";
+import { CycleSummary } from "./sync-notification";
 import type { SyncCycleResult } from "./sync-notification";
 
 export type { SyncStatus };
@@ -152,6 +152,10 @@ export class SyncOrchestrator {
 		}
 
 		await this.syncMutex.run(async () => {
+			// Coalesce every cycle in this burst into ONE end-of-run notice (see
+			// CycleSummary): a mobile resume firing focus + visibilitychange
+			// back-to-back must not show "Everything up to date" twice.
+			const summary = new CycleSummary();
 			do {
 				this.syncPending = false;
 				this.deps.onStatusChange("syncing");
@@ -183,11 +187,7 @@ export class SyncOrchestrator {
 					this.deps.logger?.info("Sync completed", { succeeded, conflicts, failed });
 				}
 
-				// The per-cycle notice is gated on its OWN setting now — `enableLogging`
-				// controls only whether logs are written (it used to double as this gate).
-				if (this.deps.getSettings().showSyncNotifications) {
-					this.deps.notify(buildNotificationMessage(result));
-				}
+				summary.add(result.result);
 
 				// Record this cycle's resolved conflicts to the audit history — once per
 				// cycle, and only when there were any. Writing stays separate from
@@ -203,9 +203,14 @@ export class SyncOrchestrator {
 				}
 				await this.deps.logger?.flush();
 
-				const allPaths = this.deps.localTracker.getDirtyPaths();
-				this.deps.localTracker.acknowledge(allPaths);
+				this.deps.localTracker.acknowledge(this.deps.localTracker.getDirtyPaths());
 			} while (this.syncPending);
+
+			// One notice per burst, gated on its OWN setting (`enableLogging` controls
+			// only whether logs are written — it used to double as this gate).
+			if (this.deps.getSettings().showSyncNotifications) {
+				this.deps.notify(summary.message);
+			}
 		});
 	}
 
