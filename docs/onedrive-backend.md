@@ -7,7 +7,7 @@ Authorization Code + PKCE, and the vault is addressed entirely by its **stable
 driveItem id** so a remote move/rename of the folder needs no migration.
 
 It is built on the same shared machinery as the Google Drive backend, because
-OneDrive — like Drive, and unlike Dropbox — references each item's parent by id
+OneDrive — like Google Drive, and unlike Dropbox — references each item's parent by id
 (`parentReference.id`). The id-chain path resolver in `AbstractMetadataCache`
 therefore drives it unchanged. Only the wire protocol (Microsoft Graph v1.0) and
 the PKCE auth (Dropbox-style, no relay) are OneDrive-specific.
@@ -48,7 +48,7 @@ unchanged — the remote path is never stored.
 (Microsoft's QuickXorHash, base64; it does not return `sha1Hash`/`sha256Hash`,
 which are Business/SharePoint only) — mapped to `{ algo: "quickxor" }`. It is
 locally reproducible (`utils/quickxor.ts`, verified against the live API), so it
-drives cross-side dedup just like Drive's md5. `sha256Hash`/`sha1Hash` are kept as
+drives cross-side dedup just like Google Drive's md5. `sha256Hash`/`sha1Hash` are kept as
 fallbacks (lowercased) for the Business shape.
 
 ## OneDriveMetadataCache
@@ -56,7 +56,7 @@ fallbacks (lowercased) for the Business shape.
 `OneDriveMetadataCache` (`fs/onedrive/metadata-cache.ts`) only reads Graph's
 driveItem shape (`parentReference.id` as a one-element parent array, the `folder`
 facet) and projects a `FileEntity`. All path/tree logic is inherited from
-`AbstractMetadataCache` (id→parent-chain resolution, identical to Drive).
+`AbstractMetadataCache` (id→parent-chain resolution, identical to Google Drive).
 
 ## Incremental sync
 
@@ -67,7 +67,7 @@ removes the subtree; everything else goes through `applyFileChangeDetectMove`,
 which surfaces renames/moves. The final page's `@odata.deltaLink` carries the new
 cursor token. A **410 Gone** (cursor expired, resync required) returns
 `needsFullScan`, and the base full-scans and diffs by id to recover
-adds/deletes/renames (the same fallback as Drive's 410).
+adds/deletes/renames (the same fallback as Google Drive's 410).
 
 ## OneDriveClient
 

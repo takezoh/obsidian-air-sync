@@ -17,7 +17,7 @@ export interface GoogleDriveBackendData {
 	pendingFolderPickState: string;
 }
 
-const DEFAULT_GDRIVE_DATA: GoogleDriveBackendData = {
+const DEFAULT_GOOGLE_DRIVE_DATA: GoogleDriveBackendData = {
 	remoteVaultFolderId: "",
 	accessTokenExpiry: 0,
 	pendingAuthState: "",
@@ -25,9 +25,9 @@ const DEFAULT_GDRIVE_DATA: GoogleDriveBackendData = {
 };
 
 /** Type-safe accessor for Google Drive backend data */
-function getGDriveData(settings: AirSyncSettings): GoogleDriveBackendData {
+function getGoogleDriveData(settings: AirSyncSettings): GoogleDriveBackendData {
 	return {
-		...DEFAULT_GDRIVE_DATA,
+		...DEFAULT_GOOGLE_DRIVE_DATA,
 		...getBackendData<GoogleDriveBackendData>(settings),
 	};
 }
@@ -80,11 +80,11 @@ export class GoogleDriveProvider extends GoogleDriveProviderBase {
 	}
 
 	protected getData(settings: AirSyncSettings): GoogleDriveBackendData {
-		return getGDriveData(settings);
+		return getGoogleDriveData(settings);
 	}
 
 	protected getDefaultData(): GoogleDriveBackendData {
-		return DEFAULT_GDRIVE_DATA;
+		return DEFAULT_GOOGLE_DRIVE_DATA;
 	}
 
 	createSettingsRenderer(): IBackendSettingsRenderer {

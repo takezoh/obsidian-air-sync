@@ -8,7 +8,7 @@
 
 ADR 0002 verifies every backend by running the shared `runIFileSystemContract` against the
 **real FS** over a **faithful fake** at the typed-client boundary
-(`DriveClient`/`DropboxClient`). It is fast and CI-friendly, but it has one structural blind
+(`GoogleDriveClient`/`DropboxClient`). It is fast and CI-friendly, but it has one structural blind
 spot, named in that ADR's rule 4: **"the fake MUST be faithful to the boundary it
 replaces."** Nothing *enforces* that. Both concrete failure modes ADR 0002 records were
 caught by **human code review** — the Dropbox `move` `.tag` divergence was literally "Found
@@ -25,7 +25,7 @@ is **opt-in**.
 ## Decision
 
 1. **Reuse `runIFileSystemContract` verbatim against the real clients.** A new
-   `GoogleDriveFs`/`DropboxFs` built over a *real* `DriveClient`/`DropboxClient` (authenticated
+   `GoogleDriveFs`/`DropboxFs` built over a *real* `GoogleDriveClient`/`DropboxClient` (authenticated
    from a stored refresh token) is driven through the exact same contract the fakes run. No
    parallel e2e assertions — drift surfaces as the shared contract going red against the live
    API. The harness lives in a top-level `e2e/` dir; the contract and FS/clients/auth come
@@ -51,7 +51,7 @@ is **opt-in**.
    same client; with only a refresh token and no client id/secret it falls back to the built-in
    `GoogleAuth`. Dropbox uses the public PKCE client id with a loopback redirect URI registered
    on the app. The exact auth path is incidental to what this e2e validates (the real
-   `DriveClient`/`DropboxClient` CRUD surface vs. the fakes), so a custom Google client is fine.
+   `GoogleDriveClient`/`DropboxClient` CRUD surface vs. the fakes), so a custom Google client is fine.
 
 5. **The real `requestUrl` is the only swapped seam.** The shipped `obsidian` test mock rejects
    every `requestUrl`; the e2e config aliases `obsidian` to a shim whose `requestUrl` performs
@@ -70,7 +70,7 @@ is **opt-in**.
    "Documented intentional divergences"). Rather than weaken the contract, a second
    backend-class knob — alongside `computesHashOnStat` — drops the mtime-equality assertions to
    "a plausible (finite, positive) timestamp" when set `false` (the real Dropbox); mock/
-   LocalFs/Drive and all fakes keep the default `true`. This knob *replaced* an initial
+   LocalFs/Google Drive and all fakes keep the default `true`. This knob *replaced* an initial
    `mtimePrecisionMs` guess (that Dropbox merely truncated the written mtime to seconds) — the
    e2e proved the real value is the server's clock, not the written one rounded, so a
    precision relaxation could never have matched *Dropbox*. (OneDrive later turned out to be
@@ -82,7 +82,7 @@ is **opt-in**.
    when the OneDrive e2e went red on exact mtime: `OneDriveFs` PATCHes
    `fileSystemInfo.lastModifiedDateTime` after the content PUT, so the written value *is*
    preserved — but Microsoft Graph stores it at **whole-second** precision (`12345 → 12000`,
-   `99999 → 99000`). This is a third behaviour class, distinct from both Drive (exact) and
+   `99999 → 99000`). This is a third behaviour class, distinct from both Google Drive (exact) and
    Dropbox (server clock): the value round-trips, just floored. So rather than relax it to
    Dropbox's "any plausible timestamp" (which would discard the true, checkable fact that
    OneDrive keeps the written second), a third backend-class knob compares the observed and

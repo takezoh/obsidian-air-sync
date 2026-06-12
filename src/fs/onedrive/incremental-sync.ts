@@ -34,7 +34,7 @@ interface DeltaAccumulator {
  * buffer them for the checkpoint commit.
  *
  * On HTTP 410 Gone (cursor expired, resync required) it returns `needsFullScan`,
- * mirroring Drive's 410 handling — the base then full-scans and diffs by id.
+ * mirroring Google Drive's 410 handling — the base then full-scans and diffs by id.
  */
 export async function applyOneDriveDelta(ctx: OneDriveSyncContext, cursor: string): Promise<IncrementalChangesResult> {
 	const acc: DeltaAccumulator = { changedPaths: new Set<string>(), renamedPaths: [], count: 0 };

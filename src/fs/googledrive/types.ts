@@ -5,18 +5,18 @@ import type { RemoteChecksum } from "../types";
 export const FOLDER_MIME = "application/vnd.google-apps.folder";
 
 /**
- * Map a Drive file's md5Checksum to a typed RemoteChecksum.
+ * Map a Google Drive file's md5Checksum to a typed RemoteChecksum.
  * Returns undefined when absent (e.g. Google Docs have no md5Checksum).
  */
-export function toRemoteChecksum(file: DriveFile): RemoteChecksum | undefined {
+export function toRemoteChecksum(file: GoogleDriveFile): RemoteChecksum | undefined {
 	return file.md5Checksum ? { algo: "md5", value: file.md5Checksum } : undefined;
 }
 
-/** Drive-specific file record type alias */
-export type DriveFileRecord = FileRecord<DriveFile>;
+/** Google Drive-specific file record type alias */
+export type GoogleDriveFileRecord = FileRecord<GoogleDriveFile>;
 
 /** Google Drive file metadata from API response */
-export interface DriveFile {
+export interface GoogleDriveFile {
 	id: string;
 	name: string;
 	mimeType: string;
@@ -28,22 +28,22 @@ export interface DriveFile {
 }
 
 /** Response from files.list API */
-export interface DriveFileList {
-	files: DriveFile[];
+export interface GoogleDriveFileList {
+	files: GoogleDriveFile[];
 	nextPageToken?: string;
 }
 
 /** A single change from changes.list */
-export interface DriveChange {
+export interface GoogleDriveChange {
 	type: string;
 	fileId: string;
 	removed: boolean;
-	file?: DriveFile;
+	file?: GoogleDriveFile;
 }
 
 /** Response from changes.list API */
-export interface DriveChangeList {
-	changes: DriveChange[];
+export interface GoogleDriveChangeList {
+	changes: GoogleDriveChange[];
 	nextPageToken?: string;
 	newStartPageToken?: string;
 }
@@ -92,8 +92,8 @@ export function assertTokenResponse(
 	}
 }
 
-/** Assert that obj is a valid DriveFile (has required id and name) */
-export function assertDriveFile(obj: unknown): asserts obj is DriveFile {
+/** Assert that obj is a valid GoogleDriveFile (has required id and name) */
+export function assertGoogleDriveFile(obj: unknown): asserts obj is GoogleDriveFile {
 	if (
 		!obj ||
 		typeof obj !== "object" ||
@@ -104,24 +104,24 @@ export function assertDriveFile(obj: unknown): asserts obj is DriveFile {
 		!("mimeType" in obj) ||
 		typeof (obj as Record<string, unknown>).mimeType !== "string"
 	) {
-		throw new Error("Invalid file metadata from Drive API");
+		throw new Error("Invalid file metadata from Google Drive API");
 	}
 }
 
-/** Assert that obj has a files array (DriveFileList response) */
-export function assertDriveFileList(
+/** Assert that obj has a files array (GoogleDriveFileList response) */
+export function assertGoogleDriveFileList(
 	obj: unknown
-): asserts obj is DriveFileList {
+): asserts obj is GoogleDriveFileList {
 	if (
 		!obj ||
 		typeof obj !== "object" ||
 		!("files" in obj) ||
 		!Array.isArray((obj as Record<string, unknown>).files)
 	) {
-		throw new Error("Invalid file list response from Drive API");
+		throw new Error("Invalid file list response from Google Drive API");
 	}
-	for (const item of (obj as DriveFileList).files) {
-		assertDriveFile(item);
+	for (const item of (obj as GoogleDriveFileList).files) {
+		assertGoogleDriveFile(item);
 	}
 }
 
@@ -135,23 +135,23 @@ export function assertStartPageTokenResponse(
 		!("startPageToken" in obj) ||
 		typeof (obj as Record<string, unknown>).startPageToken !== "string"
 	) {
-		throw new Error("Invalid start page token response from Drive API");
+		throw new Error("Invalid start page token response from Google Drive API");
 	}
 }
 
-/** Assert that obj has a changes array (DriveChangeList response) */
-export function assertDriveChangeList(
+/** Assert that obj has a changes array (GoogleDriveChangeList response) */
+export function assertGoogleDriveChangeList(
 	obj: unknown
-): asserts obj is DriveChangeList {
+): asserts obj is GoogleDriveChangeList {
 	if (
 		!obj ||
 		typeof obj !== "object" ||
 		!("changes" in obj) ||
 		!Array.isArray((obj as Record<string, unknown>).changes)
 	) {
-		throw new Error("Invalid change list response from Drive API");
+		throw new Error("Invalid change list response from Google Drive API");
 	}
-	for (const item of (obj as DriveChangeList).changes) {
+	for (const item of (obj as GoogleDriveChangeList).changes) {
 		if (
 			!item ||
 			typeof item !== "object" ||
@@ -159,10 +159,10 @@ export function assertDriveChangeList(
 			typeof item.removed !== "boolean" ||
 			typeof item.type !== "string"
 		) {
-			throw new Error("Invalid change entry in Drive API response");
+			throw new Error("Invalid change entry in Google Drive API response");
 		}
 		if (item.file) {
-			assertDriveFile(item.file);
+			assertGoogleDriveFile(item.file);
 		}
 	}
 }

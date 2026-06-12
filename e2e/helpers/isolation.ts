@@ -1,4 +1,4 @@
-import type { DriveClient } from "../../src/fs/googledrive/client";
+import type { GoogleDriveClient } from "../../src/fs/googledrive/client";
 import type { DropboxClient } from "../../src/fs/dropbox/client";
 import type { OneDriveClient } from "../../src/fs/onedrive/client";
 
@@ -18,15 +18,15 @@ function uniqueName(prefix: string): string {
 
 // ── Google Drive ──────────────────────────────────────────────────────────
 
-/** Create the per-run parent under "root" (Drive's My Drive alias); returns its id. */
-export async function makeDriveParent(client: DriveClient): Promise<string> {
+/** Create the per-run parent under "root" (Google Drive's My Drive alias); returns its id. */
+export async function makeGoogleDriveParent(client: GoogleDriveClient): Promise<string> {
 	const folder = await client.createFolder(uniqueName("airsync-e2e"), "root");
 	return folder.id;
 }
 
 /** Create a fresh empty child folder under the parent; returns its id (per-test root). */
-export async function makeDriveChild(
-	client: DriveClient,
+export async function makeGoogleDriveChild(
+	client: GoogleDriveClient,
 	parentId: string,
 ): Promise<string> {
 	const folder = await client.createFolder(uniqueName("t"), parentId);
@@ -34,8 +34,8 @@ export async function makeDriveChild(
 }
 
 /** Trash the parent and everything under it. */
-export async function cleanupDriveParent(
-	client: DriveClient,
+export async function cleanupGoogleDriveParent(
+	client: GoogleDriveClient,
 	parentId: string,
 ): Promise<void> {
 	// Trash, not permanent-delete: the drive.file scope can't hard-delete (403).
@@ -81,7 +81,7 @@ export async function cleanupDropboxParent(
 //
 // The App Folder scope (Files.ReadWrite.AppFolder) confines everything under
 // /me/drive/special/approot, so the per-run parent is created directly inside that
-// app-root item. OneDrive addresses items by their stable driveItem id (like Drive,
+// app-root item. OneDrive addresses items by their stable driveItem id (like Google Drive,
 // unlike Dropbox's id warm-up dance), so a freshly-created folder id is usable at once.
 
 /** Create the per-run parent under the App Folder root; returns its id. */

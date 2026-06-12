@@ -12,7 +12,7 @@ import type { MixedEntity, SyncRecord, SyncActionType } from "./types";
  * reach the same boolean via several mechanisms:
  *   - mtime + size comparison       (fast path)
  *   - same-size content edit        (mtime+size match but hash differs)
- *   - remoteChecksum                (remote only — Drive md5 / pCloud content hash)
+ *   - remoteChecksum                (remote only — Google Drive md5 / pCloud content hash)
  *   - content hash                  (sha256)
  *   - conservative fallback         (undeterminable → treated as "changed")
  *
@@ -364,7 +364,7 @@ describe("mechanism invariance — the Action is stable regardless of how the pr
 			).toBe("pull");
 		});
 
-		it("via remoteChecksum (Drive md5) when mtime drifts", () => {
+		it("via remoteChecksum (Google Drive md5) when mtime drifts", () => {
 			expect(
 				decide({
 					path: "f.md",

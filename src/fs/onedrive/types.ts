@@ -157,7 +157,7 @@ export function isFolderEntry(item: OneDriveItem): boolean {
  * supported account type) returns ONLY `quickXorHash` — Microsoft dropped `sha1Hash`
  * for consumer accounts (verified against the live API) — so prefer it; it is locally
  * reproducible via {@link ../../utils/quickxor}, so it drives cross-side dedup just
- * like Drive's md5. `sha256Hash`/`sha1Hash` are kept as fallbacks for the
+ * like Google Drive's md5. `sha256Hash`/`sha1Hash` are kept as fallbacks for the
  * Business/SharePoint shape (lowercased, since Graph reports those uppercase while a
  * local digest is lowercase). Returns undefined when none is present (e.g. a folder).
  */

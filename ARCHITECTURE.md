@@ -21,7 +21,7 @@ One row per directory; see the layer diagram and per-doc references for module d
 | `sync/` | The sync pipeline and its orchestration: change tracking and detection (hot/warm/cold), the decision engine, rename optimization, plan execution (groups A–D), per-action state commit, conflict resolution and 3-way merge, the orchestrator (mutex/retry/status), the scheduler (vault events + triggers), the IndexedDB `SyncStateStore`, error classification, and the conflict-history audit writer. |
 | `fs/` | Backend-agnostic contracts and lifecycle: `IFileSystem`, `IAuthProvider`, `IBackendProvider`, `FileEntity`, the provider registry, `AuthError`, `BackendManager`, and the `ISecretStore`/token-store wrappers over Obsidian SecretStorage. |
 | `fs/local/` | `LocalFs` (Obsidian Vault API wrapper) plus the raw adapter for dot-prefixed paths. |
-| `fs/googledrive/` | The Google Drive backend: `GoogleDriveFs` with metadata cache, the REST v3 `DriveClient`, server + PKCE auth, the path↔ID `DriveMetadataCache`, incremental sync (changes.list), resumable upload, remote-vault resolution, the Drive types, and the built-in / custom OAuth providers. |
+| `fs/googledrive/` | The Google Drive backend: `GoogleDriveFs` with metadata cache, the REST v3 `GoogleDriveClient`, server + PKCE auth, the path↔ID `GoogleDriveMetadataCache`, incremental sync (changes.list), resumable upload, remote-vault resolution, the Google Drive types, and the built-in / custom OAuth providers. |
 | `fs/dropbox/` | The Dropbox backend (App Folder scope): `DropboxFs` with a relative-path-keyed `DropboxMetadataCache`, the HTTP v2 `DropboxClient`, in-plugin Authorization Code + PKCE auth (worker-less), incremental sync (`list_folder/continue` + cursor), and the `"dropbox"` `content_hash` checksum. The vault is addressed solely by its **stable folder id** (`id:<id>/<subpath>` for every operation — no absolute path is stored), so a remote move/rename of the folder keeps syncing with no migration. The current absolute path is re-resolved from the id each cycle (`get_metadata`) only to relativize `list_folder`'s absolute results into vault-relative keys, and for the settings display. |
 | `ui/` | Settings UI: the main settings tab, the backend-connection section, and Google Drive / Dropbox-specific settings. |
 | `store/` | IndexedDB plumbing: the `IDBHelper` transaction wrapper, the generic `MetadataStore<T>` file-metadata cache, and `content-codec` (deflate compression for stored 3-way merge base content). |
@@ -97,7 +97,7 @@ interface FileEntity {
   size: number;          // bytes (0 for directories)
   mtime: number;         // Unix epoch ms (0 = unknown)
   hash: string;          // SHA-256 hex ("" = not computed)
-  backendMeta?: Record<string, unknown>;  // backend-specific, e.g. { driveId } (Drive) or { dropboxId, rev } (Dropbox)
+  backendMeta?: Record<string, unknown>;  // backend-specific, e.g. { googleDriveId } (Google Drive) or { dropboxId, rev } (Dropbox)
 }
 ```
 
@@ -261,7 +261,7 @@ interface IBackendProvider {
 
 `settings.backendData` is a single flat bag holding **only the active backend's** parameters (tokens live in `SecretStorage`, keyed per backend — never in `backendData`). Switching backends hard-resets it: all params are wiped and every registered backend's plugin-owned secrets are swept (`clearPluginSecrets`), so the new backend starts disconnected and can't reuse another's token under the wrong OAuth client.
 
-Remote-vault binding is **explicit**, not automatic on connect. After auth the user either binds the convention folder `obsidian-air-sync/<Vault Name>` (`BackendManager.bindDefaultRemoteVault` → `resolveRemoteVault`, which find-or-creates it and migrates a legacy `obsidian-air-sync/<uuid>` vault if one matches) or picks any folder via the web Google Picker (`startWebFolderPick` → `completeWebFolderPick`, bound by id). The folder is the sole binding; there is no `.airsync/metadata.json`. See [docs/google-drive-backend.md](docs/google-drive-backend.md) for the Drive specifics.
+Remote-vault binding is **explicit**, not automatic on connect. After auth the user either binds the convention folder `obsidian-air-sync/<Vault Name>` (`BackendManager.bindDefaultRemoteVault` → `resolveRemoteVault`, which find-or-creates it and migrates a legacy `obsidian-air-sync/<uuid>` vault if one matches) or picks any folder via the web Google Picker (`startWebFolderPick` → `completeWebFolderPick`, bound by id). The folder is the sole binding; there is no `.airsync/metadata.json`. See [docs/google-drive-backend.md](docs/google-drive-backend.md) for the Google Drive specifics.
 
 ### IAuthProvider (fs/auth.ts)
 

@@ -83,7 +83,7 @@ export class BackendManager {
 				this.remoteFs = null;
 				this.deps.onDisconnected();
 				// Only nag about expired auth when a target was actually bound. Use the
-				// backend-agnostic identity (computed above) instead of a Drive-specific
+				// backend-agnostic identity (computed above) instead of a Google Drive-specific
 				// settings field, so this layer stays free of any one backend's shape.
 				if (newIdentity) {
 					this.deps.notify("Authentication expired. Please reconnect in settings.");

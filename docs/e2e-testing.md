@@ -40,7 +40,7 @@ redirect URI once:
 - **Google** — the built-in auth server returns tokens to `obsidian://`, which a loopback
   can't capture, so the e2e uses **your own** GCP OAuth client. In Google Cloud Console create
   an OAuth client (Desktop app, or Web app with redirect `http://localhost:53682/callback`),
-  enable the Drive API, and put its id/secret in `.env.e2e`
+  enable the Google Drive API, and put its id/secret in `.env.e2e`
   (`AIRSYNC_E2E_GOOGLE_CLIENT_ID` / `_CLIENT_SECRET`). The Google e2e refreshes with this same
   client; with only a refresh token (no id/secret) it falls back to the built-in auth server.
 - **Dropbox** — on the app at <https://www.dropbox.com/developers/apps> add
@@ -109,7 +109,7 @@ npm run test:e2e:onedrive  # OneDrive only
 
 - **Dropbox mtime.** `DropboxFs` reports `server_modified` (the upload wall-clock) as `mtime`,
   so a written mtime does not round-trip — the fake echoes it back, the live backend does not.
-  The Dropbox suite therefore runs the contract with `preservesWrittenMtime: false` (Drive
+  The Dropbox suite therefore runs the contract with `preservesWrittenMtime: false` (Google Drive
   keeps the default `true`), relaxing only the mtime-equality checks to "a plausible
   timestamp." mtime is not Dropbox's change-detection signal (that is the content-hash
   `remoteChecksum`), so nothing load-bearing is dropped. This is the documented divergence
@@ -125,7 +125,7 @@ npm run test:e2e:onedrive  # OneDrive only
   the duplicate path in conflict resolution. OneDrive runs under the App Folder scope, so the
   throwaway `airsync-e2e-*` tree is created inside `special/approot`.
 - **Leftover folders.** Cleanup runs in `afterAll` but is **best-effort** — it warns instead
-  of failing the run (Drive's `drive.file` scope can't hard-delete and may 403 on trash under
+  of failing the run (Google Drive's `drive.file` scope can't hard-delete and may 403 on trash under
   load). Folders are uniquely named, so delete any stray `airsync-e2e-*` from the test account
   by hand when needed.
 - **Why it is not in CI.** Real network, credentials, and quota make it unsuitable as a gate;

@@ -43,11 +43,11 @@ An already-synced file is skipped; an incompletely-synced one is re-pushed/-pull
 ⇒ committed ⇒ converged — via whichever of the two paths the failure mode selects.
 
 The Google Drive backend additionally keeps an **IndexedDB metadata cache** (the
-`path↔id` map in `DriveMetadataCache`, persisted via `MetadataStore`). **This, too, is
+`path↔id` map in `GoogleDriveMetadataCache`, persisted via `MetadataStore`). **This, too, is
 _not_ authoritative** (distinct from C: the cache is a derivable snapshot, C is live
 divergence). It is a performance optimization that lets
 `list`/`stat`/`read`/`getChangedPaths` avoid a network re-list, and it is fully
-derivable: a `fullScan()` rebuilds it from Drive (the real authority).
+derivable: a `fullScan()` rebuilds it from Google Drive (the real authority).
 
 We have repeatedly introduced bugs by **treating this optimization as if it were
 authoritative state and over-engineering its persistence**:
@@ -66,7 +66,7 @@ authoritative state and over-engineering its persistence**:
 
 ## Decision
 
-1. **The metadata cache is non-authoritative.** Authority = Drive (remote truth) + **A**
+1. **The metadata cache is non-authoritative.** Authority = Google Drive (remote truth) + **A**
    (cursor) + **B** (`SyncRecord`). Never reason about correctness from the cache; reason
    from A + B + "re-run converges."
 
@@ -81,7 +81,7 @@ authoritative state and over-engineering its persistence**:
 3. **The cache has exactly one invariant: it must never be committed _ahead of_ (nor
    _behind_) the committed cursor.** This is now **structural**: the cache and the cursor
    live in the **same IndexedDB store** and commit in **one transaction**
-   (`commitDriveCache` → `MetadataStore.saveAll` / `commitIncremental`), so they cannot
+   (`commitGoogleDriveCache` → `MetadataStore.saveAll` / `commitIncremental`), so they cannot
    diverge — a failed flush lands neither. A failed flush still **propagates** (the cycle
    surfaces an error and the next run re-detects the un-flushed work), but there is no
    longer a two-store ordering to get wrong, nor a buffer-clear that could outrun a

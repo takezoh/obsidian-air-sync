@@ -1,7 +1,7 @@
 import { FOLDER_MIME } from "./types";
-import type { DriveFile } from "./types";
+import type { GoogleDriveFile } from "./types";
 import { LIST_PAGE_CAP } from "./client";
-import type { DriveClient } from "./client";
+import type { GoogleDriveClient } from "./client";
 import type { RenamePair } from "../types";
 import type { Logger } from "../../logging/logger";
 import type { AbstractMetadataCache } from "../caching/metadata-cache";
@@ -14,13 +14,13 @@ import type { IncrementalChangesResult } from "../caching/remote-fs";
  * so the persisted cache never runs ahead of the committed delta cursor.
  */
 export interface IncrementalSyncContext {
-	cache: AbstractMetadataCache<DriveFile>;
-	client: DriveClient;
+	cache: AbstractMetadataCache<GoogleDriveFile>;
+	client: GoogleDriveClient;
 	logger?: Logger;
 }
 
 /**
- * Apply incremental changes from the Drive changes.list API.
+ * Apply incremental changes from the Google Drive changes.list API.
  * Updates the metadata cache and returns the new page token.
  * Falls back to full re-scan (by setting initialized=false) on 410.
  *

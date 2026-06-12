@@ -114,7 +114,7 @@ describe("hasRemoteChanged", () => {
 		expect(hasRemoteChanged(file, record)).toBe(true);
 	});
 
-	it("returns false when mtime differs but md5 matches (Drive mtime jitter)", () => {
+	it("returns false when mtime differs but md5 matches (Google Drive mtime jitter)", () => {
 		const file = makeFile({ mtime: 1001, remoteChecksum: { algo: "md5", value: "aaa" } });
 		const record = makeRecord({ remoteMtime: 1000, remoteChecksum: { algo: "md5", value: "aaa" } });
 		expect(hasRemoteChanged(file, record)).toBe(false);

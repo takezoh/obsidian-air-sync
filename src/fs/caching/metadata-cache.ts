@@ -15,9 +15,9 @@ export interface FileChangeResult {
  * Owns the data structures and algorithms shared by every such backend: the
  * path↔id maps, folder tracking, the parent→children index, tree mutation
  * (rename/move/delete-subtree), and parent-chain path resolution. None of that
- * is Drive-specific — Drive's only contribution is *reading fields off its own
+ * is Google Drive-specific — Google Drive's only contribution is *reading fields off its own
  * file shape* and *projecting a `FileEntity`*. Concrete backends subclass this
- * and supply those four extractors plus `toEntity`; the multi-parent (Drive)
+ * and supply those four extractors plus `toEntity`; the multi-parent (Google Drive)
  * vs single-parent (Dropbox/pCloud) difference is absorbed by `extractParentIds`
  * returning an array — one element for single-parent backends.
  */
@@ -39,12 +39,12 @@ export abstract class AbstractMetadataCache<TFile> {
 		this.logger = logger;
 	}
 
-	// ── Per-backend seams (the only Drive/Dropbox/pCloud-specific parts) ──
+	// ── Per-backend seams (the only Google Drive/Dropbox/pCloud-specific parts) ──
 
-	/** Stable backend id for this entry (Drive `file.id`, pCloud `"d…"/"f…"`, …). */
+	/** Stable backend id for this entry (Google Drive `file.id`, pCloud `"d…"/"f…"`, …). */
 	protected abstract extractId(file: TFile): string;
 	/**
-	 * Parent ids of this entry. Multi-parent backends (Drive) return all of them;
+	 * Parent ids of this entry. Multi-parent backends (Google Drive) return all of them;
 	 * single-parent backends return a one-element array. Empty ⇒ a root-level item.
 	 */
 	protected abstract extractParentIds(file: TFile): string[];

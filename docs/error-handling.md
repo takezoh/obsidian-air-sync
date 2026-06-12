@@ -49,7 +49,7 @@ Google Drive rate limits manifest as:
 
 Both are retried with the `Retry-After` header value when available, falling back to exponential backoff.
 
-A transport-level 401 auto-refresh-retry happens inside `DriveClient.request()` before errors reach this orchestrator-level retry loop — see [google-drive-backend.md § Transport-level 401 retry](google-drive-backend.md#transport-level-401-retry).
+A transport-level 401 auto-refresh-retry happens inside `GoogleDriveClient.request()` before errors reach this orchestrator-level retry loop — see [google-drive-backend.md § Transport-level 401 retry](google-drive-backend.md#transport-level-401-retry).
 
 ## Recovery scenarios
 
@@ -61,7 +61,7 @@ A transport-level 401 auto-refresh-retry happens inside `DriveClient.request()` 
 | Auth error | `AuthError` causes immediate abort. On a 400/401 token-refresh failure, `GoogleAuthBase.handleRefreshError()` records `authFailedAt = Date.now()`; for the next `AUTH_FAILED_COOLDOWN` (60 s) `getAccessToken()` short-circuits and throws `AuthError(401)` without attempting a refresh. After the cooldown a refresh is retried. Reconnecting (`setTokens()`) or any successful token store/refresh (`storeTokenResponse()`) resets `authFailedAt = 0`. Non-400/401 refresh errors are re-thrown unchanged and do not arm the cooldown. |
 | Individual file error | Caught per-action; the failed action is recorded in `result.failed`, other actions continue, status set to `"partial_error"`. See [sync-pipeline.md § Execution groups](sync-pipeline.md#execution-groups) and [Per-file error isolation](#per-file-error-isolation) below. |
 | Mass deletion | No volume-based abort; erroneous deletions are prevented structurally. See [sync-pipeline.md § Deletion safety](sync-pipeline.md#deletion-safety). |
-| Stale cache (Drive) | `withCacheMutex()` verifies the file ID hasn't changed during I/O. If stale, the cache update is skipped with a warning. |
+| Stale cache (Google Drive) | `withCacheMutex()` verifies the file ID hasn't changed during I/O. If stale, the cache update is skipped with a warning. |
 
 ## Per-file error isolation
 

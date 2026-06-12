@@ -145,7 +145,7 @@ export class GoogleDriveCustomSettingsRenderer implements IBackendSettingsRender
 
 		new Setting(containerEl)
 			.setName("Scope")
-			.setDesc("Scope for drive access")
+			.setDesc("Scope for Google Drive access")
 			.addText((text) =>
 				text
 					.setPlaceholder(DEFAULT_CUSTOM_SCOPE)

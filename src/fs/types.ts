@@ -50,12 +50,12 @@ export interface FileEntity {
 	 * Remote-provided content checksum, tagged with its algorithm.
 	 *
 	 * Remote backends that return `hash: ""` expose a stable checksum here
-	 * instead (e.g. Drive md5, pCloud's opaque content hash). The sync engine
+	 * instead (e.g. Google Drive md5, pCloud's opaque content hash). The sync engine
 	 * uses it for temporal change detection (remote-now vs last-sync) and, when
 	 * the algo is locally computable (not `"opaque"`), for cross-side dedup.
 	 */
 	remoteChecksum?: RemoteChecksum;
-	/** Backend-specific metadata the sync engine does not interpret (e.g. Drive/pCloud file ID) */
+	/** Backend-specific metadata the sync engine does not interpret (e.g. Google Drive/pCloud file ID) */
 	backendMeta?: Record<string, unknown>;
 }
 

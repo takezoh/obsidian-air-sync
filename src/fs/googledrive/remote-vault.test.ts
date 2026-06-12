@@ -1,22 +1,22 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { resolveGDriveRemoteVault } from "./remote-vault";
+import { resolveGoogleDriveRemoteVault } from "./remote-vault";
 import { REMOTE_VAULT_ROOT } from "../remote-vault-contract";
 import { FOLDER_MIME } from "./types";
-import type { DriveFile } from "./types";
-import type { DriveClient } from "./client";
+import type { GoogleDriveFile } from "./types";
+import type { GoogleDriveClient } from "./client";
 
 vi.mock("obsidian");
 
-function makeDriveFile(overrides: Partial<DriveFile> & { id: string; name: string }): DriveFile {
+function makeGoogleDriveFile(overrides: Partial<GoogleDriveFile> & { id: string; name: string }): GoogleDriveFile {
 	return { mimeType: "application/octet-stream", ...overrides };
 }
 
-function makeFolder(id: string, name: string): DriveFile {
-	return makeDriveFile({ id, name, mimeType: FOLDER_MIME });
+function makeFolder(id: string, name: string): GoogleDriveFile {
+	return makeGoogleDriveFile({ id, name, mimeType: FOLDER_MIME });
 }
 
 function createMockClient(): {
-	client: DriveClient;
+	client: GoogleDriveClient;
 	findChildByName: ReturnType<typeof vi.fn>;
 	createFolder: ReturnType<typeof vi.fn>;
 	getFile: ReturnType<typeof vi.fn>;
@@ -29,12 +29,12 @@ function createMockClient(): {
 		findChildByName,
 		createFolder,
 		getFile,
-	} as unknown as DriveClient;
+	} as unknown as GoogleDriveClient;
 
 	return { client, findChildByName, createFolder, getFile };
 }
 
-describe("resolveGDriveRemoteVault", () => {
+describe("resolveGoogleDriveRemoteVault", () => {
 	let mock: ReturnType<typeof createMockClient>;
 
 	beforeEach(() => {
@@ -45,7 +45,7 @@ describe("resolveGDriveRemoteVault", () => {
 		it("reuses the cached folder after verifying it exists, without touching the root", async () => {
 			mock.getFile.mockResolvedValueOnce(makeFolder("vault-folder-id", "My Vault"));
 
-			const result = await resolveGDriveRemoteVault(mock.client, "My Vault", "vault-folder-id");
+			const result = await resolveGoogleDriveRemoteVault(mock.client, "My Vault", "vault-folder-id");
 
 			expect(result.backendUpdates).toEqual({ remoteVaultFolderId: "vault-folder-id" });
 			// Cached path goes straight to getFile — no discovery, no metadata writes.
@@ -54,11 +54,11 @@ describe("resolveGDriveRemoteVault", () => {
 		});
 
 		it("throws with original error detail when getFile fails", async () => {
-			mock.getFile.mockRejectedValueOnce(new Error("Drive API getFile failed: File not found"));
+			mock.getFile.mockRejectedValueOnce(new Error("Google Drive API getFile failed: File not found"));
 
 			await expect(
-				resolveGDriveRemoteVault(mock.client, "My Vault", "deleted-folder-id"),
-			).rejects.toThrow("Failed to access remote vault folder: Drive API getFile failed: File not found");
+				resolveGoogleDriveRemoteVault(mock.client, "My Vault", "deleted-folder-id"),
+			).rejects.toThrow("Failed to access remote vault folder: Google Drive API getFile failed: File not found");
 		});
 	});
 
@@ -71,7 +71,7 @@ describe("resolveGDriveRemoteVault", () => {
 			mock.findChildByName.mockResolvedValueOnce(null);
 			mock.createFolder.mockResolvedValueOnce(makeFolder("new-vault-id", "My Vault"));
 
-			const result = await resolveGDriveRemoteVault(mock.client, "My Vault", undefined);
+			const result = await resolveGoogleDriveRemoteVault(mock.client, "My Vault", undefined);
 
 			expect(result.backendUpdates).toEqual({ remoteVaultFolderId: "new-vault-id" });
 			expect(mock.createFolder).toHaveBeenCalledWith(REMOTE_VAULT_ROOT, "root");
@@ -84,7 +84,7 @@ describe("resolveGDriveRemoteVault", () => {
 			// resolveByName: found by name.
 			mock.findChildByName.mockResolvedValueOnce(makeFolder("named-id", "My Vault"));
 
-			const result = await resolveGDriveRemoteVault(mock.client, "My Vault", undefined);
+			const result = await resolveGoogleDriveRemoteVault(mock.client, "My Vault", undefined);
 
 			expect(result.backendUpdates).toEqual({ remoteVaultFolderId: "named-id" });
 			expect(mock.createFolder).not.toHaveBeenCalled();

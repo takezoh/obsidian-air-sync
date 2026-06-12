@@ -1,4 +1,4 @@
-import type { DriveClient } from "./client";
+import type { GoogleDriveClient } from "./client";
 import type { Logger } from "../../logging/logger";
 import { isHttpError } from "./incremental-sync";
 
@@ -11,7 +11,7 @@ const MAX_PATH_DEPTH = 50;
  * the walk recognize "reached the top" cleanly instead of mistaking the
  * (unreadable-by-design) root for a truncated ancestor.
  */
-async function resolveRootId(client: DriveClient): Promise<string | undefined> {
+async function resolveRootId(client: GoogleDriveClient): Promise<string | undefined> {
 	try {
 		return (await client.getFile("root")).id;
 	} catch {
@@ -20,7 +20,7 @@ async function resolveRootId(client: DriveClient): Promise<string | undefined> {
 }
 
 /**
- * Build a human-readable "/"-joined path for a Drive folder by walking its
+ * Build a human-readable "/"-joined path for a Google Drive folder by walking its
  * parent chain from the folder up toward My Drive (e.g. "Work/Projects/Notes").
  *
  * Why the result can be partial: the built-in backend uses the `drive.file`
@@ -37,7 +37,7 @@ async function resolveRootId(client: DriveClient): Promise<string | undefined> {
  * Returns null only when the bound folder itself cannot be read.
  */
 export async function resolveFolderPath(
-	client: DriveClient,
+	client: GoogleDriveClient,
 	folderId: string,
 	logger?: Logger,
 ): Promise<string | null> {
@@ -45,7 +45,7 @@ export async function resolveFolderPath(
 	try {
 		file = await client.getFile(folderId);
 	} catch (err) {
-		logger?.warn("Could not read bound Drive folder for path display", {
+		logger?.warn("Could not read bound Google Drive folder for path display", {
 			folderId,
 			message: err instanceof Error ? err.message : String(err),
 		});
@@ -75,7 +75,7 @@ export async function resolveFolderPath(
 				// Without rootId we can't tell the root from a real ancestor, so we
 				// show the clean partial path instead of a misleading marker.
 				if (rootId !== undefined) {
-					logger?.info("Drive ancestor not accessible under granted scope; path is partial", {
+					logger?.info("Google Drive ancestor not accessible under granted scope; path is partial", {
 						parentId,
 					});
 					truncated = true;
