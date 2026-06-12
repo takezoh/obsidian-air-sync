@@ -50,7 +50,7 @@ const DEFAULT_PCLOUD_DATA: PCloudBackendData = {
  */
 export class PCloudProvider implements IBackendProvider {
 	readonly type = BACKEND_TYPE;
-	readonly displayName = "pCloud";
+	readonly displayName = "pCloud (Preview)";
 	readonly auth: PCloudAuthProvider;
 
 	constructor(private secretStore: ISecretStore) {

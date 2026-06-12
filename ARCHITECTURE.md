@@ -23,8 +23,9 @@ One row per directory; see the layer diagram and per-doc references for module d
 | `fs/local/` | `LocalFs` (Obsidian Vault API wrapper) plus the raw adapter for dot-prefixed paths. |
 | `fs/googledrive/` | The Google Drive backend: `GoogleDriveFs` with metadata cache, the REST v3 `GoogleDriveClient`, server + PKCE auth, the path↔ID `GoogleDriveMetadataCache`, incremental sync (changes.list), resumable upload, remote-vault resolution, the Google Drive types, and the built-in / custom OAuth providers. |
 | `fs/dropbox/` | The Dropbox backend (App Folder scope): `DropboxFs` with a relative-path-keyed `DropboxMetadataCache`, the HTTP v2 `DropboxClient`, in-plugin Authorization Code + PKCE auth (worker-less), incremental sync (`list_folder/continue` + cursor), and the `"dropbox"` `content_hash` checksum. The vault is addressed solely by its **stable folder id** (`id:<id>/<subpath>` for every operation — no absolute path is stored), so a remote move/rename of the folder keeps syncing with no migration. The current absolute path is re-resolved from the id each cycle (`get_metadata`) only to relativize `list_folder`'s absolute results into vault-relative keys, and for the settings display. |
+| `fs/onedrive/` | The OneDrive backend (App Folder scope, personal Microsoft accounts): `OneDriveFs` with `OneDriveMetadataCache`, the Microsoft Graph v1.0 `OneDriveClient` (+ resumable upload session), worker-less Authorization Code + PKCE auth, incremental sync (`/delta`), and the provider. Like Google Drive it addresses items by **stable driveItem id**; change detection uses Microsoft's QuickXorHash (`remoteChecksum.algo === "quickxor"`). |
 | `fs/pcloud/` | The pCloud backend: `PCloudFs` with metadata cache, the JSON `PCloudClient` (hand-built multipart upload), code-flow OAuth (long-lived token, no refresh), the path↔id `PCloudMetadataCache`, incremental sync (account-wide `diff`), and the provider. Content change detection uses pCloud's opaque content hash (`remoteChecksum.algo === "opaque"`). |
-| `ui/` | Settings UI: the main settings tab, the backend-connection section, and the Google Drive / Dropbox / pCloud backend settings. |
+| `ui/` | Settings UI: the main settings tab, the backend-connection section, and the Google Drive / Dropbox / OneDrive / pCloud backend settings. |
 | `store/` | IndexedDB plumbing: the `IDBHelper` transaction wrapper, the generic `MetadataStore<T>` file-metadata cache, and `content-codec` (deflate compression for stored 3-way merge base content). |
 | `logging/` | `Logger` — structured log writer (`.airsync/logs/`). |
 | `queue/` | Concurrency primitives: `AsyncPool` (bounded concurrency) and `AsyncMutex`. |
@@ -79,10 +80,10 @@ One row per directory; see the layer diagram and per-doc references for module d
      │  commitAction()  (per action)      │  StateCommitter
      └───────────────┬────────────────────┘
                      │
-         ┌─────────────────────────────────────┐
-         │             IFileSystem             │
-         │  LocalFs │ GoogleDriveFs │ DropboxFs  │
-         └─────────────────────────────────────┘
+         ┌───────────────────────────────────────────────────────────────┐
+         │                          IFileSystem                          │
+         │  LocalFs │ GoogleDriveFs │ DropboxFs │ OneDriveFs │ PCloudFs  │
+         └───────────────────────────────────────────────────────────────┘
 ```
 
 `runSync` early-returns when no remote backend is present, the backend is connecting, or layout is not ready; it serializes via an `AsyncMutex`. A sync arriving while one runs sets a `syncPending` flag and the running cycle re-runs via a `do/while` loop (coalescing). Each cycle retries up to `MAX_RETRIES = 3`: `AuthError` (status 401) and a non-rate-limit HTTP 403 abort the whole sync immediately; HTTP 404 breaks the retry loop without special handling. For 429 or a rate-limit 403 carrying a `Retry-After` header, delay = `retryAfter * 1000` ms; otherwise exponential backoff with jitter = `2^(attempt-1) * 1000 * (0.5 + Math.random())` ms. See [docs/error-handling.md](docs/error-handling.md) for the full classification/recovery table.
@@ -98,7 +99,7 @@ interface FileEntity {
   size: number;          // bytes (0 for directories)
   mtime: number;         // Unix epoch ms (0 = unknown)
   hash: string;          // SHA-256 hex ("" = not computed)
-  backendMeta?: Record<string, unknown>;  // backend-specific, e.g. { googleDriveId } (Google Drive) or { dropboxId, rev } (Dropbox)
+  backendMeta?: Record<string, unknown>;  // backend-specific, e.g. { googleDriveId } (Google Drive), { dropboxId, rev } (Dropbox), or { pcloudId } (pCloud)
 }
 ```
 
@@ -239,7 +240,7 @@ Abstraction for a remote storage backend. main.ts and sync/ never import backend
 
 ```typescript
 interface IBackendProvider {
-  readonly type: string;             // "googledrive", "googledrive-custom", "dropbox". Stable, unique registry key;
+  readonly type: string;             // "googledrive", "googledrive-custom", "dropbox", "onedrive", "pcloud". Stable, unique registry key;
                                      // also indexes settings.backendData and per-backend secrets. Immutable once published.
   readonly displayName: string;
   readonly auth: IAuthProvider;
@@ -274,7 +275,7 @@ interface IAuthProvider {
 }
 ```
 
-The provider registry (`fs/registry.ts`) maps backend types to provider instances. New backends register here; no changes needed elsewhere. `initRegistry(secretStore)` must be called once during plugin load (`main.ts` onload) before any `getBackendProvider` call; it injects `ISecretStore` into the provider constructors. Until then the registry is empty and `getBackendProvider` returns undefined. Built-in providers: `GoogleDriveProvider` (type `googledrive`), `GoogleDriveCustomProvider` (type `googledrive-custom`), `DropboxProvider` (type `dropbox`), and `PCloudProvider` (type `pcloud`). On a duplicate `type`, the first registration wins (later ones are skipped in the type lookup).
+The provider registry (`fs/registry.ts`) maps backend types to provider instances. New backends register here; no changes needed elsewhere. `initRegistry(secretStore)` must be called once during plugin load (`main.ts` onload) before any `getBackendProvider` call; it injects `ISecretStore` into the provider constructors. Until then the registry is empty and `getBackendProvider` returns undefined. Built-in providers: `GoogleDriveProvider` (type `googledrive`), `GoogleDriveCustomProvider` (type `googledrive-custom`), `DropboxProvider` (type `dropbox`), `OneDriveProvider` (type `onedrive`), and `PCloudProvider` (type `pcloud`). On a duplicate `type`, the first registration wins (later ones are skipped in the type lookup).
 
 ## Detailed documentation
 
@@ -282,5 +283,7 @@ The provider registry (`fs/registry.ts`) maps backend types to provider instance
 - [Conflict resolution](docs/conflict-resolution.md) -- strategies, 3-way merge, conflict history
 - [Google Drive backend](docs/google-drive-backend.md) -- metadata cache, authentication, and the sole owner of incremental sync / cache invalidation
 - [Dropbox backend](docs/dropbox-backend.md) -- App Folder scope, id-only addressing, worker-less PKCE auth, in-app folder modal
+- [OneDrive backend](docs/onedrive-backend.md) -- App Folder scope, id addressing, worker-less PKCE auth, in-app folder modal, QuickXorHash
+- [pCloud backend](docs/pcloud-backend.md) -- folder-id addressing, account-wide `diff` delta, long-lived token (no refresh), opaque content hash
 - [Error handling](docs/error-handling.md) -- resilience: error classification, retry, rate limiting (recovery scenarios cross-reference the sync pipeline)
 - [OAuth worker & auth site](https://github.com/takezoh/air-sync-auth) -- server-side Google token exchange plus the static site (privacy/terms, the Google custom-OAuth callback, and the Google Drive Picker page), in the dedicated `air-sync-auth` repo (kept out of this plugin's tree). Dropbox no longer uses this site — its OAuth returns straight to `obsidian://air-sync-auth` and its folder pick is an in-app modal.

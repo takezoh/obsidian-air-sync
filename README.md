@@ -7,6 +7,7 @@ Works on desktop and mobile, powered by your own cloud storage:
 - **Google Drive**
 - **Dropbox** — *Preview*
 - **OneDrive** — *Preview* (personal Microsoft accounts only)
+- **pCloud** — *Preview*
 
 ## What you get
 
@@ -21,7 +22,7 @@ Works on desktop and mobile, powered by your own cloud storage:
 1. Open the plugin settings (**Settings → Air Sync**).
 2. Pick your backend if more than one is available.
 3. Click **Connect**, then approve access in your browser.
-4. Choose where to sync: use the **default folder** (named after your vault), or **pick an existing folder**.
+4. Choose where to sync: use the **default folder** (named after your vault), or **pick an existing folder** (folder picking isn't available on pCloud, which always uses the default folder).
 
 That's it — Air Sync syncs into that folder from then on.
 
@@ -84,10 +85,11 @@ Air Sync connects only to the cloud storage you choose, to sync your files:
 - **Google Drive** — `googleapis.com` for sync; sign-in happens on `accounts.google.com`, and a small auth server (`auth-airsync.takezo.dev`) performs the sign-in token exchange.
 - **Dropbox** — `api.dropboxapi.com` / `content.dropboxapi.com` for sync; sign-in happens on `dropbox.com` and returns directly to Obsidian (no relay or picker page — the folder is chosen in-app).
 - **OneDrive** — `graph.microsoft.com` for sync; sign-in happens on `login.microsoftonline.com` and returns directly to Obsidian (no relay or picker page — the folder is chosen in-app). Personal Microsoft accounts only.
+- **pCloud** — `api.pcloud.com` or `eapi.pcloud.com` (whichever region your account lives in) for sync, plus a per-download content host under `pcloud.com` (returned by the API when fetching a file); sign-in happens on `my.pcloud.com`, and a small auth server (`auth-airsync.takezo.dev`) completes the sign-in token exchange.
 
 Your vault data is sent only to your chosen storage provider — never to the auth, redirect, or picker pages.
 
-Air Sync only ever sees the folders it created — never the rest of your Google Drive, Dropbox, or OneDrive. (On OneDrive it uses the App Folder, so it can only access its own folder.)
+Air Sync only ever sees the folders it created — never the rest of your Google Drive, Dropbox, or OneDrive. (On OneDrive it uses the App Folder, so it can only access its own folder.) pCloud is the exception: its sign-in grants account-wide access because pCloud offers no app-folder scope. Air Sync only reads and writes file contents inside the `obsidian-air-sync/<your vault>` folder it creates; to detect remote changes it polls pCloud's account-wide change feed — which can surface the names of items changed elsewhere in your account — and ignores everything outside its own folder.
 
 ## Disclaimer
 
