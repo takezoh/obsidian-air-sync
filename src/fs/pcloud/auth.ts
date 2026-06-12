@@ -15,7 +15,7 @@ const BACKEND_TYPE = "pcloud";
  * Must match the worker's `PCLOUD_CLIENT_ID` var. Register the app at
  * https://docs.pcloud.com/ and set both this constant and `oauth-worker`'s var.
  */
-const PCLOUD_CLIENT_ID = "REPLACE_WITH_PCLOUD_CLIENT_ID";
+const PCLOUD_CLIENT_ID = "sx5zHd0QG7X";
 
 interface PCloudCallbackParams {
 	access_token: string;
