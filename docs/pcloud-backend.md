@@ -27,6 +27,70 @@ pCloud-specific.
 > unchanged. Either way Air Sync only ever addresses the bound vault folder and its
 > descendants.
 
+## Differences from the other backends
+
+pCloud shares the id-addressed, checkpoint-committing machinery
+(`CachingRemoteFs` + `AbstractMetadataCache`, ADR 0001) with Google Drive and
+OneDrive, so most of its behaviour is identical to theirs. The table gathers the
+points where it diverges; each is detailed in the section its row links to.
+
+| Dimension | Google Drive | Dropbox | OneDrive | pCloud |
+|---|---|---|---|---|
+| Addressing | file id (single parent) | folder-id-relative path | item id (single parent) | folder/file id (single parent) |
+| Remote checksum | `md5Checksum` | `content_hash` (4 MiB block tree) | `quickXorHash` | opaque 64-bit `hash` |
+| Locally reproducible → [cross-side dedup](#change-detection) | yes | yes | yes | **no** |
+| [Incremental delta](#incremental-sync) | `changes.list` + token | `list_folder/continue` + cursor | `/delta` + token | account-wide `diff` — Full-access apps only |
+| Delta feed scope | app-scoped (`drive.file`) | folder-rooted | App Folder (`approot`) | **account-wide & path-less** → filter to subtree, reverse-resolve deletes by id |
+| Shipped app has a delta? | yes | yes | yes | **no** — Specific-folder-only → result `2096` → cold reconcile every cycle |
+| [Token model](#authentication) | access + refresh, expiry, proactive refresh | access + refresh, expiry | access + refresh, expiry (`offline_access`) | **long-lived access only — no refresh, no expiry** (reactive re-auth) |
+| Access scoping | `drive.file` scope | App Folder permission | `Files.ReadWrite.AppFolder` scope | **app-level access mode — no `scope` param at authorize** |
+| Error signal | HTTP status | HTTP status | HTTP status | **HTTP 200 + non-zero `result`** |
+| [Client retry/backoff](#pcloudclient) | 401 → refresh+retry | 401 refresh + 429 backoff | 401 refresh + 429 backoff | **none — left to the orchestrator** |
+| Region | single | single | single | **US / EU host, pinned at connect via callback `hostname`** |
+| Folder picker | Drive Picker | Dropbox Chooser | none | **none** — fixed convention folder |
+
+A few of these are worth spelling out.
+
+- **Incremental sync is doubly different.** When `diff` *is* available (a
+  Full-access app) it is an **account-wide, path-less** event log — unlike the
+  pre-scoped feeds of the other three — so events are filtered to the bound
+  subtree and deletes reverse-resolved id→path through the cache. But the shipped
+  app is **Specific folder only**, for which `diff` returns result `2096`, so this
+  backend has **no incremental delta at all** and cold-reconciles every cycle (a
+  recursive `listfolder` × baseline join). No other backend lacks a delta. See
+  [Incremental sync](#incremental-sync) and the access-mode note above.
+
+- **Auth carries no refresh token and no scope param.** pCloud issues a single
+  long-lived access token (no refresh, no `expires_in`), so only the `access`
+  secret is stored and expiry is reactive (an auth-class `result` → `AuthError` →
+  reconnect). Access is governed by the app's *access mode*, set on the app, not
+  by a scope requested at authorize time. The callback also carries `hostname` for
+  **region pinning** (US `api.pcloud.com` / EU `eapi.pcloud.com`). See
+  [Authentication](#authentication).
+
+- **Other pCloud-only quirks:** logical errors arrive as a non-zero `result` in an
+  HTTP-200 body (`assertOk` in `types.ts`); the client has **no retry/backoff** of
+  its own; uploads are **hand-built multipart** because `requestUrl` has no
+  `FormData`; and a **local vault rename renames the remote folder** (unlike
+  OneDrive — see [Remote vault resolution](#remote-vault-resolution--default)).
+
+### Why there is no cross-side dedup — and why `checksumfile` stays unused
+
+pCloud's opaque `hash` (see [Change detection](#change-detection)) drives temporal
+change detection for free but cannot be reproduced from local bytes, so — unlike
+Google Drive's md5, Dropbox's `content_hash`, or OneDrive's QuickXorHash — it
+can't match a local file against a remote one without downloading. pCloud *does*
+expose a `checksumfile` API returning a locally-computable SHA-1 (SHA-256 on the
+US region), which could seed a `{ algo: "sha1" }` `remoteChecksum` and enable
+dedup. It is **deliberately left unimplemented**: its only payoff is cross-side
+dedup on the **first sync** when an identical vault already exists on both sides —
+a one-time scenario that adds nothing to steady-state sync — while wiring it in
+would cost an extra **per-file** API call (it does not ride along on
+`listfolder`/`stat`/`diff` the way the opaque hash does) plus an `IFileSystem`
+capability to fetch a remote digest on demand. An initial-sync-only benefit
+doesn't justify that, so the opaque hash remains the sole checksum. (Decided
+2026-06-12.)
+
 ## PCloudFs
 
 `PCloudFs` (`fs/pcloud/index.ts`) extends `CachingRemoteFs<PCloudEntry>`. The
