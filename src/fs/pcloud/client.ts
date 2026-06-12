@@ -41,8 +41,10 @@ function buildMultipartBody(filename: string, content: ArrayBuffer): { body: Arr
 /**
  * Low-level pCloud HTTP JSON API client.
  *
- * Uses Obsidian's `requestUrl` (never `fetch`). Authentication is a long-lived
- * `auth=<token>` query param on every call; the API host (US `api.pcloud.com`
+ * Uses Obsidian's `requestUrl` (never `fetch`). Authentication is the long-lived
+ * OAuth2 token as an `access_token=<token>` query param on every call (NOT `auth=`,
+ * which is pCloud's separate getauth/digest token — an OAuth token sent as `auth`
+ * is rejected with result 2000 "Log in failed"); the API host (US `api.pcloud.com`
  * or EU `eapi.pcloud.com`) is read from `getApiHost` on every request, so the
  * region pinned at connect time is honored for the client's whole lifetime.
  * pCloud returns HTTP 200 even on logical errors, so every JSON response is
@@ -57,7 +59,7 @@ export class PCloudClient {
 
 	private buildUrl(method: string, params: Params): string {
 		const qs = new URLSearchParams();
-		qs.set("auth", this.getToken());
+		qs.set("access_token", this.getToken());
 		for (const [k, v] of Object.entries(params)) {
 			if (v !== undefined) qs.set(k, String(v));
 		}

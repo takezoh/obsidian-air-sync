@@ -35,13 +35,13 @@ describe("PCloudClient error handling", () => {
 });
 
 describe("PCloudClient request shape", () => {
-	it("attaches the auth token and folderid/recursive as query params", async () => {
+	it("attaches the access_token and folderid/recursive as query params", async () => {
 		const spy = (await spyRequestUrl()).mockResolvedValue(mockRes({ result: 0, metadata: pcFolder(0, "/", 0, []) }));
 		const client = await makeClient("secret-token");
 		await client.listFolder("0", true);
 		const opts = spy.mock.calls[0]![0] as RequestUrlParam;
 		expect(opts.url).toContain("/listfolder?");
-		expect(opts.url).toContain("auth=secret-token");
+		expect(opts.url).toContain("access_token=secret-token");
 		expect(opts.url).toContain("folderid=0");
 		expect(opts.url).toContain("recursive=1");
 	});
