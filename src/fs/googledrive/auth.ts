@@ -2,16 +2,12 @@ import { requestUrl } from "obsidian";
 import type { Logger } from "../../logging/logger";
 import { assertTokenResponse } from "./types";
 import { BaseOAuthTokenManager, buildOAuthState, computeS256Challenge, generateRandomString } from "../oauth-pkce";
+import { GOOGLE_DRIVE_AUTH, DEFAULT_CUSTOM_REDIRECT_URI } from "../auth-config";
 
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
-const AUTH_SERVER_URL = "https://auth-airsync.takezo.dev";
 const SCOPES = "https://www.googleapis.com/auth/drive.file";
 export const DEFAULT_CUSTOM_SCOPE = SCOPES;
-export const DEFAULT_CUSTOM_REDIRECT_URI = "https://airsync.takezo.dev/callback";
-const REDIRECT_URI = `${AUTH_SERVER_URL}/google/callback`;
-
-const GOOGLE_CLIENT_ID = "135801498656-lfjor2ml3v26t9l63mkoka0bndgl9eue.apps.googleusercontent.com";
 
 /** Shared interface for GoogleAuth and GoogleAuthDirect */
 export interface IGoogleAuth {
@@ -121,8 +117,8 @@ export class GoogleAuth extends GoogleAuthBase {
 		const state = this.generateState();
 
 		const params = new URLSearchParams({
-			client_id: GOOGLE_CLIENT_ID,
-			redirect_uri: REDIRECT_URI,
+			client_id: GOOGLE_DRIVE_AUTH.clientId,
+			redirect_uri: GOOGLE_DRIVE_AUTH.redirectUri,
 			response_type: "code",
 			scope: SCOPES,
 			access_type: "offline",
@@ -166,7 +162,7 @@ export class GoogleAuth extends GoogleAuthBase {
 		this.logger?.info("Refreshing access token");
 		try {
 			const response = await requestUrl({
-				url: `${AUTH_SERVER_URL}/google/token/refresh`,
+				url: GOOGLE_DRIVE_AUTH.tokenRefreshUrl,
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ refresh_token: this.refreshToken }),

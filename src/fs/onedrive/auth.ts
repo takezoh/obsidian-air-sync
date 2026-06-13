@@ -5,27 +5,15 @@ import type { Logger } from "../../logging/logger";
 import { AuthError } from "../errors";
 import { setBackendSecret, hasBackendSecret } from "../token-store";
 import { BaseOAuthTokenManager, buildOAuthState, computeS256Challenge, generateRandomString } from "../oauth-pkce";
+import { ONEDRIVE_AUTH } from "../auth-config";
 import { assertMicrosoftTokenResponse } from "./types";
 
 /** Personal Microsoft accounts only — the `consumers` authority host. */
 const AUTHORIZE_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize";
 const TOKEN_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
-/** Reuse the existing in-plugin protocol handler — NO new scheme, no relay page. */
-export const REDIRECT_URI = "obsidian://air-sync-auth";
 /** App Folder scope: the vault lives under /me/drive/special/approot; offline_access enables refresh. */
 const SCOPES = "Files.ReadWrite.AppFolder offline_access";
 const BACKEND_TYPE = "onedrive";
-
-/**
- * Public OAuth client id for the Air Sync OneDrive app (Files.ReadWrite.AppFolder).
- *
- * The real Entra (Azure AD) application (client) id, registered at
- * https://entra.microsoft.com with `obsidian://air-sync-auth` as a redirect URI and
- * "Personal Microsoft accounts only" as the supported account type. PKCE means there
- * is NO client secret anywhere — the `code_verifier` is the ephemeral proof. The
- * contract tests pass a fake client id, so they are green regardless of this value.
- */
-export const ONEDRIVE_CLIENT_ID = "71cd9a2a-a701-4ec2-b7d0-2352e0e84e9f";
 
 /**
  * Build the OneDrive authorization-code + PKCE authorize URL. The single source of
@@ -45,7 +33,7 @@ export function buildOneDriveAuthorizeUrl(opts: {
 		code_challenge: opts.codeChallenge,
 		code_challenge_method: "S256",
 		scope: SCOPES,
-		redirect_uri: opts.redirectUri ?? REDIRECT_URI,
+		redirect_uri: opts.redirectUri ?? ONEDRIVE_AUTH.redirectUri,
 		state: opts.state,
 	});
 	return `${AUTHORIZE_URL}?${params.toString()}`;
@@ -108,11 +96,11 @@ export class OneDriveAuth extends BaseOAuthTokenManager {
 	 * Exchange an authorization code for tokens (PKCE — no client secret).
 	 *
 	 * `redirectUri` must match the one used in the authorize request and defaults to
-	 * the in-plugin {@link REDIRECT_URI}. The opt-in e2e bootstrap (ADR 0003) overrides
-	 * it with a `http://localhost:<port>` loopback so a headless CLI can capture the
-	 * redirect directly.
+	 * the in-plugin {@link ONEDRIVE_AUTH}.redirectUri. The opt-in e2e bootstrap (ADR
+	 * 0003) overrides it with a `http://localhost:<port>` loopback so a headless CLI
+	 * can capture the redirect directly.
 	 */
-	async exchangeCode(code: string, codeVerifier: string, redirectUri: string = REDIRECT_URI): Promise<void> {
+	async exchangeCode(code: string, codeVerifier: string, redirectUri: string = ONEDRIVE_AUTH.redirectUri): Promise<void> {
 		const res = await requestUrl({
 			url: TOKEN_URL,
 			method: "POST",
@@ -179,7 +167,7 @@ export class OneDriveAuthProvider implements IAuthProvider {
 
 	constructor(
 		private secretStore: ISecretStore,
-		private clientId: string = ONEDRIVE_CLIENT_ID,
+		private clientId: string = ONEDRIVE_AUTH.clientId,
 		private logger?: Logger,
 	) {}
 
