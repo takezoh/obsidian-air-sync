@@ -47,18 +47,6 @@ export function createMockSecretStore(secrets: Record<string, string> = {}): ISe
 	};
 }
 
-/** Create a mock App with SecretStorage for tests (for UI components that need App) */
-export function mockApp(secrets: Record<string, string> = {}): import("obsidian").App {
-	const store = new Map(Object.entries(secrets));
-	return {
-		secretStorage: {
-			getSecret: (id: string) => store.get(id) ?? null,
-			setSecret: (id: string, secret: string) => { store.set(id, secret); },
-			listSecrets: () => [...store.keys()],
-		},
-	} as unknown as import("obsidian").App;
-}
-
 /** Type for accessing the cache on GoogleDriveFs in tests */
 export interface GoogleDriveFsCacheInternal {
 	cache: { getChildren(path: string): ReadonlySet<string> | undefined };

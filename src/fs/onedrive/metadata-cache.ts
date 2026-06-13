@@ -3,8 +3,6 @@ import type { OneDriveItem } from "./types";
 import { isFolderEntry, oneDriveItemToEntity } from "./types";
 import { AbstractMetadataCache } from "../caching/metadata-cache";
 
-export type { FileChangeResult } from "../caching/metadata-cache";
-
 /**
  * OneDrive's metadata cache. All the data structures and path/tree logic live in
  * {@link AbstractMetadataCache}; this subclass only reads Graph's driveItem shape

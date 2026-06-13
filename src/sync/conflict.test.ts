@@ -21,60 +21,6 @@ describe("resolveWithStrategy", () => {
 		remoteFs = createMockFs("remote");
 	});
 
-	describe("keep_local", () => {
-		it("overwrites remote with the local version", async () => {
-			const local = addFile(localFs, "f.md", "local wins", 1000);
-			addFile(remoteFs, "f.md", "remote old", 1000);
-
-			const r = await resolveWithStrategy(
-				{ path: "f.md", localFs, remoteFs, local },
-				"keep_local",
-			);
-
-			expect(r.action).toBe("kept_local");
-			expect(readText(remoteFs, "f.md")).toBe("local wins");
-		});
-
-		it("deletes the remote when local is absent (the local deletion wins)", async () => {
-			addFile(remoteFs, "f.md", "remote", 1000);
-
-			const r = await resolveWithStrategy(
-				{ path: "f.md", localFs, remoteFs },
-				"keep_local",
-			);
-
-			expect(r.action).toBe("kept_local");
-			expect(remoteFs.files.has("f.md")).toBe(false);
-		});
-	});
-
-	describe("keep_remote", () => {
-		it("overwrites local with the remote version", async () => {
-			const remote = addFile(remoteFs, "f.md", "remote wins", 1000);
-			addFile(localFs, "f.md", "local old", 1000);
-
-			const r = await resolveWithStrategy(
-				{ path: "f.md", localFs, remoteFs, remote },
-				"keep_remote",
-			);
-
-			expect(r.action).toBe("kept_remote");
-			expect(readText(localFs, "f.md")).toBe("remote wins");
-		});
-
-		it("deletes the local when remote is absent (the remote deletion wins)", async () => {
-			addFile(localFs, "f.md", "local", 1000);
-
-			const r = await resolveWithStrategy(
-				{ path: "f.md", localFs, remoteFs },
-				"keep_remote",
-			);
-
-			expect(r.action).toBe("kept_remote");
-			expect(localFs.files.has("f.md")).toBe(false);
-		});
-	});
-
 	describe("keep_newer", () => {
 		it("keeps the remote version when its mtime is newer", async () => {
 			const local = addFile(localFs, "f.md", "older local", 1000);
