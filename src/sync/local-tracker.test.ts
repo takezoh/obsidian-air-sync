@@ -1,5 +1,19 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { LocalChangeTracker } from "./local-tracker";
+import { LocalChangeTracker, type TrackerSnapshot } from "./local-tracker";
+
+/** Build a partial snapshot for acknowledge() tests that need a specific set. */
+function mkSnap(opts: {
+	dirty?: string[];
+	renames?: [string, string][];
+	folderRenames?: [string, string][];
+} = {}): TrackerSnapshot {
+	return {
+		dirtyPaths: new Set(opts.dirty ?? []),
+		renamePairs: new Map(opts.renames ?? []),
+		folderRenamePairs: new Map(opts.folderRenames ?? []),
+		initialized: true,
+	};
+}
 
 describe("LocalChangeTracker", () => {
 	let tracker: LocalChangeTracker;
@@ -40,48 +54,89 @@ describe("LocalChangeTracker", () => {
 		});
 	});
 
+	describe("snapshot", () => {
+		it("is a frozen copy unaffected by later mutation of the live tracker", () => {
+			tracker.markDirty("a.md");
+			const snap = tracker.snapshot();
+			tracker.markDirty("b.md");
+			expect(snap.dirtyPaths.has("a.md")).toBe(true);
+			expect(snap.dirtyPaths.has("b.md")).toBe(false); // captured before b.md
+		});
+
+		it("captures the initialized flag", () => {
+			expect(tracker.snapshot().initialized).toBe(false);
+			tracker.acknowledge(tracker.snapshot());
+			expect(tracker.snapshot().initialized).toBe(true);
+		});
+	});
+
 	describe("acknowledge", () => {
 		it("removes acknowledged paths from the dirty set", () => {
 			tracker.markDirty("a.md");
 			tracker.markDirty("b.md");
-			tracker.acknowledge(["a.md"]);
+			tracker.acknowledge(mkSnap({ dirty: ["a.md"] }));
 			expect(tracker.getDirtyPaths().has("a.md")).toBe(false);
 			expect(tracker.getDirtyPaths().has("b.md")).toBe(true);
 		});
 
 		it("sets initialized to true", () => {
 			expect(tracker.isInitialized()).toBe(false);
-			tracker.acknowledge([]);
+			tracker.acknowledge(mkSnap());
 			expect(tracker.isInitialized()).toBe(true);
 		});
 
-		it("retains dirty paths not in the acknowledged set", () => {
+		it("retains dirty paths not in the acknowledged snapshot", () => {
 			tracker.markDirty("a.md");
 			tracker.markDirty("b.md");
 			tracker.markDirty("c.md");
-			tracker.acknowledge(["a.md", "c.md"]);
+			tracker.acknowledge(mkSnap({ dirty: ["a.md", "c.md"] }));
 			expect(tracker.getDirtyPaths().size).toBe(1);
 			expect(tracker.getDirtyPaths().has("b.md")).toBe(true);
 		});
 
-		it("ignores paths that are not dirty", () => {
+		it("ignores snapshot paths that are not dirty", () => {
 			tracker.markDirty("a.md");
-			tracker.acknowledge(["b.md"]);
+			tracker.acknowledge(mkSnap({ dirty: ["b.md"] }));
 			expect(tracker.getDirtyPaths().has("a.md")).toBe(true);
 			expect(tracker.getDirtyPaths().size).toBe(1);
 		});
 
-		it("accepts any Iterable (Set)", () => {
+		it("acknowledging a full snapshot() clears the captured dirty set", () => {
 			tracker.markDirty("a.md");
-			tracker.acknowledge(new Set(["a.md"]));
+			tracker.acknowledge(tracker.snapshot());
 			expect(tracker.getDirtyPaths().size).toBe(0);
 		});
 
-		it("paths marked dirty after acknowledge remain dirty", () => {
-			tracker.acknowledge([]);
+		it("paths marked dirty after the snapshot is taken remain dirty", () => {
+			const snap = tracker.snapshot();
 			tracker.markDirty("new.md");
+			tracker.acknowledge(snap);
 			expect(tracker.getDirtyPaths().has("new.md")).toBe(true);
 			expect(tracker.isInitialized()).toBe(true);
+		});
+	});
+
+	describe("acknowledgePath", () => {
+		it("clears a single path's dirty + rename entry", () => {
+			tracker.markDirty("a.md");
+			tracker.markRenamed("new.md", "old.md");
+			tracker.acknowledgePath("a.md");
+			tracker.acknowledgePath("new.md");
+			expect(tracker.getDirtyPaths().has("a.md")).toBe(false);
+			expect(tracker.getRenamePairs().has("new.md")).toBe(false);
+		});
+
+		it("does NOT touch pending folder renames (single-file pull must not wipe them)", () => {
+			tracker.markFolderRenamed("B", "A");
+			tracker.markDirty("a.md");
+			tracker.acknowledgePath("a.md");
+			expect(tracker.getFolderRenamePairs().get("B")).toBe("A");
+		});
+
+		it("does NOT flip initialized (must not leave cold-start state)", () => {
+			tracker.markDirty("a.md");
+			tracker.acknowledgePath("a.md");
+			expect(tracker.isInitialized()).toBe(false);
 		});
 	});
 
@@ -116,15 +171,26 @@ describe("LocalChangeTracker", () => {
 	});
 
 	describe("acknowledge with rename pairs", () => {
-		it("clears rename pairs when newPath is acknowledged", () => {
+		it("clears rename pairs when the newPath is in the snapshot", () => {
 			tracker.markRenamed("new.md", "old.md");
-			tracker.acknowledge(["new.md", "old.md"]);
+			tracker.acknowledge(tracker.snapshot());
 			expect(tracker.getRenamePairs().size).toBe(0);
 		});
 
-		it("retains rename pair if newPath is not acknowledged", () => {
+		it("retains rename pair if newPath is not in the snapshot", () => {
 			tracker.markRenamed("new.md", "old.md");
-			tracker.acknowledge(["old.md"]);
+			tracker.acknowledge(mkSnap({ dirty: ["old.md"] }));
+			expect(tracker.getRenamePairs().get("new.md")).toBe("old.md");
+		});
+
+		it("a mid-cycle rename onto a pre-dirtied path survives acknowledge", () => {
+			// new.md is independently dirty before the cycle, so it is in the
+			// snapshot's dirty set. A rename old.md→new.md recorded mid-cycle must
+			// NOT be swept just because new.md is a dirty-snapshot member.
+			tracker.markDirty("new.md");
+			const snap = tracker.snapshot(); // dirty={new.md}, renamePairs={}
+			tracker.markRenamed("new.md", "old.md"); // mid-cycle
+			tracker.acknowledge(snap);
 			expect(tracker.getRenamePairs().get("new.md")).toBe("old.md");
 		});
 	});
@@ -148,11 +214,31 @@ describe("LocalChangeTracker", () => {
 			expect(tracker.getFolderRenamePairs().size).toBe(0);
 		});
 
-		it("acknowledge clears all folder rename pairs", () => {
+		it("acknowledge clears folder rename pairs present in the snapshot", () => {
 			tracker.markFolderRenamed("B", "A");
 			tracker.markFolderRenamed("D", "C");
-			tracker.acknowledge([]);
+			tracker.acknowledge(tracker.snapshot());
 			expect(tracker.getFolderRenamePairs().size).toBe(0);
+		});
+
+		it("a folder rename recorded after the snapshot survives acknowledge", () => {
+			tracker.markFolderRenamed("B", "A");
+			const snap = tracker.snapshot();
+			tracker.markFolderRenamed("D", "C"); // recorded mid-cycle
+			tracker.acknowledge(snap);
+			expect(tracker.getFolderRenamePairs().has("B")).toBe(false); // in snapshot → cleared
+			expect(tracker.getFolderRenamePairs().get("D")).toBe("C"); // mid-cycle → survives
+		});
+
+		it("a mid-cycle folder rename that reuses a snapshot key survives acknowledge", () => {
+			// Snapshot captures B→A; mid-cycle a different rename overwrites the key
+			// (B→X). acknowledge must not delete B, since the live value no longer
+			// equals what the snapshot captured.
+			tracker.markFolderRenamed("B", "A");
+			const snap = tracker.snapshot();
+			tracker.markFolderRenamed("B", "X"); // mid-cycle overwrite
+			tracker.acknowledge(snap);
+			expect(tracker.getFolderRenamePairs().get("B")).toBe("X");
 		});
 	});
 
@@ -162,12 +248,12 @@ describe("LocalChangeTracker", () => {
 		});
 
 		it("returns true after acknowledge is called", () => {
-			tracker.acknowledge([]);
+			tracker.acknowledge(tracker.snapshot());
 			expect(tracker.isInitialized()).toBe(true);
 		});
 
 		it("remains true after subsequent markDirty calls", () => {
-			tracker.acknowledge([]);
+			tracker.acknowledge(tracker.snapshot());
 			tracker.markDirty("a.md");
 			expect(tracker.isInitialized()).toBe(true);
 		});

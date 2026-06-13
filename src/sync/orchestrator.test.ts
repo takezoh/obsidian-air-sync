@@ -377,13 +377,48 @@ describe("SyncOrchestrator", () => {
 			deps.localFs = () => localFs;
 			deps.remoteFs = () => remoteFs;
 
+			// Initialize the tracker (it is empty here, so nothing is cleared), THEN
+			// dirty file.md — so file.md is genuinely dirty going into runSync and the
+			// post-sync assertion proves runSync's end-of-cycle acknowledge cleared it
+			// (not the setup). Ordering matters: marking before initializing would let
+			// the initialize snapshot clear file.md, making the assertion vacuous.
+			deps.localTracker.acknowledge(deps.localTracker.snapshot()); // initialize tracker
 			deps.localTracker.markDirty("file.md");
-			deps.localTracker.acknowledge([]); // initialize tracker
 
 			const orchestrator = new SyncOrchestrator(deps);
 			await orchestrator.runSync();
 
 			expect(deps.localTracker.getDirtyPaths().size).toBe(0);
+			await orchestrator.close();
+		});
+
+		it("a markDirty arriving mid-cycle survives the cycle's acknowledge", async () => {
+			// A fresh tracker + empty store runs a COLD cycle, which lists the vault.
+			// Fire a markDirty from inside that list() — i.e. AFTER the cycle captured
+			// its snapshot — to simulate the user editing while a sync is in flight.
+			// The cycle must not sweep this path: it was never part of this cycle, so
+			// it must stay dirty (keeping it on the HOT path for the next cycle).
+			const deps = createDeps();
+			const localFs = createMockFs("local");
+			const remoteFs = createMockFs("remote");
+			deps.localFs = () => localFs;
+			deps.remoteFs = () => remoteFs;
+
+			let fired = false;
+			vi.spyOn(localFs, "list").mockImplementation(() => {
+				if (!fired) {
+					fired = true;
+					deps.localTracker.markDirty("mid-cycle.md");
+				}
+				return Promise.resolve([]);
+			});
+
+			const orchestrator = new SyncOrchestrator(deps);
+			await orchestrator.runSync();
+
+			// RED on the old acknowledge(getDirtyPaths()) (swept); GREEN once the
+			// cycle acknowledges only its start-of-cycle snapshot.
+			expect(deps.localTracker.getDirtyPaths().has("mid-cycle.md")).toBe(true);
 			await orchestrator.close();
 		});
 	});

@@ -85,18 +85,19 @@ Execution is grouped and ordered. Group A (`push`, `pull`, `match`, `cleanup`) r
 
 ## Acknowledge pattern
 
-`LocalChangeTracker.acknowledge(paths)` is called only after a successful sync cycle completes:
+Each sync cycle captures a `snapshot()` of the tracker at the start — a frozen copy of `dirtyPaths`, `renamePairs`, `folderRenamePairs`, and `initialized` — drives change detection from it, and acknowledges exactly that snapshot at the end:
 
 ```typescript
-// In orchestrator.runSync():
-const allPaths = this.deps.localTracker.getDirtyPaths();
-this.deps.localTracker.acknowledge(allPaths);
+// In orchestrator.runSync(), once per do/while cycle:
+const snapshot = this.deps.localTracker.snapshot();
+// …change detection + execution read `snapshot`…
+this.deps.localTracker.acknowledge(snapshot);
 ```
 
-`acknowledge(paths)` for each path removes it from `dirtyPaths` and from `renamePairs` (keyed by `newPath`, so a rename pair is only dropped when its `newPath` is acknowledged); it then clears the entire `folderRenamePairs` map regardless of the `paths` argument (even `acknowledge([])` wipes all folder rename pairs), and sets `initialized = true`.
+`acknowledge(snapshot)` removes each of the snapshot's dirty paths from `dirtyPaths`, and clears each captured rename pair and folder-rename pair **only when the live entry still equals the snapshot's value** — a mid-cycle rename that re-created or overwrote that key (a fresh pair, or the same `newPath` with a different source) differs from the snapshot and survives. It then sets `initialized = true`. Acknowledging the start-of-cycle snapshot rather than the live set is deliberate: a `markDirty`/rename arriving mid-cycle (after the snapshot was taken) is left intact for the next cycle instead of being swept — keeping it on the fast hot path instead of degrading the next cycle to a warm full-scan. This is robustness, not correctness: even if a mid-cycle change were swept, the unchanged baseline would re-surface it via warm/cold detection.
 
-`acknowledge` is reached only when `executeWithRetry()` returns a non-null result. A *fatal* error — `AuthError`, a non-rate-limit 403, a 404 (which breaks the retry loop), or retries exhausted — returns null, so `runSync` returns early at `if (!result) return;` and dirty paths are preserved for the next cycle. A *per-file* failure (recorded in `result.failed`, status `partial_error`) still completes the cycle, so `acknowledge(getDirtyPaths())` runs and clears those paths from the dirty set. Because a failed action never commits a `SyncRecord`, the baseline mismatch persists and the file is re-detected next cycle via warm/cold change detection, not via the dirty set.
+`acknowledge` is reached only when `executeWithRetry()` returns a non-null result. A *fatal* error — `AuthError`, a non-rate-limit 403, a 404 (which breaks the retry loop), or retries exhausted — returns null, so `runSync` returns early at `if (!result) return;` and the snapshot is never acknowledged, preserving the dirty set for the next cycle. A *per-file* failure (recorded in `result.failed`, status `partial_error`) still completes the cycle, so the snapshot is acknowledged and its paths are cleared from the dirty set. Because a failed action never commits a `SyncRecord`, the baseline mismatch persists and the file is re-detected next cycle via warm/cold change detection, not via the dirty set.
 
-The `pullSingle()` method also calls `acknowledge([path])` after completion (success or failure) to prevent re-triggering the file-open priority sync for the same path.
+The `pullSingle()` method calls `acknowledgePath(path)` after completion (success or failure) to prevent re-triggering the file-open priority sync for the same path. Unlike `acknowledge`, it clears only that path's dirty and rename-pair entry, intentionally leaving `folderRenamePairs` and `initialized` untouched — a single-file pull must not wipe pending folder renames or flip the tracker out of its cold-start state.
 
-Setting `initialized = true` is a precondition for hot-mode change detection, but hot mode is selected only when the tracker is initialized AND has at least one dirty path (`collectHot`); an initialized tracker with no dirty paths uses warm mode, or cold mode when the state store is empty. Because `acknowledge()` clears the acknowledged paths from the dirty set, the immediately following cycle, absent new edits, runs in warm mode rather than hot.
+Setting `initialized = true` is a precondition for hot-mode change detection, but hot mode is selected only when the tracker is initialized AND has at least one dirty path (`collectHot`); an initialized tracker with no dirty paths uses warm mode, or cold mode when the state store is empty. After a cycle with no concurrent edits the dirty set is empty, so the immediately following cycle (absent new edits) runs in warm mode rather than hot.

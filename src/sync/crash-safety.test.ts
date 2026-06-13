@@ -45,16 +45,19 @@ async function runCycle(
 	env: Env,
 ): Promise<{ plan: SyncPlan; result: ExecutionResult; temperature: string }> {
 	const { localFs, remoteFs, stateStore, localTracker } = env;
+	// Mirror the orchestrator: one snapshot at cycle start drives detection AND
+	// the end-of-cycle acknowledge.
+	const snapshot = localTracker.snapshot();
 	const changeSet = await collectChanges({
 		localFs,
 		remoteFs,
 		stateStore,
-		localTracker,
+		changes: snapshot,
 	});
 	const plan = refinePlan(
 		planSync(changeSet.entries),
-		localTracker.getRenamePairs(),
-		localTracker.getFolderRenamePairs(),
+		snapshot.renamePairs,
+		snapshot.folderRenamePairs,
 		changeSet.remoteRenamePairs,
 	);
 	const result = await executePlan(plan, {
@@ -63,12 +66,12 @@ async function runCycle(
 		committer: { stateStore },
 		conflictStrategy: "auto_merge",
 	});
-	// The orchestrator acknowledges every dirty path after a cycle regardless of
-	// per-action success — so a failed action is NOT kept "dirty" (the tracker
-	// cannot be relied on to re-surface it). Mirror that here, then assert in
-	// each test that recovery comes from the next full re-scan (warm/cold), not
-	// from a lingering dirty flag.
-	localTracker.acknowledge([...localTracker.getDirtyPaths()]);
+	// The orchestrator acknowledges the snapshot's dirty paths after a cycle
+	// regardless of per-action success — so a failed action is NOT kept "dirty"
+	// (the tracker cannot be relied on to re-surface it). Mirror that here, then
+	// assert in each test that recovery comes from the next full re-scan
+	// (warm/cold), not from a lingering dirty flag.
+	localTracker.acknowledge(snapshot);
 	return { plan, result, temperature: changeSet.temperature };
 }
 

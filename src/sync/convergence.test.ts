@@ -55,16 +55,19 @@ function makeEnv(): Env {
  */
 async function runCycle(env: Env): Promise<SyncPlan> {
 	const { localFs, remoteFs, stateStore, localTracker } = env;
+	// Mirror the orchestrator: capture one snapshot at cycle start and use it for
+	// both detection and the end-of-cycle acknowledge.
+	const snapshot = localTracker.snapshot();
 	const changeSet = await collectChanges({
 		localFs,
 		remoteFs,
 		stateStore,
-		localTracker,
+		changes: snapshot,
 	});
 	const plan = refinePlan(
 		planSync(changeSet.entries),
-		localTracker.getRenamePairs(),
-		localTracker.getFolderRenamePairs(),
+		snapshot.renamePairs,
+		snapshot.folderRenamePairs,
 		changeSet.remoteRenamePairs,
 	);
 	await executePlan(plan, {
@@ -73,9 +76,9 @@ async function runCycle(env: Env): Promise<SyncPlan> {
 		committer: { stateStore },
 		conflictStrategy: "auto_merge",
 	});
-	// Mirror the orchestrator: dirty paths are acknowledged after a cycle, which
-	// also flips the tracker into its "initialized" state for the next cycle.
-	localTracker.acknowledge([...localTracker.getDirtyPaths()]);
+	// Acknowledging the snapshot also flips the tracker into its "initialized"
+	// state for the next cycle.
+	localTracker.acknowledge(snapshot);
 	return plan;
 }
 
@@ -139,7 +142,7 @@ describe("sync converges to a fixed point", () => {
 		// real SHA-256 — exercising backend-faithful hashing end-to-end.
 		addFile(env.localFs, "same.md", "identical", 1000);
 		addFile(env.remoteFs, "same.md", "identical", 1000);
-		env.localTracker.acknowledge([]); // initialize → hot path
+		env.localTracker.acknowledge(env.localTracker.snapshot()); // initialize → hot path
 		env.localTracker.markDirty("same.md");
 
 		const first = await runCycle(env);

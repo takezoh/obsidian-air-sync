@@ -28,7 +28,7 @@ describe("collectChanges — temperature selection", () => {
 	let localTracker: LocalChangeTracker;
 
 	function makeDeps(): ChangeDetectorDeps {
-		return { localFs, remoteFs, stateStore, localTracker };
+		return { localFs, remoteFs, stateStore, changes: localTracker.snapshot() };
 	}
 
 	beforeEach(() => {
@@ -193,7 +193,7 @@ describe("collectChanges — temperature selection", () => {
 			await stateStore.put(makeRecord("a.md"));
 			addFile(localFs, "a.md", "hello", 1000);
 			// Acknowledge to initialize but clear all dirty paths
-			localTracker.acknowledge([]);
+			localTracker.acknowledge(localTracker.snapshot());
 
 			const result = await collectChanges(makeDeps());
 
@@ -270,9 +270,8 @@ describe("collectChanges — temperature selection", () => {
 			await stateStore.put(makeRecord("a.md"));
 			addFile(localFs, "a.md", "modified", 2000);
 			localTracker.markDirty("a.md");
-			localTracker.acknowledge([]); // mark initialized without clearing dirty
-			// re-mark after acknowledge
-			localTracker.markDirty("a.md");
+			localTracker.acknowledge(localTracker.snapshot()); // flip out of cold-start
+			localTracker.markDirty("a.md"); // dirty again for this cycle
 
 			const result = await collectChanges(makeDeps());
 
@@ -284,7 +283,7 @@ describe("collectChanges — temperature selection", () => {
 			await stateStore.put(makeRecord("clean.md"));
 			addFile(localFs, "dirty.md", "changed", 2000);
 			addFile(localFs, "clean.md", "unchanged", 1000);
-			localTracker.acknowledge([]); // initialize
+			localTracker.acknowledge(localTracker.snapshot()); // initialize
 			localTracker.markDirty("dirty.md");
 
 			const result = await collectChanges(makeDeps());
@@ -303,7 +302,7 @@ describe("collectChanges — temperature selection", () => {
 
 			remoteFs.checkpoint!.getChangedPaths = () => Promise.resolve({ modified: ["remote-only.md"], deleted: [] });
 
-			localTracker.acknowledge([]);
+			localTracker.acknowledge(localTracker.snapshot());
 			localTracker.markDirty("local-dirty.md");
 
 			const result = await collectChanges(makeDeps());
@@ -322,7 +321,7 @@ describe("collectChanges — temperature selection", () => {
 
 			remoteFs.checkpoint!.getChangedPaths = () => Promise.resolve({ modified: [], deleted: ["remote-deleted.md"] });
 
-			localTracker.acknowledge([]);
+			localTracker.acknowledge(localTracker.snapshot());
 			localTracker.markDirty("local-dirty.md");
 
 			const result = await collectChanges(makeDeps());
@@ -338,7 +337,7 @@ describe("collectChanges — temperature selection", () => {
 			await stateStore.put(makeRecord("deleted.md"));
 			addFile(remoteFs, "deleted.md", "content", 1000);
 			// deleted.md is not in localFs (locally deleted)
-			localTracker.acknowledge([]);
+			localTracker.acknowledge(localTracker.snapshot());
 			localTracker.markDirty("deleted.md");
 
 			const result = await collectChanges(makeDeps());
@@ -354,7 +353,7 @@ describe("collectChanges — temperature selection", () => {
 		it("returns empty entries when no dirty paths and no remote changes", async () => {
 			await stateStore.put(makeRecord("a.md"));
 			addFile(localFs, "a.md", "content", 1000);
-			localTracker.acknowledge([]); // initialize
+			localTracker.acknowledge(localTracker.snapshot()); // initialize
 			localTracker.markDirty("orphan.md"); // dirty path that doesn't exist anywhere
 
 			const result = await collectChanges(makeDeps());
@@ -398,7 +397,7 @@ describe("collectChanges — temperature selection", () => {
 			addFile(remoteFs, "old.md", "content", 1000);
 
 			// Initialize tracker, then simulate rename
-			localTracker.acknowledge([]);
+			localTracker.acknowledge(localTracker.snapshot());
 			localTracker.markRenamed("new.md", "old.md");
 
 			// Mock stat() returns hash (real LocalFs.stat computes SHA-256)
@@ -424,7 +423,7 @@ describe("collectChanges — temperature selection", () => {
 			addFile(localFs, "new.md", "content", 1000);
 			addFile(remoteFs, "old.md", "content", 1000);
 
-			localTracker.acknowledge([]);
+			localTracker.acknowledge(localTracker.snapshot());
 			localTracker.markRenamed("new.md", "old.md");
 
 			const result = await collectChanges(makeDeps());
@@ -445,7 +444,7 @@ describe("collectChanges — temperature selection", () => {
 				renamed: [{ oldPath: "a.md", newPath: "b.md" }],
 			});
 
-			localTracker.acknowledge([]);
+			localTracker.acknowledge(localTracker.snapshot());
 			localTracker.markDirty("a.md");
 
 			const result = await collectChanges(makeDeps());
@@ -641,7 +640,7 @@ describe("collectChanges — warm deletion confirmation", () => {
 	let localTracker: LocalChangeTracker;
 
 	function makeDeps(): ChangeDetectorDeps {
-		return { localFs, remoteFs, stateStore, localTracker };
+		return { localFs, remoteFs, stateStore, changes: localTracker.snapshot() };
 	}
 
 	beforeEach(() => {
@@ -695,7 +694,7 @@ describe("collectChanges — forceFullScan rediscovers un-baselined remote files
 	let localTracker: LocalChangeTracker;
 
 	function makeDeps(): ChangeDetectorDeps {
-		return { localFs, remoteFs, stateStore, localTracker };
+		return { localFs, remoteFs, stateStore, changes: localTracker.snapshot() };
 	}
 
 	beforeEach(async () => {
