@@ -1,9 +1,5 @@
 import type { FileEntity, RemoteChecksum } from "../types";
-import type { FileRecord } from "../../store/metadata-store";
 import { AuthError } from "../errors";
-
-/** OneDrive-specific file record type alias (persisted in IndexedDB). */
-export type OneDriveFileRecord = FileRecord<OneDriveItem>;
 
 /**
  * A Microsoft Graph `driveItem` (the subset Air Sync uses).

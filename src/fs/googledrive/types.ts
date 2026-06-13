@@ -1,4 +1,3 @@
-import type { FileRecord } from "../../store/metadata-store";
 import type { RemoteChecksum } from "../types";
 
 /** Google Drive folder MIME type */
@@ -11,9 +10,6 @@ export const FOLDER_MIME = "application/vnd.google-apps.folder";
 export function toRemoteChecksum(file: GoogleDriveFile): RemoteChecksum | undefined {
 	return file.md5Checksum ? { algo: "md5", value: file.md5Checksum } : undefined;
 }
-
-/** Google Drive-specific file record type alias */
-export type GoogleDriveFileRecord = FileRecord<GoogleDriveFile>;
 
 /** Google Drive file metadata from API response */
 export interface GoogleDriveFile {
