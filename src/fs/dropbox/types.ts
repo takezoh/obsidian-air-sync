@@ -1,9 +1,5 @@
 import type { FileEntity } from "../types";
-import type { FileRecord } from "../../store/metadata-store";
 import { AuthError } from "../errors";
-
-/** Dropbox-specific file record type alias (persisted in IndexedDB). */
-export type DropboxFileRecord = FileRecord<DropboxEntry>;
 
 /**
  * A Dropbox file/folder metadata entry (the subset Air Sync uses).

@@ -8,7 +8,7 @@ import { isMergeEligible, threeWayMerge } from "./merge";
 import { sameContent } from "./content-identity";
 
 /** Internal strategy used by the low-level conflict resolver */
-export type ResolverStrategy = "keep_newer" | "keep_local" | "keep_remote" | "duplicate" | "auto_merge";
+export type ResolverStrategy = "keep_newer" | "duplicate" | "auto_merge";
 
 export interface ConflictResolutionResult {
 	/** The action that was taken */
@@ -30,22 +30,14 @@ export interface ConflictContext {
 	logger?: Logger;
 }
 
-export type FallbackResolver = ResolverStrategy | (() => Promise<ResolverStrategy>);
-
 export async function resolveWithStrategy(
 	ctx: ConflictContext,
 	strategy: ResolverStrategy,
-	fallback?: FallbackResolver,
+	fallback?: ResolverStrategy,
 ): Promise<ConflictResolutionResult> {
 	const { path, localFs, remoteFs, local, remote } = ctx;
 
 	switch (strategy) {
-		case "keep_local":
-			return keepLocal(path, localFs, remoteFs, local);
-
-		case "keep_remote":
-			return keepRemote(path, localFs, remoteFs, remote);
-
 		case "keep_newer":
 			return keepNewer(path, localFs, remoteFs, local, remote);
 
@@ -200,51 +192,44 @@ function insertConflictSuffix(path: string, seq: number | string): string {
 
 async function attemptThreeWayMerge(
 	ctx: ConflictContext,
-	fallback: FallbackResolver = "keep_newer",
+	fallback: ResolverStrategy = "keep_newer",
 ): Promise<ConflictResolutionResult> {
 	const { path, localFs, remoteFs, local, remote, prevSync, stateStore, logger } = ctx;
 	const tag = "auto_merge";
 
 	logger?.debug(`${tag}: attempting 3-way merge`, { path });
 
-	const resolveFallback = async (): Promise<ResolverStrategy> => {
-		return typeof fallback === "function" ? await fallback() : fallback;
-	};
-
 	// Must have both sides present and a previous sync record
 	if (!local || !remote || !prevSync) {
-		const fb = await resolveFallback();
 		logger?.warn(`${tag}: falling back — missing prerequisites`, {
 			path,
 			strategy: tag,
 			reason: `missing: ${[!local && "local", !remote && "remote", !prevSync && "prevSync"].filter(Boolean).join(", ")}`,
-			outcome: fb,
+			outcome: fallback,
 		});
-		return resolveWithStrategy(ctx, fb);
+		return resolveWithStrategy(ctx, fallback);
 	}
 
 	// Retrieve the stored base content
 	const prevSyncContent = stateStore ? await stateStore.getContent(path) : undefined;
 	if (!prevSyncContent) {
-		const fb = await resolveFallback();
 		logger?.warn(`${tag}: falling back — no base content in state store`, {
 			path,
 			strategy: tag,
 			reason: stateStore ? "base content not found in store" : "no state store provided",
-			outcome: fb,
+			outcome: fallback,
 		});
-		return resolveWithStrategy(ctx, fb);
+		return resolveWithStrategy(ctx, fallback);
 	}
 
 	if (!isMergeEligible(path, Math.max(local.size, remote.size))) {
-		const fb = await resolveFallback();
 		logger?.warn(`${tag}: falling back — file not eligible for merge`, {
 			path,
 			strategy: tag,
 			reason: `not a mergeable text file (localSize=${local.size}, remoteSize=${remote.size})`,
-			outcome: fb,
+			outcome: fallback,
 		});
-		return resolveWithStrategy(ctx, fb);
+		return resolveWithStrategy(ctx, fallback);
 	}
 
 	const decoder = new TextDecoder();
@@ -260,14 +245,13 @@ async function attemptThreeWayMerge(
 	try {
 		mergeResult = threeWayMerge(baseText, localText, remoteText);
 	} catch (mergeErr) {
-		const fb = await resolveFallback();
 		logger?.warn(`${tag}: falling back — merge threw an exception`, {
 			path,
 			strategy: tag,
 			reason: mergeErr instanceof Error ? mergeErr.message : String(mergeErr),
-			outcome: fb,
+			outcome: fallback,
 		});
-		return resolveWithStrategy(ctx, fb);
+		return resolveWithStrategy(ctx, fallback);
 	}
 
 	logger?.debug(`${tag}: merge complete`, {

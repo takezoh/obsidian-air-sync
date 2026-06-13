@@ -2,17 +2,16 @@
 
 ## Conflict strategies
 
-`conflict-resolver.ts` exposes 3 user-facing strategies via `ConflictStrategy`:
+`conflict-resolver.ts` exposes 2 user-facing strategies via `ConflictStrategy`:
 
 | Strategy | Behavior |
 |----------|----------|
 | `auto_merge` | Try a 3-way merge; if the file is ineligible, the base content is missing, or the merge throws, fall back to newer-wins. Two narrower cases produce a duplicate: within newer-wins, equal or unknown mtimes with differing content; and for `.json`/`.canvas`, a merge that produced conflict markers or invalid JSON. |
 | `duplicate` | Delete-aware (see below). When both sides exist, save remote as a `.conflict` file and keep local at the original path. |
-| `ask` | Show a modal for the user to choose `keep_local` / `keep_remote` / `duplicate`. |
 
-The setting is stored as `conflictStrategy` in `AirSyncSettings` (values `auto_merge` \| `duplicate` \| `ask`).
+The setting is stored as `conflictStrategy` in `AirSyncSettings` (values `auto_merge` \| `duplicate`).
 
-The ask modal defaults to `duplicate` if the user closes it without choosing (`AskConflictModal.onClose`), and `resolveAsk` falls back to `duplicate` (logging a warning) when no `App` instance is available in the resolver context. The modal's third option is labelled "Keep both" (its button, like the others, reads "Choose").
+> NOTE: an interactive `ask` strategy existed in an earlier version. It was removed (it always fell back to `duplicate` anyway). A vault saved while it was selected is normalized to `duplicate` on load (`normalizeConflictStrategy` in `settings-normalize.ts`).
 
 ## auto_merge fallback chain
 
@@ -87,22 +86,20 @@ remote version
 | Strategy | Behavior |
 |----------|----------|
 | `keep_newer` | Compare mtime; newer side overwrites the other |
-| `keep_local` | Push local to remote (or delete remote if local deleted) |
-| `keep_remote` | Pull remote to local (or delete local if remote deleted) |
 | `duplicate` | Delete-aware (see below); when both sides exist, save remote copy with `.conflict` suffix and keep local |
 | `auto_merge` | Attempt 3-way merge, fall back to `keep_newer` |
 
-These are not exposed in the settings UI.
+These are not exposed in the settings UI. Internally, `keep_newer` delegates the actual write to two helpers — push-local-to-remote (or delete remote when local is gone) and pull-remote-to-local (or delete local when remote is gone) — which surface as the `kept_local` / `kept_remote` actions.
 
 `duplicate` is delete-aware. If exactly one side is deleted, the surviving version is restored to the deleted side (action `duplicated`, no `.conflict` file). If both sides are deleted, nothing happens (action `kept_local`). Only when both sides exist is the remote saved as a `.conflict` duplicate on BOTH local and remote, the local file kept at its original path, and that local version also pushed to remote at the original path (action `duplicated`).
 
-`keep_local` / `keep_remote` preserve the surviving side's mtime on the written copy (`remoteFs.write(..., local.mtime)` / `localFs.write(..., remote.mtime)`); `keep_newer` and `duplicate` likewise preserve source mtimes. A successful 3-way merge is the only resolver path that instead stamps both sides with the current time (`Date.now()`), which affects subsequent newer-wins comparisons.
+`keep_newer` and `duplicate` preserve source mtimes on the written copies. A successful 3-way merge is the only resolver path that instead stamps both sides with the current time (`Date.now()`), which affects subsequent newer-wins comparisons.
 
 ## Conflict history
 
 `ConflictHistory` (`conflict-history.ts`) is an audit-log writer for conflict resolutions, targeting `.airsync/conflicts/{device}.json`.
 
-> NOTE: as of this writing it is not yet wired into the sync pipeline — no production code constructs `ConflictRecord`s or calls `append()`; only its unit test exercises it. The shape below is the *intended* contract.
+It is wired into the sync pipeline via the orchestrator's `recordConflicts` hook: `main.ts` passes `recordConflicts: (records) => this.conflictHistory.append(records)` into `SyncOrchestrator`, so each resolved conflict is appended as a `ConflictRecord`.
 
 ```typescript
 interface ConflictRecord {

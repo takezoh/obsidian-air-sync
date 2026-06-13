@@ -70,13 +70,32 @@ export class SyncScheduler {
 		this.debouncedSync.cancel();
 	}
 
-	/** Trigger a full sync now, unless no backend is configured or one is already running. */
+	/**
+	 * Trigger a full sync now, unless no backend is configured or one is already
+	 * running. This is the SIGNAL path (focus/visibility/online): the
+	 * `isSyncing()` guard discards the request while a sync is in flight — the
+	 * in-flight cycle already performs the full re-scan a signal asks for. The
+	 * guard is load-bearing, NOT redundant with runSync's own lock check:
+	 * runSync's check sets `syncPending` (a re-run), this one suppresses it for
+	 * signals. Removing it makes a signal set syncPending and run a redundant
+	 * WARM full scan (ADR 0004).
+	 */
 	private triggerSync(): void {
 		if (!this.deps.remoteFs()) return;
 		if (this.deps.orchestrator.isSyncing()) return;
 		void this.deps.orchestrator.runSync();
 	}
 
+	// `focus` and `visibilitychange` are deliberately BOTH wired on every
+	// platform — they are not redundant. `focus` is the only signal for a
+	// desktop app-to-app switch (alt-tab): Electron keeps the document
+	// `visible` in the background, so visibilitychange never fires. On mobile
+	// webviews window focus is unreliable on resume, so visibilitychange is the
+	// dependable foreground signal. Each covers a case the other misses, so
+	// dropping or platform-gating either one would lose a resume sync somewhere.
+	// The cost — a single resume firing both — is absorbed downstream: the
+	// `isSyncing()` guard in triggerSync, then runSync coalescing into one
+	// burst, then CycleSummary collapsing it to one notice (see commit 884b948).
 	private wireFocusEvent(): void {
 		this.deps.registerWindowEvent("focus", () => this.triggerSync());
 	}
@@ -117,6 +136,7 @@ export class SyncScheduler {
 		this.deps.registerWindowEvent("online", () => this.triggerSync());
 	}
 
+	// Paired with wireFocusEvent above (see that comment for why both exist).
 	private wireVisibilityEvent(): void {
 		this.deps.registerDocumentEvent("visibilitychange", () => {
 			// App-level visibility: read the main document (matching the focus/

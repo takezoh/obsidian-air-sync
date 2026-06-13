@@ -20,7 +20,7 @@ The orchestrator (`SyncOrchestrator.executeSyncOnce()`) drives this pipeline, ap
 
 The same `isExcluded()` gates the vault-event dirty tracking (scheduler), so push and pull use one scope rule across hot and cold paths.
 
-`runSync()` is gated on a connected remote (`remoteFs` present), layout-ready, and not-connecting; it serializes via an `AsyncMutex`. A call arriving while a sync runs sets `syncPending` and returns; the lock holder re-runs in a `do/while (syncPending)` loop, acknowledging the dirty set at the end of each non-fatal cycle (coalescing). Each cycle (`executeSyncOnce`) is wrapped by `executeWithRetry`, which retries up to `MAX_RETRIES = 3` with exponential backoff plus jitter (`2^(attempt-1) * 1000 * (0.5 + Math.random())` ms), honoring `Retry-After` (×1000) on 429/403. `AuthError`, a non-rate-limit 403, and 404 abort without retry; a fatal abort returns early and leaves the dirty set un-acknowledged so it is retried next run.
+`runSync()` is gated on a connected remote (`remoteFs` present), layout-ready, and not-connecting; it serializes via an `AsyncMutex`. A call arriving while a sync runs sets `syncPending` and returns; the lock holder re-runs in a `do/while (syncPending)` loop, acknowledging each cycle's start-of-cycle snapshot at the end of each non-fatal cycle (coalescing). Each cycle (`executeSyncOnce`) is wrapped by `executeWithRetry`, which retries up to `MAX_RETRIES = 3` with exponential backoff plus jitter (`2^(attempt-1) * 1000 * (0.5 + Math.random())` ms), honoring `Retry-After` (×1000) on 429/403. `AuthError`, a non-rate-limit 403, and 404 abort without retry; a fatal abort returns early and leaves the dirty set un-acknowledged so it is retried next run.
 
 ## Crash recovery
 
@@ -38,7 +38,7 @@ The change detector selects a temperature based on the state of `LocalChangeTrac
 
 ### Hot -- O(delta)
 
-Selected when `localTracker.isInitialized()` returns true and `getDirtyPaths()` is non-empty.
+Selected when the cycle snapshot is `initialized` and its dirty set is non-empty (the detector reads the snapshot captured at cycle start, not the live tracker).
 
 - Takes the union of local dirty paths and remote changed paths (from `getChangedPaths()`)
 - Calls `stat()` on each path for both local and remote filesystems
@@ -87,9 +87,9 @@ After initial-match enrichment, `enrichHashesForRenames()` runs for entries that
 
 ### Local changes
 
-`LocalChangeTracker` (`local-tracker.ts`) tracks dirty paths in memory via a `Set<string>`. Vault events (`create`, `modify`, `delete`) call `markDirty(path)`. The `rename` event calls `markRenamed(newPath, oldPath)`, which records the pair in a `renamePairs` map (used by the rename optimizer) and marks both paths dirty. Rename chains are collapsed (A→B→C becomes A→C). After a successful sync cycle, `acknowledge(paths)` deletes the given paths from the dirty set and the file `renamePairs` map (keyed by `newPath`), unconditionally clears the entire `folderRenamePairs` map, and sets `initialized = true`.
+`LocalChangeTracker` (`local-tracker.ts`) tracks dirty paths in memory via a `Set<string>`. Vault events (`create`, `modify`, `delete`) call `markDirty(path)`. The `rename` event calls `markRenamed(newPath, oldPath)`, which records the pair in a `renamePairs` map (used by the rename optimizer) and marks both paths dirty. Rename chains are collapsed (A→B→C becomes A→C). Each sync cycle captures a `snapshot()` of the tracker at the start (a frozen copy of `dirtyPaths` / `renamePairs` / `folderRenamePairs` / `initialized`) and acknowledges exactly that snapshot at the end: `acknowledge(snapshot)` deletes the snapshot's paths from the dirty set and clears each captured rename / folder-rename pair only when the live entry still matches the snapshot's value (so a mid-cycle rename reusing a key survives), then sets `initialized = true`. Acknowledging the start-of-cycle snapshot rather than the live set keeps a `markDirty` arriving mid-cycle for the next cycle instead of sweeping it (see [Acknowledge pattern](error-handling.md#acknowledge-pattern)).
 
-Folder renames are tracked separately: a `rename` event whose target is a `TFolder` routes to `markFolderRenamed(newPath, oldPath)`, recording the pair in a distinct `folderRenamePairs` map (also chain-collapsing A→B→C to A→C), while files go to `markRenamed`. Unlike `markRenamed`, this does not mark any path dirty. The orchestrator reads `getFolderRenamePairs()` and passes it into `refinePlan()` as a separate argument, where `coalesceLocalFolderRenames` consumes it.
+Folder renames are tracked separately: a `rename` event whose target is a `TFolder` routes to `markFolderRenamed(newPath, oldPath)`, recording the pair in a distinct `folderRenamePairs` map (also chain-collapsing A→B→C to A→C), while files go to `markRenamed`. Unlike `markRenamed`, this does not mark any path dirty. The orchestrator reads the cycle snapshot's `folderRenamePairs` and passes it into `refinePlan()` as a separate argument, where `coalesceLocalFolderRenames` consumes it.
 
 ### Remote changes
 
@@ -201,6 +201,8 @@ Failed actions are not committed; they will be re-detected on the next sync cycl
 | File open | `workspace.on("file-open")` | Priority pull for the opened file (see below). |
 
 All triggers are event-driven — there is no periodic timer. All triggers except file-open run a full sync cycle through the pipeline. Out-of-scope paths (failing either gate of `isExcluded()` — dot-path scope or `ignorePatterns`) are excluded at the vault-event level — dirty marks and debounce are skipped entirely. The file-open priority pull also skips out-of-scope paths.
+
+These triggers are **classified** ([ADR 0004](adr/0004-sync-reruns-are-classified-by-trigger.md)): **signal** triggers (focus/visibility/online) carry no local change and route through `triggerSync()`, whose `isSyncing()` guard **discards** them while a sync is in flight (the in-flight cycle already does the re-scan they ask for); **vault** triggers carry a real edit and route through `markDirty` + `debouncedSync()`, so they re-run via `syncPending` even mid-sync. That guard and the `syncPending` loop are load-bearing — see the ADR before collapsing them into a single "loop while dirty" rule.
 
 ## Active file priority sync
 

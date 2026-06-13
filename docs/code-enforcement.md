@@ -110,9 +110,12 @@ Each file owns one concept; oversized files signal a missing split.
 | **How** | `max-lines` (error) on `src/**/*.ts`; tests, mocks, and `test-helpers.ts` are exempt |
 | **Exception** | Split the module. Do **not** raise the cap |
 
-Three modules are grandfathered above the cap as known debt, each **pinned at its
-current size** so it cannot grow: `fs/googledrive/index.ts` (397), `fs/googledrive/auth.ts`
-(337), `sync/orchestrator.ts` (332). Ratchet these down by splitting; never raise them.
+Two modules are grandfathered above the cap as known debt, each **pinned at its
+current size** so it cannot grow: `fs/googledrive/auth.ts` (337) and
+`sync/orchestrator.ts` (332). Ratchet these down by splitting; never raise them.
+(`fs/googledrive/index.ts` was grandfathered here at 397; ADR 0001 lifted its
+cache/checkpoint machinery into `fs/caching/`, dropping it back under the 300 cap,
+so it is no longer grandfathered.)
 
 ## 7. Vault-index read centralization
 

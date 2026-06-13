@@ -355,6 +355,38 @@ describe("SyncScheduler", () => {
 		});
 	});
 
+	// The asymmetry that IS the trigger classification (ADR 0004): a signal
+	// (focus/online/visibility) is a content-less "re-check everything" request,
+	// so it is dropped while a sync is already in flight — the in-flight cycle
+	// already does that scan. A vault change carries a real local edit, so it
+	// must still drive a re-run (via debounce → syncPending) even mid-sync.
+	// Pins the load-bearing `isSyncing()` guard so a future "cleanup" can't
+	// delete it silently (deleting it makes a signal set syncPending and run a
+	// redundant WARM full scan).
+	describe("trigger classification (ADR 0004)", () => {
+		it("discards a signal (focus/online/visibility) while a sync is in flight", () => {
+			deps.orchestrator.isSyncing = () => true;
+
+			windowListeners.get("focus")!(new Event("focus"));
+			windowListeners.get("online")!(new Event("online"));
+			documentListeners.get("visibilitychange")!(
+				new Event("visibilitychange"),
+			);
+
+			expect(deps.runSync).not.toHaveBeenCalled();
+		});
+
+		it("still drives a vault change (via debounce) while a sync is in flight", () => {
+			deps.orchestrator.isSyncing = () => true;
+
+			const handler = deps.vaultHandlers.get("modify") as VaultHandler;
+			handler(makeFile("note.md"));
+			vi.advanceTimersByTime(5000);
+
+			expect(deps.runSync).toHaveBeenCalled();
+		});
+	});
+
 	describe("destroy", () => {
 		it("cancels debounced sync", () => {
 			const handler = deps.vaultHandlers.get("modify") as VaultHandler;

@@ -47,7 +47,7 @@ describe("the hot path is O(delta), not O(vault)", () => {
 		}
 
 		// Initialize the tracker (flip out of cold start) and dirty exactly one file.
-		localTracker.acknowledge([]);
+		localTracker.acknowledge(localTracker.snapshot());
 		localTracker.markDirty("note-7.md");
 
 		const listSpy = vi.spyOn(localFs, "list");
@@ -59,7 +59,7 @@ describe("the hot path is O(delta), not O(vault)", () => {
 			localFs,
 			remoteFs,
 			stateStore,
-			localTracker,
+			changes: localTracker.snapshot(),
 		});
 
 		// Hot temperature, and the full-scan entry point was never used on
@@ -89,7 +89,7 @@ describe("the hot path is O(delta), not O(vault)", () => {
 			localFs,
 			remoteFs,
 			stateStore,
-			localTracker,
+			changes: localTracker.snapshot(),
 		});
 
 		expect(changeSet.temperature).toBe("cold");

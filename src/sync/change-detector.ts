@@ -1,7 +1,7 @@
 import type { IFileSystem } from "../fs/interface";
 import type { MixedEntity, RenamePair, SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
-import type { LocalChangeTracker } from "./local-tracker";
+import type { TrackerSnapshot } from "./local-tracker";
 import { hasChanged, hasRemoteChanged } from "./change-compare";
 import { sha256, digest, isLocallyComputable } from "../utils/hash";
 import { AsyncPool } from "../queue/async-queue";
@@ -16,7 +16,7 @@ export interface ChangeDetectorDeps {
 	localFs: IFileSystem;
 	remoteFs: IFileSystem;
 	stateStore: SyncStateStore;
-	localTracker: LocalChangeTracker;
+	changes: TrackerSnapshot;
 }
 
 export interface CollectChangesOptions {
@@ -42,12 +42,12 @@ export async function collectChanges(
 	deps: ChangeDetectorDeps,
 	opts: CollectChangesOptions = {},
 ): Promise<ChangeSet> {
-	const { localTracker, stateStore } = deps;
+	const { changes, stateStore } = deps;
 
 	let changeSet: ChangeSet;
 
 	// Determine temperature
-	if (!opts.forceFullScan && localTracker.isInitialized() && localTracker.getDirtyPaths().size > 0) {
+	if (!opts.forceFullScan && changes.initialized && changes.dirtyPaths.size > 0) {
 		changeSet = await collectHot(deps);
 	} else {
 		const allRecords = await stateStore.getAll();
@@ -60,7 +60,7 @@ export async function collectChanges(
 	await enrichHashesForInitialMatch(changeSet.entries, deps.localFs);
 
 	// Ensure rename-related local entries have hashes (WARM/COLD use list() → hash:"")
-	await enrichHashesForRenames(changeSet.entries, deps.localFs, localTracker.getRenamePairs());
+	await enrichHashesForRenames(changeSet.entries, deps.localFs, changes.renamePairs);
 
 	// Warm mode infers local deletions from absence in list() (the in-memory vault
 	// index), which can under-report. Confirm each candidate against the authoritative
@@ -73,9 +73,9 @@ export async function collectChanges(
 }
 
 async function collectHot(deps: ChangeDetectorDeps): Promise<ChangeSet> {
-	const { localFs, remoteFs, stateStore, localTracker } = deps;
+	const { localFs, remoteFs, stateStore, changes } = deps;
 
-	const dirtyPaths = localTracker.getDirtyPaths();
+	const dirtyPaths = changes.dirtyPaths;
 
 	// Get remote changed paths if supported
 	const remoteChanges = await getRemoteChanges(remoteFs);
@@ -167,7 +167,7 @@ async function collectWarm(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): 
 	}
 
 	// Include rename pair paths so warm mode can optimize renames
-	const renamePairs = deps.localTracker.getRenamePairs();
+	const renamePairs = deps.changes.renamePairs;
 	for (const [newPath, oldPath] of renamePairs) {
 		changedPaths.add(newPath);
 		changedPaths.add(oldPath);

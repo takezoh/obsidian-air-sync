@@ -85,7 +85,7 @@ The 410 fallback triggers `fullScanWithDelta()` which compares persisted metadat
 
 `GoogleDriveClient` (`client.ts`) wraps the Google Drive REST API v3 using Obsidian's `requestUrl` (CORS-free via Electron's net module).
 
-**Requested fields** (`FILE_FIELDS`): `id, name, mimeType, size, modifiedTime, parents, md5Checksum`
+**Requested fields** (`FILE_FIELDS`): `id, name, mimeType, size, modifiedTime, parents, md5Checksum, trashed` (`trashed` is requested so soft-deleted files can be detected and treated as removed)
 
 Key methods:
 
@@ -106,7 +106,7 @@ Key methods:
 
 ## Authentication
 
-Two OAuth implementations share a common base class (`GoogleAuthBase`). The server side of the built-in flow — the `auth-airsync.takezo.dev` endpoints — lives in the dedicated [air-sync-auth](https://github.com/takezoh/air-sync-auth) repo.
+Two OAuth implementations share a common base class (`GoogleAuthBase`). The server side of the built-in flow — the `auth-airsync.takezo.dev` endpoints — lives in the dedicated [obsidian-air-sync-auth](https://github.com/takezoh/obsidian-air-sync-auth) repo.
 
 ### GoogleAuth (server-side, built-in)
 

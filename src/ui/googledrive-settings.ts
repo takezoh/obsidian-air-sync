@@ -7,7 +7,8 @@ import type {
 } from "../fs/settings-renderer";
 import type { GoogleDriveBackendData } from "../fs/googledrive/provider";
 import type { GoogleDriveCustomBackendData } from "../fs/googledrive/provider-custom";
-import { DEFAULT_CUSTOM_SCOPE, DEFAULT_CUSTOM_REDIRECT_URI } from "../fs/googledrive/auth";
+import { DEFAULT_CUSTOM_SCOPE } from "../fs/googledrive/auth";
+import { DEFAULT_CUSTOM_REDIRECT_URI } from "../fs/auth-config";
 import { getBackendProvider } from "../fs/registry";
 import { REMOTE_VAULT_ROOT } from "../fs/remote-vault-contract";
 

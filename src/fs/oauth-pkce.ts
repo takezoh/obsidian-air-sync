@@ -66,7 +66,7 @@ export function buildOAuthState(extra: Record<string, unknown> = {}): string {
 	return base64ToBase64Url(btoa(json));
 }
 
-export interface OAuthTokenState {
+interface OAuthTokenState {
 	refreshToken: string;
 	accessToken: string;
 	accessTokenExpiry: number;

@@ -117,7 +117,7 @@ describe("phantom warm deletion: an incomplete listing does not mass-delete", ()
 			localFs,
 			remoteFs,
 			stateStore,
-			localTracker,
+			changes: localTracker.snapshot(),
 		});
 		const actions = planSync(changeSet.entries).actions;
 		const deletes = actions.filter(
@@ -144,7 +144,7 @@ describe("phantom warm deletion: an incomplete listing does not mass-delete", ()
 			localFs,
 			remoteFs,
 			stateStore,
-			localTracker,
+			changes: localTracker.snapshot(),
 		});
 		const action = planSync(changeSet.entries).actions.find(
 			(a) => a.path === "gone.md",

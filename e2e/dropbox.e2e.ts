@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe } from "vitest";
-import { DROPBOX_CLIENT_ID, DropboxAuth } from "../src/fs/dropbox/auth";
+import { DropboxAuth } from "../src/fs/dropbox/auth";
+import { DROPBOX_AUTH } from "../src/fs/auth-config";
 import { DropboxFs } from "../src/fs/dropbox/index";
 import { runIFileSystemContract } from "../src/fs/ifilesystem-contract";
 import { RetryingDropboxClient } from "./helpers/dropbox-retry-client";
@@ -31,7 +32,7 @@ if (!creds) {
 } else {
 	// PKCE refresh needs only the public client id. Empty access token + expiry 0
 	// forces a refresh on the first getAccessToken().
-	const auth = new DropboxAuth(DROPBOX_CLIENT_ID);
+	const auth = new DropboxAuth(DROPBOX_AUTH.clientId);
 	auth.setTokens(creds.refreshToken, "", 0);
 	// Inject a node-safe sleep: the client's default sleep uses window.setTimeout,
 	// which is undefined under vitest's node environment — a 429 backoff (the very

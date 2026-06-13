@@ -7,7 +7,7 @@ import { isIgnored, isSystemJunkFile } from "../utils/ignore";
 import { isDotPathOutOfScope } from "../utils/path";
 import { INTERNAL_METADATA_PATH } from "../fs/remote-vault-contract";
 import { SyncStateStore } from "./state";
-import { LocalChangeTracker } from "./local-tracker";
+import { LocalChangeTracker, type TrackerSnapshot } from "./local-tracker";
 import { collectChanges } from "./change-detector";
 import { planSync } from "./decision-engine";
 import { refinePlan } from "./rename-optimizer";
@@ -17,7 +17,7 @@ import { classifyHttpError } from "../fs/errors";
 import { decideRetry, sleep } from "./error";
 import type { ConflictRecord, SyncStatus } from "./types";
 import { buildSyncRecord } from "./state-committer";
-import { buildNotificationMessage } from "./sync-notification";
+import { CycleSummary } from "./sync-notification";
 import type { SyncCycleResult } from "./sync-notification";
 
 export type { SyncStatus };
@@ -146,15 +146,30 @@ export class SyncOrchestrator {
 			return;
 		}
 
+		// A runSync arriving while locked is a debounce-fired VAULT change (or a
+		// rescan): set syncPending so the do/while runs another cycle and the
+		// snapshot-surviving dirty path is consumed on HOT. SIGNAL triggers never
+		// reach here — triggerSync's isSyncing() guard already dropped them. Do not
+		// recast syncPending as "dirty exists": markDirty does not set it, so a
+		// dirty-count loop would bypass the 5s debounce and tight-loop during
+		// continuous editing (ADR 0004).
 		if (this.syncMutex.isLocked) {
 			this.syncPending = true;
 			return;
 		}
 
 		await this.syncMutex.run(async () => {
+			// Coalesce every cycle in this burst into ONE end-of-run notice (see
+			// CycleSummary): a mobile resume firing focus + visibilitychange
+			// back-to-back must not show "Everything up to date" twice.
+			const summary = new CycleSummary();
 			do {
 				this.syncPending = false;
 				this.deps.onStatusChange("syncing");
+
+				// One snapshot per cycle, captured above the retry loop, drives both
+				// detection and the acknowledge (see TrackerSnapshot for why).
+				const snapshot = this.deps.localTracker.snapshot();
 
 				// Force a full cold reconcile when delta-based detection can't be
 				// trusted: no committed remote checkpoint (last sync never completed
@@ -168,7 +183,7 @@ export class SyncOrchestrator {
 				const forceFullScan = noCheckpoint || this.recoverViaColdScan;
 				this.deps.logger?.info("Sync started", { forceFullScan });
 
-				const result = await this.executeWithRetry(forceFullScan);
+				const result = await this.executeWithRetry(forceFullScan, snapshot);
 				if (!result) return; // Fatal error already handled
 
 				const { succeeded, failed, conflicts } = result;
@@ -183,11 +198,7 @@ export class SyncOrchestrator {
 					this.deps.logger?.info("Sync completed", { succeeded, conflicts, failed });
 				}
 
-				// The per-cycle notice is gated on its OWN setting now — `enableLogging`
-				// controls only whether logs are written (it used to double as this gate).
-				if (this.deps.getSettings().showSyncNotifications) {
-					this.deps.notify(buildNotificationMessage(result));
-				}
+				summary.add(result.result);
 
 				// Record this cycle's resolved conflicts to the audit history — once per
 				// cycle, and only when there were any. Writing stays separate from
@@ -203,22 +214,27 @@ export class SyncOrchestrator {
 				}
 				await this.deps.logger?.flush();
 
-				const allPaths = this.deps.localTracker.getDirtyPaths();
-				this.deps.localTracker.acknowledge(allPaths);
+				this.deps.localTracker.acknowledge(snapshot);
 			} while (this.syncPending);
+
+			// One notice per burst, gated on its OWN setting (`enableLogging` controls
+			// only whether logs are written — it used to double as this gate).
+			if (this.deps.getSettings().showSyncNotifications) {
+				this.deps.notify(summary.message);
+			}
 		});
 	}
 
 	/**
 	 * Execute sync with retry logic. Returns null on fatal error (already reported).
 	 */
-	private async executeWithRetry(forceFullScan: boolean): Promise<SyncCycleResult | null> {
+	private async executeWithRetry(forceFullScan: boolean, snapshot: TrackerSnapshot): Promise<SyncCycleResult | null> {
 		let lastError: unknown = null;
 		let lastResult: ExecutionResult | null = null;
 
 		for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
 			try {
-				lastResult = await this.executeSyncOnce(forceFullScan);
+				lastResult = await this.executeSyncOnce(forceFullScan, snapshot);
 				return {
 					result: lastResult,
 					succeeded: lastResult.succeeded.length,
@@ -295,7 +311,7 @@ export class SyncOrchestrator {
 					error: err instanceof Error ? err.message : String(err),
 				});
 			} finally {
-				this.deps.localTracker.acknowledge([path]);
+				this.deps.localTracker.acknowledgePath(path);
 			}
 		});
 	}
@@ -304,7 +320,7 @@ export class SyncOrchestrator {
 		return this.syncMutex.isLocked ? "syncing" : "idle";
 	}
 
-	private async executeSyncOnce(forceFullScan: boolean) {
+	private async executeSyncOnce(forceFullScan: boolean, snapshot: TrackerSnapshot) {
 		const localFs = this.deps.localFs();
 		const remoteFs = this.deps.remoteFs();
 		if (!localFs || !remoteFs) {
@@ -316,10 +332,10 @@ export class SyncOrchestrator {
 			localFs,
 			remoteFs,
 			stateStore: this.stateStore,
-			localTracker: this.deps.localTracker,
+			changes: snapshot,
 		}, { forceFullScan });
 
-		const renamePairs = this.deps.localTracker.getRenamePairs();
+		const { renamePairs, folderRenamePairs } = snapshot;
 		const remoteOnlyPaths = changeSet.entries.filter((e) => !e.local && e.remote).map((e) => e.path);
 		this.deps.logger?.info("Change detection completed", {
 			temperature: changeSet.temperature,
@@ -366,7 +382,6 @@ export class SyncOrchestrator {
 			});
 		}
 
-		const folderRenamePairs = this.deps.localTracker.getFolderRenamePairs();
 		if (folderRenamePairs.size > 0) {
 			this.deps.logger?.info("Folder rename pairs detected", {
 				count: folderRenamePairs.size,
