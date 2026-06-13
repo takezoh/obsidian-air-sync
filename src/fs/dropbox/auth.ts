@@ -5,31 +5,14 @@ import type { Logger } from "../../logging/logger";
 import { AuthError } from "../errors";
 import { setBackendSecret, hasBackendSecret } from "../token-store";
 import { BaseOAuthTokenManager, buildOAuthState, computeS256Challenge, generateRandomString } from "../oauth-pkce";
+import { DROPBOX_AUTH } from "../auth-config";
 import { assertDropboxTokenResponse } from "./types";
 
 const AUTHORIZE_URL = "https://www.dropbox.com/oauth2/authorize";
 const TOKEN_URL = "https://api.dropboxapi.com/oauth2/token";
 const REVOKE_URL = "https://api.dropboxapi.com/2/auth/token/revoke";
-/**
- * Direct deep link back to the in-plugin protocol handler — no relay page.
- * Dropbox permits a custom-scheme redirect URI specifically for PKCE apps (the
- * authorization-code flow otherwise requires https/localhost), so the code can
- * return straight to Obsidian, matching the OneDrive backend.
- */
-const REDIRECT_URI = "obsidian://air-sync-auth";
 const SCOPES = "files.metadata.read files.content.read files.content.write";
 const BACKEND_TYPE = "dropbox";
-
-/**
- * Public OAuth app key for the Air Sync Dropbox app (App folder permission).
- *
- * PKCE means there is NO client secret anywhere — the `code_verifier` is the
- * ephemeral proof. Registered at https://www.dropbox.com/developers/apps with
- * `obsidian://air-sync-auth` as a redirect URI (Dropbox allows custom schemes for
- * PKCE apps). The Dropbox backend is still labelled "Preview" in the UI, but the
- * key is embedded so it connects with no per-user setup.
- */
-export const DROPBOX_CLIENT_ID = "icsyogaens93hde";
 
 /**
  * Build the Dropbox authorization-code + PKCE authorize URL. The single source of
@@ -50,7 +33,7 @@ export function buildDropboxAuthorizeUrl(opts: {
 		code_challenge: opts.codeChallenge,
 		code_challenge_method: "S256",
 		scope: SCOPES,
-		redirect_uri: opts.redirectUri ?? REDIRECT_URI,
+		redirect_uri: opts.redirectUri ?? DROPBOX_AUTH.redirectUri,
 		state: opts.state,
 	});
 	return `${AUTHORIZE_URL}?${params.toString()}`;
@@ -101,11 +84,11 @@ export class DropboxAuth extends BaseOAuthTokenManager {
 	 * Exchange an authorization code for tokens (PKCE — no client secret).
 	 *
 	 * `redirectUri` must match the one used in the authorize request and defaults
-	 * to the shipped relay ({@link REDIRECT_URI}). The opt-in e2e bootstrap (ADR
-	 * 0003) overrides it with a `http://localhost:<port>` loopback so a headless
-	 * CLI can capture the redirect directly.
+	 * to the shipped in-plugin redirect ({@link DROPBOX_AUTH}.redirectUri). The
+	 * opt-in e2e bootstrap (ADR 0003) overrides it with a `http://localhost:<port>`
+	 * loopback so a headless CLI can capture the redirect directly.
 	 */
-	async exchangeCode(code: string, codeVerifier: string, redirectUri: string = REDIRECT_URI): Promise<void> {
+	async exchangeCode(code: string, codeVerifier: string, redirectUri: string = DROPBOX_AUTH.redirectUri): Promise<void> {
 		const res = await requestUrl({
 			url: TOKEN_URL,
 			method: "POST",
@@ -196,7 +179,7 @@ export class DropboxAuthProvider implements IAuthProvider {
 
 	constructor(
 		private secretStore: ISecretStore,
-		private clientId: string = DROPBOX_CLIENT_ID,
+		private clientId: string = DROPBOX_AUTH.clientId,
 		private logger?: Logger,
 	) {}
 
