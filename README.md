@@ -40,25 +40,6 @@ The first sync scans your remote folder, so it may take a little while. After th
 |---------|-------------|
 | `Air Sync: Sync now` | Run a sync manually |
 
-## Settings
-
-All settings live under **Settings → Air Sync**.
-
-| Setting | What it does |
-|---------|--------------|
-| Conflict strategy | How to resolve a file changed on two devices at once — **Auto merge** (recommended) or **Always create duplicate**. See [Conflict resolution strategies](#conflict-resolution-strategies). |
-| Remote backend | Which cloud service to sync with. Shown only when more than one backend is available. |
-| Rescan vault | Discards the remote sync checkpoint and fully reconciles on the next sync. Use it if sync seems stuck after an interruption (see Troubleshooting). |
-| Dot-prefixed paths to sync | Dot-prefixed folders to include in sync (e.g. `.templates`), one per line. |
-| Ignore patterns | Gitignore-style patterns to exclude from sync (e.g. `*.zip`, `large-assets/**`), one per line. |
-| Mobile max file size (MB) | Files larger than this are skipped on mobile. Default `10`. |
-| Keep screen awake during sync | Mobile only — prevents the screen from sleeping mid-sync so long syncs aren't interrupted. Default off. |
-| Show sync notifications | Show a brief notice summarizing each completed sync. Default off. |
-| Enable logging | Write sync logs to `.airsync/` in your vault for debugging. Default off. |
-| Log level | Minimum level of messages to log (Debug / Info / Warn / Error). Default Info. |
-
-> Auto merge uses a 3-way merge for text files; it is always on as part of the Auto-merge strategy and has no separate toggle.
-
 ---
 
 ## Advanced
