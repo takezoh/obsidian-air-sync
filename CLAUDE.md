@@ -20,13 +20,14 @@ This file is the **agent operating guide** for this repo. Where to look:
 ```bash
 npm install        # Install dependencies
 npm run dev        # Development (watch)
-npm run build      # Production build (tsc -noEmit && esbuild)
+npm run build      # Production build (tsc -noEmit -skipLibCheck && node esbuild.config.mjs production)
 npm test           # vitest
 npm run test:watch # vitest watch
 npm run lint       # eslint --max-warnings 0
-npm run test:e2e   # opt-in e2e vs real Google Drive/Dropbox (creds-gated; NOT in the gate/CI; backends run in parallel — see docs/e2e-testing.md)
+npm run test:e2e   # opt-in e2e vs real Google Drive/Dropbox/OneDrive (creds-gated; NOT in the gate/CI; backends run in parallel — see docs/e2e-testing.md)
 npm run test:e2e:google   # …only Google Drive
 npm run test:e2e:dropbox  # …only Dropbox
+npm run test:e2e:onedrive # …only OneDrive
 ```
 
 ## The gate

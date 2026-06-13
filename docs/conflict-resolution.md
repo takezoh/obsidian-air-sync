@@ -99,7 +99,7 @@ These are not exposed in the settings UI. Internally, `keep_newer` delegates the
 
 `ConflictHistory` (`conflict-history.ts`) is an audit-log writer for conflict resolutions, targeting `.airsync/conflicts/{device}.json`.
 
-> NOTE: as of this writing it is not yet wired into the sync pipeline — no production code constructs `ConflictRecord`s or calls `append()`; only its unit test exercises it. The shape below is the *intended* contract.
+It is wired into the sync pipeline via the orchestrator's `recordConflicts` hook: `main.ts` passes `recordConflicts: (records) => this.conflictHistory.append(records)` into `SyncOrchestrator`, so each resolved conflict is appended as a `ConflictRecord`.
 
 ```typescript
 interface ConflictRecord {

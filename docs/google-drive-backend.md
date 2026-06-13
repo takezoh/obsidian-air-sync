@@ -85,7 +85,7 @@ The 410 fallback triggers `fullScanWithDelta()` which compares persisted metadat
 
 `GoogleDriveClient` (`client.ts`) wraps the Google Drive REST API v3 using Obsidian's `requestUrl` (CORS-free via Electron's net module).
 
-**Requested fields** (`FILE_FIELDS`): `id, name, mimeType, size, modifiedTime, parents, md5Checksum`
+**Requested fields** (`FILE_FIELDS`): `id, name, mimeType, size, modifiedTime, parents, md5Checksum, trashed` (`trashed` is requested so soft-deleted files can be detected and treated as removed)
 
 Key methods:
 
