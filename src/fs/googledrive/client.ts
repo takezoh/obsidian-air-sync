@@ -248,11 +248,6 @@ export class GoogleDriveClient {
 		return googleDriveFile;
 	}
 
-	/** Clear cached resume URLs (call on plugin unload) */
-	clearResumeCache(): void {
-		this.resumableUploader.clearResumeCache();
-	}
-
 	/** Create a folder */
 	async createFolder(name: string, parentId: string): Promise<GoogleDriveFile> {
 		const response = await this.request("createFolder", {

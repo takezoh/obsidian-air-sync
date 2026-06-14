@@ -31,13 +31,6 @@ export interface GoogleDriveCustomAuthProviderInternal {
 	googleAuth: import("./auth").GoogleAuthDirect;
 }
 
-/** Type for accessing private resumableUploader on GoogleDriveClient in tests */
-export interface GoogleDriveClientInternal {
-	resumableUploader: {
-		resumeCache: Map<string, { uploadUrl: string; totalSize: number; createdAt: number }>;
-	};
-}
-
 /** Create a mock ISecretStore for tests */
 export function createMockSecretStore(secrets: Record<string, string> = {}): ISecretStore {
 	const store = new Map(Object.entries(secrets));
