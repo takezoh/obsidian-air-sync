@@ -208,6 +208,13 @@ function applyRename(
 	const wasFolder = cache.isFolder(oldPath);
 	const oldDescendants = wasFolder ? cache.collectDescendants(oldPath) : [];
 
+	// A DIFFERENT entry already occupying newPath (the moved id is at oldPath, so any
+	// occupant here is some other id) is evicted by setEntry → removeTree without
+	// reporting. Capture its displaced descendants so they surface as deletions rather
+	// than vanish from the cache unclassified — the rename-branch twin of the recreate
+	// handling in applyUpsertEntry (ADR 0006). The occupant's own path is reported below.
+	const displaced = cache.hasFile(newPath) ? cache.collectDescendants(newPath) : [];
+
 	cache.removeEntry(oldPath);
 	cache.setEntry(newPath, entry);
 	if (wasFolder) cache.rewriteChildPaths(oldPath, newPath);
@@ -216,6 +223,9 @@ function applyRename(
 	acc.changedPaths.add(newPath);
 	acc.changedPaths.add(oldPath);
 	for (const d of oldDescendants) {
+		acc.changedPaths.add(d);
+	}
+	for (const d of displaced) {
 		acc.changedPaths.add(d);
 	}
 	if (wasFolder) {

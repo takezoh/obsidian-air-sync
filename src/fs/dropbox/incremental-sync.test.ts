@@ -193,6 +193,37 @@ describe("applyDropboxDelta — official algorithm", () => {
 		expect(delta.modified).toEqual(expect.arrayContaining(["dir", "dir/new.md"]));
 	});
 
+	it("surfaces an evicted child when a folder is MOVED onto a path freed by a deleted folder", async () => {
+		const cache = new DropboxMetadataCache("/root");
+		cache.buildFromFiles([
+			dbxFolder("10", "/root/X"),
+			dbxFile("11", "/root/X/keep.md"),
+			dbxFolder("20", "/root/A"),
+			dbxFile("21", "/root/A/c.md"),
+		]);
+		// Delete folder X, then move folder A onto the freed path X (same-id move A->X).
+		// The displaced old child X/keep.md must surface as a deletion — the eviction
+		// happens inside applyRename's setEntry, which otherwise records nothing.
+		const client = fakeClient([
+			page([
+				dbxDeleted("/root/X"),
+				dbxDeleted("/root/X/keep.md"),
+				dbxFolder("20", "/root/X"),
+				dbxFile("21", "/root/X/c.md"),
+				dbxDeleted("/root/A"),
+			]),
+		]);
+		const result = await applyDropboxDelta({ cache, client }, "cur");
+		if (result.needsFullScan) throw new Error("unexpected reset");
+
+		expect(result.renamedPaths).toContainEqual({ oldPath: "A", newPath: "X", isFolder: true });
+		expect(cache.getPathById("id:20")).toBe("X");
+		expect(cache.hasFile("X/c.md")).toBe(true);
+		expect(cache.hasFile("X/keep.md")).toBe(false);
+		const delta = classify(cache, result.changedPaths);
+		expect(delta.deleted).toContain("X/keep.md");
+	});
+
 	it("signals needsFullScan on a cursor reset", async () => {
 		const cache = seededCache();
 		const result = await applyDropboxDelta({ cache, client: resetClient() }, "cur");
