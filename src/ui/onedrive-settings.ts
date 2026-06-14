@@ -1,4 +1,4 @@
-import type { App, TextComponent } from "obsidian";
+import type { App } from "obsidian";
 import { Setting } from "obsidian";
 import type { AirSyncSettings } from "../settings";
 import type {
@@ -7,7 +7,8 @@ import type {
 } from "../fs/settings-renderer";
 import type { OneDriveBackendData, OneDriveProvider } from "../fs/onedrive/provider";
 import { getBackendProvider } from "../fs/registry";
-import { OneDriveFolderModal } from "./onedrive-folder-modal";
+import { AppFolderPickerModal } from "./app-folder-picker";
+import { renderBoundFolderField, renderConnectionStatus } from "./backend-settings-ui";
 
 /**
  * Renders OneDrive-specific settings UI: connection status, the in-plugin PKCE
@@ -33,41 +34,22 @@ export class OneDriveSettingsRenderer implements IBackendSettingsRenderer {
 		const authed = provider?.auth.isAuthenticated(settings.backendData ?? {}) ?? false;
 		const data = (settings.backendData ?? {}) as Partial<OneDriveBackendData>;
 
-		const statusDesc = authed ? "● Connected" : "● Not connected";
-		const statusClass = authed ? "air-sync-status-connected" : "air-sync-status-disconnected";
-		const statusSetting = new Setting(containerEl)
-			.setName("Connection status")
-			.setDesc(statusDesc);
-		statusSetting.settingEl.addClass(statusClass);
-		statusSetting.addButton((button) =>
-			button
-				.setButtonText(authed ? "Disconnect" : "Connect to OneDrive")
-				.onClick(async () => {
-					if (authed) {
-						await actions.disconnect();
-					} else {
-						await actions.startAuth();
-					}
-					actions.refreshDisplay();
-				}),
-		);
+		renderConnectionStatus(containerEl, {
+			connected: authed,
+			connectLabel: "Connect to OneDrive",
+			actions,
+		});
 
 		if (!authed) return;
 
 		const folderSetting = new Setting(containerEl).setName("Remote vault folder");
 
 		if (data.remoteVaultFolderId) {
-			// Bound: show the folder id IMMEDIATELY (never block the field on a network
-			// call), then best-effort upgrade to the id-resolved path. A slow/failed
-			// lookup just leaves the id shown.
-			folderSetting.setDesc("The folder this vault syncs into, inside the app folder.");
-			let pathField: TextComponent | undefined;
-			folderSetting.addText((text) => {
-				pathField = text.setValue(data.remoteVaultFolderId ?? "").setDisabled(true);
+			renderBoundFolderField(folderSetting, {
+				desc: "The folder this vault syncs into, inside the app folder.",
+				folderId: data.remoteVaultFolderId,
+				resolvePath: () => provider?.getRemoteVaultDisplayPath?.(settings),
 			});
-			void provider?.getRemoteVaultDisplayPath?.(settings)
-				.then((path) => { if (path) pathField?.setValue(path); })
-				.catch(() => { /* keep the id shown */ });
 		} else {
 			// Not bound yet: use the default folder (the vault name under the app folder),
 			// or pick an existing one via the in-app modal. Binding happens on an explicit choice.
@@ -94,8 +76,9 @@ export class OneDriveSettingsRenderer implements IBackendSettingsRenderer {
 						.setButtonText("Choose folder")
 						.onClick(() => {
 							if (!provider) return;
-							new OneDriveFolderModal(
+							new AppFolderPickerModal(
 								app,
+								"Choose a OneDrive folder",
 								provider,
 								settings,
 								onSave,

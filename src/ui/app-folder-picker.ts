@@ -1,27 +1,37 @@
 import type { App } from "obsidian";
 import { Modal, Notice, Setting } from "obsidian";
-import type { DropboxProvider } from "../fs/dropbox/provider";
 import type { AirSyncSettings } from "../settings";
 
+/** Minimal client shape the picker needs: list folders directly under the app root. */
+interface AppFolderListClient {
+	listAppRootFolders(): Promise<{ name: string }[]>;
+}
+
+/** Minimal provider shape: build a UI client for the given settings. */
+export interface AppFolderPickerProvider {
+	createUiClient(settings: AirSyncSettings): AppFolderListClient;
+}
+
 /**
- * In-app folder picker for Dropbox (App Folder scope). Lists the folders directly
- * under the App Folder root and lets the user pick an existing one or type a new
- * name. On confirm it writes the chosen name to `pendingPickedFolderPath` via the
- * renderer-provided `onSave`, then runs `bindDefault` (the default-bind action), so
- * the provider's `resolveRemoteVault` find-or-creates and binds it.
+ * In-app folder picker for an App-Folder-scoped backend (Dropbox, OneDrive). Lists the
+ * folders directly under the backend's app-folder root and lets the user pick an
+ * existing one or type a new name. On confirm it writes the chosen name to
+ * `pendingPickedFolderPath` via the renderer-provided `onSave`, then runs `bindDefault`
+ * (the default-bind action), so the provider's `resolveRemoteVault` find-or-creates
+ * `/<name>` and binds its id.
  *
- * This replaces the web Chooser: App Folder scope means the app only ever sees
- * folders under the App Folder, so a full-Dropbox Chooser (which then had to reject
- * picks outside it) was misleading. No BackendManager changes are needed — binding
- * reuses the existing default-folder path.
+ * This replaces a full-drive web picker: App Folder scope means the app only ever sees
+ * folders under its own root, so a picker that then had to reject outside picks was
+ * misleading. No BackendManager changes are needed — binding reuses the default path.
  */
-export class DropboxFolderModal extends Modal {
+export class AppFolderPickerModal extends Modal {
 	private selected = "";
 	private newName = "";
 
 	constructor(
 		app: App,
-		private provider: DropboxProvider,
+		private title: string,
+		private provider: AppFolderPickerProvider,
 		private settings: AirSyncSettings,
 		private onSave: (updates: Record<string, unknown>) => Promise<void>,
 		private bindDefault: () => Promise<void>,
@@ -31,7 +41,7 @@ export class DropboxFolderModal extends Modal {
 
 	async onOpen(): Promise<void> {
 		const { contentEl } = this;
-		this.setTitle("Choose a Dropbox folder");
+		this.setTitle(this.title);
 		contentEl.createEl("p", {
 			text: "Pick an existing folder in the app folder, or create a new one. This vault syncs into the chosen folder.",
 		});
