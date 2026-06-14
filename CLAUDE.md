@@ -51,6 +51,15 @@ disabling a rule.**
 - No migration code — on IndexedDB schema changes, cold-start (drop all stores and
   recreate). Settings schema changes use sensible defaults for missing fields via
   `Object.assign({}, DEFAULT_SETTINGS, stored)`.
+  - **Sanctioned exception: `settings-normalize.ts`.** Two one-time *normalizations*
+    run on load: `liftActiveBackendData` (lifts the active backend out of the old
+    nested per-type `backendData` map into the flat single-bag shape, discarding the
+    rest) and `normalizeConflictStrategy` (coerces the removed `"ask"` strategy to its
+    effective `"duplicate"`). These reshape-or-discard an incompatible old shape rather
+    than transforming data field-by-field, and exist so a vault upgrading from the old
+    shape stays connected instead of silently breaking the resolver / stranding
+    foreign-backend params. Both are idempotent (a no-op on the current shape). Do not
+    grow this list without the same "reshape/discard, not transform" justification.
 
 ### Project-specific gotchas
 

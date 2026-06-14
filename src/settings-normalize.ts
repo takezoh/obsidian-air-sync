@@ -19,7 +19,8 @@ function isObject(v: unknown): v is Record<string, unknown> {
  *
  * This is cold-start normalization, NOT data migration: an incompatible old shape
  * is reshaped/discarded rather than transformed field-by-field. It is idempotent —
- * on the already-flat shape it is a no-op (returns false). Old vs new is told apart
+ * on the already-flat shape it is a no-op (returns false). It is a sanctioned
+ * exception to CLAUDE.md's "no migration code" rule, recorded there. Old vs new is told apart
  * by whether `backendData` has a key equal to a REGISTERED backend type whose value
  * is an object; real param names never collide with a backend type, so this
  * discriminator has no false positives in practice.
