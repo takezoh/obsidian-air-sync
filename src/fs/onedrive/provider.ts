@@ -1,7 +1,4 @@
 import type { App } from "obsidian";
-import { getBackendData } from "../backend";
-import type { IBackendProvider } from "../backend";
-import type { ISecretStore } from "../secret-store";
 import type { IFileSystem } from "../interface";
 import type { IBackendSettingsRenderer } from "../settings-renderer";
 import type { AirSyncSettings } from "../../settings";
@@ -9,19 +6,19 @@ import type { Logger } from "../../logging/logger";
 import type { ErrorClassification } from "../errors";
 import type { RemoteVaultResolution } from "../remote-vault-contract";
 import { MetadataStore } from "../../store/metadata-store";
+import { PkceAppFolderProvider, type PkceAppFolderData } from "../pkce-app-folder-provider";
 import { OneDriveClient } from "./client";
 import { OneDriveFs } from "./index";
-import { OneDriveAuthProvider, OneDriveAuth } from "./auth";
+import { OneDriveAuthProvider, type OneDriveAuth } from "./auth";
 import type { OneDriveItem } from "./types";
 import { classifyOneDriveError } from "./errors";
 import { findOrCreateAppRootFolder } from "./remote-vault";
 import { OneDriveSettingsRenderer } from "../../ui/onedrive-settings";
-import { getBackendSecret, setBackendSecret, hasBackendSecret, clearBackendSecrets } from "../token-store";
 
 const BACKEND_TYPE = "onedrive";
 
 /** OneDrive's slice of the active-backend `backendData` bag (tokens live in SecretStorage). */
-export interface OneDriveBackendData {
+export interface OneDriveBackendData extends PkceAppFolderData {
 	/**
 	 * Stable driveItem id of the remote vault folder — the SOLE remote address. The
 	 * FS addresses everything by this id; a remote move/rename of the folder needs no
@@ -50,85 +47,32 @@ const DEFAULT_ONEDRIVE_DATA: OneDriveBackendData = {
 /**
  * OneDrive backend provider — in-plugin PKCE (worker-less), App Folder scope,
  * personal Microsoft accounts only. The vault lives at `approot:/<folder>` directly
- * under the special App Folder (the scope already namespaces the app). The delta
- * cursor co-commits with the file-map cache in the backend's IndexedDB store (ADR
- * 0001); refreshed tokens are written back to SecretStorage.
+ * under the special App Folder (the scope already namespaces the app). All the
+ * token/cache/lifecycle plumbing is the shared {@link PkceAppFolderProvider}; this
+ * supplies the OneDrive client/FS seams, error classification, and the two
+ * backend-specific operations below.
  *
- * Folder binding is an IN-APP modal (no web picker), which writes the chosen name
- * to `pendingPickedFolderPath` then triggers the default-bind action so
- * {@link resolveRemoteVault} runs. So this provider has no `picker` capability.
+ * Folder binding is an IN-APP modal (no web picker), so this provider has no `picker`.
  */
-export class OneDriveProvider implements IBackendProvider {
+export class OneDriveProvider extends PkceAppFolderProvider<OneDriveBackendData, OneDriveItem, OneDriveClient, OneDriveAuth> {
 	readonly type = BACKEND_TYPE;
 	readonly displayName = "OneDrive (Preview)";
-	readonly auth: OneDriveAuthProvider;
+	readonly auth = new OneDriveAuthProvider(this.secretStore);
 
-	constructor(private secretStore: ISecretStore) {
-		this.auth = new OneDriveAuthProvider(secretStore);
+	protected readonly defaultData = DEFAULT_ONEDRIVE_DATA;
+	protected readonly dbNamePrefix = "air-sync-onedrive";
+
+	protected createClient(getToken: (forceRefresh?: boolean) => Promise<string>, logger?: Logger): OneDriveClient {
+		return new OneDriveClient(getToken, logger);
 	}
 
-	private getData(settings: AirSyncSettings): OneDriveBackendData {
-		return { ...DEFAULT_ONEDRIVE_DATA, ...getBackendData<OneDriveBackendData>(settings) };
-	}
-
-	/** Build a token-bearing client from the stored secrets + expiry (shared auth). */
-	private makeClient(data: OneDriveBackendData, logger?: Logger): OneDriveClient {
-		return this.clientFromAuth(this.auth.getOrCreateAuth(logger), data, logger);
-	}
-
-	/** A client on a throwaway auth — for one-off settings reads that must not reset
-	 *  the live sync's shared in-memory tokens. */
-	private makeDetachedClient(data: OneDriveBackendData, logger?: Logger): OneDriveClient {
-		return this.clientFromAuth(this.auth.createDetachedAuth(logger), data, logger);
-	}
-
-	private clientFromAuth(auth: OneDriveAuth, data: OneDriveBackendData, logger?: Logger): OneDriveClient {
-		auth.setTokens(
-			getBackendSecret(this.secretStore, BACKEND_TYPE, "refresh"),
-			getBackendSecret(this.secretStore, BACKEND_TYPE, "access"),
-			data.accessTokenExpiry,
-		);
-		return new OneDriveClient((force) => auth.getAccessToken(force), logger);
-	}
-
-	/**
-	 * A client usable from the settings UI / folder modal. Exposed so the in-app
-	 * folder modal can list approot folders without a live FS. Detached so it can't
-	 * clobber a concurrently-running sync's tokens.
-	 */
-	createUiClient(settings: AirSyncSettings, logger?: Logger): OneDriveClient {
-		return this.makeDetachedClient(this.getData(settings), logger);
-	}
-
-	/** The per-target checkpoint store (file-map cache + delta cursor), keyed by id. */
-	private metadataStoreFor(settings: AirSyncSettings): MetadataStore<OneDriveItem> | null {
-		const id = this.getData(settings).remoteVaultFolderId;
-		if (!id) return null;
-		return new MetadataStore<OneDriveItem>(`${settings.vaultId}-${id}`, { dbNamePrefix: "air-sync-onedrive", version: 1 });
-	}
-
-	/** A usable token exists if either secret is present (a refresh OR a live access token). */
-	private hasAnyToken(): boolean {
-		return (
-			hasBackendSecret(this.secretStore, BACKEND_TYPE, "refresh") ||
-			hasBackendSecret(this.secretStore, BACKEND_TYPE, "access")
-		);
-	}
-
-	createFs(_app: App, settings: AirSyncSettings, logger?: Logger): IFileSystem | null {
-		const data = this.getData(settings);
-		if (!this.hasAnyToken() || !data.remoteVaultFolderId) return null;
-		const client = this.makeClient(data, logger);
-		return new OneDriveFs(client, data.remoteVaultFolderId, logger, this.metadataStoreFor(settings) ?? undefined);
-	}
-
-	isConnected(settings: AirSyncSettings): boolean {
-		return this.hasAnyToken() && !!this.getData(settings).remoteVaultFolderId;
-	}
-
-	getIdentity(settings: AirSyncSettings): string | null {
-		const id = this.getData(settings).remoteVaultFolderId;
-		return id ? `${BACKEND_TYPE}:${id}` : null;
+	protected createFsInstance(
+		client: OneDriveClient,
+		folderId: string,
+		logger: Logger | undefined,
+		store: MetadataStore<OneDriveItem> | undefined,
+	): IFileSystem {
+		return new OneDriveFs(client, folderId, logger, store);
 	}
 
 	classifyError(err: unknown): ErrorClassification {
@@ -137,19 +81,6 @@ export class OneDriveProvider implements IBackendProvider {
 
 	createSettingsRenderer(): IBackendSettingsRenderer {
 		return new OneDriveSettingsRenderer();
-	}
-
-	readBackendState(): Record<string, unknown> {
-		const result: Record<string, unknown> = {};
-		// The delta cursor commits atomically with the file map in the metadata store
-		// (ADR 0001). Here we only persist refreshed tokens + the non-secret expiry.
-		const tokens = this.auth.getTokenState();
-		if (tokens && (tokens.refreshToken || tokens.accessToken)) {
-			setBackendSecret(this.secretStore, BACKEND_TYPE, "refresh", tokens.refreshToken);
-			setBackendSecret(this.secretStore, BACKEND_TYPE, "access", tokens.accessToken);
-			result.accessTokenExpiry = tokens.accessTokenExpiry;
-		}
-		return result;
 	}
 
 	/**
@@ -198,32 +129,5 @@ export class OneDriveProvider implements IBackendProvider {
 			return `${after}/${item.name}`;
 		}
 		return item.name;
-	}
-
-	/**
-	 * Clear the per-target checkpoint store by its settings key, without a live FS
-	 * (used by disconnect when the backend had no live FS — e.g. expired auth — so no
-	 * stale checkpoint survives). Best-effort.
-	 */
-	async clearCheckpointStore(settings: AirSyncSettings): Promise<void> {
-		const store = this.metadataStoreFor(settings);
-		if (!store) return;
-		try {
-			await store.open();
-			await store.clear();
-			await store.close();
-		} catch {
-			/* non-fatal: an orphaned store is keyed by the old target and never reused */
-		}
-	}
-
-	async disconnect(_settings: AirSyncSettings): Promise<Record<string, unknown>> {
-		await this.auth.revokeAuth();
-		this.clearPluginSecrets();
-		return { ...DEFAULT_ONEDRIVE_DATA };
-	}
-
-	clearPluginSecrets(): void {
-		clearBackendSecrets(this.secretStore, BACKEND_TYPE, ["access", "refresh"]);
 	}
 }

@@ -66,6 +66,31 @@ export function buildOAuthState(extra: Record<string, unknown> = {}): string {
 	return base64ToBase64Url(btoa(json));
 }
 
+/** Parsed PKCE redirect callback: the authorization code and CSRF state. */
+export interface PkceCallbackParams {
+	code: string;
+	state: string | undefined;
+}
+
+/**
+ * Parse the `obsidian://air-sync-auth?code=…&state=…` PKCE redirect callback.
+ * Shared by every in-plugin PKCE backend so the parse (and its error messages)
+ * can't drift between them.
+ */
+export function parsePkceCallback(input: string): PkceCallbackParams {
+	const trimmed = input.trim();
+	if (!trimmed) throw new Error("Auth callback is empty");
+	let url: URL;
+	try {
+		url = new URL(trimmed);
+	} catch {
+		throw new Error("Invalid auth callback URL");
+	}
+	const code = url.searchParams.get("code");
+	if (!code) throw new Error("Missing code in auth callback");
+	return { code, state: url.searchParams.get("state") ?? undefined };
+}
+
 interface OAuthTokenState {
 	refreshToken: string;
 	accessToken: string;

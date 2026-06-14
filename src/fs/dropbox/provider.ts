@@ -1,19 +1,16 @@
 import type { App } from "obsidian";
-import { getBackendData } from "../backend";
-import type { IBackendProvider } from "../backend";
-import type { ISecretStore } from "../secret-store";
 import type { IFileSystem } from "../interface";
 import type { IBackendSettingsRenderer } from "../settings-renderer";
 import type { AirSyncSettings } from "../../settings";
 import type { Logger } from "../../logging/logger";
 import type { RemoteVaultResolution } from "../remote-vault-contract";
 import { MetadataStore } from "../../store/metadata-store";
+import { PkceAppFolderProvider, type PkceAppFolderData } from "../pkce-app-folder-provider";
 import { DropboxClient } from "./client";
 import { DropboxFs } from "./index";
-import { DropboxAuthProvider, DropboxAuth } from "./auth";
+import { DropboxAuthProvider, type DropboxAuth } from "./auth";
 import type { DropboxEntry } from "./types";
 import { DropboxSettingsRenderer } from "../../ui/dropbox-settings";
-import { getBackendSecret, setBackendSecret, hasBackendSecret, clearBackendSecrets } from "../token-store";
 
 // Note: the shared REMOTE_VAULT_ROOT wrapper folder is intentionally NOT used —
 // Dropbox's App Folder scope already namespaces the app, so the vault lives at
@@ -22,7 +19,7 @@ import { getBackendSecret, setBackendSecret, hasBackendSecret, clearBackendSecre
 const BACKEND_TYPE = "dropbox";
 
 /** Dropbox's slice of the active-backend `backendData` bag (tokens live in SecretStorage). */
-export interface DropboxBackendData {
+export interface DropboxBackendData extends PkceAppFolderData {
 	/**
 	 * Stable folder id (`id:…`) of the remote vault — the SOLE remote address.
 	 * The FS addresses everything by this id (`id:<id>/<subpath>`); the folder's
@@ -53,118 +50,37 @@ const DEFAULT_DROPBOX_DATA: DropboxBackendData = {
 /**
  * Dropbox backend provider — in-plugin PKCE (worker-less), App Folder scope.
  *
- * Addressing is path-based: the remote vault is `/<vault>` directly under the
- * App Folder root (the App Folder scope already namespaces the app, so no
- * obsidian-air-sync/ wrapper is needed). The delta cursor is committed only on a
- * fully-successful sync — but now co-located with the file-map cache in the
- * backend's IndexedDB store (ADR 0001, via the FS's commitCheckpoint), not in
- * settings. Refreshed tokens are written back to SecretStorage.
+ * Addressing is path-based: the remote vault is `/<vault>` directly under the App
+ * Folder root (the scope already namespaces the app, so no obsidian-air-sync/ wrapper
+ * is needed). All the token/cache/lifecycle plumbing is the shared
+ * {@link PkceAppFolderProvider}; this supplies the Dropbox client/FS seams and the two
+ * backend-specific operations below.
  *
- * Folder binding is an IN-APP modal (no web picker), which writes the chosen name
- * to `pendingPickedFolderPath` then triggers the default-bind action so
- * {@link resolveRemoteVault} runs. So this provider has no `picker` capability.
+ * Folder binding is an IN-APP modal (no web picker), so this provider has no `picker`.
  */
-export class DropboxProvider implements IBackendProvider {
+export class DropboxProvider extends PkceAppFolderProvider<DropboxBackendData, DropboxEntry, DropboxClient, DropboxAuth> {
 	readonly type = BACKEND_TYPE;
 	readonly displayName = "Dropbox (Preview)";
-	readonly auth: DropboxAuthProvider;
+	readonly auth = new DropboxAuthProvider(this.secretStore);
 
-	constructor(private secretStore: ISecretStore) {
-		this.auth = new DropboxAuthProvider(secretStore);
+	protected readonly defaultData = DEFAULT_DROPBOX_DATA;
+	protected readonly dbNamePrefix = "air-sync-dropbox";
+
+	protected createClient(getToken: (forceRefresh?: boolean) => Promise<string>, logger?: Logger): DropboxClient {
+		return new DropboxClient(getToken, logger);
 	}
 
-	private getData(settings: AirSyncSettings): DropboxBackendData {
-		return { ...DEFAULT_DROPBOX_DATA, ...getBackendData<DropboxBackendData>(settings) };
-	}
-
-	/** Build a token-bearing client from the stored secrets + expiry. */
-	private makeClient(data: DropboxBackendData, logger?: Logger): DropboxClient {
-		return this.clientFromAuth(this.auth.getOrCreateAuth(logger), data, logger);
-	}
-
-	/**
-	 * A client backed by a throwaway auth, isolated from the shared FS-bound token
-	 * manager — for one-off reads (settings folder-path display) that may run
-	 * concurrently with a live sync and must not reset its in-memory tokens.
-	 */
-	private makeDetachedClient(data: DropboxBackendData, logger?: Logger): DropboxClient {
-		return this.clientFromAuth(this.auth.createDetachedAuth(logger), data, logger);
-	}
-
-	private clientFromAuth(auth: DropboxAuth, data: DropboxBackendData, logger?: Logger): DropboxClient {
-		auth.setTokens(
-			getBackendSecret(this.secretStore, BACKEND_TYPE, "refresh"),
-			getBackendSecret(this.secretStore, BACKEND_TYPE, "access"),
-			data.accessTokenExpiry,
-		);
-		return new DropboxClient((force) => auth.getAccessToken(force), logger);
-	}
-
-	/**
-	 * A client usable from the settings UI / folder modal. Exposed so the in-app
-	 * folder modal can list app-folder folders without a live FS. Detached so it
-	 * can't clobber a concurrently-running sync's tokens.
-	 */
-	createUiClient(settings: AirSyncSettings, logger?: Logger): DropboxClient {
-		return this.makeDetachedClient(this.getData(settings), logger);
-	}
-
-	/** The per-target checkpoint store (file-map cache + delta cursor), keyed by id. */
-	private metadataStoreFor(settings: AirSyncSettings): MetadataStore<DropboxEntry> | null {
-		const id = this.getData(settings).remoteVaultFolderId;
-		if (!id) return null;
-		return new MetadataStore<DropboxEntry>(
-			`${settings.vaultId}-${id}`,
-			{ dbNamePrefix: "air-sync-dropbox", version: 1 },
-		);
-	}
-
-	createFs(_app: App, settings: AirSyncSettings, logger?: Logger): IFileSystem | null {
-		const data = this.getData(settings);
-		const hasToken =
-			hasBackendSecret(this.secretStore, BACKEND_TYPE, "refresh") ||
-			hasBackendSecret(this.secretStore, BACKEND_TYPE, "access");
-		// The folder id is the sole remote address; the FS resolves any path it needs
-		// from it on demand.
-		if (!hasToken || !data.remoteVaultFolderId) return null;
-
-		const client = this.makeClient(data, logger);
-		// The delta cursor is restored from this store (co-located with the cache),
-		// not from settings.
-		return new DropboxFs(client, data.remoteVaultFolderId, logger, this.metadataStoreFor(settings) ?? undefined);
-	}
-
-	isConnected(settings: AirSyncSettings): boolean {
-		const hasToken =
-			hasBackendSecret(this.secretStore, BACKEND_TYPE, "refresh") ||
-			hasBackendSecret(this.secretStore, BACKEND_TYPE, "access");
-		return hasToken && !!this.getData(settings).remoteVaultFolderId;
-	}
-
-	getIdentity(settings: AirSyncSettings): string | null {
-		const id = this.getData(settings).remoteVaultFolderId;
-		return id ? `${BACKEND_TYPE}:${id}` : null;
+	protected createFsInstance(
+		client: DropboxClient,
+		folderId: string,
+		logger: Logger | undefined,
+		store: MetadataStore<DropboxEntry> | undefined,
+	): IFileSystem {
+		return new DropboxFs(client, folderId, logger, store);
 	}
 
 	createSettingsRenderer(): IBackendSettingsRenderer {
 		return new DropboxSettingsRenderer();
-	}
-
-	readBackendState(): Record<string, unknown> {
-		const result: Record<string, unknown> = {};
-		// The delta cursor is no longer persisted in settings — it commits atomically
-		// with the file map in the metadata store (ADR 0001, via the FS's
-		// commitCheckpoint). Here we only persist refreshed tokens (access may have
-		// rotated; refresh usually stable) and the non-secret expiry; the tokens
-		// themselves go to SecretStorage. Saved every cycle, clean or not: a refresh
-		// that already succeeded should not be discarded because a later file op failed.
-		const tokens = this.auth.getTokenState();
-		if (tokens && (tokens.refreshToken || tokens.accessToken)) {
-			setBackendSecret(this.secretStore, BACKEND_TYPE, "refresh", tokens.refreshToken);
-			setBackendSecret(this.secretStore, BACKEND_TYPE, "access", tokens.accessToken);
-			result.accessTokenExpiry = tokens.accessTokenExpiry;
-		}
-		return result;
 	}
 
 	async resolveRemoteVault(
@@ -217,34 +133,5 @@ export class DropboxProvider implements IBackendProvider {
 		const client = this.makeDetachedClient(data, logger);
 		const meta = await client.getMetadata(data.remoteVaultFolderId);
 		return meta.path_display ?? null;
-	}
-
-	/**
-	 * Clear the per-target checkpoint store (file-map cache + delta cursor) by its
-	 * settings key, without a live FS (used by disconnect when the backend had no live
-	 * FS — e.g. expired auth — so no stale checkpoint survives). Best-effort.
-	 */
-	async clearCheckpointStore(settings: AirSyncSettings): Promise<void> {
-		const store = this.metadataStoreFor(settings);
-		if (!store) return;
-		try {
-			await store.open();
-			await store.clear();
-			await store.close();
-		} catch {
-			/* non-fatal: an orphaned store is keyed by the old target and never reused */
-		}
-	}
-
-	async disconnect(_settings: AirSyncSettings): Promise<Record<string, unknown>> {
-		await this.auth.revokeAuth();
-		this.clearPluginSecrets();
-		// The per-target IndexedDB cache + cursor is cleared by BackendManager via the
-		// live FS's resetCheckpoint() (one connection, no race) — see disconnectBackend.
-		return { ...DEFAULT_DROPBOX_DATA };
-	}
-
-	clearPluginSecrets(): void {
-		clearBackendSecrets(this.secretStore, BACKEND_TYPE, ["access", "refresh"]);
 	}
 }
