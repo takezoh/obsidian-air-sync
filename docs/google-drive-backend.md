@@ -102,7 +102,7 @@ Key methods:
 
 ### Transport-level 401 retry
 
-`request()` injects `Authorization: Bearer <token>` and, on a 401 from the first attempt only, forces a token refresh via `getToken(true)` and retries the request exactly once (guarded by the `retried` flag). Every Google Drive error is re-thrown as `Error("Google Drive API <operation> failed: <msg>")` that copies `status`, `headers`, and `json` from the original, so `getErrorInfo()` (status/headers) and `isRateLimitError()` (json) can classify it -- and so upstream 410 (changes-token-expired) and 308 (resumable-resume) handling can read them.
+`request()` injects `Authorization: Bearer <token>` and, on a 401 from the first attempt only, forces a token refresh via `getToken(true)` and retries the request exactly once (guarded by the `retried` flag). Every Google Drive error is re-thrown as `Error("Google Drive API <operation> failed: <msg>")` that copies `status`, `headers`, and `json` from the original, so `getErrorInfo()` (status/headers) and `isRateLimitError()` (json) can classify it -- and so upstream 410 (changes-token-expired) handling can read them.
 
 ## Authentication
 
@@ -141,11 +141,9 @@ Tokens (`refreshToken`, `accessToken`) are stored in Obsidian's `SecretStorage` 
 `ResumableUploader` (`resumable-upload.ts`) handles files > 5 MB (`RESUMABLE_THRESHOLD`):
 
 1. Initiate a resumable upload session (POST/PATCH with `uploadType=resumable`)
-2. Upload the entire content in a single PUT (chunked upload is avoided due to Obsidian's `requestUrl` limitations with 308 responses)
-3. On failure, cache the upload URL (6-hour TTL) so the next retry can resume:
-   - Resume entries are keyed by `existingFileId` (or `${parentId}/${name}` for new files), reused only if the cached `totalSize` equals the current byte length and `createdAt` is within the 6 h TTL, and are deleted before the resume attempt so a failed resume falls through to a fresh upload
-   - Query Google for bytes received with a status `PUT` carrying `Content-Range: bytes */total`. A 200/201 means the upload already completed (returns the `GoogleDriveFile`); on 308 the `range: bytes=0-N` header gives `bytesReceived = N+1` (0 if unparseable); any other status returns null and the caller restarts a fresh upload
-   - Send only the remaining `content.slice(bytesReceived)` with `Content-Range: bytes <recv>-<total-1>/<total>`
+2. Upload the entire content in a **single PUT** — chunked upload is impossible here because Obsidian's `requestUrl` (Electron `net`) can't reliably handle the `308 Resume Incomplete` responses chunking depends on
+
+A failed PUT is simply retried as a fresh upload on the next sync cycle; the resumable session is only an envelope for the single PUT, not a byte-range resume.
 
 ## Provider model
 

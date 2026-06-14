@@ -75,7 +75,7 @@ remote version
 
 - `notes/file.md` -> `notes/file.conflict.md`
 - If that exists: `notes/file.conflict-2.md`, `notes/file.conflict-3.md`, ..., up to 100
-- Beyond 100: a timestamp suffix (`.conflict-{Date.now()}`), still collision-checked; if even that collides, `.conflict-{Date.now()}-{random 0-999}`
+- Beyond 100: a single timestamp suffix (`.conflict-{Date.now()}`) — a same-path, same-millisecond collision on top of 100 existing copies is not a real scenario
 - The suffix is inserted before the file extension, or appended to the end for extensionless paths
 - Checks all involved filesystems to avoid overwrites on either side
 

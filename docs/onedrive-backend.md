@@ -146,8 +146,8 @@ folder (it is tracked by id).
 
 Because the App Folder scope confines access to `approot`, there is **no web
 picker** (a full-Drive picker would only mislead). Instead, settings offers
-**Choose folder**, which opens an in-plugin `OneDriveFolderModal`
-(`ui/onedrive-folder-modal.ts`): it lists the folders directly under `approot`
+**Choose folder**, which opens the shared in-plugin `AppFolderPickerModal`
+(`ui/app-folder-picker.ts`): it lists the folders directly under `approot`
 (`listAppRootFolders`) and lets the user pick one or type a new name. On confirm
 it writes the chosen name to `backendData.pendingPickedFolderPath` (via the
 renderer's `onSave`) and triggers the existing default-bind action, so

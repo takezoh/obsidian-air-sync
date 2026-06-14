@@ -97,13 +97,12 @@ Folder renames are tracked separately: a `rename` event whose target is a `TFold
 
 ### Comparison functions
 
-`hasChanged(file, record)` -- local file vs baseline:
+`hasChanged(file, record)` -- local file vs baseline (ADR 0005 — locally a content
+hash costs I/O, so it leads with the hash only when one is already on hand):
 
-1. mtime + size comparison (fast, no I/O)
-2. If mtime/size differ, verify via hash before concluding changed
-3. If mtime/size match, verify hash if both available (catches same-size edits)
-4. Fall back to hash-only comparison
-5. Conservative: treat as changed if undeterminable
+1. If **both** sides carry a content hash (the HOT/`stat()` path computed one), it is authoritative — compare hashes (catches a same-mtime+size edit; ignores an mtime-only touch)
+2. Otherwise (the `list()` path leaves `hash: ""` to stay I/O-free), compare mtime + size
+3. Neither a hash nor a usable mtime → conservatively treat as changed
 
 `hasRemoteChanged(file, record)` -- remote file vs baseline:
 

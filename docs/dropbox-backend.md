@@ -145,8 +145,8 @@ advances so `BackendManager`'s name-equality short-circuit resumes.
 ### Choosing a different folder
 
 When connected, settings offers **Choose folder**, which opens an **in-app modal**
-(`DropboxFolderModal`) — the same pattern as OneDrive, no web Chooser or relay
-page:
+(the shared `AppFolderPickerModal`, `ui/app-folder-picker.ts`) — the same pattern as
+OneDrive, no web Chooser or relay page:
 
 - The modal lists the folders directly under the App Folder root
   (`client.listAppRootFolders()`, i.e. `list_folder` on path `""`) and lets the
