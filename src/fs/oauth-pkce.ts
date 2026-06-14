@@ -105,6 +105,23 @@ export interface OAuthTokenResponse {
 }
 
 /**
+ * Extract a readable error detail from an OAuth token-endpoint error response,
+ * preferring `error_description`, then `error`, then the raw text. Shared by the
+ * worker-less PKCE backends (Dropbox, OneDrive) whose token endpoints return the
+ * same RFC 6749 error shape, so the message format can't drift between them.
+ */
+export function extractTokenErrorDetail(res: { json?: unknown; text?: string }): string {
+	try {
+		const json = res.json as { error_description?: string; error?: string } | undefined;
+		if (json?.error_description) return json.error_description;
+		if (json?.error) return json.error;
+	} catch {
+		// fall through to text
+	}
+	return typeof res.text === "string" ? res.text : "";
+}
+
+/**
  * Shared OAuth access-token lifecycle: in-memory token state, expiry-skew reuse,
  * concurrent-refresh dedup, post-failure cooldown, and refresh-token-rotation
  * notification. Subclasses implement {@link performRefresh} with the provider's

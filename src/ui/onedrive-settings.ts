@@ -7,8 +7,7 @@ import type {
 } from "../fs/settings-renderer";
 import type { OneDriveBackendData, OneDriveProvider } from "../fs/onedrive/provider";
 import { getBackendProvider } from "../fs/registry";
-import { AppFolderPickerModal } from "./app-folder-picker";
-import { renderBoundFolderField, renderConnectionStatus } from "./backend-settings-ui";
+import { renderBoundFolderField, renderConnectionStatus, renderUnboundAppFolderField } from "./backend-settings-ui";
 
 /**
  * Renders OneDrive-specific settings UI: connection status, the in-plugin PKCE
@@ -51,41 +50,12 @@ export class OneDriveSettingsRenderer implements IBackendSettingsRenderer {
 				resolvePath: () => provider?.getRemoteVaultDisplayPath?.(settings),
 			});
 		} else {
-			// Not bound yet: use the default folder (the vault name under the app folder),
-			// or pick an existing one via the in-app modal. Binding happens on an explicit choice.
-			const defaultName = app.vault.getName();
-			folderSetting.setDesc(
-				"Choose where this vault syncs: use the default folder, or pick an existing one inside the app folder.",
-			);
-			folderSetting
-				.addButton((button) =>
-					button
-						.setButtonText(defaultName)
-						.setCta()
-						.onClick(async () => {
-							// Clear any folder name queued by the modal first: the default
-							// button always binds the vault name. Otherwise a pick whose bind
-							// failed (bindDefaultFolder swallows errors) would leave a stale
-							// pendingPickedFolderPath that this button would silently reuse.
-							await onSave({ pendingPickedFolderPath: "" });
-							await actions.bindDefaultFolder();
-						}),
-				)
-				.addButton((button) =>
-					button
-						.setButtonText("Choose folder")
-						.onClick(() => {
-							if (!provider) return;
-							new AppFolderPickerModal(
-								app,
-								"Choose a OneDrive folder",
-								provider,
-								settings,
-								onSave,
-								() => actions.bindDefaultFolder(),
-							).open();
-						}),
-				);
+			// Not bound yet: default folder is the vault name under the app folder (approot).
+			renderUnboundAppFolderField(folderSetting, {
+				app, settings, provider, actions, onSave,
+				defaultLabel: app.vault.getName(),
+				modalTitle: "Choose a OneDrive folder",
+			});
 		}
 	}
 }

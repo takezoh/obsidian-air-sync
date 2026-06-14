@@ -37,14 +37,15 @@ export function createIdDeltaResult(): IdDeltaResult {
  * own pagination/cursor/410 wrapper and the raw→{@link IdDeltaEntry} mapping.
  *
  * Folders are applied shallow-first (by cached path depth) so a child path resolves
- * against an already-placed parent.
+ * against an already-placed parent. `entries` is sorted IN PLACE — callers pass a
+ * fresh per-page array (the backend's raw→IdDeltaEntry mapping), so no copy is needed.
  */
 export function applyIdDeltaPage<TFile>(
 	cache: AbstractMetadataCache<TFile>,
 	acc: IdDeltaResult,
 	entries: IdDeltaEntry<TFile>[],
 ): void {
-	const sorted = [...entries].sort((a, b) => {
+	entries.sort((a, b) => {
 		const aFolder = a.isFolder ? 0 : 1;
 		const bFolder = b.isFolder ? 0 : 1;
 		if (aFolder !== bFolder) return aFolder - bFolder;
@@ -55,8 +56,8 @@ export function applyIdDeltaPage<TFile>(
 		}
 		return 0;
 	});
-	acc.count += sorted.length;
-	for (const entry of sorted) applyEntry(cache, acc, entry);
+	acc.count += entries.length;
+	for (const entry of entries) applyEntry(cache, acc, entry);
 }
 
 /** Apply a single normalized delta entry to the cache and accumulate its paths. */

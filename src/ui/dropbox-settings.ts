@@ -7,8 +7,7 @@ import type {
 } from "../fs/settings-renderer";
 import type { DropboxBackendData, DropboxProvider } from "../fs/dropbox/provider";
 import { getBackendProvider } from "../fs/registry";
-import { AppFolderPickerModal } from "./app-folder-picker";
-import { renderBoundFolderField, renderConnectionStatus } from "./backend-settings-ui";
+import { renderBoundFolderField, renderConnectionStatus, renderUnboundAppFolderField } from "./backend-settings-ui";
 
 /**
  * Renders Dropbox-specific settings UI: connection status, the in-plugin PKCE
@@ -51,41 +50,12 @@ export class DropboxSettingsRenderer implements IBackendSettingsRenderer {
 				resolvePath: () => provider?.getRemoteVaultDisplayPath?.(settings),
 			});
 		} else {
-			// Not bound yet: use the default folder (/<Vault Name> under the app folder),
-			// or pick an existing one. Binding only happens on an explicit choice here.
-			const defaultPath = `/${app.vault.getName()}`;
-			folderSetting.setDesc(
-				"Choose where this vault syncs: use the default folder, or pick an existing one inside the app folder.",
-			);
-			folderSetting
-				.addButton((button) =>
-					button
-						.setButtonText(defaultPath)
-						.setCta()
-						.onClick(async () => {
-							// Clear any folder name queued by the modal first: the default
-							// button always binds the vault name. Otherwise a pick whose bind
-							// failed would leave a stale pendingPickedFolderPath this button
-							// would silently reuse.
-							await onSave({ pendingPickedFolderPath: "" });
-							await actions.bindDefaultFolder();
-						}),
-				)
-				.addButton((button) =>
-					button
-						.setButtonText("Choose folder")
-						.onClick(() => {
-							if (!provider) return;
-							new AppFolderPickerModal(
-								app,
-								"Choose a Dropbox folder",
-								provider,
-								settings,
-								onSave,
-								() => actions.bindDefaultFolder(),
-							).open();
-						}),
-				);
+			// Not bound yet: default folder is /<Vault Name> directly under the app folder.
+			renderUnboundAppFolderField(folderSetting, {
+				app, settings, provider, actions, onSave,
+				defaultLabel: `/${app.vault.getName()}`,
+				modalTitle: "Choose a Dropbox folder",
+			});
 		}
 	}
 }

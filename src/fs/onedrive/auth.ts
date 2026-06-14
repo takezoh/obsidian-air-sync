@@ -2,7 +2,7 @@ import { requestUrl } from "obsidian";
 import type { ISecretStore } from "../secret-store";
 import type { Logger } from "../../logging/logger";
 import { AuthError } from "../errors";
-import { BaseOAuthTokenManager } from "../oauth-pkce";
+import { BaseOAuthTokenManager, extractTokenErrorDetail } from "../oauth-pkce";
 import { PkceAuthProvider } from "../pkce-auth-provider";
 import { ONEDRIVE_AUTH } from "../auth-config";
 import { assertMicrosoftTokenResponse } from "./types";
@@ -36,18 +36,6 @@ export function buildOneDriveAuthorizeUrl(opts: {
 		state: opts.state,
 	});
 	return `${AUTHORIZE_URL}?${params.toString()}`;
-}
-
-/** Extract a readable error detail from a Microsoft token-endpoint error response. */
-function tokenErrorDetail(res: { json?: unknown; text?: string }): string {
-	try {
-		const json = res.json as { error_description?: string; error?: string } | undefined;
-		if (json?.error_description) return json.error_description;
-		if (json?.error) return json.error;
-	} catch {
-		// fall through to text
-	}
-	return typeof res.text === "string" ? res.text : "";
 }
 
 /**
@@ -95,7 +83,7 @@ export class OneDriveAuth extends BaseOAuthTokenManager {
 			}).toString(),
 		});
 		if (res.status < 200 || res.status >= 300) {
-			throw new Error(`Token exchange failed: ${res.status} ${tokenErrorDetail(res)}`);
+			throw new Error(`Token exchange failed: ${res.status} ${extractTokenErrorDetail(res)}`);
 		}
 		assertMicrosoftTokenResponse(res.json);
 		this.storeTokenResponse(res.json);
@@ -123,10 +111,10 @@ export class OneDriveAuth extends BaseOAuthTokenManager {
 		}
 		if (res.status === 400 || res.status === 401) {
 			this.authFailedAt = Date.now();
-			throw new AuthError(`Token refresh failed: ${res.status} ${tokenErrorDetail(res)}`, res.status);
+			throw new AuthError(`Token refresh failed: ${res.status} ${extractTokenErrorDetail(res)}`, res.status);
 		}
 		if (res.status < 200 || res.status >= 300) {
-			throw new Error(`Token refresh failed: ${res.status} ${tokenErrorDetail(res)}`);
+			throw new Error(`Token refresh failed: ${res.status} ${extractTokenErrorDetail(res)}`);
 		}
 		assertMicrosoftTokenResponse(res.json);
 		this.storeTokenResponse(res.json);
