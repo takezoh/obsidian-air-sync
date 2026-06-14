@@ -30,6 +30,30 @@ export function buildSyncRecord(local: FileEntity | undefined, remote: FileEntit
 }
 
 /**
+ * Store the local content as a 3-way-merge base, when merge is enabled and the file
+ * is eligible. Best-effort: a read/write failure is logged, not propagated — a missing
+ * merge base only costs a future conflict resolution, never correctness.
+ */
+async function maybeStoreMergeBase(
+	ctx: StateCommitterContext,
+	path: string,
+	localEntity: FileEntity | undefined,
+	size: number,
+): Promise<void> {
+	const { stateStore, localFs, enableThreeWayMerge, logger } = ctx;
+	if (!(enableThreeWayMerge && localFs && localEntity && isMergeEligible(path, size))) return;
+	try {
+		const content = await localFs.read(path);
+		await stateStore.putContent(path, content);
+	} catch (err) {
+		logger?.warn("Failed to store content for 3-way merge", {
+			path,
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+}
+
+/**
  * Commit the state change for a single successfully-executed action.
  *
  * - push/pull/match/conflict → upsert SyncRecord (+ optionally store merge-base content)
@@ -46,7 +70,7 @@ export async function commitAction(
 	ctx: StateCommitterContext,
 ): Promise<void> {
 	const { path } = action;
-	const { stateStore, localFs, enableThreeWayMerge, logger } = ctx;
+	const { stateStore } = ctx;
 
 	switch (action.action) {
 		case "push":
@@ -55,18 +79,7 @@ export async function commitAction(
 		case "conflict": {
 			const record = buildSyncRecord(localEntity, remoteEntity, path);
 			await stateStore.put(record);
-
-			if (enableThreeWayMerge && localFs && localEntity && isMergeEligible(path, record.localSize)) {
-				try {
-					const content = await localFs.read(path);
-					await stateStore.putContent(path, content);
-				} catch (err) {
-					logger?.warn("Failed to store content for 3-way merge", {
-						path,
-						error: err instanceof Error ? err.message : String(err),
-					});
-				}
-			}
+			await maybeStoreMergeBase(ctx, path, localEntity, record.localSize);
 			break;
 		}
 
@@ -78,18 +91,7 @@ export async function commitAction(
 				await stateStore.delete(action.oldPath);
 				const renameRecord = buildSyncRecord(localEntity, remoteEntity, path);
 				await stateStore.put(renameRecord);
-
-				if (enableThreeWayMerge && localFs && localEntity && isMergeEligible(path, renameRecord.localSize)) {
-					try {
-						const content = await localFs.read(path);
-						await stateStore.putContent(path, content);
-					} catch (err) {
-						logger?.warn("Failed to store content for 3-way merge", {
-							path,
-							error: err instanceof Error ? err.message : String(err),
-						});
-					}
-				}
+				await maybeStoreMergeBase(ctx, path, localEntity, renameRecord.localSize);
 			}
 			break;
 		}
