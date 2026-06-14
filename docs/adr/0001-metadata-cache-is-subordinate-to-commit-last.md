@@ -1,6 +1,6 @@
 # ADR 0001 — The remote metadata cache is subordinate to commit-last state
 
-**Status:** Accepted · 2026-06-07 · **Revised 2026-06-07** (cursor single-holding: co-located with the cache; supersedes the earlier "keep the cursor in settings" tradeoff) · **Revised 2026-06-08** (convergence theory: documents state **C** and the third, runtime convergence mechanism `recoverViaColdScan` for same-session failures; corrects the concurrency claim — `cacheMutex` guards a real Group-A race; stale-guard reachability pending T7) · **Revised 2026-06-09** (T7 concluded: the `withCacheMutex` stale-guard is **retained** — it is the compare-and-swap of the mutex-released-during-I/O protocol, not a phantom lock; currently unreachable, kept as defense-in-depth; the phantom "concurrent delta" justification is corrected to the real invariant — one plan action per path)
+**Status:** Accepted · 2026-06-07 · **Revised 2026-06-07** (cursor single-holding: co-located with the cache; supersedes the earlier "keep the cursor in settings" tradeoff) · **Revised 2026-06-08** (convergence theory: documents state **C** and the third, runtime convergence mechanism `recoverViaColdScan` for same-session failures; corrects the concurrency claim — `cacheMutex` guards a real Group-A race; stale-guard reachability pending T7) · **Revised 2026-06-09** (T7 concluded: the `withCacheMutex` stale-guard is **retained** — it is the compare-and-swap of the mutex-released-during-I/O protocol, not a phantom lock; currently unreachable, kept as defense-in-depth; the phantom "concurrent delta" justification is corrected to the real invariant — one plan action per path) · **Revised 2026-06-14** (clarifies state **C**: the in-memory cursor is the **deferred-commit working state** — held in memory and committed last for crash-safety, *not* a performance optimization — so its overtaking on failure is a byproduct/liability reconciled by `recoverViaColdScan`, not a benefit; corrects the cache-vs-C contrast accordingly)
 **Context area:** sync pipeline / Google Drive backend
 **Related:** [sync-pipeline.md → Crash recovery](../sync-pipeline.md), [google-drive-backend.md](../google-drive-backend.md)
 
@@ -22,7 +22,7 @@ converges by re-running** — but the derivation is **not** "A + B, therefore co
 
 | | State | Where | Behaviour on failure |
 |---|---|---|---|
-| **C** | The **in-memory** delta cursor (live `_changesPageToken`) **and** the local **dirty-tracker** | the live `IFileSystem` object + `LocalChangeTracker` — both survive across cycles while the plugin runs | **Overtakes** the committed state. The in-memory cursor advances during change *detection* regardless of whether the cycle later fails; the dirty-tracker is acknowledged unconditionally (`orchestrator.ts`). After a failed cycle, C sits **ahead** of what actually committed. |
+| **C** | The **in-memory** delta cursor (live `_changesPageToken`) **and** the local **dirty-tracker** | the live `IFileSystem` object + `LocalChangeTracker` — both survive across cycles while the plugin runs | **Overtakes** the committed state — a **byproduct of deferral, not an optimization.** The cursor is held in-memory and its commit **deferred to a clean cycle** (commit-last, rule A) for *crash-safety*, not for performance; so it advances during change *detection* regardless of whether the cycle later fails (the dirty-tracker is acknowledged unconditionally, `orchestrator.ts`). A failed cycle never commits, so the advanced value simply **lingers in the live FS object, ahead of what committed**, until `recoverViaColdScan` reconciles it. The overtaking is a liability the cold path pays for, **not a benefit C provides**. |
 
 **Two convergence paths, both load-bearing:**
 
@@ -44,7 +44,8 @@ An already-synced file is skipped; an incompletely-synced one is re-pushed/-pull
 
 The Google Drive backend additionally keeps an **IndexedDB metadata cache** (the
 `path↔id` map in `GoogleDriveMetadataCache`, persisted via `MetadataStore`). **This, too, is
-_not_ authoritative** (distinct from C: the cache is a derivable snapshot, C is live
+_not_ authoritative** (distinct from C: the cache **is** a performance optimization — a
+derivable snapshot — whereas C is *not*: it is the deferred-commit cursor lingering as live
 divergence). It is a performance optimization that lets
 `list`/`stat`/`read`/`getChangedPaths` avoid a network re-list, and it is fully
 derivable: a `fullScan()` rebuilds it from Google Drive (the real authority).
