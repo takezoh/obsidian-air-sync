@@ -47,6 +47,9 @@ export class LocalFs implements IFileSystem {
 					isDirectory: false,
 					size: file.stat.size,
 					mtime: file.stat.mtime,
+					// hash is "" by design: list() must stay I/O-free, and computing a hash
+					// means reading the file. Change detection falls back to mtime+size for
+					// list-sourced entries; stat() pays the read when a hash is needed (ADR 0005).
 					hash: "",
 				});
 			} else if (file instanceof TFolder) {
@@ -82,6 +85,9 @@ export class LocalFs implements IFileSystem {
 		}
 
 		if (file instanceof TFile) {
+			// stat() pays the I/O that list() avoids: read the content and hash it, so the
+			// caller gets an authoritative content fingerprint (ADR 0005). Only the HOT
+			// path's dirty files reach here, so the read cost is bounded.
 			const content = await this.vault.readBinary(file);
 			const hash = await sha256(content);
 			return {
