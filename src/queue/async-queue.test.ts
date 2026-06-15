@@ -225,6 +225,25 @@ describe("AdaptivePool", () => {
 		expect(pool.limit).toBe(1); // floored at min
 	});
 
+	it("coalesces a burst: rate-limit signals while above the reduced ceiling don't re-halve", async () => {
+		const pool = new AdaptivePool({ min: 1, start: 8, max: 8, rampAfter: 100 });
+		let release!: () => void;
+		const gate = new Promise<void>((r) => { release = r; });
+		// Fill the pool: 8 tasks holding their slots (start == limit == 8).
+		const inflight = Array.from({ length: 8 }, () => pool.run(() => gate));
+		await Promise.resolve();
+		expect(pool.running).toBe(8);
+
+		pool.noteRateLimit(); // running(8) > limit(8)? no → halve to 4
+		expect(pool.limit).toBe(4);
+		pool.noteRateLimit(); // running(8) > limit(4)? yes → same episode, ignored
+		pool.noteRateLimit();
+		expect(pool.limit).toBe(4); // one decrease, not collapsed toward min
+
+		release();
+		await Promise.all(inflight);
+	});
+
 	it("resets the success streak on a rate-limit (pre-signal successes don't count)", async () => {
 		const pool = new AdaptivePool({ min: 1, start: 4, max: 8, rampAfter: 3 });
 		await pool.run(ok);

@@ -31,6 +31,11 @@ export async function listAllFiles(
 	const allFiles: GoogleDriveFile[] = [];
 	const pool = new AdaptivePool({ min: 1, start: 3, max: 8, rampAfter: 8 });
 	const tasks: Promise<void>[] = [];
+	// Capture each task's rejection so a failing folder can't leave a sibling task's
+	// rejection unhandled when the drain below stops early. The first error is rethrown
+	// after all in-flight tasks settle (the scan still fails atomically).
+	let failed = false;
+	let firstError: unknown;
 
 	const listPage = async (
 		folderId: string,
@@ -70,16 +75,22 @@ export async function listAllFiles(
 			throw new Error(
 				`listAllFiles: pagination exceeded ${LIST_PAGE_CAP} pages for folder ${folderId} (server not clearing nextPageToken?)`
 			);
+		}).catch((err) => {
+			if (!failed) {
+				failed = true;
+				firstError = err;
+			}
 		});
 		tasks.push(task);
 	};
 
 	enqueueFolder(rootFolderId);
 
-	// Drain: await tasks as they are added (tasks array grows dynamically)
-	for (let i = 0; i < tasks.length; i++) {
-		await tasks[i];
-	}
+	// Drain the dynamically-growing list. Every task resolves (errors captured above),
+	// so a failure never leaves an in-flight folder's rejection unhandled; rethrow the
+	// first captured error once all tasks have settled.
+	for (let i = 0; i < tasks.length; i++) await tasks[i];
+	if (failed) throw firstError;
 
 	return allFiles;
 }

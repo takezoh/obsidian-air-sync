@@ -178,8 +178,15 @@ export class AdaptivePool {
 	 * and reset the success streak. Call this BEFORE backing off (sleeping) so the
 	 * decrease takes effect immediately. Does not wake waiters — shrinking can only
 	 * reduce admissions, never enable one.
+	 *
+	 * Coalesces a burst into ONE decrease per episode: while the pool is still above
+	 * the just-reduced ceiling (`_running > _limit`) it is already shedding load, so
+	 * the concurrent 429s that triggered it belong to the same episode and are ignored
+	 * — otherwise N simultaneously rate-limited tasks would each halve, collapsing
+	 * straight to `min`. A new 429 after the pool drains to the ceiling halves again.
 	 */
 	noteRateLimit(): void {
+		if (this._running > this._limit) return;
 		this._limit = Math.max(this.min, Math.floor(this._limit / 2));
 		this.successStreak = 0;
 	}

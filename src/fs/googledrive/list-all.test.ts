@@ -52,4 +52,22 @@ describe("listAllFiles (adaptive full-scan listing)", () => {
 		expect(result.map((f) => f.name)).toEqual(expect.arrayContaining(["folder1", "a.txt"]));
 		expect(f1Calls).toBe(2); // 429 once, then retried successfully
 	});
+
+	it("rejects (and attempts every folder) when multiple sibling folders fail", async () => {
+		const listFiles = vi.fn((folderId: string): Promise<GoogleDriveFileList> => {
+			if (folderId === "root") {
+				return Promise.resolve(fileList([
+					{ id: "f1", name: "a", mimeType: FOLDER },
+					{ id: "f2", name: "b", mimeType: FOLDER },
+				]));
+			}
+			// Both subfolders fail persistently (permission ⇒ not retried).
+			return Promise.reject(Object.assign(new Error("Forbidden"), { status: 403 }));
+		});
+
+		await expect(listAllFiles(listFiles, "root", instantSleep)).rejects.toThrow();
+		// root + both children attempted; the drain settles every task before rethrowing
+		// (no sibling left with an unhandled rejection).
+		expect(listFiles).toHaveBeenCalledTimes(3);
+	});
 });
