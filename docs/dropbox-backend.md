@@ -81,7 +81,11 @@ trailing `deleted(old)` is a no-op. A `deleted` is skipped when its path was rec
 by an upsert in the same delta (a rename target, or a same-path recreate with a
 different id), so a delete-then-recreate is not mistaken for — or destroyed by — the
 reorder. Without this, a folder rename whose `deleted(old)` was listed first degraded
-to a file-by-file delete+pull of the whole subtree.
+to a file-by-file delete+pull of the whole subtree. See
+[ADR 0006](adr/0006-remote-rename-detection-is-order-independent.md) for the full
+edge-case matrix (cross-page renames, delete-then-recreate, move-onto-freed-path,
+moved-outside-root, id-less entries, and the deltas Dropbox's coalescing makes
+unrealizable).
 
 Change detection is **checksum-based**: `stat()` returns `hash: ""` and the
 sync engine compares Dropbox's `content_hash` (4 MiB block SHA-256 tree) plus

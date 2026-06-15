@@ -55,12 +55,22 @@ Concretely, `applyDropboxDelta` (`fs/dropbox/incremental-sync.ts`):
    a nested rename collapses to one pair instead of emitting redundant per-child pairs.
 
 3. **Guard the delete pass against a reclaimed path.** A `deleted(path)` removes the
-   subtree **only if** the entry now at `path` was *not* upserted in this same delta
-   (`upsertIds`). If it was, the path is a rename target or a delete-then-recreate at the
-   same path with a **different** id (the upsert already evicted the old occupant) — the
-   upsert is authoritative and removing it would drop the live file. This guard is what
+   subtree **only if** that `path` was *not* (re)written by an upsert in this same delta
+   (`upsertedPaths`). If it was, the path is a rename target or a delete-then-recreate at
+   the same path with a **different** id (the upsert already evicted the old occupant) —
+   the upsert is authoritative and removing it would drop the live file. This guard is what
    keeps the legitimate "delete P, then create a new file at P" case correct; a naive
-   "upserts-before-deletes" reorder without it would wrongly delete the recreated file.
+   "upserts-before-deletes" reorder without it would wrongly delete the recreated file. The
+   guard keys on **path, not id**, because Dropbox `deleted` tombstones carry no id and an
+   upsert's `id` is itself optional.
+
+4. **Record an evicted subtree before it is silently dropped.** When an upsert lands on a
+   path already held by a *different* id — a folder delete-then-recreated at the same path
+   (`applyUpsertEntry`), or a folder moved onto a path freed by a deleted folder
+   (`applyRename`) — `cache.setEntry` evicts the old occupant's whole subtree but reports
+   nothing. Both call sites therefore capture the displaced descendants **before** the
+   eviction and add them to the changed set, so they surface as deletions instead of
+   orphaning locally until the next full scan.
 
 Bounding (from ADR 0001): a *missed* rename is never data loss — it degrades to delete+add,
 which still converges (the file is re-downloaded). So this is an **efficiency/quality**
@@ -84,13 +94,55 @@ bug while making the common case efficient.
   `getChangedPaths` surface was previously unexercised against any live backend).
 
 - **Prohibited:** applying Dropbox delta entries in raw receive order; "fixing" this by
-  merely sorting upserts ahead of deletes without the `upsertIds` guard (re-breaks
+  merely sorting upserts ahead of deletes without the `upsertedPaths` guard (re-breaks
   delete-then-recreate-at-the-same-path); assuming a `deleted` tombstone always means
-  "remove the subtree" without checking whether the path was reclaimed this delta.
+  "remove the subtree" without checking whether the path was reclaimed this delta; calling
+  `cache.setEntry` over a different-id occupant without first recording the evicted subtree.
+
+## Edge cases & irregular deltas
+
+How the drained-then-reordered apply behaves on the irregular deltas (all order-independent
+unless noted):
+
+| Delta | Behaviour |
+|---|---|
+| `deleted(old)` before `add(new)`, same id (the bug) | One `rename_local`; the stale `deleted(old)` is a no-op (path already vacated). |
+| Rename split across pagination pages | Coalesced — the whole delta is drained before applying. |
+| Delete-then-recreate a **file** at the same path, **different id** | Not a rename: new file kept, `deleted(old)` guarded out, surfaced as a content change (`modified`). |
+| Delete-then-recreate a **folder** at the same path, **different id** | New folder kept; the old folder's children surface as deletions (evicted-subtree recording). |
+| Folder **moved onto a path freed by a deleted folder** (`X` deleted, `A`→`X`) | One `rename_local(A→X)`; the displaced old `X/*` children surface as deletions. |
+| **Rename `A`→`B` *and* a new file created at `A`** in the same sync | Delta level: the cache detects `A`→`B` by id and the new `A` (different id) survives — `deleted(A)` is guarded out. Plan level: it does **not** coalesce into a rename. `A` is now `modified` (replaced), not `deleted`, so the rename optimizer's `delete_*`+`pull`/`push` pattern does not match; it resolves as two independent transfers (`pull(B)`+`pull(A)`, or `push`+`push` for a local rename). Correct end state (`B` = old content, `A` = new file), just without the move optimization. The folder variant (rename folder `A`→`B`, new file at `A`) still coalesces the folder move and pulls the new `A` separately; because `A` is locally a directory until the rename runs, the file lands at `A` over one or two cycles. |
+| Entry **moved outside the vault root** (`relativize` → null) | Old path + descendants surfaced as deletions; the out-of-root destination is not tracked. |
+| Move **onto the reserved metadata path or the root itself** | Destination ignored (never cached); the old location is surfaced as gone. |
+| `file`/`folder` entry with **no `id`** | Handled — the stale-tombstone guard keys on path, not id. |
+| Cursor **`reset`** | `applyDropboxDelta` returns `needsFullScan`; `CachingRemoteFs` full-scans and diffs by id to recover renames/deletes. |
+| Server never clears **`has_more`** | Throws at `LIST_PAGE_CAP` rather than applying a truncated (lossy) delta. |
+
+**Known non-handled-but-unrealizable deltas** (Dropbox's per-path latest-wins coalescing
+prevents them, so no code guards them): a same-id `create`/`modify` then `delete` of the
+**same path** in one delta (Dropbox emits only the net state — a present upsert *or* a
+`deleted`, never both for one id); and a live child upsert under a folder that is deleted
+and **not** recreated (a live child cannot exist under a deleted parent).
+
+## Optimization opportunity (not implemented)
+
+When a remote **folder rename's destination is already occupied locally**
+(`coalesceRemoteFolderRenames`, reason `destination_occupied`), the whole-folder
+`localFs.rename(A→B)` would collide, so the optimizer skips coalescing entirely and the
+children fall back to per-file `delete_local`+`pull` — i.e. **every child is re-downloaded**,
+even those whose own destination `B/x` is free. A finer fallback is possible: expand the
+folder pair into per-child pairs and route them through `optimizeRemoteFileRenames`, so each
+child whose destination is free becomes a `rename_local(A/x→B/x)` (no re-download) and only
+the genuinely-colliding child stays a `conflict`/`match` (its behaviour is unchanged from
+today, so no new dangling-delete risk). This is purely an efficiency win in a rare case —
+convergence already guarantees correctness — and is deliberately left unimplemented to keep
+the coalescer all-or-nothing.
 
 **Pinned by tests** (keep green; extend, don't weaken):
 - `fs/dropbox/incremental-sync.test.ts` — DELETE-FIRST file & folder rename, child-before-parent
-  ordering, and delete-then-recreate-same-path-different-id ⇒ NOT a rename.
+  ordering, delete-then-recreate-same-path-different-id ⇒ NOT a rename, the folder
+  delete-recreate evicted-child surfacing, and a folder moved onto a path freed by a deleted
+  folder (displaced old children surface as deletions).
 - `fs/caching/remote-fs-contract.ts` — the cross-backend "remote FILE/FOLDER rename ⇒ one
   renamed pair" cases, run against the real Dropbox/Google Drive/OneDrive FS.
 - `sync/convergence.test.ts` — remote folder/file rename collapses to one `rename_local` and
