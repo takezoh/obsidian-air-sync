@@ -1,6 +1,6 @@
 # ADR 0001 — The remote metadata cache is subordinate to commit-last state
 
-**Status:** Accepted · 2026-06-07 · **Revised 2026-06-07** (cursor single-holding: co-located with the cache; supersedes the earlier "keep the cursor in settings" tradeoff) · **Revised 2026-06-08** (convergence theory: documents state **C** and the third, runtime convergence mechanism `recoverViaColdScan` for same-session failures; corrects the concurrency claim — `cacheMutex` guards a real Group-A race; stale-guard reachability pending T7) · **Revised 2026-06-09** (T7 concluded: the `withCacheMutex` stale-guard is **retained** — it is the compare-and-swap of the mutex-released-during-I/O protocol, not a phantom lock; currently unreachable, kept as defense-in-depth; the phantom "concurrent delta" justification is corrected to the real invariant — one plan action per path) · **Revised 2026-06-14** (clarifies state **C**: the in-memory cursor is the **deferred-commit working state** — held in memory and committed last for crash-safety, *not* a performance optimization — so its overtaking on failure is a byproduct/liability reconciled by `recoverViaColdScan`, not a benefit; corrects the cache-vs-C contrast accordingly)
+**Status:** Accepted · 2026-06-07 · **Revised 2026-06-07** (cursor single-holding: co-located with the cache; supersedes the earlier "keep the cursor in settings" tradeoff) · **Revised 2026-06-08** (convergence theory: documents state **C** and the third, runtime convergence mechanism `recoverViaColdScan` for same-session failures; corrects the concurrency claim — `cacheMutex` guards a real Group-A race; stale-guard reachability pending T7) · **Revised 2026-06-09** (T7 concluded: the `withCacheMutex` stale-guard is **retained** — it is the compare-and-swap of the mutex-released-during-I/O protocol, not a phantom lock; currently unreachable, kept as defense-in-depth; the phantom "concurrent delta" justification is corrected to the real invariant — one plan action per path) · **Revised 2026-06-14** (clarifies state **C**: the in-memory cursor is the **deferred-commit working state** — held in memory and committed last for crash-safety, *not* a performance optimization — so its overtaking on failure is a byproduct/liability reconciled by `recoverViaColdScan`, not a benefit; corrects the cache-vs-C contrast accordingly) · **Revised 2026-06-15** (executor lane/tier rescheduling: `delete_remote` is now **pooled** in the structural phase and the **inline delete CAS guard transitions from dormant to ACTIVE**; `rename_remote` stays serial and the `withCacheMutex` write/rename guard stays dormant; `conflict` runs in its **own serial phase** — see T7 and Prohibited patterns; cross-refs [ADR 0006](0006-remote-rename-detection-is-order-independent.md))
 **Context area:** sync pipeline / Google Drive backend
 **Related:** [sync-pipeline.md → Crash recovery](../sync-pipeline.md), [google-drive-backend.md](../google-drive-backend.md)
 
@@ -129,9 +129,16 @@ FS (`resetCheckpoint()`), not by editing settings.
   this violates rule A (one failure ⇒ cursor holds). Keeping genuinely un-syncable inputs
   *out of the pipeline* (e.g. `isSystemJunkFile` for OS-generated files some backends
   reject) is the sanctioned escape valve; silently skipping a real failure is not;
+- **pooling `conflict` actions with transfer-phase writes.** Conflict resolution mints a
+  **planner-invisible** `.conflict` sibling path (`conflict.ts` `generateConflictPath` →
+  `duplicate`) via cross-filesystem existence probing and writes it to both sides. The
+  one-action-per-path invariant does not cover that sibling, so co-pooling conflict with
+  `push`/`pull` can clobber a concurrently-pushed same-named file and wakes the dormant
+  `withCacheMutex` new-path guard. Conflict runs in its **own serial phase**
+  (`plan-executor.ts`), after transfers and before structural ops;
 - adding locks/lockstep for a **phantom** race. Note the boundary precisely, because
   `cacheMutex` is **not** phantom: `syncMutex` serializes whole *cycles*, not the actions
-  *within* a cycle, and Group A (push/pull/match/cleanup) runs under `AsyncPool(5)` — so
+  *within* a cycle, and the transfer phase (push/pull) runs under `AsyncPool(5)` (structural deletes pool too) — so
   concurrent `ensureFolder`/cache mutations on the live `path↔id` map are real and
   `cacheMutex` is **required**. (The earlier claim here that "concurrent writers do not
   exist" was wrong.)
@@ -139,7 +146,7 @@ FS (`resetCheckpoint()`), not by editing settings.
   The three-phase `withCacheMutex` **stale-guard** is **not** a phantom lock either, and
   is **retained** (T7 concluded — 2026-06-09). It is not a lock at all: it is the
   **compare-and-swap of an optimistic protocol**. The phase split releases `cacheMutex`
-  during the phase-2 network call (so Group-A uploads run concurrently instead of
+  during the phase-2 network call (so transfer-phase uploads run concurrently instead of
   serializing on the mutex for the duration of each upload); that release is what makes
   the phase-1 view of the cache potentially stale by phase 3. The guard is the *compare*
   — re-read `idAt(path)` under the mutex phase 3 already holds, write only if it still
@@ -153,19 +160,41 @@ FS (`resetCheckpoint()`), not by editing settings.
   (`collectChanges` → `list`/`getChangedPaths`, the **only** delta re-key path) is fully
   awaited **before** execute (`executePlan`), so **no delta ever runs during a phase-2
   network call** — the scenario the old comments named ("a concurrent delta re-pointing
-  the same path") *cannot occur*; (3) in execute only Group A is parallel, and its only
-  cache-*mutating* op is `push`=`write`; concurrent writes target **disjoint file paths**
+  the same path") *cannot occur*; (3) in execute the only parallel cache-*mutating writer*
+  is `push`=`write` (the transfer phase; pooled deletes use the separate inline delete guard,
+  see (4)); concurrent writes target **disjoint file paths**
   (one plan action per path), and a write's only cross-path cache mutation is
   `ensureFolder` on **ancestor folder paths**, which can never coincide with another
   write's *file* path (no path is both a file and a folder in one consistent vault
-  state); (4) `rename_remote`/`delete_remote` run **serially** in Group B. So keep it as
-  **defense-in-depth for invariants the type system can't express**: if a future change
-  violates one (parallelizing Group B, a concurrent remote-browse outside `syncMutex`, or
-  a plan that emits two actions for one path), the guard degrades the failure from
-  **silent cache corruption** to a logged skip + next-cycle re-detect. Do not re-justify
-  it with the phantom "concurrent delta" story; the real (current) producer it would
-  guard against is a concurrent Group-A write, and the load-bearing invariant that keeps
-  it dormant is **one plan action per path**.
+  state); (4) `rename_remote` runs **serially** in the structural phase's remote lane.
+
+  **Revised 2026-06-15 (executor lane/tier rescheduling).** `delete_remote` is **no longer
+  serial** — it now runs **pooled** in the structural phase's remote lane (after renames
+  drain). This **splits the two guards**:
+  - The `withCacheMutex` **write/rename** stale-guard stays **dormant**, by the same proof:
+    the only parallel cache-*mutating* writer is still `push`=`write` (point 3), and
+    `rename_remote` is still serial. `conflict` — which would add a second parallel writer —
+    is kept in its **own serial phase** (it mints a planner-invisible `.conflict` sibling, see
+    Prohibited patterns), so it never runs concurrently with a transfer-phase write.
+  - The **inline delete CAS guard** (`remote-fs.ts`, `delete()` phase 3) is now **ACTIVE /
+    reachable**, deliberately. Its live producer is the legitimate folder+descendant case: a
+    `delete_remote(folder)` and `delete_remote(folder/child)` legitimately coexist in one plan
+    (folder deletes are not coalesced), and pooled they overlap. The guard makes this safe —
+    the folder delete's `removeTree` synchronously evicts the child's cache entry, so the child
+    delete's phase-1 `idAt` returns undefined and **short-circuits with no remote call**
+    (`if (!fileId) return`); the reverse interleaving is caught by the phase-3
+    `idAt(path) === fileId` re-check (a stale `removeTree` is skipped). This matters because
+    Google Drive's `deleteFile` **re-throws 404** (Dropbox/OneDrive swallow not_found/404), so
+    a double remote-delete would otherwise surface a spurious failure; worst case it is caught
+    per-action into `result.failed` and the next cycle plans nothing (the path is gone) —
+    self-healing.
+
+  So keep the write/rename guard as **defense-in-depth for invariants the type system can't
+  express**: a future change parallelizing `rename_remote`, a concurrent remote-browse outside
+  `syncMutex`, or a plan emitting two actions for one path degrades from **silent cache
+  corruption** to a logged skip + next-cycle re-detect. Its dormancy still rests on **one plan
+  action per path** + serial renames + conflict-not-pooled; the now-active delete guard's
+  correctness rests on `removeTree`'s synchronous descendant eviction.
 
 **Pinned by tests** (keep these green; extend them, do not weaken them):
 - `orchestrator.test.ts` → *"does not advance the committed cursor when the checkpoint
@@ -191,4 +220,12 @@ FS (`resetCheckpoint()`), not by editing settings.
   `decision-engine.test.ts` → *"emits exactly one action per path across every action
   type"* and `rename-optimizer.test.ts` → *"keeps concurrent Group-A actions on distinct
   paths"*. Breaking that invariant (a plan emitting two Group-A actions for one path) is
-  what would wake the guard — these tests fail the day it does.
+  what would wake the write/rename guard — these tests fail the day it does.
+- **Lane/tier rescheduling (2026-06-15).** The now-**active** delete CAS guard's
+  overlapping-delete behavior is pinned by `googledrive/index.test.ts` → *"delete()
+  short-circuits (no client.deleteFile) when the cache already lost the path"*. That
+  `conflict` stays out of the transfer pool (keeping the write/rename guard dormant) is
+  pinned by `plan-executor.test.ts` → *"a pushed `.conflict` sidecar is not clobbered by a
+  same-cycle conflict's duplicate"*, with the phase-barrier / lane-concurrency tests in the
+  same file pinning the schedule. Cross-ref [ADR 0006](0006-remote-rename-detection-is-order-independent.md):
+  rename *detection* is order-independent; rename *execution* stays serial — orthogonal.

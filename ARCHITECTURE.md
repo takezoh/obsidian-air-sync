@@ -18,7 +18,7 @@ One row per directory; see the layer diagram and per-doc references for module d
 |------|----------------|
 | `main.ts` | Plugin entry point — lifecycle only: load settings, register commands, wire components, handle the OAuth protocol callback. |
 | `settings.ts` | `AirSyncSettings` type and `DEFAULT_SETTINGS`; `settings-normalize.ts` lifts a legacy per-type `backendData` map into the active flat bag on load. |
-| `sync/` | The sync pipeline and its orchestration: change tracking and detection (hot/warm/cold), the decision engine, rename optimization, plan execution (groups A–D), per-action state commit, conflict resolution and 3-way merge, the orchestrator (mutex/retry/status), the scheduler (vault events + triggers), the IndexedDB `SyncStateStore`, error classification, and the conflict-history audit writer. |
+| `sync/` | The sync pipeline and its orchestration: change tracking and detection (hot/warm/cold), the decision engine, rename optimization, plan execution (3-phase lane/tier scheduling), per-action state commit, conflict resolution and 3-way merge, the orchestrator (mutex/retry/status), the scheduler (vault events + triggers), the IndexedDB `SyncStateStore`, error classification, and the conflict-history audit writer. |
 | `fs/` | Backend-agnostic contracts and lifecycle: `IFileSystem` + `IncrementalCheckpoint`, `IAuthProvider`, `IBackendProvider` + `WebFolderPicker`, `FileEntity`/`RemoteChecksum`, the provider registry, error classification (`errors.ts`), the OAuth PKCE helper (`oauth-pkce.ts`), the backend settings-renderer contract (`settings-renderer.ts`), `BackendManager`, and the `ISecretStore`/token-store wrappers over Obsidian SecretStorage. |
 | `fs/caching/` | Shared base for id-addressed remote backends: `CachingRemoteFs<T>` (path↔id resolution and the `IncrementalCheckpoint` checkpoint lifecycle, ADR 0001) and `AbstractMetadataCache<T>`. Google Drive, Dropbox, and OneDrive all build on it. The id-keyed delta apply (`id-delta.ts`) makes their remote-rename detection order-independent for free (ADR 0006). |
 | `fs/local/` | `LocalFs` (Obsidian Vault API wrapper) plus the raw adapter for dot-prefixed paths. |
@@ -70,11 +70,11 @@ One row per directory; see the layer diagram and per-doc references for module d
      │    optimizeRemoteFileRenames        │    → rename_local  (trusted)
      │        │                           │
      │        ▼                           │
-     │  executePlan()                     │  PlanExecutor
-     │    Group A: push/pull/match/cleanup│    AsyncPool(5)
-     │    Group B: rename_*/delete_remote │    serial
-     │    Group C: delete_local           │    serial
-     │    Group D: conflict               │    serial
+     │  executePlan()  (3 phases)         │  PlanExecutor
+     │    1 transfers: push/pull          │    AsyncPool(5); match/cleanup inline
+     │    2 conflict (serial)             │    own phase (sibling-path safe)
+     │    3 structural: 2 lanes ||        │    remote & local, concurrent
+     │      per lane: rename then del     │    rename serial; delete pooled
      │        │                           │
      │        ▼                           │
      │  commitAction()  (per action)      │  StateCommitter

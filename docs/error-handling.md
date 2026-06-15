@@ -81,7 +81,7 @@ try {
 }
 ```
 
-Execution is grouped and ordered. Group A (`push`, `pull`, `match`, `cleanup`) runs concurrently, bounded to 5 in-flight actions via `AsyncPool(POOL_CONCURRENCY = 5)` and awaited with `Promise.all`. Group B (`rename_remote`, `rename_local`, `delete_remote`) runs serially. Group C (`delete_local`) runs serially. Group D (`conflict`) runs serially via `executeConflictAction` (which may show a UI modal). Both `executeAction` and `executeConflictAction` apply the same per-action isolation: each action is wrapped in its own try/catch that re-throws only `AuthError` (aborting the whole sync) and records every other error in `result.failed` so remaining actions continue.
+Execution runs in three phases (lane/tier scheduling — see [sync-pipeline.md](sync-pipeline.md)). Phase 1 runs transfers (`push`, `pull`) concurrently, bounded to 5 in-flight via `AsyncPool(TRANSFER_CONCURRENCY = 5)`, with the state-only `match`/`cleanup` run inline; Phase 2 runs `conflict` serially in its own phase via `executeConflictAction`; Phase 3 runs the remote and local structural lanes concurrently, each doing its renames serially then its deletes pooled (`AsyncPool(DELETE_CONCURRENCY = 5)`). Both `executeAction` and `executeConflictAction` apply the same per-action isolation: each action is wrapped in its own try/catch that re-throws only `AuthError` (aborting the whole sync) and records every other error in `result.failed` so remaining actions continue.
 
 ## Acknowledge pattern
 

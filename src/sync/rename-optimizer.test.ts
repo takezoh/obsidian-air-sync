@@ -214,14 +214,15 @@ describe("refinePlan", () => {
 	});
 
 	it("keeps concurrent Group-A actions on distinct paths (ADR 0001 T7 invariant)", () => {
-		// The withCacheMutex stale-guard stays dormant only because no two CONCURRENT
-		// (Group-A: push/pull/match/cleanup) actions share a target path — so a parallel
-		// write can never re-key another's guarded path mid-upload. Group A is the only
-		// parallel group; renames are Group B (serial). Pin that refinePlan — the most
-		// complex plan transform — preserves this: it consumes Group-A actions INTO
-		// Group-B renames and never mints a duplicate-path Group-A action. Here a remote
-		// folder rename (A → B) is coalesced while three independent Group-A actions on
-		// distinct paths survive untouched.
+		// The withCacheMutex write/rename stale-guard stays dormant only because no two
+		// CONCURRENT cache-mutating writes share a target path — so a parallel write can
+		// never re-key another's guarded path mid-upload. Transfers (push/pull) pool in the
+		// transfer phase; renames stay serial in the structural phase; conflict is its own
+		// serial phase. (Pooled deletes use the separate inline delete guard.) Pin that
+		// refinePlan — the most complex plan transform — preserves this: it consumes
+		// delete+transfer actions INTO renames and never mints a duplicate-path action. Here a
+		// remote folder rename (A → B) is coalesced while three independent transfer/state
+		// actions on distinct paths survive untouched.
 		const p = plan([
 			{ path: "A/f1.md", action: "delete_local", local: entity("A/f1.md", "h1"), baseline: baseline("A/f1.md", "h1") },
 			{ path: "B/f1.md", action: "pull", remote: entity("B/f1.md", "h1") },

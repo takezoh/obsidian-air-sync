@@ -164,18 +164,20 @@ When `getChangedPaths()` reports a rename pair, the optimizer matches `delete_lo
 
 Each optimization step returns `RenameOptResult` with `applied` (successful renames) and `skipped` (with structured `reason`: `action_type_mismatch`, `hash_mismatch`, `hash_missing`, `no_descendants`, `destination_occupied`). `refinePlan()` logs these via the debug logger.
 
-## Execution groups
+## Execution phases (lane/tier scheduling)
 
-`executePlan()` in `plan-executor.ts` partitions actions into 4 groups executed in order:
+`executePlan()` in `plan-executor.ts` classifies each action by **resource lane** (which filesystem it mutates: `remote` / `local` / `both` / state-only) and **dependency tier** (`transfer` / `rename` / `delete` / state-only), then runs three phases separated by barriers:
 
-| Group | Actions | Execution | Rationale |
+| Phase | Actions | Execution | Rationale |
 |-------|---------|-----------|-----------|
-| A | `push`, `pull`, `match`, `cleanup` | Parallel via `AsyncPool(5)` | Independent file I/O, safe to parallelize |
-| B | `rename_remote`, `rename_local`, `delete_remote` | Serial | Rename before delete to avoid orphaned state |
-| C | `delete_local` | Serial | Avoids local filesystem conflicts |
-| D | `conflict` | Serial | May show UI modal (`ask` strategy) |
+| 1 — Transfers | `push`, `pull` | Pooled via `AsyncPool(TRANSFER_CONCURRENCY=5)` | Independent content I/O on disjoint paths (one action per path) |
+| 1 — State-only | `match`, `cleanup` | Inline, no pool slot | No I/O — just a `SyncRecord` upsert/delete |
+| 2 — Conflicts | `conflict` | Serial (own phase) | Mutates both filesystems **and a planner-invisible `.conflict` sibling** (`generateConflictPath`); serial avoids sibling-path collisions — see [ADR 0001](adr/0001-metadata-cache-is-subordinate-to-commit-last.md) (prohibited patterns) |
+| 3 — Structural | remote lane: `rename_remote` → `delete_remote`; local lane: `rename_local` → `delete_local` | The two lanes run **concurrently**; within each lane renames are **serial** then deletes **pooled** (own `AsyncPool(DELETE_CONCURRENCY=5)` per lane) | Renames serial (two endpoints + folder-subtree rewrites); deletes pooled (bulk-folder-delete throughput); lanes independent (the local FS has no remote metadata cache) |
 
-Groups A/B/C use `executeAction()`, which runs `runActionIO()` followed by `commitAction()` and records success in `result.succeeded`. Group D (conflict) uses `executeConflictAction()` instead: it runs `resolveConflict()` per the configured strategy, re-stats both local and remote sides, commits, and records the action in both `result.conflicts` and `result.succeeded`. In both paths, `AuthError` is re-thrown to abort the entire sync; all other errors are caught per-action and recorded in `result.failed`.
+The phases run behind **sequential barriers** (Phase 1 fully drains before Phase 2 before Phase 3). This preserves two safety properties: no content write (Phase 1) runs concurrently with a same-subtree structural rename/delete (Phase 3), and conflict (Phase 2, which touches both sides + a sibling path) never overlaps either. Renames stay serial so the rename optimizer's destination-occupancy assumptions hold; pooled deletes are safe even for the legitimate folder+descendant overlap via the inline delete CAS guard (the folder's `removeTree` evicts the child entry, so the child delete short-circuits) — see [ADR 0001 → T7](adr/0001-metadata-cache-is-subordinate-to-commit-last.md).
+
+Phases 1 and 3 use `executeAction()`, which runs `runActionIO()` followed by `commitAction()` and records success in `result.succeeded`. Phase 2 (conflict) uses `executeConflictAction()` instead: it runs `resolveConflict()` per the configured strategy (`auto_merge` / `duplicate`), re-stats both local and remote sides, commits, and records the action in both `result.conflicts` and `result.succeeded`. In both paths, `AuthError` is re-thrown to abort the entire cycle (it rejects the phase's pool/lane and propagates); all other errors are caught per-action and recorded in `result.failed`.
 
 ## State commit
 

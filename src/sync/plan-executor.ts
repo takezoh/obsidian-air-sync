@@ -1,6 +1,6 @@
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
-import type { ConflictRecord, ConflictStrategy, SyncAction, SyncPlan } from "./types";
+import type { ConflictRecord, ConflictStrategy, SyncAction, SyncActionType, SyncPlan } from "./types";
 import type { StateCommitterContext } from "./state-committer";
 import type { ConflictResolverContext, ConflictResolutionResult } from "./conflict-resolver";
 import type { Logger } from "../logging/logger";
@@ -68,8 +68,61 @@ export interface ExecutionContext {
 	logger?: Logger;
 }
 
-const POOL_CONCURRENCY = 5;
+type Lane = "remote" | "local" | "both" | "none";
+type Tier = "transfer" | "rename" | "delete" | "none";
 
+/**
+ * Executor-internal classification of each action by the filesystem it mutates
+ * (`lane`) and its dependency tier (`tier`). This drives the phase/lane scheduling
+ * in {@link executePlan}; `SyncActionType` stays the planner's vocabulary. The
+ * `Record<SyncActionType, …>` makes the classification exhaustive — adding a new
+ * action type fails the build until it is classified here.
+ *
+ * `conflict` is transfer-tier (content I/O) but is DELIBERATELY scheduled in its
+ * own serial phase, NOT pooled with `push`/`pull`: conflict resolution mints a
+ * planner-invisible `.conflict` sibling path (`conflict.ts` `generateConflictPath`)
+ * and writes it to both sides, so the one-action-per-path invariant does not cover
+ * that sibling. Pooling it would risk clobbering a concurrent `push` of a
+ * same-named file and would wake the dormant `withCacheMutex` new-path guard. See
+ * ADR 0001 (prohibited patterns). Do not move it into the transfer phase.
+ */
+const ACTION_CLASS: Record<SyncActionType, { lane: Lane; tier: Tier }> = {
+	push: { lane: "remote", tier: "transfer" },
+	pull: { lane: "local", tier: "transfer" },
+	conflict: { lane: "both", tier: "transfer" },
+	match: { lane: "none", tier: "none" },
+	cleanup: { lane: "none", tier: "none" },
+	rename_remote: { lane: "remote", tier: "rename" },
+	rename_local: { lane: "local", tier: "rename" },
+	delete_remote: { lane: "remote", tier: "delete" },
+	delete_local: { lane: "local", tier: "delete" },
+};
+
+/** Max concurrent content transfers (push/pull) — bandwidth / rate-limit bound. */
+const TRANSFER_CONCURRENCY = 5;
+/**
+ * Max concurrent deletes, per lane. Deletes are metadata-only (trash / delete by
+ * id) and could run hotter, but they share the backend rate-limit budget, so kept
+ * at 5 for parity. Each lane gets its OWN pool — local (vault trash) and remote
+ * (network) deletes have disjoint resource profiles and must not share a budget.
+ */
+const DELETE_CONCURRENCY = 5;
+
+/**
+ * Execute a plan in three phases separated by barriers, scheduled by (lane, tier):
+ *
+ *   Phase 1  transfers (push/pull) pooled + state-only (match/cleanup) inline
+ *   Phase 2  conflict — serial (own phase; see {@link ACTION_CLASS})
+ *   Phase 3  structural — remote & local lanes run concurrently; within each lane,
+ *            renames serial then deletes pooled
+ *
+ * The barriers are load-bearing: no content write (Phase 1) runs concurrently with
+ * a same-subtree structural rename/delete (Phase 3), and conflict (which mutates a
+ * planner-invisible sibling, Phase 2) never overlaps either. Renames stay serial
+ * (two endpoints + folder-subtree rewrites); deletes pool (the bulk-delete win).
+ * `AuthError` from any action rejects its pool/lane and propagates out (aborting the
+ * cycle); all other per-action errors are caught into `result.failed`.
+ */
 export async function executePlan(
 	plan: SyncPlan,
 	ctx: ExecutionContext,
@@ -80,30 +133,28 @@ export async function executePlan(
 		conflicts: [],
 	};
 
-	const groupA: SyncAction[] = [];
-	const groupB: SyncAction[] = [];
-	const groupC: SyncAction[] = [];
-	const groupD: SyncAction[] = [];
+	// Partition by (lane, tier). Conflict is its own phase; match/cleanup are
+	// state-only (run inline, no pool slot); renames/deletes split by lane.
+	const transfers: SyncAction[] = [];
+	const stateOnly: SyncAction[] = [];
+	const conflicts: SyncAction[] = [];
+	const renameRemote: SyncAction[] = [];
+	const deleteRemote: SyncAction[] = [];
+	const renameLocal: SyncAction[] = [];
+	const deleteLocal: SyncAction[] = [];
 
 	for (const action of plan.actions) {
-		switch (action.action) {
-			case "push":
-			case "pull":
-			case "match":
-			case "cleanup": // cleanup is state-only (no I/O), safe to run in parallel with Group A
-				groupA.push(action);
-				break;
-			case "rename_remote":
-			case "rename_local":
-			case "delete_remote":
-				groupB.push(action);
-				break;
-			case "delete_local":
-				groupC.push(action);
-				break;
-			case "conflict":
-				groupD.push(action);
-				break;
+		const { lane, tier } = ACTION_CLASS[action.action];
+		if (action.action === "conflict") {
+			conflicts.push(action);
+		} else if (tier === "none") {
+			stateOnly.push(action);
+		} else if (tier === "transfer") {
+			transfers.push(action);
+		} else if (tier === "rename") {
+			(lane === "remote" ? renameRemote : renameLocal).push(action);
+		} else {
+			(lane === "remote" ? deleteRemote : deleteLocal).push(action);
 		}
 	}
 
@@ -114,28 +165,46 @@ export async function executePlan(
 		ctx.onProgress?.(completed, total);
 	};
 
-	// Group A: parallel with AsyncPool(5)
-	const pool = new AsyncPool(POOL_CONCURRENCY);
-	await Promise.all(
-		groupA.map((action) =>
-			pool.run(() => executeAction(action, ctx, result, reportProgress))
-		)
-	);
+	// ── Phase 1 — transfers (pooled) + state-only (inline). ──
+	// One action per path ⇒ concurrent transfers target disjoint paths. State-only
+	// actions do no I/O, so they don't take a pool slot — they're awaited alongside.
+	const transferPool = new AsyncPool(TRANSFER_CONCURRENCY);
+	await Promise.all([
+		...transfers.map((action) =>
+			transferPool.run(() => executeAction(action, ctx, result, reportProgress))
+		),
+		...stateOnly.map((action) =>
+			executeAction(action, ctx, result, reportProgress)
+		),
+	]);
 
-	// Group B: delete_remote — serial
-	for (const action of groupB) {
-		await executeAction(action, ctx, result, reportProgress);
-	}
-
-	// Group C: delete_local — serial
-	for (const action of groupC) {
-		await executeAction(action, ctx, result, reportProgress);
-	}
-
-	// Group D: conflict — serial (may show UI modal)
-	for (const action of groupD) {
+	// ── Phase 2 — conflicts (serial, own phase). ──
+	// Headless, but mutates a planner-invisible `.conflict` sibling — kept serial so
+	// concurrent resolutions can't collide on that sibling namespace (see ACTION_CLASS).
+	for (const action of conflicts) {
 		await executeConflictAction(action, ctx, result, reportProgress);
 	}
+
+	// ── Phase 3 — structural mutations; the two lanes run concurrently. ──
+	// They touch disjoint filesystems (the local FS has no remote metadata cache), so
+	// they share no mutable state — safe to overlap. Within each lane: renames first
+	// (serial — a rename has two endpoints and folder renames rewrite subtrees), then
+	// deletes pooled (the bulk-folder-delete win). Each lane has its OWN delete pool.
+	const runLane = async (renames: SyncAction[], deletes: SyncAction[]) => {
+		for (const action of renames) {
+			await executeAction(action, ctx, result, reportProgress);
+		}
+		const pool = new AsyncPool(DELETE_CONCURRENCY);
+		await Promise.all(
+			deletes.map((action) =>
+				pool.run(() => executeAction(action, ctx, result, reportProgress))
+			)
+		);
+	};
+	await Promise.all([
+		runLane(renameRemote, deleteRemote),
+		runLane(renameLocal, deleteLocal),
+	]);
 
 	return result;
 }
