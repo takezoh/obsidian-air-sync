@@ -31,6 +31,16 @@ export class SyncScheduler {
 	private deps: SyncSchedulerDeps;
 	private debouncedSync: ReturnType<typeof debounce>;
 	private destroyed = false;
+	/**
+	 * Whether the app has left the foreground since it was last in sync. A
+	 * foreground signal (focus / visibilitychange→visible) re-checks the remote
+	 * only when this is true — a genuine background→foreground (mobile) or
+	 * app-switch (desktop/tablet) return. It starts false: at cold start the
+	 * onLayoutReady catch-up sync already covers the initial foreground, so the
+	 * trailing foreground signal — the deferred-to-first-touch `focus` on mobile —
+	 * is NOT a return and must not fire a second, redundant sync. See ADR 0007.
+	 */
+	private departed = false;
 
 	constructor(deps: SyncSchedulerDeps) {
 		this.deps = deps;
@@ -62,6 +72,7 @@ export class SyncScheduler {
 		this.wireOnlineEvent();
 		this.wireVisibilityEvent();
 		this.wireFocusEvent();
+		this.wireDepartureEvents();
 		this.wireFileOpenEvent();
 	}
 
@@ -71,14 +82,12 @@ export class SyncScheduler {
 	}
 
 	/**
-	 * Trigger a full sync now, unless no backend is configured or one is already
-	 * running. This is the SIGNAL path (focus/visibility/online): the
-	 * `isSyncing()` guard discards the request while a sync is in flight — the
-	 * in-flight cycle already performs the full re-scan a signal asks for. The
-	 * guard is load-bearing, NOT redundant with runSync's own lock check:
-	 * runSync's check sets `syncPending` (a re-run), this one suppresses it for
-	 * signals. Removing it makes a signal set syncPending and run a redundant
-	 * WARM full scan (ADR 0004).
+	 * The NETWORK signal path (online): re-check now, unless no backend or a sync
+	 * is already running. The `isSyncing()` guard discards the request while a
+	 * sync is in flight — the in-flight cycle already performs the full re-scan a
+	 * signal asks for. It is load-bearing, NOT redundant with runSync's own lock
+	 * check: runSync's check sets `syncPending` (a re-run), this one suppresses it
+	 * for signals (ADR 0004). Foreground signals use triggerForegroundSync instead.
 	 */
 	private triggerSync(): void {
 		if (!this.deps.remoteFs()) return;
@@ -86,18 +95,36 @@ export class SyncScheduler {
 		void this.deps.orchestrator.runSync();
 	}
 
-	// `focus` and `visibilitychange` are deliberately BOTH wired on every
-	// platform — they are not redundant. `focus` is the only signal for a
-	// desktop app-to-app switch (alt-tab): Electron keeps the document
-	// `visible` in the background, so visibilitychange never fires. On mobile
-	// webviews window focus is unreliable on resume, so visibilitychange is the
-	// dependable foreground signal. Each covers a case the other misses, so
-	// dropping or platform-gating either one would lose a resume sync somewhere.
-	// The cost — a single resume firing both — is absorbed downstream: the
-	// `isSyncing()` guard in triggerSync, then runSync coalescing into one
-	// burst, then CycleSummary collapsing it to one notice (see commit 884b948).
+	/**
+	 * The FOREGROUND signal path (focus / visibilitychange→visible). Re-checks the
+	 * remote only on a genuine return — after the app actually left the foreground
+	 * (`departed`). This drops the redundant cold-start signal (no departure since
+	 * the onLayoutReady catch-up sync) while still syncing every real resume, with
+	 * no timing window. If a sync is already in flight, return WITHOUT clearing
+	 * `departed`: that cycle may predate the departure, so a later signal must
+	 * still re-check — never miss a return (ADR 0007). The `departed` flag is
+	 * cleared only here, when we actually run the resume sync.
+	 */
+	private triggerForegroundSync(): void {
+		if (!this.deps.remoteFs()) return;
+		if (this.deps.orchestrator.isSyncing()) return;
+		if (!this.departed) return;
+		this.departed = false;
+		void this.deps.orchestrator.runSync();
+	}
+
+	// `focus` and `visibilitychange→visible` are BOTH wired on every platform —
+	// not redundant. `focus` is the only return signal for a desktop alt-tab AND
+	// a tablet split-view / Stage Manager app-switch: both keep the document
+	// `visible`, so visibilitychange never fires there. On a phone background,
+	// window focus is unreliable, so visibilitychange→visible is the dependable
+	// return signal. Each covers a case the other misses across iOS/Android/
+	// desktop, so neither can be dropped or platform-gated without losing a
+	// resume somewhere. The cost — a real resume firing both — is absorbed by
+	// triggerForegroundSync: the first clears `departed`, so the second is a
+	// no-op (and a sync in flight blocks both via isSyncing). See ADR 0007.
 	private wireFocusEvent(): void {
-		this.deps.registerWindowEvent("focus", () => this.triggerSync());
+		this.deps.registerWindowEvent("focus", () => this.triggerForegroundSync());
 	}
 
 	private wireVaultEvents(): void {
@@ -142,8 +169,28 @@ export class SyncScheduler {
 			// App-level visibility: read the main document (matching the focus/
 			// online listeners), not activeDocument — we want "Obsidian is
 			// foreground", not whichever popout happens to be focused.
-			if (document.visibilityState !== "visible") return;
-			this.triggerSync();
+			if (document.visibilityState === "visible") {
+				this.triggerForegroundSync();
+			} else {
+				// Backgrounding (phone/tablet) is a departure — the next foreground
+				// signal is then a genuine return that should re-check.
+				this.departed = true;
+			}
+		});
+	}
+
+	// Departure boundary, OR'd with visibilitychange→hidden so a genuine return is
+	// never missed (a spurious departure only costs one extra re-check, never a
+	// stale miss). `blur` is the ONLY departure signal for a desktop alt-tab AND a
+	// tablet split-view / Stage Manager app-switch: both keep the document
+	// `visible`, so visibilitychange→hidden never fires there. Window-level blur
+	// fires on app focus loss — not on element focus or the soft keyboard — so it
+	// does not mark spurious departures during normal editing. (Focusing an
+	// Obsidian popout window does blur the main window → one harmless extra
+	// re-check on return; not worth distinguishing.) See ADR 0007.
+	private wireDepartureEvents(): void {
+		this.deps.registerWindowEvent("blur", () => {
+			this.departed = true;
 		});
 	}
 

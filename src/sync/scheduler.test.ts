@@ -104,10 +104,21 @@ describe("SyncScheduler", () => {
 		// Reset captured handlers so a stale closure from a prior test can't leak.
 		windowListeners.clear();
 		documentListeners.clear();
+		// Reset visibility (a test may set it hidden) so each starts foregrounded.
+		(document as unknown as { visibilityState: string }).visibilityState = "visible";
 		deps = createDeps();
 		scheduler = new SyncScheduler(deps);
 		scheduler.start();
 	});
+
+	// Foreground signals (focus / visibilitychange→visible) only sync after a
+	// departure (ADR 0007). These helpers drive a departure and a return.
+	const fireBlur = () => windowListeners.get("blur")!(new Event("blur"));
+	const fireFocus = () => windowListeners.get("focus")!(new Event("focus"));
+	const fireVisibility = (state: string) => {
+		(document as unknown as { visibilityState: string }).visibilityState = state;
+		documentListeners.get("visibilitychange")!(new Event("visibilitychange"));
+	};
 
 	describe("layout-ready gate", () => {
 		it("defers event wiring until the vault layout is ready", () => {
@@ -296,10 +307,9 @@ describe("SyncScheduler", () => {
 	});
 
 	describe("focus event", () => {
-		it("triggers immediate sync when window gains focus", () => {
-			const handler = windowListeners.get("focus");
-			expect(handler).toBeDefined();
-			handler!(new Event("focus"));
+		it("triggers sync on focus after a departure (alt-tab / split-view return)", () => {
+			fireBlur(); // depart
+			fireFocus(); // return
 			expect(deps.runSync).toHaveBeenCalled();
 		});
 
@@ -309,14 +319,14 @@ describe("SyncScheduler", () => {
 			scheduler = new SyncScheduler(deps);
 			scheduler.start();
 
-			const handler = windowListeners.get("focus");
-			handler!(new Event("focus"));
+			fireBlur();
+			fireFocus();
 			expect(deps.runSync).not.toHaveBeenCalled();
 		});
 	});
 
 	describe("online event", () => {
-		it("triggers sync on network restore", () => {
+		it("triggers sync on network restore (no departure needed)", () => {
 			const handler = windowListeners.get("online");
 			expect(handler).toBeDefined();
 			handler!(new Event("online"));
@@ -336,10 +346,9 @@ describe("SyncScheduler", () => {
 	});
 
 	describe("visibility event", () => {
-		it("triggers immediate sync when app becomes visible", () => {
-			const handler = documentListeners.get("visibilitychange");
-			expect(handler).toBeDefined();
-			handler!(new Event("visibilitychange"));
+		it("triggers sync when app becomes visible after backgrounding", () => {
+			fireVisibility("hidden"); // depart
+			fireVisibility("visible"); // resume
 			expect(deps.runSync).toHaveBeenCalled();
 		});
 
@@ -349,9 +358,51 @@ describe("SyncScheduler", () => {
 			scheduler = new SyncScheduler(deps);
 			scheduler.start();
 
-			const handler = documentListeners.get("visibilitychange");
-			handler!(new Event("visibilitychange"));
+			fireVisibility("hidden");
+			fireVisibility("visible");
 			expect(deps.runSync).not.toHaveBeenCalled();
+		});
+	});
+
+	// Foreground signals (focus / visibilitychange→visible) sync only on a genuine
+	// return — after the app actually left the foreground. This drops the
+	// redundant cold-start signal (the mobile deferred-to-first-touch focus, which
+	// arrives with no preceding departure) while still syncing every real resume,
+	// without a timing window. Departure is OR'd across blur + visibilitychange→
+	// hidden so phone/tablet/desktop are all covered (ADR 0007).
+	describe("departure gating (ADR 0007)", () => {
+		it("skips a foreground signal with no departure (cold-start trailing focus)", () => {
+			fireFocus(); // no preceding departure
+			fireVisibility("visible");
+			expect(deps.runSync).not.toHaveBeenCalled();
+		});
+
+		it("clears departed after the resume sync — a second foreground signal is a no-op", () => {
+			fireBlur();
+			fireFocus(); // genuine return → one sync
+			fireFocus(); // departed cleared → no second sync
+			expect(deps.runSync).toHaveBeenCalledTimes(1);
+		});
+
+		it("a blur departure arms a later visibilitychange→visible too", () => {
+			fireBlur(); // desktop/tablet app-switch away (no visibilitychange)
+			fireVisibility("visible"); // return
+			expect(deps.runSync).toHaveBeenCalledTimes(1);
+		});
+
+		it("keeps departed set when a foreground signal is dropped mid-sync, so a later return still syncs", () => {
+			// The load-bearing "never miss a resume" guarantee: a return landing on an
+			// in-flight cycle (which may predate the departure) is dropped WITHOUT
+			// clearing departed, so the next signal still re-checks. Reordering the
+			// isSyncing() guard to clear departed first would break this silently.
+			fireBlur(); // departed = true
+			deps.orchestrator.isSyncing = () => true;
+			fireFocus(); // dropped (in flight) — must NOT clear departed
+			expect(deps.runSync).not.toHaveBeenCalled();
+
+			deps.orchestrator.isSyncing = () => false;
+			fireFocus(); // departed survived → resume syncs now
+			expect(deps.runSync).toHaveBeenCalledTimes(1);
 		});
 	});
 
@@ -365,13 +416,12 @@ describe("SyncScheduler", () => {
 	// redundant WARM full scan).
 	describe("trigger classification (ADR 0004)", () => {
 		it("discards a signal (focus/online/visibility) while a sync is in flight", () => {
+			fireBlur(); // depart, so focus/visibility would otherwise sync
 			deps.orchestrator.isSyncing = () => true;
 
-			windowListeners.get("focus")!(new Event("focus"));
+			fireFocus();
 			windowListeners.get("online")!(new Event("online"));
-			documentListeners.get("visibilitychange")!(
-				new Event("visibilitychange"),
-			);
+			fireVisibility("visible");
 
 			expect(deps.runSync).not.toHaveBeenCalled();
 		});

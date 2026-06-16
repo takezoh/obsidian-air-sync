@@ -2,7 +2,7 @@
 
 **Status:** Accepted · 2026-06-13
 **Context area:** sync pipeline / scheduler + orchestrator
-**Related:** [ADR 0001](0001-metadata-cache-is-subordinate-to-commit-last.md) (convergence — why a dropped or extra cycle is never a correctness bug, only an efficiency one), [sync-pipeline.md](../sync-pipeline.md), [`TrackerSnapshot`](../../src/sync/local-tracker.ts) (the per-cycle snapshot this decision builds on)
+**Related:** [ADR 0001](0001-metadata-cache-is-subordinate-to-commit-last.md) (convergence — why a dropped or extra cycle is never a correctness bug, only an efficiency one), [ADR 0007](0007-foreground-resync-requires-a-real-departure.md) (refines the **signal** path: a foreground signal re-syncs only after a real departure, so the cold-start trailing signal is dropped), [sync-pipeline.md](../sync-pipeline.md), [`TrackerSnapshot`](../../src/sync/local-tracker.ts) (the per-cycle snapshot this decision builds on)
 
 ## Context
 

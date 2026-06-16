@@ -195,20 +195,22 @@ Failed actions are not committed; they will be re-detected on the next sync cycl
 
 ## Sync triggers
 
-`SyncScheduler` (`scheduler.ts`) registers six event-driven sync triggers (wired by five `wire*` methods, since `wireVaultEvents()` covers both the Vault change and Vault rename rows below). Wiring happens in `wireAll()`, gated on `workspace.layoutReady`: if the layout is already ready, `start()` calls `wireAll()` immediately; otherwise it defers via `workspace.onLayoutReady(() => wireAll())`. `wireAll()` no-ops if the plugin was destroyed before the layout became ready.
+`SyncScheduler` (`scheduler.ts`) registers six event-driven sync triggers (wired by five `wire*` methods, since `wireVaultEvents()` covers both the Vault change and Vault rename rows below) — plus `wireDepartureEvents()`, which wires the departure boundary that *gates* the foreground triggers and is not itself a trigger (see below). Wiring happens in `wireAll()`, gated on `workspace.layoutReady`: if the layout is already ready, `start()` calls `wireAll()` immediately; otherwise it defers via `workspace.onLayoutReady(() => wireAll())`. `wireAll()` no-ops if the plugin was destroyed before the layout became ready.
 
 | Trigger | Event | Behaviour |
 |---------|-------|-----------|
 | Vault change | `create` / `modify` / `delete` | Marks path dirty via `localTracker.markDirty()`, then calls `debouncedSync()` (5 s debounce). Consecutive edits reset the timer so sync fires 5 s after the last change. |
 | Vault rename | `rename` | Calls `localTracker.markRenamed(newPath, oldPath)` which records the rename pair and marks both paths dirty, then calls `debouncedSync()`. Folder targets call `markFolderRenamed` instead. If either endpoint is ignore-excluded, the rename is not recorded as a pair; each non-excluded endpoint is marked dirty, and the debounce fires only if at least one endpoint is non-excluded. |
-| Visibility | `document.visibilitychange` → `"visible"` | Immediately calls `runSync()` when the app returns to the foreground (e.g. mobile app switch, desktop minimize restore), unless a sync is already running. |
-| Focus | `window.focus` | Immediately calls `runSync()` when the window gains focus (e.g. switching back from another desktop app), unless a sync is already running. |
-| Online | `window.online` | Immediately calls `runSync()` when the network connection is restored. |
+| Visibility | `document.visibilitychange` | On `"visible"` re-syncs via `triggerForegroundSync()` **only after a departure** (ADR 0007), unless a sync is already running. On `"hidden"` (background) marks a departure. |
+| Focus | `window.focus` | Re-syncs via `triggerForegroundSync()` when the window gains focus (desktop alt-tab, tablet split-view return, mobile first-touch), **only after a departure** (ADR 0007). |
+| Online | `window.online` | Immediately calls `runSync()` when the network connection is restored — a network axis, **not** departure-gated. |
 | File open | `workspace.on("file-open")` | Priority pull for the opened file (see below). |
+
+A **departure** (the app leaving the foreground) is marked by `wireDepartureEvents()` (`window.blur`) **or** `visibilitychange→hidden`, OR'd so phone (hidden), tablet/desktop (blur — alt-tab and split-view keep the document `visible`) are all covered. It is not itself a sync trigger; it arms the next foreground return.
 
 All triggers are event-driven — there is no periodic timer. All triggers except file-open run a full sync cycle through the pipeline. Out-of-scope paths (failing either gate of `isExcluded()` — dot-path scope or `ignorePatterns`) are excluded at the vault-event level — dirty marks and debounce are skipped entirely. The file-open priority pull also skips out-of-scope paths.
 
-These triggers are **classified** ([ADR 0004](adr/0004-sync-reruns-are-classified-by-trigger.md)): **signal** triggers (focus/visibility/online) carry no local change and route through `triggerSync()`, whose `isSyncing()` guard **discards** them while a sync is in flight (the in-flight cycle already does the re-scan they ask for); **vault** triggers carry a real edit and route through `markDirty` + `debouncedSync()`, so they re-run via `syncPending` even mid-sync. That guard and the `syncPending` loop are load-bearing — see the ADR before collapsing them into a single "loop while dirty" rule.
+These triggers are **classified** ([ADR 0004](adr/0004-sync-reruns-are-classified-by-trigger.md)): **signal** triggers carry no local change, and the `isSyncing()` guard **discards** them while a sync is in flight (the in-flight cycle already does the re-scan they ask for); **vault** triggers carry a real edit and route through `markDirty` + `debouncedSync()`, so they re-run via `syncPending` even mid-sync. The **foreground** signals (focus / visibilitychange→visible) are further gated on a real **departure** ([ADR 0007](adr/0007-foreground-resync-requires-a-real-departure.md)): they re-sync only after the app actually left the foreground, so a mobile cold start's trailing deferred `focus` (no departure since the `onLayoutReady` catch-up sync) does not fire a redundant second scan. That guard, the `syncPending` loop, and the departure gate are load-bearing — see the ADRs before collapsing them.
 
 ## Active file priority sync
 
