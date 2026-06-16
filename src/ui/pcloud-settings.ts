@@ -7,6 +7,7 @@ import type {
 } from "../fs/settings-renderer";
 import type { PCloudBackendData } from "../fs/pcloud/provider";
 import { getBackendProvider } from "../fs/registry";
+import { renderConnectionStatus } from "./backend-settings-ui";
 
 /**
  * Renders pCloud-specific settings UI: connection status and the OAuth code flow.
@@ -30,24 +31,14 @@ export class PCloudSettingsRenderer implements IBackendSettingsRenderer {
 		const provider = getBackendProvider("pcloud");
 		const isConnected = provider?.isConnected(settings) ?? false;
 
-		const statusDesc = isConnected ? "● Connected" : "● Not connected";
-		const statusClass = isConnected ? "air-sync-status-connected" : "air-sync-status-disconnected";
-		const statusSetting = new Setting(containerEl)
-			.setName("Connection status")
-			.setDesc(statusDesc);
-		statusSetting.settingEl.addClass(statusClass);
-		statusSetting.addButton((button) =>
-			button
-				.setButtonText(isConnected ? "Disconnect" : "Connect to pCloud")
-				.onClick(async () => {
-					if (isConnected) {
-						await actions.disconnect();
-					} else {
-						await actions.startAuth();
-					}
-					actions.refreshDisplay();
-				}),
-		);
+		// Shared connection-status row (●-status + Connect/Disconnect) — same helper the
+		// Dropbox/OneDrive/Google Drive renderers use. pCloud auto-resolves its folder on
+		// connect, so there is no intermediate authed-but-unbound state to gate on.
+		renderConnectionStatus(containerEl, {
+			connected: isConnected,
+			connectLabel: "Connect to pCloud",
+			actions,
+		});
 
 		// Show the remote vault folder ID when connected (read-only).
 		if (isConnected && data.remoteVaultFolderId) {
