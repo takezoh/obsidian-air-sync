@@ -10,11 +10,12 @@ Works on desktop and mobile, powered by your own cloud storage:
 
 ## What you get
 
-- **Sync you never notice**: Your vault stays in sync on its own — after every edit, when you switch back to Obsidian, and the moment your connection comes back. You never press a button.
-- **Always the latest version**: Open a note and it pulls in the newest version if it changed on another device.
-- **Never lose work to a conflict**: Edits made on two devices at once are merged for you. When they truly clash, Air Sync keeps every version safe instead of overwriting — you choose how, and it always keeps files rather than deleting them when in doubt.
-- **Set up in a minute**: Connect your cloud account once. There's almost nothing to configure.
-- **Control what syncs**: Keep large or private files from syncing, using simple patterns (e.g. `*.zip`, `large-assets/**`).
+- **Syncs itself**: Your vault stays current on every device — no button to press.
+- **Survives interruptions**: Close Obsidian or lock your phone mid-sync; it picks up where it left off.
+- **Quick on big vaults**: Only what changed moves — easy on data and battery.
+- **Two-device edits, combined**: Edits from two devices come together when they can — no messy "conflicted copy" files.
+- **Set up in a minute**: Connect once; almost nothing to configure.
+- **Choose what syncs**: Skip big attachments or a private folder.
 
 ## Getting started
 
