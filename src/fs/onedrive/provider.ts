@@ -56,7 +56,7 @@ const DEFAULT_ONEDRIVE_DATA: OneDriveBackendData = {
  */
 export class OneDriveProvider extends PkceAppFolderProvider<OneDriveBackendData, OneDriveItem, OneDriveClient, OneDriveAuth> {
 	readonly type = BACKEND_TYPE;
-	readonly displayName = "OneDrive (Preview)";
+	readonly displayName = "OneDrive";
 	readonly auth = new OneDriveAuthProvider(this.secretStore);
 
 	protected readonly defaultData = DEFAULT_ONEDRIVE_DATA;

@@ -18,8 +18,8 @@ export function initRegistry(secretStore: ISecretStore): void {
 	providers = [
 		new GoogleDriveProvider(secretStore),
 		new GoogleDriveCustomProvider(secretStore),
-		new DropboxProvider(secretStore),
 		new OneDriveProvider(secretStore),
+		new DropboxProvider(secretStore),
 	];
 	providerMap = new Map<string, IBackendProvider>();
 	for (const p of providers) {

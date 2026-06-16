@@ -34,8 +34,7 @@ export const DEFAULT_CUSTOM_REDIRECT_URI = "https://airsync.takezo.dev/callback"
  * PKCE means there is NO client secret anywhere — the `code_verifier` is the
  * ephemeral proof. Registered at https://www.dropbox.com/developers/apps with
  * `obsidian://air-sync-auth` as a redirect URI (Dropbox allows custom schemes for
- * PKCE apps). The Dropbox backend is still labelled "Preview" in the UI, but the
- * key is embedded so it connects with no per-user setup.
+ * PKCE apps). The key is embedded so it connects with no per-user setup.
  */
 export const DROPBOX_AUTH = {
 	clientId: "icsyogaens93hde",

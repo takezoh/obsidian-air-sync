@@ -60,7 +60,7 @@ const DEFAULT_DROPBOX_DATA: DropboxBackendData = {
  */
 export class DropboxProvider extends PkceAppFolderProvider<DropboxBackendData, DropboxEntry, DropboxClient, DropboxAuth> {
 	readonly type = BACKEND_TYPE;
-	readonly displayName = "Dropbox (Preview)";
+	readonly displayName = "Dropbox";
 	readonly auth = new DropboxAuthProvider(this.secretStore);
 
 	protected readonly defaultData = DEFAULT_DROPBOX_DATA;

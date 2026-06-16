@@ -5,8 +5,8 @@ Your Obsidian notes, always up to date on every device — without ever thinking
 Works on desktop and mobile, powered by your own cloud storage:
 
 - **Google Drive**
-- **Dropbox** — *Preview*
-- **OneDrive** — *Preview* (personal Microsoft accounts only)
+- **OneDrive** — personal Microsoft accounts only
+- **Dropbox**
 
 ## What you get
 
