@@ -2,6 +2,7 @@ import "fake-indexeddb/auto";
 import { vi } from "vitest";
 import type { GoogleDriveClient } from "./client";
 import type { GoogleDriveFile, GoogleDriveChange } from "./types";
+import { FOLDER_MIME } from "./types";
 import { MetadataStore } from "../../store/metadata-store";
 import { GoogleDriveFs } from "./index";
 import { runCachingRemoteFsContract } from "../caching/remote-fs-contract";
@@ -37,11 +38,30 @@ function makeGoogleDriveHarness(): CachingRemoteFsHarness<GoogleDriveFile> {
 			const id = `f${++idSeq}`;
 			baseline.set(id, { id, name: path, mimeType: "text/plain", parents: ["root"], modifiedTime: "2024-01-01T00:00:00.000Z" });
 		},
+		seedFolderWithChild: (folderPath, childName) => {
+			const folderId = `d${++idSeq}`;
+			const childId = `f${++idSeq}`;
+			baseline.set(folderId, { id: folderId, name: folderPath, mimeType: FOLDER_MIME, parents: ["root"], modifiedTime: "2024-01-01T00:00:00.000Z" });
+			baseline.set(childId, { id: childId, name: childName, mimeType: "text/plain", parents: [folderId], modifiedTime: "2024-01-01T00:00:00.000Z" });
+		},
 		stageRemoteDelete: (path) => {
 			const entry = [...baseline.values()].find((f) => f.name === path);
 			if (!entry) throw new Error(`stageRemoteDelete: no such file "${path}"`);
 			baseline.delete(entry.id);
 			events.push({ type: "file", fileId: entry.id, removed: true });
+		},
+		// Google Drive is id-addressed: a rename is a SINGLE change carrying the file's new
+		// name. A folder's children keep their parent id (their paths are derived), so they
+		// are NOT re-emitted — the cache reparents them from the one folder change.
+		stageRemoteRename: (oldPath, newPath, opts) => {
+			const match = opts?.isFolder
+				? (f: GoogleDriveFile) => f.name === oldPath && f.mimeType === FOLDER_MIME
+				: (f: GoogleDriveFile) => f.name === oldPath;
+			const entry = [...baseline.values()].find(match);
+			if (!entry) throw new Error(`stageRemoteRename: no such path "${oldPath}"`);
+			const renamed: GoogleDriveFile = { ...entry, name: newPath };
+			baseline.set(entry.id, renamed);
+			events.push({ type: "file", fileId: entry.id, removed: false, file: renamed });
 		},
 	};
 }

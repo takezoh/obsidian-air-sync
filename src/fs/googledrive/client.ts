@@ -10,19 +10,16 @@ import {
 	assertGoogleDriveChangeList,
 	buildUploadMetadata,
 } from "./types";
-import { AsyncPool } from "../../queue/async-queue";
+import { listAllFiles as listAllFilesRecursive } from "./list-all";
 import { ResumableUploader, RESUMABLE_THRESHOLD } from "./resumable-upload";
 
 const GOOGLE_DRIVE_API = "https://www.googleapis.com/drive/v3";
 const UPLOAD_API = "https://www.googleapis.com/upload/drive/v3";
 const FILE_FIELDS = "id,name,mimeType,size,modifiedTime,parents,md5Checksum,trashed";
 
-/**
- * Hard cap on pagination drain loops (full list and changes.list). At pageSize
- * 1000 this is 10M entries — beyond any real vault — so reaching it means the
- * server isn't clearing its page token; we throw instead of looping forever.
- */
-export const LIST_PAGE_CAP = 10_000;
+// LIST_PAGE_CAP lives in ./types (a leaf) so the listing helper can import it
+// without a client↔list-all cycle; re-exported here for existing `./client` importers.
+export { LIST_PAGE_CAP } from "./types";
 
 /**
  * Low-level Google Drive REST API v3 client.
@@ -141,45 +138,12 @@ export class GoogleDriveClient {
 		return result;
 	}
 
-	/** Recursively list all files under a folder with bounded concurrency */
-	async listAllFiles(rootFolderId: string): Promise<GoogleDriveFile[]> {
-		const allFiles: GoogleDriveFile[] = [];
-		const pool = new AsyncPool(3);
-		const tasks: Promise<void>[] = [];
-
-		const enqueueFolder = (folderId: string): void => {
-			const task = pool.run(async () => {
-				let pageToken: string | undefined;
-				// Bound the pagination drain: a server that never clears nextPageToken
-				// would otherwise loop forever. 10k pages × 1000 files/page is far beyond
-				// any real folder, so hitting it means a misbehaving server — throw rather
-				// than silently truncate (a short listing would read as mass deletion).
-				for (let guard = 0; guard < LIST_PAGE_CAP; guard++) {
-					const result = await this.listFiles(folderId, pageToken);
-					for (const file of result.files) {
-						allFiles.push(file);
-						if (file.mimeType === FOLDER_MIME) {
-							enqueueFolder(file.id);
-						}
-					}
-					pageToken = result.nextPageToken;
-					if (!pageToken) return;
-				}
-				throw new Error(
-					`listAllFiles: pagination exceeded ${LIST_PAGE_CAP} pages for folder ${folderId} (server not clearing nextPageToken?)`
-				);
-			});
-			tasks.push(task);
-		};
-
-		enqueueFolder(rootFolderId);
-
-		// Drain: await tasks as they are added (tasks array grows dynamically)
-		for (let i = 0; i < tasks.length; i++) {
-			await tasks[i];
-		}
-
-		return allFiles;
+	/** Recursively list all files under a folder (adaptive concurrency + per-page retry — see `list-all.ts`) */
+	listAllFiles(rootFolderId: string): Promise<GoogleDriveFile[]> {
+		return listAllFilesRecursive(
+			(folderId, pageToken) => this.listFiles(folderId, pageToken),
+			rootFolderId,
+		);
 	}
 
 	/** Download file content */
@@ -246,11 +210,6 @@ export class GoogleDriveClient {
 		const googleDriveFile: unknown = response.json;
 		assertGoogleDriveFile(googleDriveFile);
 		return googleDriveFile;
-	}
-
-	/** Clear cached resume URLs (call on plugin unload) */
-	clearResumeCache(): void {
-		this.resumableUploader.clearResumeCache();
 	}
 
 	/** Create a folder */

@@ -495,10 +495,13 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 		await this.deleteRemote(fileId);
 
 		// Phase 3: update the cache under the mutex with an id guard — the inline twin of
-		// withCacheMutex's CAS (delete needs no `update` callback, so it guards here). Skip
-		// the removeTree if a concurrent op re-keyed this path during phase 2. Like the
-		// shared guard this is currently unreachable (ADR 0001, T7: delete_remote runs
-		// serially in Group B, deltas never run during execute) — kept as defense-in-depth.
+		// withCacheMutex's CAS (delete needs no `update` callback, so it guards here). This
+		// guard is ACTIVE: delete_remote is now POOLED in the structural phase (ADR 0001, T7),
+		// so a folder delete and an overlapping descendant delete can run concurrently. If the
+		// folder's removeTree evicted this path during phase 2, idAt no longer matches fileId,
+		// so we skip the stale removeTree (the path is already gone) rather than corrupt the
+		// cache. (The common case short-circuits earlier: a child whose entry was already
+		// evicted resolves no id at phase 1 and never reaches the network delete.)
 		await this.cacheMutex.run(() => {
 			if (this.cache.idAt(path) === fileId) {
 				this.cache.removeTree(path);

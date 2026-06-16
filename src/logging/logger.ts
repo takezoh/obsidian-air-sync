@@ -40,9 +40,6 @@ export class Logger {
 	private _deviceName: string;
 	private _adapter: RawFsAdapter;
 	private getSettings: () => AirSyncSettings;
-	// DOM timer id (number), not Node's `NodeJS.Timeout`: window.setInterval is
-	// the browser API the plugin runs against (isDesktopOnly: false).
-	private flushTimer: number | null = null;
 
 	constructor(
 		adapter: RawFsAdapter,
@@ -52,9 +49,6 @@ export class Logger {
 		this._adapter = adapter;
 		this.getSettings = getSettings;
 		this._deviceName = sanitizeDeviceName(deviceName);
-		this.flushTimer = window.setInterval(() => {
-			void this.flush();
-		}, 30_000);
 	}
 
 	get adapter(): RawFsAdapter { return this._adapter; }
@@ -123,13 +117,6 @@ export class Logger {
 			await this._adapter.write(filePath, content);
 		} catch {
 			// Logging should never break the app — silently drop on failure
-		}
-	}
-
-	dispose(): void {
-		if (this.flushTimer !== null) {
-			window.clearInterval(this.flushTimer);
-			this.flushTimer = null;
 		}
 	}
 }

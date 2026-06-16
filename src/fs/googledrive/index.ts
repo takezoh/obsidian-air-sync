@@ -191,8 +191,8 @@ export class GoogleDriveFs extends CachingRemoteFs<GoogleDriveFile> {
 				// only re-indexes a NEW path). Skip instead — symmetric with write()'s
 				// new-path guard; the in-memory cursor advanced past it, so the next cycle
 				// re-detects our rename. Like the shared guard, this is currently
-				// unreachable (ADR 0001, T7: rename_remote runs serially in Group B, and
-				// deltas never run during execute) — retained as defense-in-depth.
+				// unreachable (ADR 0001, T7: rename_remote runs serially in the structural
+				// phase, and deltas never run during execute) — retained as defense-in-depth.
 				const occupant = this.cache.getFile(newPath);
 				if (occupant && occupant.id !== result.id) {
 					this.logger?.warn("Skipping stale cache update for rename", { path: newPath });

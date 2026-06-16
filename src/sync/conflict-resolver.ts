@@ -69,10 +69,8 @@ async function resolveAutoMerge(
 		logger,
 	};
 
-	// Try 3-way merge if we have everything needed; newer-wins is the fallback
-	if (local && remote && baseline && stateStore) {
-		return resolveWithStrategy(conflictCtx, "auto_merge", "keep_newer");
-	}
-
-	return resolveWithStrategy(conflictCtx, "keep_newer");
+	// attemptThreeWayMerge already handles every missing-prerequisite case — a deleted
+	// side, no baseline, or no stored base content — by falling back to keep_newer, so
+	// no pre-check is needed here.
+	return resolveWithStrategy(conflictCtx, "auto_merge", "keep_newer");
 }

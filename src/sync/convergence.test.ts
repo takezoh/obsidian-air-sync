@@ -10,7 +10,7 @@ import {
 	addFile,
 	readText,
 } from "../__mocks__/sync-test-helpers";
-import type { SyncPlan } from "./types";
+import type { RenamePair, SyncPlan } from "./types";
 
 /**
  * Convergence (fixed-point) contract — the emergent property the whole engine
@@ -154,5 +154,77 @@ describe("sync converges to a fixed point", () => {
 
 		const second = await runCycle(env);
 		expect(second.actions).toHaveLength(0);
+	});
+
+	// A remote rename must collapse to a single rename_local across the WHOLE pipeline
+	// (delta → plan → refine → execute → commit), then converge — not re-pull file by
+	// file. This is the end-to-end regression for the Dropbox folder-rename bug (ADR 0006);
+	// no per-stage test proves the rename pair, the per-file delete/pull actions, and the
+	// baseline rewrite compose into a fixed point.
+
+	/** Report a remote delta exactly once (the rename), then nothing — like a real cursor. */
+	function deliverOnce(
+		env: Env,
+		delta: { modified: string[]; deleted: string[]; renamed: RenamePair[] },
+	): void {
+		let delivered = false;
+		env.remoteFs.checkpoint!.getChangedPaths = () => {
+			if (delivered) return Promise.resolve({ modified: [], deleted: [] });
+			delivered = true;
+			return Promise.resolve(delta);
+		};
+	}
+
+	it("a remote FOLDER rename collapses to one rename_local, then converges", async () => {
+		const env = makeEnv();
+		addFile(env.localFs, "dir/b.md", "beta", 1000);
+		addFile(env.localFs, "dir/c.md", "gamma", 1000);
+
+		// Cycle 1: push both files; now in sync at the old folder path.
+		expect(actionTypes(await runCycle(env))).toEqual(["push", "push"]);
+
+		// The folder is renamed on the remote: move it there and report the rename once.
+		await env.remoteFs.rename("dir", "papers");
+		deliverOnce(env, {
+			modified: ["papers/b.md", "papers/c.md"],
+			deleted: ["dir/b.md", "dir/c.md"],
+			renamed: [{ oldPath: "dir", newPath: "papers", isFolder: true }],
+		});
+
+		// Cycle 2: a SINGLE rename_local — not delete_local×2 + pull×2.
+		const renameCycle = await runCycle(env);
+		expect(actionTypes(renameCycle)).toEqual(["rename_local"]);
+		expect(readText(env.localFs, "papers/b.md")).toBe("beta");
+		expect(readText(env.localFs, "papers/c.md")).toBe("gamma");
+		expect(env.localFs.files.has("dir/b.md")).toBe(false);
+		// Baselines moved with the folder (no stale dir/* record to resurrect).
+		expect(await env.stateStore.get("papers/b.md")).toBeDefined();
+		expect(await env.stateStore.get("dir/b.md")).toBeUndefined();
+
+		// Cycle 3: fixed point.
+		expect((await runCycle(env)).actions).toHaveLength(0);
+	});
+
+	it("a remote FILE rename collapses to one rename_local, then converges", async () => {
+		const env = makeEnv();
+		addFile(env.localFs, "note.md", "body", 1000);
+
+		expect(actionTypes(await runCycle(env))).toEqual(["push"]);
+
+		await env.remoteFs.rename("note.md", "renamed.md");
+		deliverOnce(env, {
+			modified: ["renamed.md"],
+			deleted: ["note.md"],
+			renamed: [{ oldPath: "note.md", newPath: "renamed.md" }],
+		});
+
+		const renameCycle = await runCycle(env);
+		expect(actionTypes(renameCycle)).toEqual(["rename_local"]);
+		expect(readText(env.localFs, "renamed.md")).toBe("body");
+		expect(env.localFs.files.has("note.md")).toBe(false);
+		expect(await env.stateStore.get("renamed.md")).toBeDefined();
+		expect(await env.stateStore.get("note.md")).toBeUndefined();
+
+		expect((await runCycle(env)).actions).toHaveLength(0);
 	});
 });

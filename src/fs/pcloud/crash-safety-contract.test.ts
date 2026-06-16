@@ -2,9 +2,10 @@ import "fake-indexeddb/auto";
 import { vi } from "vitest";
 import type { PCloudClient } from "./client";
 import type { PCloudEntry, PCloudDiffEntry, PCloudDiffResponse } from "./types";
+import { withoutContents } from "./types";
 import { MetadataStore } from "../../store/metadata-store";
 import { PCloudFs } from "./index";
-import { pcFile } from "./test-helpers";
+import { pcFile, pcFolder } from "./test-helpers";
 import { runCachingRemoteFsContract } from "../caching/remote-fs-contract";
 import type { CachingRemoteFsHarness } from "../caching/remote-fs-contract";
 
@@ -52,6 +53,14 @@ function makePCloudHarness(): CachingRemoteFsHarness<PCloudEntry> {
 		seedFile: (path) => {
 			baseline.set(path, pcFile(++fileSeq, path.split("/").pop()!, Number(ROOT_FOLDER_ID)));
 		},
+		// A top-level folder carrying one child, nested under `contents` exactly as a
+		// recursive `listfolder` returns it (flattenPCloudListing stamps the child's
+		// parentfolderid from the folder so the cache reparents it on a folder rename).
+		seedFolderWithChild: (folderPath, childName) => {
+			const folderId = ++fileSeq;
+			const child = pcFile(++fileSeq, childName, folderId);
+			baseline.set(folderPath, pcFolder(folderId, folderPath, Number(ROOT_FOLDER_ID), [child]));
+		},
 		stageRemoteDelete: (path) => {
 			const entry = baseline.get(path);
 			if (!entry) throw new Error(`stageRemoteDelete: no such file "${path}"`);
@@ -60,6 +69,23 @@ function makePCloudHarness(): CachingRemoteFsHarness<PCloudEntry> {
 				diffid: events.length + 1,
 				event: "deletefile",
 				metadata: { id: entry.id, name: entry.name, isfolder: false },
+			});
+		},
+		// pCloud is id-addressed: its account-wide `diff` reports a rename as a SINGLE
+		// `modify*` event carrying the entry's new name under the same id. A folder's
+		// children keep their parentfolderid, so the cache reparents them from this one
+		// event — they are NOT re-emitted (matching Google Drive / OneDrive).
+		stageRemoteRename: (oldPath, newPath, opts) => {
+			const isFolder = opts?.isFolder ?? false;
+			const entry = baseline.get(oldPath);
+			if (!entry || entry.isfolder !== isFolder) throw new Error(`stageRemoteRename: no such path "${oldPath}"`);
+			const renamed: PCloudEntry = { ...entry, name: newPath.split("/").pop()! };
+			baseline.delete(oldPath);
+			baseline.set(newPath, renamed);
+			events.push({
+				diffid: events.length + 1,
+				event: isFolder ? "modifyfolder" : "modifyfile",
+				metadata: withoutContents(renamed),
 			});
 		},
 	};

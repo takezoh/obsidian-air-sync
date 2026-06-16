@@ -89,3 +89,55 @@ export function classifyHttpError(err: unknown): ErrorClassification {
 	if (status === 429) return { kind: "rateLimit", retryAfterMs };
 	return { kind: "transient" };
 }
+
+/**
+ * Upper bound on any single retry backoff (ms). A server (or a clock skewed
+ * backwards) can emit a huge `Retry-After`; without a cap one retry could sleep for
+ * hours and hang the sync. Matches the per-backend client cap (`MAX_RATE_LIMIT_DELAY_MS`).
+ */
+const MAX_RETRY_DELAY_MS = 64_000;
+
+/**
+ * What the retry loop should do with a classified error. Pure data so the policy
+ * can be unit-tested in isolation (with an injected rng for the jitter).
+ *
+ * - `abort` — give up now and surface a user-facing message (`auth` / `permission`).
+ * - `stop`  — stop retrying without a backoff (e.g. 404: the target is gone).
+ * - `retry` — wait `delayMs`, then try again.
+ * - `exhausted` — out of attempts; the caller falls through to its generic failure.
+ */
+export type RetryDecision =
+	| { action: "abort"; kind: "auth" | "permission" }
+	| { action: "stop" }
+	| { action: "retry"; delayMs: number }
+	| { action: "exhausted" };
+
+/**
+ * Decide what to do with a classified error on attempt `attempt` of `maxRetries`.
+ * Pure and deterministic given `rng` (inject `Math.random` in production, a fixed
+ * value in tests). Honours a server-set `retryAfterMs`; otherwise full-jitter
+ * exponential backoff: base 2^(attempt-1) s, scaled by (0.5 + rng()).
+ *
+ * Lives here, with the error classification it acts on, so both the sync engine
+ * and fs-layer backends (e.g. the Google Drive full-scan listing) reuse it.
+ */
+export function decideRetry(
+	classification: ErrorClassification,
+	attempt: number,
+	maxRetries: number,
+	rng: () => number,
+): RetryDecision {
+	if (classification.kind === "auth") return { action: "abort", kind: "auth" };
+	if (classification.kind === "permission") return { action: "abort", kind: "permission" };
+	if (classification.kind === "notFound") return { action: "stop" };
+	if (attempt >= maxRetries) return { action: "exhausted" };
+
+	const rawDelay = classification.retryAfterMs != null
+		? classification.retryAfterMs
+		: Math.pow(2, attempt - 1) * 1000 * (0.5 + rng());
+	return { action: "retry", delayMs: Math.min(rawDelay, MAX_RETRY_DELAY_MS) };
+}
+
+export function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => window.setTimeout(resolve, ms));
+}

@@ -4,7 +4,7 @@ import type { DropboxClient } from "./client";
 import type { DropboxEntry, DropboxListFolderResponse } from "./types";
 import { MetadataStore } from "../../store/metadata-store";
 import { DropboxFs } from "./index";
-import { dbxFile, dbxDeleted } from "./test-helpers";
+import { dbxFile, dbxFolder, dbxDeleted } from "./test-helpers";
 import { runCachingRemoteFsContract } from "../caching/remote-fs-contract";
 import type { CachingRemoteFsHarness } from "../caching/remote-fs-contract";
 
@@ -47,9 +47,36 @@ function makeDropboxHarness(): CachingRemoteFsHarness<DropboxEntry> {
 		seedFile: (path) => {
 			baseline.set(abs(path), dbxFile(`f${++idSeq}`, abs(path)));
 		},
+		seedFolderWithChild: (folderPath, childName) => {
+			baseline.set(abs(folderPath), dbxFolder(`d${++idSeq}`, abs(folderPath)));
+			const childPath = `${folderPath}/${childName}`;
+			baseline.set(abs(childPath), dbxFile(`f${++idSeq}`, abs(childPath)));
+		},
 		stageRemoteDelete: (path) => {
 			if (!baseline.delete(abs(path))) throw new Error(`stageRemoteDelete: no such file "${path}"`);
 			events.push(dbxDeleted(abs(path)));
+		},
+		// Dropbox is path-addressed: a move re-keys the entry (and every descendant) to a
+		// new absolute path, reported as deleted(old)+file/folder(new) sharing the id. We
+		// list the DELETES FIRST — the adversarial ordering ADR 0006 makes safe.
+		stageRemoteRename: (oldPath, newPath, opts) => {
+			const absOld = abs(oldPath);
+			if (!baseline.has(absOld)) throw new Error(`stageRemoteRename: no such path "${oldPath}"`);
+			const oldPrefix = absOld + "/";
+			const moved: DropboxEntry[] = [];
+			const deletes: DropboxEntry[] = [];
+			for (const [p, e] of [...baseline.entries()]) {
+				const isSelf = p === absOld;
+				if (!isSelf && !(opts?.isFolder && p.startsWith(oldPrefix))) continue;
+				baseline.delete(p);
+				const np = isSelf ? abs(newPath) : abs(newPath) + "/" + p.substring(oldPrefix.length);
+				const movedEntry: DropboxEntry = { ...e, name: np.split("/").pop()!, path_lower: np.toLowerCase(), path_display: np };
+				baseline.set(np, movedEntry);
+				moved.push(movedEntry);
+				deletes.push(dbxDeleted(p));
+			}
+			for (const d of deletes) events.push(d); // deletes first (adversarial)
+			for (const m of moved) events.push(m);
 		},
 	};
 }

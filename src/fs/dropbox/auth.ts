@@ -1,10 +1,9 @@
-import { Notice, Platform, requestUrl } from "obsidian";
-import type { IAuthProvider } from "../auth";
+import { requestUrl } from "obsidian";
 import type { ISecretStore } from "../secret-store";
 import type { Logger } from "../../logging/logger";
 import { AuthError } from "../errors";
-import { setBackendSecret, hasBackendSecret } from "../token-store";
-import { BaseOAuthTokenManager, buildOAuthState, computeS256Challenge, generateRandomString } from "../oauth-pkce";
+import { BaseOAuthTokenManager, extractTokenErrorDetail } from "../oauth-pkce";
+import { PkceAuthProvider } from "../pkce-auth-provider";
 import { DROPBOX_AUTH } from "../auth-config";
 import { assertDropboxTokenResponse } from "./types";
 
@@ -37,26 +36,6 @@ export function buildDropboxAuthorizeUrl(opts: {
 		state: opts.state,
 	});
 	return `${AUTHORIZE_URL}?${params.toString()}`;
-}
-
-interface DropboxCallbackParams {
-	code: string;
-	state: string | undefined;
-}
-
-/** Parse the `obsidian://air-sync-auth?code=…&state=…` PKCE callback. */
-function parseDropboxCallback(input: string): DropboxCallbackParams {
-	const trimmed = input.trim();
-	if (!trimmed) throw new Error("Auth callback is empty");
-	let url: URL;
-	try {
-		url = new URL(trimmed);
-	} catch {
-		throw new Error("Invalid auth callback URL");
-	}
-	const code = url.searchParams.get("code");
-	if (!code) throw new Error("Missing code in auth callback");
-	return { code, state: url.searchParams.get("state") ?? undefined };
 }
 
 /**
@@ -103,7 +82,7 @@ export class DropboxAuth extends BaseOAuthTokenManager {
 			}).toString(),
 		});
 		if (res.status < 200 || res.status >= 300) {
-			throw new Error(`Token exchange failed: ${res.status} ${tokenErrorDetail(res)}`);
+			throw new Error(`Token exchange failed: ${res.status} ${extractTokenErrorDetail(res)}`);
 		}
 		assertDropboxTokenResponse(res.json);
 		this.storeTokenResponse(res.json);
@@ -130,10 +109,10 @@ export class DropboxAuth extends BaseOAuthTokenManager {
 		}
 		if (res.status === 400 || res.status === 401) {
 			this.authFailedAt = Date.now();
-			throw new AuthError(`Token refresh failed: ${res.status} ${tokenErrorDetail(res)}`, res.status);
+			throw new AuthError(`Token refresh failed: ${res.status} ${extractTokenErrorDetail(res)}`, res.status);
 		}
 		if (res.status < 200 || res.status >= 300) {
-			throw new Error(`Token refresh failed: ${res.status} ${tokenErrorDetail(res)}`);
+			throw new Error(`Token refresh failed: ${res.status} ${extractTokenErrorDetail(res)}`);
 		}
 		assertDropboxTokenResponse(res.json);
 		this.storeTokenResponse(res.json);
@@ -155,102 +134,21 @@ export class DropboxAuth extends BaseOAuthTokenManager {
 	}
 }
 
-/** Extract a readable error detail from a Dropbox token-endpoint error response. */
-function tokenErrorDetail(res: { json?: unknown; text?: string }): string {
-	try {
-		const json = res.json as { error_description?: string; error?: string } | undefined;
-		if (json?.error_description) return json.error_description;
-		if (json?.error) return json.error;
-	} catch {
-		// fall through to text
-	}
-	return typeof res.text === "string" ? res.text : "";
-}
-
 /**
  * Dropbox authentication provider — in-plugin Authorization Code + PKCE, fully
- * worker-less. The authorization code returns directly to the in-plugin
- * `obsidian://air-sync-auth` protocol handler (PKCE permits a custom-scheme
- * redirect — no relay page); this plugin exchanges it for tokens directly with
- * Dropbox using the ephemeral `code_verifier`.
+ * worker-less. The shared {@link PkceAuthProvider} owns the flow; this supplies only
+ * Dropbox's token manager and authorize URL.
  */
-export class DropboxAuthProvider implements IAuthProvider {
-	private tokenAuth: DropboxAuth | null = null;
-
-	constructor(
-		private secretStore: ISecretStore,
-		private clientId: string = DROPBOX_AUTH.clientId,
-		private logger?: Logger,
-	) {}
-
-	/** Get or lazily create the shared token manager (so refreshed tokens are persistable). */
-	getOrCreateAuth(logger?: Logger): DropboxAuth {
-		if (!this.tokenAuth) this.tokenAuth = new DropboxAuth(this.clientId, logger ?? this.logger);
-		return this.tokenAuth;
+export class DropboxAuthProvider extends PkceAuthProvider<DropboxAuth> {
+	constructor(secretStore: ISecretStore, clientId: string = DROPBOX_AUTH.clientId, logger?: Logger) {
+		super(secretStore, BACKEND_TYPE, clientId, logger);
 	}
 
-	/**
-	 * A throwaway token manager, independent of the shared (FS-bound) instance. Use
-	 * for one-off read calls (e.g. resolving the folder path for the settings UI)
-	 * so they don't clobber the live sync's in-memory tokens / failure cooldown.
-	 */
-	createDetachedAuth(logger?: Logger): DropboxAuth {
-		const auth = new DropboxAuth(this.clientId, logger ?? this.logger);
-		// Persist a rotated refresh token from a detached refresh to SecretStorage —
-		// otherwise it would be discarded with this throwaway instance, leaving the
-		// stored (and shared) token stale so the next real sync's refresh fails. The
-		// shared instance instead persists via the provider's readBackendState.
-		auth.setRefreshTokenRotatedHook((rt) => setBackendSecret(this.secretStore, BACKEND_TYPE, "refresh", rt));
-		return auth;
+	protected createAuth(clientId: string, logger?: Logger): DropboxAuth {
+		return new DropboxAuth(clientId, logger);
 	}
 
-	getTokenState(): { refreshToken: string; accessToken: string; accessTokenExpiry: number } | null {
-		return this.tokenAuth?.getTokenState() ?? null;
-	}
-
-	async revokeAuth(): Promise<void> {
-		if (this.tokenAuth) await this.tokenAuth.revokeToken();
-		this.tokenAuth = null;
-	}
-
-	isAuthenticated(_backendData: Record<string, unknown>): boolean {
-		return hasBackendSecret(this.secretStore, BACKEND_TYPE, "refresh");
-	}
-
-	async startAuth(_backendData: Record<string, unknown>): Promise<Record<string, unknown>> {
-		const codeVerifier = generateRandomString(64);
-		const codeChallenge = await computeS256Challenge(codeVerifier);
-		// base64url state (URL-transit safe) via the shared builder; it returns
-		// directly through the obsidian://air-sync-auth deep link and is parsed by
-		// parseDropboxCallback.
-		const state = buildOAuthState();
-		const url = buildDropboxAuthorizeUrl({ clientId: this.clientId, codeChallenge, state });
-		if (Platform.isMobile) {
-			window.location.href = url;
-		} else {
-			window.open(url);
-		}
-		new Notice("Complete authorization in your browser");
-		return { pendingAuthState: state, pendingCodeVerifier: codeVerifier };
-	}
-
-	async completeAuth(input: string, backendData: Record<string, unknown>): Promise<Record<string, unknown>> {
-		const params = parseDropboxCallback(input);
-		const expectedState = backendData.pendingAuthState;
-		if (typeof expectedState !== "string" || !expectedState || params.state !== expectedState) {
-			throw new Error("State mismatch - possible CSRF attack");
-		}
-		const codeVerifier = backendData.pendingCodeVerifier;
-		if (typeof codeVerifier !== "string" || !codeVerifier) {
-			throw new Error("PKCE code verifier is missing. Please restart the authorization flow.");
-		}
-
-		const auth = this.getOrCreateAuth();
-		await auth.exchangeCode(params.code, codeVerifier);
-		const tokens = auth.getTokenState();
-		setBackendSecret(this.secretStore, BACKEND_TYPE, "refresh", tokens.refreshToken);
-		setBackendSecret(this.secretStore, BACKEND_TYPE, "access", tokens.accessToken);
-
-		return { accessTokenExpiry: tokens.accessTokenExpiry, pendingAuthState: "", pendingCodeVerifier: "" };
+	protected buildAuthorizeUrl(opts: { clientId: string; codeChallenge: string; state: string }): string {
+		return buildDropboxAuthorizeUrl(opts);
 	}
 }

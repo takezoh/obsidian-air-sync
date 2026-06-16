@@ -188,7 +188,6 @@ export default class AirSyncPlugin extends Plugin {
 
 	onunload() {
 		void this.logger.flush();
-		this.logger.dispose();
 		this.backendManager.close();
 		this.scheduler.destroy();
 		this.orchestrator.close().catch((e) => {

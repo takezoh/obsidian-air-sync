@@ -14,8 +14,18 @@ export interface CachingRemoteFsHarness<TFile> {
 	makeFs(store: MetadataStore<TFile>): CachingRemoteFs<TFile>;
 	/** Add a file to the remote baseline (visible to a full list). */
 	seedFile(path: string): void;
+	/** Add a folder containing one child file to the remote baseline (visible to a full list). */
+	seedFolderWithChild(folderPath: string, childName: string): void;
 	/** Stage a remote deletion of `path` that the next delta will report. */
 	stageRemoteDelete(path: string): void;
+	/**
+	 * Stage a remote rename of a previously-seeded path that the next delta will report.
+	 * For a folder (`opts.isFolder`), descendants move with it. Each backend emits its
+	 * own faithful delta shape — notably Dropbox emits a delete+add pair and lists the
+	 * `deleted(old)` FIRST (the adversarial ordering ADR 0006 makes safe), while the
+	 * id-addressed backends emit a single id-keyed change.
+	 */
+	stageRemoteRename(oldPath: string, newPath: string, opts?: { isFolder?: boolean }): void;
 }
 
 /**
@@ -141,6 +151,51 @@ export function runCachingRemoteFsContract<TFile>(
 
 			await fs.resetCheckpoint();
 			expect(await fs.hasCheckpoint()).toBe(false);
+			await store.close();
+		});
+
+		// ── Remote rename detection (ADR 0006) ──
+		// A remote rename must surface as a single `renamed` pair, not a delete+add the
+		// engine can't coalesce. Each backend's harness emits its own faithful delta;
+		// the Dropbox harness lists deleted(old) BEFORE the moved entry, the ordering
+		// that previously degraded a folder rename to a file-by-file delete+pull.
+
+		it("reports a remote FILE rename as a single renamed pair (not delete+add)", async () => {
+			const h = makeHarness();
+			h.seedFile("note.md");
+			const store = h.makeStore("contract-rename-file");
+
+			const fs = h.makeFs(store);
+			await fs.list();
+			await fs.commitCheckpoint();
+
+			h.stageRemoteRename("note.md", "renamed.md");
+			const d = await fs.getChangedPaths();
+			expect(d?.renamed ?? []).toContainEqual({ oldPath: "note.md", newPath: "renamed.md", isFolder: undefined });
+			expect(d?.modified).toContain("renamed.md");
+			expect(d?.deleted).toContain("note.md");
+			await store.close();
+		});
+
+		it("reports a remote FOLDER rename as a single renamed pair, children reparented", async () => {
+			const h = makeHarness();
+			h.seedFolderWithChild("dir", "b.md");
+			const store = h.makeStore("contract-rename-folder");
+
+			const fs = h.makeFs(store);
+			await fs.list();
+			await fs.commitCheckpoint();
+
+			h.stageRemoteRename("dir", "papers", { isFolder: true });
+			const d = await fs.getChangedPaths();
+
+			// Exactly one pair — the folder — NOT a per-child rename and NOT a subtree delete+add.
+			expect(d?.renamed).toEqual([{ oldPath: "dir", newPath: "papers", isFolder: true }]);
+			expect(d?.deleted).toContain("dir");
+			// The folder moved as a unit: the child now lives under the new path.
+			expect((await fs.stat("papers"))?.isDirectory).toBe(true);
+			expect(await fs.stat("papers/b.md")).not.toBeNull();
+			expect(await fs.stat("dir/b.md")).toBeNull();
 			await store.close();
 		});
 	});

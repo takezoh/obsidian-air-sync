@@ -6,7 +6,7 @@ Each sync cycle runs a 4-phase pipeline:
 
 1. **Collect** -- `collectChanges()` gathers `MixedEntity[]` using the appropriate temperature mode
 2. **Decide** -- `planSync()` maps each `MixedEntity` to a `SyncAction`
-3. **Execute** -- `executePlan()` runs I/O in grouped batches (A/B/C/D)
+3. **Execute** -- `executePlan()` runs I/O in lane/tier phases (transfers → conflicts → structural; see [Execution phases](#execution-phases-lanetier-scheduling))
 4. **Commit** -- `commitAction()` persists each successful action's `SyncRecord` to IndexedDB
 
 The orchestrator (`SyncOrchestrator.executeSyncOnce()`) drives this pipeline, applying scope filtering and mobile size limits between Collect and Decide.
@@ -27,6 +27,8 @@ The same `isExcluded()` gates the vault-event dirty tracking (scheduler), so pus
 The remote delta cursor (Google Drive's `changesStartPageToken`) is the engine's "synced up to here" checkpoint. It lives in the backend's IndexedDB store (`META_STORE`), **co-located with the file-map cache and committed in the same transaction** (see [ADR 0001](adr/0001-metadata-cache-is-subordinate-to-commit-last.md)). The orchestrator calls `provider.commitCheckpoint(fs)` **only after a fully-successful cycle** (`result.failed.length === 0`); a partial or interrupted cycle never calls it, so the cursor and cache both stay at the prior committed value.
 
 At the start of each cycle the orchestrator asks `remoteFs.hasCheckpoint()` (async — it reads the store). When it is false — first sync, an interrupted/partial sync that never committed a checkpoint, or after a manual rescan — `executeSyncOnce` passes `forceFullScan: true` to `collectChanges`, forcing a **cold** reconcile (full remote `list()` × baselines). Cold is the only mode that rediscovers remote files an interrupted sync pulled-but-never-baselined or never reached: the delta-based hot/warm path is blind to them because the cursor has already moved past them (or they predate any cursor, as in an interrupted first sync). When a checkpoint *is* committed, the next sync replays the delta from it, re-detecting any un-synced change.
+
+A **same-session failure** also forces the next cycle cold: `recoverViaColdScan = result.failed.length > 0` (`orchestrator.ts`). This is load-bearing (ADR 0001 convergence path 2) — `result.failed` does not capture the full recovery gap (folder-rename descendants, remote-only orphans, detect-vs-execute races), so only a full cold scan re-derives it. The cost is **bounded and intentionally retained, not a bug to optimize away**: per-action `withIoRetry` (see [Execution phases](#execution-phases-lanetier-scheduling)) keeps most transient/429 failures from ever reaching `result.failed`, and a *repeated* cold in one session is mostly in-memory — `remoteFs.list()` walks the metadata cache after the single per-session network full scan (itself now adaptive, see [google-drive-backend.md](google-drive-backend.md#full-scan-listing-concurrency)), and `localFs.list()` is the vault index. Re-seeding failed paths for a "hot" recovery, skipping the cold scan for "small" failure sets, or advancing the cursor on a failed cycle are **ADR 0001 prohibited patterns** (they re-open silent in-session data loss).
 
 The **Rescan vault** action (settings → Advanced) discards the committed checkpoint via the live FS (`remoteFs.resetCheckpoint()` — clears the cursor and cache) and triggers a sync, forcing one cold reconcile against the remote — a manual recovery for a vault that looks stuck or incomplete. It diffs against baselines (it does not re-download) and keeps sync history.
 
@@ -71,9 +73,9 @@ After any temperature mode collects entries, `collectChanges()` runs `enrichHash
 
 `list()` returns `hash: ""` for performance. Without enrichment, the decision engine cannot distinguish identical files from conflicts (both hashes are falsy). The enrichment step:
 
-1. Filters to entries where `local.size === remote.size` and `remote.backendMeta.contentChecksum` is available
-2. Reads local file content and computes MD5 (via `js-md5`)
-3. Compares with Google Drive's `contentChecksum` (MD5 from the files.list API response)
+1. Filters to entries where `local.size === remote.size` and `remote.remoteChecksum` is available (and its algo is locally computable)
+2. Reads local file content and computes a digest in the remote checksum's algorithm (e.g. MD5 for Google Drive, via `js-md5`)
+3. Compares with the remote's `remoteChecksum.value` (e.g. Google Drive MD5 from the files.list API response)
 4. If match: computes SHA-256 from the same content and sets it on both entities so the decision engine returns `match`
 5. If mismatch: leaves hashes empty → decision engine returns `conflict`
 
@@ -97,18 +99,17 @@ Folder renames are tracked separately: a `rename` event whose target is a `TFold
 
 ### Comparison functions
 
-`hasChanged(file, record)` -- local file vs baseline:
+`hasChanged(file, record)` -- local file vs baseline (ADR 0005 — locally a content
+hash costs I/O, so it leads with the hash only when one is already on hand):
 
-1. mtime + size comparison (fast, no I/O)
-2. If mtime/size differ, verify via hash before concluding changed
-3. If mtime/size match, verify hash if both available (catches same-size edits)
-4. Fall back to hash-only comparison
-5. Conservative: treat as changed if undeterminable
+1. If **both** sides carry a content hash (the HOT/`stat()` path computed one), it is authoritative — compare hashes (catches a same-mtime+size edit; ignores an mtime-only touch)
+2. Otherwise (the `list()` path leaves `hash: ""` to stay I/O-free), compare mtime + size
+3. Neither a hash nor a usable mtime → conservatively treat as changed
 
 `hasRemoteChanged(file, record)` -- remote file vs baseline:
 
 1. mtime + size comparison
-2. If mtime/size differ, check `backendMeta.contentChecksum` (e.g. Google Drive md5Checksum)
+2. If mtime/size differ, check `remoteChecksum` (e.g. Google Drive md5Checksum), when both sides expose the same algorithm
 3. Fall back to hash comparison
 4. Conservative: treat as changed if undeterminable
 
@@ -155,27 +156,32 @@ When `LocalChangeTracker` records a rename pair (from Obsidian's `rename` event)
 
 ### Remote renames — trusted (`optimize-remote-renames.ts`)
 
-When `getChangedPaths()` reports a rename pair, the optimizer matches `delete_local(oldPath) + pull(newPath)` → `rename_local`. The rename pair from the backend is authoritative, so no hash verification is needed.
+When `getChangedPaths()` reports a rename pair, the optimizer matches `delete_local(oldPath) + pull(newPath)` → `rename_local`. The rename pair from the backend is authoritative, so no hash verification is needed. Surfacing that pair is the backend's job and is **order-independent** across all backends ([ADR 0006](adr/0006-remote-rename-detection-is-order-independent.md)): id-addressed backends (Google Drive, OneDrive) get it for free, while Dropbox's path-addressed delta (a `deleted(old)`+`add(new)` pair whose ordering Dropbox does not guarantee) reorders upserts-before-deletes so a folder rename never degrades to a file-by-file re-pull.
 
-- **File renames** (`optimizeRemoteFileRenames`): Matches individual rename pairs from the backend.
+- **File renames** (`optimizeRemoteFileRenames`): Matches individual rename pairs from the backend. The match requires the old path to be a pure `delete_local` and the new path a `pull`; if a same-name file was created at the old path in the same sync, that path becomes a `pull`/`conflict` (not `delete_local`), so the rename correctly does NOT coalesce — the move and the new file resolve as two independent transfers (right end state, no move optimization). The local optimizer (`optimize-local-renames.ts`) is symmetric: it needs `delete_remote(old)` + `push(new)`.
 - **Folder renames** (`coalesceRemoteFolderRenames`): When a folder-level rename pair has `isFolder: true`, coalesce every `delete_local` child under the old prefix into one `rename_local` (`isFolder: true`). Rules: (1) Absorb a descendant whose matching `pull` is missing into the rename — rewrite its baseline to the new path; a genuine remote delete then propagates as `delete_local` next cycle (bias toward safe deletion). (2) Skip the whole folder (reason `destination_occupied`) if any action under the new prefix has a non-null local entity (`a.local != null`), falling back to the per-file actions. Detection is best-effort; a per-action `localFs.rename` failure is caught and recovers next cycle. See `optimize-remote-renames.ts` for rationale. Remaining file-level pairs fall through to individual file rename optimization.
+  - **Optimization opportunity (not implemented):** the `destination_occupied` skip re-downloads *every* child via `delete_local`+`pull`, even children whose own destination `B/x` is free. A finer fallback could expand the folder pair into per-child pairs and route them through `optimizeRemoteFileRenames`, turning each free-destination child into a `rename_local(A/x→B/x)` (no re-download) and leaving only the genuinely-colliding child as `conflict`/`match`. Purely an efficiency win in a rare case — convergence already guarantees correctness — left unimplemented to keep the coalescer all-or-nothing. See [ADR 0006](adr/0006-remote-rename-detection-is-order-independent.md).
 
 ### Observability
 
 Each optimization step returns `RenameOptResult` with `applied` (successful renames) and `skipped` (with structured `reason`: `action_type_mismatch`, `hash_mismatch`, `hash_missing`, `no_descendants`, `destination_occupied`). `refinePlan()` logs these via the debug logger.
 
-## Execution groups
+## Execution phases (lane/tier scheduling)
 
-`executePlan()` in `plan-executor.ts` partitions actions into 4 groups executed in order:
+`executePlan()` in `plan-executor.ts` classifies each action by **resource lane** (which filesystem it mutates: `remote` / `local` / `both` / state-only) and **dependency tier** (`transfer` / `rename` / `delete` / state-only), then runs three phases separated by barriers:
 
-| Group | Actions | Execution | Rationale |
+| Phase | Actions | Execution | Rationale |
 |-------|---------|-----------|-----------|
-| A | `push`, `pull`, `match`, `cleanup` | Parallel via `AsyncPool(5)` | Independent file I/O, safe to parallelize |
-| B | `rename_remote`, `rename_local`, `delete_remote` | Serial | Rename before delete to avoid orphaned state |
-| C | `delete_local` | Serial | Avoids local filesystem conflicts |
-| D | `conflict` | Serial | May show UI modal (`ask` strategy) |
+| 1 — Transfers | `push`, `pull` | Pooled via an **`AdaptivePool`** (AIMD: desktop start 5 / max 10, mobile start 2 / max 3; +1 every 8 clean runs, ÷2 on a rate-limit) | Independent content I/O on disjoint paths (one action per path); concurrency adapts to the provider's sustainable rate |
+| 1 — State-only | `match`, `cleanup` | Inline, no pool slot | No I/O — just a `SyncRecord` upsert/delete |
+| 2 — Conflicts | `conflict` | Serial (own phase) | Mutates both filesystems **and a planner-invisible `.conflict` sibling** (`generateConflictPath`); serial avoids sibling-path collisions — see [ADR 0001](adr/0001-metadata-cache-is-subordinate-to-commit-last.md) (prohibited patterns) |
+| 3 — Structural | remote lane: `rename_remote` → `delete_remote`; local lane: `rename_local` → `delete_local` | The two lanes run **concurrently**; within each lane renames are **serial** then deletes **pooled** (own `AsyncPool(DELETE_CONCURRENCY=5)` per lane) | Renames serial (two endpoints + folder-subtree rewrites); deletes pooled (bulk-folder-delete throughput); lanes independent (the local FS has no remote metadata cache) |
 
-Groups A/B/C use `executeAction()`, which runs `runActionIO()` followed by `commitAction()` and records success in `result.succeeded`. Group D (conflict) uses `executeConflictAction()` instead: it runs `resolveConflict()` per the configured strategy, re-stats both local and remote sides, commits, and records the action in both `result.conflicts` and `result.succeeded`. In both paths, `AuthError` is re-thrown to abort the entire sync; all other errors are caught per-action and recorded in `result.failed`.
+The phases run behind **sequential barriers** (Phase 1 fully drains before Phase 2 before Phase 3). This preserves two safety properties: no content write (Phase 1) runs concurrently with a same-subtree structural rename/delete (Phase 3), and conflict (Phase 2, which touches both sides + a sibling path) never overlaps either. Renames stay serial so the rename optimizer's destination-occupancy assumptions hold; pooled deletes are safe even for the legitimate folder+descendant overlap via the inline delete CAS guard (the folder's `removeTree` evicts the child entry, so the child delete short-circuits) — see [ADR 0001 → T7](adr/0001-metadata-cache-is-subordinate-to-commit-last.md).
+
+Phases 1 and 3 use `executeAction()`, which runs `runActionIO()` followed by `commitAction()` and records success in `result.succeeded`. Phase 2 (conflict) uses `executeConflictAction()` instead: it runs `resolveConflict()` per the configured strategy (`auto_merge` / `duplicate`), re-stats both local and remote sides, commits, and records the action in both `result.conflicts` and `result.succeeded`. In both paths, `AuthError` is re-thrown to abort the entire cycle (it rejects the phase's pool/lane and propagates); all other errors are caught per-action and recorded in `result.failed`.
+
+**Adaptive transfer concurrency + in-cycle retry.** Phase 1's `AdaptivePool` ramps its in-flight ceiling up on sustained success and halves it on a rate-limit signal, so a large initial/bulk sync discovers the provider's sustainable throughput instead of a fixed `5`. Each action's network I/O is additionally wrapped in `withIoRetry`: a `rateLimit`/`transient` error is retried in-cycle (up to `MAX_ACTION_RETRIES = 3`, honoring `Retry-After`), and on a rate-limit the task signals the pool (`noteRateLimit`, before the backoff sleep) so the ceiling drops immediately while the rate-limited task holds its slot (a natural throttle). A rate-limited transfer therefore no longer defers to the next (forced-cold) cycle, so the cycle completes clean more often. See [error-handling.md → Two retry layers](error-handling.md#two-retry-layers). Conflict and deletes also get `withIoRetry`, but only transfers feed the `AdaptivePool` (conflict is serial; deletes use a fixed pool).
 
 ## State commit
 

@@ -66,6 +66,31 @@ export function buildOAuthState(extra: Record<string, unknown> = {}): string {
 	return base64ToBase64Url(btoa(json));
 }
 
+/** Parsed PKCE redirect callback: the authorization code and CSRF state. */
+export interface PkceCallbackParams {
+	code: string;
+	state: string | undefined;
+}
+
+/**
+ * Parse the `obsidian://air-sync-auth?code=…&state=…` PKCE redirect callback.
+ * Shared by every in-plugin PKCE backend so the parse (and its error messages)
+ * can't drift between them.
+ */
+export function parsePkceCallback(input: string): PkceCallbackParams {
+	const trimmed = input.trim();
+	if (!trimmed) throw new Error("Auth callback is empty");
+	let url: URL;
+	try {
+		url = new URL(trimmed);
+	} catch {
+		throw new Error("Invalid auth callback URL");
+	}
+	const code = url.searchParams.get("code");
+	if (!code) throw new Error("Missing code in auth callback");
+	return { code, state: url.searchParams.get("state") ?? undefined };
+}
+
 interface OAuthTokenState {
 	refreshToken: string;
 	accessToken: string;
@@ -77,6 +102,23 @@ export interface OAuthTokenResponse {
 	access_token: string;
 	refresh_token?: string;
 	expires_in: number;
+}
+
+/**
+ * Extract a readable error detail from an OAuth token-endpoint error response,
+ * preferring `error_description`, then `error`, then the raw text. Shared by the
+ * worker-less PKCE backends (Dropbox, OneDrive) whose token endpoints return the
+ * same RFC 6749 error shape, so the message format can't drift between them.
+ */
+export function extractTokenErrorDetail(res: { json?: unknown; text?: string }): string {
+	try {
+		const json = res.json as { error_description?: string; error?: string } | undefined;
+		if (json?.error_description) return json.error_description;
+		if (json?.error) return json.error;
+	} catch {
+		// fall through to text
+	}
+	return typeof res.text === "string" ? res.text : "";
 }
 
 /**

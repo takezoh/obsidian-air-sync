@@ -168,8 +168,8 @@ export class DropboxFs extends CachingRemoteFs<DropboxEntry> {
 				// it, dropping that change. Skip instead — symmetric with write()'s new-path
 				// guard and GoogleDriveFs.rename; the in-memory cursor advanced past it, so the
 				// next cycle re-detects our rename. Currently unreachable (ADR 0001, T7:
-				// rename runs serially in Group B, deltas never run during execute) — retained
-				// as defense-in-depth.
+				// rename runs serially in the structural phase, deltas never run during
+				// execute) — retained as defense-in-depth.
 				const occupant = this.cache.getFile(newPath);
 				if (occupant && occupant.id !== result.id) {
 					this.logger?.warn("Skipping stale cache update for rename", { path: newPath });

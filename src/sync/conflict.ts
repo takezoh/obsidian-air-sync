@@ -175,10 +175,10 @@ export async function generateConflictPath(
 		const numbered = insertConflictSuffix(path, i);
 		if (!(await existsOnAny(numbered))) return numbered;
 	}
-	// Extremely unlikely; fall through with timestamp (still check for collision)
-	const tsPath = insertConflictSuffix(path, Date.now());
-	if (!(await existsOnAny(tsPath))) return tsPath;
-	return insertConflictSuffix(path, `${Date.now()}-${Math.floor(Math.random() * 1000)}`);
+	// Extremely unlikely (100 existing .conflict copies of one file): fall back to a
+	// timestamp suffix. No further tier — a same-path, same-millisecond collision on
+	// top of 100 existing copies is not a real scenario.
+	return insertConflictSuffix(path, Date.now());
 }
 
 function insertConflictSuffix(path: string, seq: number | string): string {

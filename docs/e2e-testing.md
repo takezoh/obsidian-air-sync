@@ -101,6 +101,7 @@ Read from the real environment or a gitignored `.env.e2e` at the repo root (real
 | `AIRSYNC_E2E_PCLOUD_ACCESS_TOKEN` | pCloud — long-lived access token, minted by the bootstrap (or pasted by hand) |
 | `AIRSYNC_E2E_PCLOUD_API_HOST` | pCloud — region host, set by the bootstrap (default `api.pcloud.com`; EU `eapi.pcloud.com`) |
 | `AIRSYNC_E2E_OAUTH_PORT` | Optional loopback port (default 53682) |
+| `AIRSYNC_E2E_EXTRA_CA` | Optional PEM bundle of extra trust anchors for the Electron `net` host (see [Running behind a TLS-intercepting proxy](#running-behind-a-tls-intercepting-proxy)) |
 
 ## Running
 
@@ -127,6 +128,39 @@ npm run test:e2e:pcloud    # pCloud only
 > `.env.e2e` (the refresh token alone falls back to the built-in auth server, which can't
 > refresh a token minted by your own OAuth client). OneDrive likewise needs
 > `AIRSYNC_E2E_ONEDRIVE_CLIENT_ID` (the shipped placeholder client id can't refresh your token).
+
+## Running behind a TLS-intercepting proxy
+
+Some environments (hosted CI runners, corporate networks) route all egress through a
+proxy that terminates TLS and re-signs every certificate with its own CA. The e2e runs on
+**Electron's `net`** (the desktop engine — that's the whole point, see
+[ADR 0003](adr/0003-opt-in-e2e-validates-fakes-against-real-backends.md)), and Chromium's
+network stack on Linux ships its **own** root store — it ignores the system CA bundle and
+`NODE_EXTRA_CA_CERTS`. So even when `curl` works, every request fails with
+`net::ERR_CERT_AUTHORITY_INVALID`. (`--use-system-ca` does **not** help on Linux.)
+
+Point `AIRSYNC_E2E_EXTRA_CA` at a PEM bundle that includes the proxy's CA:
+
+```bash
+AIRSYNC_E2E_EXTRA_CA=/etc/ssl/certs/ca-certificates.crt npm run test:e2e
+```
+
+The Electron `net` host then installs a `setCertificateVerifyProc` that does **real**
+validation against that bundle — it walks the presented chain, checks each link's
+signature, requires the leaf to match the requested host, and requires the chain to anchor
+in a CA from the bundle. It is **not** a blanket "trust everything": an unrelated or forged
+cert still fails. Leave the variable **unset** (the default) and Chromium's normal strict
+validation is used unchanged — so ordinary local runs are unaffected.
+
+> Use the **fetch** transport instead (`AIRSYNC_E2E_TRANSPORT=fetch`, which honours
+> `NODE_EXTRA_CA_CERTS`) only as a last resort: it diverges from desktop on the
+> redirect-auth / `Content-Length` bug classes this e2e exists to catch, so it false-greens
+> them (see `e2e/request-url.ts`).
+
+If the proxy also enforces a host **allowlist**, a backend can authenticate yet still 403 on
+the host its content up/downloads redirect to (e.g. OneDrive's `*.microsoftpersonalcontent.com`,
+returned as `403 Host not in allowlist: …`). That is an egress-policy limit, not a test or
+credential failure — add the host to the environment's egress settings to let those tests run.
 
 ## Notes
 

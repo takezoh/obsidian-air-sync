@@ -11,7 +11,7 @@ import { LocalChangeTracker, type TrackerSnapshot } from "./local-tracker";
 import { collectChanges } from "./change-detector";
 import { planSync } from "./decision-engine";
 import { refinePlan } from "./rename-optimizer";
-import { executePlan, toConflictRecords } from "./plan-executor";
+import { executePlan, toConflictRecords, DESKTOP_TRANSFER_POOL, MOBILE_TRANSFER_POOL } from "./plan-executor";
 import type { ExecutionContext, ExecutionResult } from "./plan-executor";
 import { classifyHttpError } from "../fs/errors";
 import { decideRetry, sleep } from "./error";
@@ -407,6 +407,7 @@ export class SyncOrchestrator {
 
 		const total = plan.actions.length;
 
+		const provider = this.deps.backendProvider();
 		const ctx: ExecutionContext = {
 			localFs,
 			remoteFs,
@@ -418,20 +419,17 @@ export class SyncOrchestrator {
 			},
 			conflictStrategy: settings.conflictStrategy,
 			onProgress: (completed: number) => {
-				if (total > 0) {
-					this.deps.onProgress(`Syncing ${completed}/${total}...`);
-				}
+				if (total > 0) this.deps.onProgress(`Syncing ${completed}/${total}...`);
 			},
 			logger: this.deps.logger,
+			classifyError: (err) => provider?.classifyError?.(err) ?? classifyHttpError(err),
+			transferPool: this.deps.isMobile() ? MOBILE_TRANSFER_POOL : DESKTOP_TRANSFER_POOL,
 		};
 
 		const result = await executePlan(plan, ctx);
 
-		// Persist backend state. The delta cursor advances only on a fully clean
-		// cycle (failed === 0): commitCheckpoint flushes the file map AND the cursor
-		// to the backend store atomically, so a partial/interrupted sync keeps the
-		// prior committed cursor and the next run re-detects the un-synced work.
-		const provider = this.deps.backendProvider();
+		// Persist backend state. commitCheckpoint advances the delta cursor (+ file map,
+		// atomically) only on a fully clean cycle; a partial sync keeps the prior cursor.
 		const cleanCycle = result.failed.length === 0;
 		// The checkpoint lives on the FS now (no provider downcast): flush it only on a
 		// fully clean cycle so a partial sync keeps the prior committed cursor.

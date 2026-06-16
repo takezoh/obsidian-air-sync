@@ -7,7 +7,8 @@ import type { Logger } from "../../logging/logger";
 import type { RemoteVaultResolution } from "../remote-vault-contract";
 import { GoogleAuthDirect } from "./auth";
 import type { IGoogleAuth } from "./auth";
-import { GoogleDriveAuthProviderBase, GoogleDriveProviderBase } from "./provider-base";
+import { GoogleDriveProviderBase } from "./provider-base";
+import { GoogleDriveAuthProviderBase } from "./auth-provider-base";
 import type { GoogleDriveBackendData } from "./provider";
 import type { IBackendSettingsRenderer } from "../settings-renderer";
 import { GoogleDriveCustomSettingsRenderer } from "../../ui/googledrive-settings";
@@ -53,70 +54,25 @@ export class GoogleDriveCustomAuthProvider extends GoogleDriveAuthProviderBase {
 		super(secretStore);
 	}
 
-	protected createAuth(backendData: Record<string, unknown>): IGoogleAuth | null {
-		const data = backendData as Partial<GoogleDriveCustomBackendData>;
-		const clientId = this.resolveSecret(data.customClientId ?? "");
-		const clientSecret = this.resolveSecret(data.customClientSecret ?? "");
-		if (!clientId || !clientSecret) {
-			new Notice("Enter your client ID and client secret first");
-			return null;
-		}
-		this.googleAuth = new GoogleAuthDirect({
-			clientId, clientSecret,
-			scope: data.customScope || undefined,
-			redirectUri: data.customRedirectUri || undefined,
-			includeGrantedScopes: data.customIncludeGrantedScopes,
-		});
-		return this.googleAuth;
-	}
-
-	protected createAuthIfNeeded(backendData: Record<string, unknown>): IGoogleAuth | null {
-		const data = backendData as Partial<GoogleDriveCustomBackendData>;
-		if (!this.googleAuth && data.customClientId && data.customClientSecret) {
-			const clientId = this.resolveSecret(data.customClientId);
-			const clientSecret = this.resolveSecret(data.customClientSecret);
-			if (clientId && clientSecret) {
-				this.googleAuth = new GoogleAuthDirect({
-					clientId, clientSecret,
-					scope: data.customScope || undefined,
-					redirectUri: data.customRedirectUri || undefined,
-					includeGrantedScopes: data.customIncludeGrantedScopes,
-				});
-			}
-		}
-		if (!this.googleAuth) {
-			return null;
-		}
-		return this.googleAuth;
-	}
-
-	getOrCreateGoogleAuth(data: GoogleDriveBackendData, logger?: Logger): IGoogleAuth {
-		const customData = data as unknown as GoogleDriveCustomBackendData;
-		if (!this.googleAuth) {
-			const clientId = this.resolveSecret(customData.customClientId);
-			const clientSecret = this.resolveSecret(customData.customClientSecret);
-			this.googleAuth = new GoogleAuthDirect({
-				clientId,
-				clientSecret,
-				logger,
-				scope: customData.customScope || undefined,
-				redirectUri: customData.customRedirectUri || undefined,
-				includeGrantedScopes: customData.customIncludeGrantedScopes,
-			});
-		}
-		return this.googleAuth;
-	}
-
-	createDetachedGoogleAuth(data: GoogleDriveBackendData, logger?: Logger): IGoogleAuth {
-		const customData = data as unknown as GoogleDriveCustomBackendData;
-		return this.wireDetachedRefreshPersistence(new GoogleAuthDirect({
-			clientId: this.resolveSecret(customData.customClientId),
-			clientSecret: this.resolveSecret(customData.customClientSecret),
+	protected buildAuth(data: Record<string, unknown>, logger?: Logger): IGoogleAuth {
+		const d = data as Partial<GoogleDriveCustomBackendData>;
+		return new GoogleAuthDirect({
+			clientId: this.resolveSecret(d.customClientId ?? ""),
+			clientSecret: this.resolveSecret(d.customClientSecret ?? ""),
 			logger,
-			scope: customData.customScope || undefined,
-			redirectUri: customData.customRedirectUri || undefined,
-			includeGrantedScopes: customData.customIncludeGrantedScopes,
-		}));
+			scope: d.customScope || undefined,
+			redirectUri: d.customRedirectUri || undefined,
+			includeGrantedScopes: d.customIncludeGrantedScopes,
+		});
+	}
+
+	protected hasCredentials(data: Record<string, unknown>): boolean {
+		const d = data as Partial<GoogleDriveCustomBackendData>;
+		return !!(this.resolveSecret(d.customClientId ?? "") && this.resolveSecret(d.customClientSecret ?? ""));
+	}
+
+	protected onMissingCredentials(): void {
+		new Notice("Enter your client ID and client secret first");
 	}
 
 	/** Resolve a secret name to its actual value via ISecretStore */

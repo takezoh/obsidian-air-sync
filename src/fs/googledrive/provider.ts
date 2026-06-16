@@ -4,7 +4,8 @@ import type { AirSyncSettings } from "../../settings";
 import type { Logger } from "../../logging/logger";
 import { GoogleAuth } from "./auth";
 import type { IGoogleAuth } from "./auth";
-import { GoogleDriveAuthProviderBase, GoogleDriveProviderBase } from "./provider-base";
+import { GoogleDriveProviderBase } from "./provider-base";
+import { GoogleDriveAuthProviderBase } from "./auth-provider-base";
 import type { IBackendSettingsRenderer } from "../settings-renderer";
 import { GoogleDriveSettingsRenderer } from "../../ui/googledrive-settings";
 
@@ -42,27 +43,8 @@ export class GoogleDriveAuthProvider extends GoogleDriveAuthProviderBase {
 		super(secretStore);
 	}
 
-	protected createAuth(_backendData: Record<string, unknown>): IGoogleAuth {
-		this.googleAuth = new GoogleAuth();
-		return this.googleAuth;
-	}
-
-	protected createAuthIfNeeded(_backendData: Record<string, unknown>): IGoogleAuth {
-		if (!this.googleAuth) {
-			this.googleAuth = new GoogleAuth();
-		}
-		return this.googleAuth;
-	}
-
-	getOrCreateGoogleAuth(_data: GoogleDriveBackendData, logger?: Logger): IGoogleAuth {
-		if (!this.googleAuth) {
-			this.googleAuth = new GoogleAuth(logger);
-		}
-		return this.googleAuth;
-	}
-
-	createDetachedGoogleAuth(_data: GoogleDriveBackendData, logger?: Logger): IGoogleAuth {
-		return this.wireDetachedRefreshPersistence(new GoogleAuth(logger));
+	protected buildAuth(_data: Record<string, unknown>, logger?: Logger): IGoogleAuth {
+		return new GoogleAuth(logger);
 	}
 }
 

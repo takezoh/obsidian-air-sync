@@ -72,6 +72,21 @@ A delta yields modified/deleted/renamed paths consumed by warm change detection.
 A lost/expired cursor (`reset`) falls back to a fresh full scan diffed against
 the prior cache by id (`computeFullScanDelta`) to recover renames/deletes.
 
+Rename detection is **order-independent** ([ADR 0006](adr/0006-remote-rename-detection-is-order-independent.md)).
+A rename arrives as `deleted(old)` + `file/folder(new)` sharing a stable `id`, but
+Dropbox does not guarantee the add precedes the delete. The whole delta is drained,
+then **upserts are applied before deletes** (folders shallow-first): the move
+coalesces into one `RenamePair` via the still-present `id→path` mapping, and the
+trailing `deleted(old)` is a no-op. A `deleted` is skipped when its path was reclaimed
+by an upsert in the same delta (a rename target, or a same-path recreate with a
+different id), so a delete-then-recreate is not mistaken for — or destroyed by — the
+reorder. Without this, a folder rename whose `deleted(old)` was listed first degraded
+to a file-by-file delete+pull of the whole subtree. See
+[ADR 0006](adr/0006-remote-rename-detection-is-order-independent.md) for the full
+edge-case matrix (cross-page renames, delete-then-recreate, move-onto-freed-path,
+moved-outside-root, id-less entries, and the deltas Dropbox's coalescing makes
+unrealizable).
+
 Change detection is **checksum-based**: `stat()` returns `hash: ""` and the
 sync engine compares Dropbox's `content_hash` (4 MiB block SHA-256 tree) plus
 `server_modified` — so a metadata-only touch (same content, bumped mtime) is
@@ -145,8 +160,8 @@ advances so `BackendManager`'s name-equality short-circuit resumes.
 ### Choosing a different folder
 
 When connected, settings offers **Choose folder**, which opens an **in-app modal**
-(`DropboxFolderModal`) — the same pattern as OneDrive, no web Chooser or relay
-page:
+(the shared `AppFolderPickerModal`, `ui/app-folder-picker.ts`) — the same pattern as
+OneDrive, no web Chooser or relay page:
 
 - The modal lists the folders directly under the App Folder root
   (`client.listAppRootFolders()`, i.e. `list_folder` on path `""`) and lets the

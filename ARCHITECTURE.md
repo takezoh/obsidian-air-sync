@@ -18,18 +18,18 @@ One row per directory; see the layer diagram and per-doc references for module d
 |------|----------------|
 | `main.ts` | Plugin entry point — lifecycle only: load settings, register commands, wire components, handle the OAuth protocol callback. |
 | `settings.ts` | `AirSyncSettings` type and `DEFAULT_SETTINGS`; `settings-normalize.ts` lifts a legacy per-type `backendData` map into the active flat bag on load. |
-| `sync/` | The sync pipeline and its orchestration: change tracking and detection (hot/warm/cold), the decision engine, rename optimization, plan execution (groups A–D), per-action state commit, conflict resolution and 3-way merge, the orchestrator (mutex/retry/status), the scheduler (vault events + triggers), the IndexedDB `SyncStateStore`, error classification, and the conflict-history audit writer. |
+| `sync/` | The sync pipeline and its orchestration: change tracking and detection (hot/warm/cold), the decision engine, rename optimization, plan execution (3-phase lane/tier scheduling), per-action state commit, conflict resolution and 3-way merge, the orchestrator (mutex/retry/status), the scheduler (vault events + triggers), the IndexedDB `SyncStateStore`, error classification, and the conflict-history audit writer. |
 | `fs/` | Backend-agnostic contracts and lifecycle: `IFileSystem` + `IncrementalCheckpoint`, `IAuthProvider`, `IBackendProvider` + `WebFolderPicker`, `FileEntity`/`RemoteChecksum`, the provider registry, error classification (`errors.ts`), the OAuth PKCE helper (`oauth-pkce.ts`), the backend settings-renderer contract (`settings-renderer.ts`), `BackendManager`, and the `ISecretStore`/token-store wrappers over Obsidian SecretStorage. |
-| `fs/caching/` | Shared base for id-addressed remote backends: `CachingRemoteFs<T>` (path↔id resolution and the `IncrementalCheckpoint` checkpoint lifecycle, ADR 0001) and `AbstractMetadataCache<T>`. Google Drive, Dropbox, OneDrive, and pCloud all build on it. |
+| `fs/caching/` | Shared base for id-addressed remote backends: `CachingRemoteFs<T>` (path↔id resolution and the `IncrementalCheckpoint` checkpoint lifecycle, ADR 0001) and `AbstractMetadataCache<T>`. Google Drive, Dropbox, OneDrive, and pCloud all build on it. The id-keyed delta apply (`id-delta.ts`) makes their remote-rename detection order-independent for free (ADR 0006). |
 | `fs/local/` | `LocalFs` (Obsidian Vault API wrapper) plus the raw adapter for dot-prefixed paths. |
 | `fs/googledrive/` | The Google Drive backend: `GoogleDriveFs` with metadata cache, the REST v3 `GoogleDriveClient`, server + PKCE auth, the path↔ID `GoogleDriveMetadataCache`, incremental sync (changes.list), resumable upload, remote-vault resolution, the Google Drive types, and the built-in (`provider-base.ts`) / custom (`provider-custom.ts`) OAuth providers. |
-| `fs/dropbox/` | The Dropbox backend (App Folder scope): `DropboxFs` with a relative-path-keyed `DropboxMetadataCache`, the HTTP v2 `DropboxClient`, in-plugin Authorization Code + PKCE auth (worker-less), incremental sync (`list_folder/continue` + cursor), and the `"dropbox"` `content_hash` checksum. The vault is addressed solely by its **stable folder id** (`id:<id>/<subpath>` for every operation — no absolute path is stored), so a remote move/rename of the folder keeps syncing with no migration. The current absolute path is re-resolved from the id each cycle (`get_metadata`) only to relativize `list_folder`'s absolute results into vault-relative keys, and for the settings display. |
+| `fs/dropbox/` | The Dropbox backend (App Folder scope): `DropboxFs` with a relative-path-keyed `DropboxMetadataCache`, the HTTP v2 `DropboxClient`, in-plugin Authorization Code + PKCE auth (worker-less), incremental sync (`list_folder/continue` + cursor), and the `"dropbox"` `content_hash` checksum. The vault is addressed solely by its **stable folder id** (`id:<id>/<subpath>` for every operation — no absolute path is stored), so a remote move/rename of the folder keeps syncing with no migration. The current absolute path is re-resolved from the id each cycle (`get_metadata`) only to relativize `list_folder`'s absolute results into vault-relative keys, and for the settings display. Its path-addressed delta encodes a rename as a `deleted(old)`+`add(new)` pair and is applied upserts-before-deletes so detection is order-independent like the id-addressed backends (ADR 0006). |
 | `fs/onedrive/` | The OneDrive backend (App Folder scope, personal Microsoft accounts): `OneDriveFs` with `OneDriveMetadataCache` over the Microsoft Graph v1.0 `OneDriveClient`, worker-less Authorization Code + PKCE auth, incremental sync (`/delta`), chunked `upload-session.ts`, remote-vault resolution, and the `"quickxor"` QuickXorHash checksum — computed locally (`utils/quickxor.ts`) so cross-side dedup works. Like Google Drive it addresses items by **stable driveItem id**. |
 | `fs/pcloud/` | The pCloud backend: `PCloudFs` with metadata cache, the JSON `PCloudClient` (hand-built multipart upload), code-flow OAuth (long-lived token, no refresh), the path↔id `PCloudMetadataCache`, and the provider. Incremental sync uses the account-wide `diff` for **Full-access** apps; a **Specific-folder-only** app can't call `diff` (result 2096), so `getStartCursor()` returns an empty cursor and the orchestrator cold-reconciles every cycle (full `listfolder` × baseline). Content change detection uses pCloud's opaque content hash (`remoteChecksum.algo === "opaque"`). |
 | `ui/` | Settings UI: the main settings tab, the backend-connection section, and the per-backend settings (Google Drive / Dropbox / OneDrive / pCloud) and folder-pick modals. |
 | `store/` | IndexedDB plumbing: the `IDBHelper` transaction wrapper, the generic `MetadataStore<T>` file-metadata cache, and `content-codec` (deflate compression for stored 3-way merge base content). |
 | `logging/` | `Logger` — structured log writer (`.airsync/logs/`). |
-| `queue/` | Concurrency primitives: `AsyncPool` (bounded concurrency) and `AsyncMutex`. |
+| `queue/` | Concurrency primitives: `AsyncPool` (fixed bounded concurrency), `AdaptivePool` (AIMD concurrency for the transfer phase — ramps on success, halves on a rate-limit), and `AsyncMutex`. |
 | `utils/` | Helpers: `sha256()` / `md5()` hashing, the QuickXorHash implementation (`quickxor.ts`) for OneDrive, path utilities (`getFileExtension`, etc.), gitignore-style `isIgnored()` pattern matching, and line parsing (`parse-lines.ts`). |
 
 ## Layer architecture
@@ -60,7 +60,7 @@ One row per directory; see the layer diagram and per-doc references for module d
      │                                    │
      │  collectChanges()                  │  ChangeDetector
      │    collect (hot / warm / cold)     │    temperature modes
-     │    enrichHashesForInitialMatch()   │    MD5 vs contentChecksum
+     │    enrichHashesForInitialMatch()   │    local digest vs remoteChecksum
      │        │                           │
      │        ▼                           │
      │  planSync()                        │  DecisionEngine
@@ -71,11 +71,11 @@ One row per directory; see the layer diagram and per-doc references for module d
      │    optimizeRemoteFileRenames        │    → rename_local  (trusted)
      │        │                           │
      │        ▼                           │
-     │  executePlan()                     │  PlanExecutor
-     │    Group A: push/pull/match/cleanup│    AsyncPool(5)
-     │    Group B: rename_*/delete_remote │    serial
-     │    Group C: delete_local           │    serial
-     │    Group D: conflict               │    serial
+     │  executePlan()  (3 phases)         │  PlanExecutor
+     │    1 transfers: push/pull          │    AdaptivePool (AIMD); match/cleanup inline
+     │    2 conflict (serial)             │    own phase (sibling-path safe)
+     │    3 structural: 2 lanes ||        │    remote & local, concurrent
+     │      per lane: rename then del     │    rename serial; delete pooled
      │        │                           │
      │        ▼                           │
      │  commitAction()  (per action)      │  StateCommitter

@@ -1,4 +1,4 @@
-import type { App, TextComponent } from "obsidian";
+import type { App } from "obsidian";
 import { Setting } from "obsidian";
 import type { AirSyncSettings } from "../settings";
 import type {
@@ -7,7 +7,7 @@ import type {
 } from "../fs/settings-renderer";
 import type { DropboxBackendData, DropboxProvider } from "../fs/dropbox/provider";
 import { getBackendProvider } from "../fs/registry";
-import { DropboxFolderModal } from "./dropbox-folder-modal";
+import { renderBoundFolderField, renderConnectionStatus, renderUnboundAppFolderField } from "./backend-settings-ui";
 
 /**
  * Renders Dropbox-specific settings UI: connection status, the in-plugin PKCE
@@ -32,81 +32,30 @@ export class DropboxSettingsRenderer implements IBackendSettingsRenderer {
 		const authed = provider?.auth.isAuthenticated(settings.backendData ?? {}) ?? false;
 		const data = (settings.backendData ?? {}) as Partial<DropboxBackendData>;
 
-		const statusDesc = authed ? "● Connected" : "● Not connected";
-		const statusClass = authed ? "air-sync-status-connected" : "air-sync-status-disconnected";
-		const statusSetting = new Setting(containerEl)
-			.setName("Connection status")
-			.setDesc(statusDesc);
-		statusSetting.settingEl.addClass(statusClass);
-		statusSetting.addButton((button) =>
-			button
-				.setButtonText(authed ? "Disconnect" : "Connect to Dropbox")
-				.onClick(async () => {
-					if (authed) {
-						await actions.disconnect();
-					} else {
-						await actions.startAuth();
-					}
-					actions.refreshDisplay();
-				}),
-		);
+		renderConnectionStatus(containerEl, {
+			connected: authed,
+			connectLabel: "Connect to Dropbox",
+			actions,
+		});
 
 		if (!authed) return;
 
 		const folderSetting = new Setting(containerEl).setName("Remote vault folder");
 
 		if (data.remoteVaultFolderId) {
-			// Bound: show the folder id IMMEDIATELY (never block the field on a network
-			// call — mirrors the Google Drive renderer), then best-effort upgrade to the
-			// id-resolved path. A slow/failed/never-settling lookup just leaves the id
-			// shown — it must never stick on a "Resolving…" placeholder. No "Choose folder"
-			// once bound — same gate as the default-folder button below.
-			folderSetting.setDesc(
-				"The folder this vault syncs into, inside the app folder.",
-			);
-			let pathField: TextComponent | undefined;
-			folderSetting
-				.addText((text) => {
-					pathField = text.setValue(data.remoteVaultFolderId ?? "").setDisabled(true);
-				});
-			void provider?.getRemoteVaultDisplayPath?.(settings)
-				.then((path) => { if (path) pathField?.setValue(path); })
-				.catch(() => { /* keep the id shown */ });
+			// No "Choose folder" once bound — same gate as the default-folder button below.
+			renderBoundFolderField(folderSetting, {
+				desc: "The folder this vault syncs into, inside the app folder.",
+				folderId: data.remoteVaultFolderId,
+				resolvePath: () => provider?.getRemoteVaultDisplayPath?.(settings),
+			});
 		} else {
-			// Not bound yet: use the default folder (/<Vault Name> under the app folder),
-			// or pick an existing one. Binding only happens on an explicit choice here.
-			const defaultPath = `/${app.vault.getName()}`;
-			folderSetting.setDesc(
-				"Choose where this vault syncs: use the default folder, or pick an existing one inside the app folder.",
-			);
-			folderSetting
-				.addButton((button) =>
-					button
-						.setButtonText(defaultPath)
-						.setCta()
-						.onClick(async () => {
-							// Clear any folder name queued by the modal first: the default
-							// button always binds the vault name. Otherwise a pick whose bind
-							// failed would leave a stale pendingPickedFolderPath this button
-							// would silently reuse.
-							await onSave({ pendingPickedFolderPath: "" });
-							await actions.bindDefaultFolder();
-						}),
-				)
-				.addButton((button) =>
-					button
-						.setButtonText("Choose folder")
-						.onClick(() => {
-							if (!provider) return;
-							new DropboxFolderModal(
-								app,
-								provider,
-								settings,
-								onSave,
-								() => actions.bindDefaultFolder(),
-							).open();
-						}),
-				);
+			// Not bound yet: default folder is /<Vault Name> directly under the app folder.
+			renderUnboundAppFolderField(folderSetting, {
+				app, settings, provider, actions, onSave,
+				defaultLabel: `/${app.vault.getName()}`,
+				modalTitle: "Choose a Dropbox folder",
+			});
 		}
 	}
 }

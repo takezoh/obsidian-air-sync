@@ -557,8 +557,8 @@ describe("coalesceRemoteFolderRenames", () => {
 	});
 
 	it("treats a delete_local under the new prefix as destination occupancy", () => {
-		// A delete_local still carries a local entity (the file is on disk until
-		// Group C runs, after the Group B folder rename), so B/ is occupied and
+		// A delete_local still carries a local entity (the file is on disk until the
+		// local lane's delete step runs, after the folder rename), so B/ is occupied and
 		// the move would collide. This is the occupying type whose local side is
 		// least obvious — pin it.
 		const actions: SyncAction[] = [

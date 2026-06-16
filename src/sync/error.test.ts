@@ -32,6 +32,11 @@ describe("decideRetry", () => {
 		expect(d).toEqual({ action: "retry", delayMs: 4200 });
 	});
 
+	it("caps an excessive retryAfterMs at 64s so one retry can't hang the sync", () => {
+		const d = decideRetry({ kind: "rateLimit", retryAfterMs: 3_600_000 }, 1, MAX, halfRng);
+		expect(d).toEqual({ action: "retry", delayMs: 64_000 });
+	});
+
 	it("uses full-jitter exponential backoff when no retryAfterMs is set", () => {
 		// base 2^(attempt-1) s, scaled by (0.5 + rng()); rng=0.5 ⇒ exactly base.
 		expect(decideRetry({ kind: "transient" }, 1, MAX, halfRng)).toEqual({ action: "retry", delayMs: 1000 });

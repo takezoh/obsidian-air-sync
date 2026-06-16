@@ -5,7 +5,7 @@ import type { Logger } from "../../logging/logger";
 import { AbstractMetadataCache } from "../caching/metadata-cache";
 
 /** Split a path into its non-empty segments. */
-function segments(path: string): string[] {
+export function segments(path: string): string[] {
 	return path.split("/").filter(Boolean);
 }
 

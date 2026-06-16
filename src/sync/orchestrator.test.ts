@@ -423,6 +423,58 @@ describe("SyncOrchestrator", () => {
 		});
 	});
 
+	describe("adaptive transfer concurrency (wiring)", () => {
+		const rateLimit = () => Object.assign(new Error("rate limited"), { status: 429 });
+
+		it("retries a rate-limited transfer in-cycle, so the cycle completes clean", async () => {
+			const deps = createDeps();
+			const localFs = createMockFs("local");
+			const remoteFs = createMockFs("remote");
+			deps.localFs = () => localFs;
+			deps.remoteFs = () => remoteFs;
+			addFile(localFs, "a.md", "content"); // local-only ⇒ push
+
+			const origWrite = remoteFs.write.bind(remoteFs);
+			let attempts = 0;
+			const writeSpy = vi.spyOn(remoteFs, "write").mockImplementation((p, c, m) =>
+				++attempts === 1 ? Promise.reject(rateLimit()) : origWrite(p, c, m));
+
+			const orchestrator = new SyncOrchestrator(deps);
+			await orchestrator.runSync();
+
+			// classifyError (provider-less ⇒ classifyHttpError: 429 ⇒ rateLimit) + per-action
+			// retry are wired end-to-end ⇒ the push retries once and the cycle is clean.
+			expect(writeSpy).toHaveBeenCalledTimes(2);
+			expect(deps.onStatusChange).toHaveBeenCalledWith("idle");
+			expect(deps.onStatusChange).not.toHaveBeenCalledWith("partial_error");
+			await orchestrator.close();
+		});
+
+		it("a persistent rate-limit fails the file in ONE cycle (no cycle-level retry storm)", async () => {
+			const deps = createDeps();
+			const localFs = createMockFs("local");
+			const remoteFs = createMockFs("remote");
+			deps.localFs = () => localFs;
+			deps.remoteFs = () => remoteFs;
+			addFile(localFs, "a.md", "content");
+
+			const writeSpy = vi.spyOn(remoteFs, "write").mockRejectedValue(rateLimit());
+			let listCalls = 0;
+			const origList = localFs.list.bind(localFs);
+			vi.spyOn(localFs, "list").mockImplementation(() => { listCalls++; return origList(); });
+
+			const orchestrator = new SyncOrchestrator(deps);
+			await orchestrator.runSync();
+
+			// Per-action: up to MAX_ACTION_RETRIES attempts then result.failed (a return, not a
+			// throw) ⇒ executeWithRetry does NOT re-run the cycle. One cold scan, one list.
+			expect(writeSpy).toHaveBeenCalledTimes(3);
+			expect(listCalls).toBe(1);
+			expect(deps.onStatusChange).toHaveBeenCalledWith("partial_error");
+			await orchestrator.close();
+		});
+	});
+
 	describe("pullSingle()", () => {
 		it("pulls a remote file and saves sync record", async () => {
 			const deps = createDeps();
@@ -877,8 +929,10 @@ describe("SyncOrchestrator", () => {
 			});
 
 			// Cycle 1: WARM (hasCheckpoint true). push.md's push fails → partial_error;
-			// orphan.md is invisible to WARM (empty remote delta).
-			vi.spyOn(remoteFs, "write").mockRejectedValueOnce(new Error("network dropped"));
+			// orphan.md is invisible to WARM (empty remote delta). The error is PERSISTENT so
+			// the per-action in-cycle retry (withIoRetry) exhausts rather than self-healing a
+			// one-shot transient — the failed cycle is what forces cycle 2 cold.
+			vi.spyOn(remoteFs, "write").mockRejectedValue(new Error("network dropped"));
 			await orchestrator.runSync();
 			expect(localFs.files.has("orphan.md")).toBe(false);
 

@@ -1,16 +1,8 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Logger, getDeviceName } from "./logger";
 import type { RawFsAdapter } from "../fs/raw-fs";
 import type { AirSyncSettings } from "../settings";
 import { DEFAULT_SETTINGS } from "../settings";
-
-// The vitest environment is node, where `window` is undefined. Logger's
-// constructor calls window.setInterval (and dispose() window.clearInterval), so
-// stub a minimal window that delegates to the real global timers.
-vi.stubGlobal("window", {
-	setInterval: globalThis.setInterval.bind(globalThis),
-	clearInterval: globalThis.clearInterval.bind(globalThis),
-});
 
 function createMockAdapter(): RawFsAdapter & {
 	written: Map<string, string>;
@@ -49,10 +41,6 @@ describe("Logger", () => {
 		logger = new Logger(adapter, () => settings, "desktop");
 	});
 
-	afterEach(() => {
-		logger.dispose();
-	});
-
 	it("writes buffered log lines on flush", async () => {
 		logger.info("test message");
 		logger.warn("another message");
@@ -76,7 +64,6 @@ describe("Logger", () => {
 	});
 
 	it("uses provided device name for log directory", async () => {
-		logger.dispose();
 		logger = new Logger(adapter, () => settings, "My iPhone");
 		logger.info("mobile log");
 		await logger.flush();
@@ -86,7 +73,6 @@ describe("Logger", () => {
 	});
 
 	it("sanitizes unsafe characters in device name", async () => {
-		logger.dispose();
 		logger = new Logger(adapter, () => settings, "PC/Work:Station\\1");
 		logger.info("test");
 		await logger.flush();
@@ -96,7 +82,6 @@ describe("Logger", () => {
 	});
 
 	it("falls back to 'unknown' for empty device name", async () => {
-		logger.dispose();
 		logger = new Logger(adapter, () => settings, "");
 		logger.info("test");
 		await logger.flush();

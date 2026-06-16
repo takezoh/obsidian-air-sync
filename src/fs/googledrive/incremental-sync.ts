@@ -1,11 +1,11 @@
 import { FOLDER_MIME } from "./types";
-import type { GoogleDriveFile } from "./types";
+import type { GoogleDriveChange, GoogleDriveFile } from "./types";
 import { LIST_PAGE_CAP } from "./client";
 import type { GoogleDriveClient } from "./client";
-import type { RenamePair } from "../types";
 import type { Logger } from "../../logging/logger";
 import type { AbstractMetadataCache } from "../caching/metadata-cache";
 import type { IncrementalChangesResult } from "../caching/remote-fs";
+import { applyIdDeltaPage, createIdDeltaResult, type IdDeltaEntry } from "../caching/id-delta";
 
 /**
  * Context for incremental sync operations. Note there is no metadataStore here:
@@ -33,10 +33,7 @@ export async function applyIncrementalChanges(
 	try {
 		let pageToken: string | undefined;
 		let currentToken = changesPageToken;
-
-		let totalChanges = 0;
-		const changedPaths = new Set<string>();
-		const renamedPaths: RenamePair[] = [];
+		const acc = createIdDeltaResult();
 
 		// Bound the drain: a server that never clears nextPageToken would loop
 		// forever. 10k pages of changes is far beyond any real delta, so throw
@@ -52,63 +49,9 @@ export async function applyIncrementalChanges(
 				pageToken
 			);
 
-			// Process folder changes first (shallow before deep) so paths resolve correctly
-			const sorted = [...result.changes].sort((a, b) => {
-				const aIsFolder =
-					a.file?.mimeType === FOLDER_MIME ? 0 : 1;
-				const bIsFolder =
-					b.file?.mimeType === FOLDER_MIME ? 0 : 1;
-				if (aIsFolder !== bIsFolder) return aIsFolder - bIsFolder;
-				// Among folders, sort by cached path depth (shallow first)
-				if (aIsFolder === 0) {
-					const aPath = ctx.cache.getPathById(a.fileId) ?? "";
-					const bPath = ctx.cache.getPathById(b.fileId) ?? "";
-					return aPath.split("/").length - bPath.split("/").length;
-				}
-				return 0;
-			});
-
-			totalChanges += sorted.length;
-			for (const change of sorted) {
-				if (change.removed || change.file?.trashed) {
-					const path = ctx.cache.getPathById(change.fileId);
-					if (path) {
-						// Collect descendants before removing
-						const descendants = ctx.cache.collectDescendants(path);
-						changedPaths.add(path);
-						for (const d of descendants) changedPaths.add(d);
-						ctx.cache.removeTree(path);
-					}
-				} else if (change.file) {
-					const { oldPath, newPath: updatedPath, wasFolder, oldDescendants } =
-						ctx.cache.applyFileChangeDetectMove(change.file);
-
-					if (updatedPath) {
-						changedPaths.add(updatedPath);
-					}
-
-					// File was moved/renamed — report old path(s) as deleted
-					const moved = oldPath && updatedPath && oldPath !== updatedPath;
-					const movedOutOfRoot = oldPath && !updatedPath;
-					if (moved || movedOutOfRoot) {
-						changedPaths.add(oldPath);
-						for (const d of oldDescendants) {
-							changedPaths.add(d);
-						}
-					}
-					if (moved) {
-						renamedPaths.push({ oldPath, newPath: updatedPath, isFolder: wasFolder || undefined });
-					}
-
-					// Folder move — also report new descendant paths as updated
-					if (moved && wasFolder) {
-						const newDescendants = ctx.cache.collectDescendants(updatedPath);
-						for (const nd of newDescendants) {
-							changedPaths.add(nd);
-						}
-					}
-				}
-			}
+			// The per-page apply (folder ordering, move classification, subtree
+			// removal) is shared with OneDrive via applyIdDeltaPage.
+			applyIdDeltaPage(ctx.cache, acc, toEntries(result.changes));
 
 			pageToken = result.nextPageToken;
 			if (result.newStartPageToken) {
@@ -117,12 +60,12 @@ export async function applyIncrementalChanges(
 			if (!pageToken) break;
 		}
 
-		if (totalChanges > 0) {
-			ctx.logger?.info("Incremental changes applied", { changeCount: totalChanges });
+		if (acc.count > 0) {
+			ctx.logger?.info("Incremental changes applied", { changeCount: acc.count });
 		}
 		// The in-memory cache now reflects the changes; persistence to IndexedDB is
 		// the caller's job at checkpoint commit (see GoogleDriveFs.commitCheckpoint).
-		return { newToken: currentToken, needsFullScan: false, changedPaths, renamedPaths };
+		return { newToken: currentToken, needsFullScan: false, changedPaths: acc.changedPaths, renamedPaths: acc.renamedPaths };
 	} catch (err) {
 		if (isHttpError(err, 410)) {
 			// Token expired, fall back to full scan
@@ -131,6 +74,23 @@ export async function applyIncrementalChanges(
 		}
 		throw err;
 	}
+}
+
+/**
+ * Map a `changes.list` page to normalized delta entries. A `removed` or `trashed`
+ * change is a tombstone; a change carrying a `file` is an upsert; a change with
+ * neither (no file and not removed) is ignored — it carries nothing to apply.
+ */
+function toEntries(changes: GoogleDriveChange[]): IdDeltaEntry<GoogleDriveFile>[] {
+	const entries: IdDeltaEntry<GoogleDriveFile>[] = [];
+	for (const change of changes) {
+		if (change.removed || change.file?.trashed) {
+			entries.push({ id: change.fileId, isFolder: change.file?.mimeType === FOLDER_MIME, file: undefined });
+		} else if (change.file) {
+			entries.push({ id: change.fileId, isFolder: change.file.mimeType === FOLDER_MIME, file: change.file });
+		}
+	}
+	return entries;
 }
 
 /** Check if an error is an HTTP error with the given status code */

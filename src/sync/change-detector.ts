@@ -107,15 +107,11 @@ async function collectHot(deps: ChangeDetectorDeps): Promise<ChangeSet> {
 		};
 	});
 
-	// Also include unchanged records not in changedPaths so downstream has full picture
-	// (only entries with actual changes are included in hot mode — callers handle partial sets)
-	const filtered = entries.filter((e) => {
-		// Include if local or remote exists, or if there's a prevSync (deletion case)
-		return e.local !== undefined || e.remote !== undefined || e.prevSync !== undefined;
-	});
-
-	// Check which hot entries actually changed vs baseline (prune no-ops)
-	const changed = filtered.filter((e) => {
+	// Keep only entries that actually changed vs baseline (prune no-ops). This also
+	// subsumes the "has any side" existence check: an entry with neither local nor
+	// remote nor a prevSync can't have changed, so the predicate's branches drop it
+	// (the first branch returns `!!prev` === false for the all-absent case).
+	const changed = entries.filter((e) => {
 		const prev = e.prevSync;
 		// Both deleted — include if previously synced (cleanup)
 		if (!e.local && !e.remote) return !!prev;

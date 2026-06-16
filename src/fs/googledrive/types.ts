@@ -4,6 +4,15 @@ import type { RemoteChecksum } from "../types";
 export const FOLDER_MIME = "application/vnd.google-apps.folder";
 
 /**
+ * Hard cap on pagination drain loops (full list and changes.list). At pageSize
+ * 1000 this is 10M entries — beyond any real vault — so reaching it means the
+ * server isn't clearing its page token; we throw instead of looping forever.
+ * Lives here (a leaf) so the client and the listing helper can both import it
+ * without a cycle.
+ */
+export const LIST_PAGE_CAP = 10_000;
+
+/**
  * Map a Google Drive file's md5Checksum to a typed RemoteChecksum.
  * Returns undefined when absent (e.g. Google Docs have no md5Checksum).
  */

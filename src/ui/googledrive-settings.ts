@@ -1,4 +1,4 @@
-import type { App, TextComponent } from "obsidian";
+import type { App } from "obsidian";
 import { Notice, SecretComponent, Setting } from "obsidian";
 import type { AirSyncSettings } from "../settings";
 import type {
@@ -11,6 +11,7 @@ import { DEFAULT_CUSTOM_SCOPE } from "../fs/googledrive/auth";
 import { DEFAULT_CUSTOM_REDIRECT_URI } from "../fs/auth-config";
 import { getBackendProvider } from "../fs/registry";
 import { REMOTE_VAULT_ROOT } from "../fs/remote-vault-contract";
+import { renderBoundFolderField, renderConnectionStatus } from "./backend-settings-ui";
 
 /**
  * Renders Google Drive-specific settings UI:
@@ -31,34 +32,11 @@ export class GoogleDriveSettingsRenderer implements IBackendSettingsRenderer {
 		// the user still needs the connected UI to choose a remote folder.
 		const authed = provider?.auth.isAuthenticated(settings.backendData ?? {}) ?? false;
 
-		let statusDesc: string;
-		let statusClass: string;
-		if (authed) {
-			statusDesc = "● Connected";
-			statusClass = "air-sync-status-connected";
-		} else {
-			statusDesc = "● Not connected";
-			statusClass = "air-sync-status-disconnected";
-		}
-		const statusSetting = new Setting(containerEl)
-			.setName("Connection status")
-			.setDesc(statusDesc);
-		statusSetting.settingEl.addClass(statusClass);
-		statusSetting
-			.addButton((button) =>
-				button
-					.setButtonText(
-						authed ? "Disconnect" : "Connect to Google Drive"
-					)
-					.onClick(async () => {
-						if (authed) {
-							await actions.disconnect();
-						} else {
-							await actions.startAuth();
-						}
-						actions.refreshDisplay();
-					})
-			);
+		renderConnectionStatus(containerEl, {
+			connected: authed,
+			connectLabel: "Connect to Google Drive",
+			actions,
+		});
 
 		if (!authed) return;
 
@@ -66,21 +44,12 @@ export class GoogleDriveSettingsRenderer implements IBackendSettingsRenderer {
 		const folderSetting = new Setting(containerEl).setName("Remote vault folder");
 
 		if (data.remoteVaultFolderId) {
-			// Bound: show the folder (id rendered IMMEDIATELY — never block on a network
-			// call — then best-effort upgraded to the id-resolved path). A slow/failed
-			// lookup just leaves the id shown. No "Choose folder" once bound — same gate
-			// as the default-folder button below (only offered while unbound).
-			folderSetting.setDesc(
-				"The Google Drive folder this vault syncs into.",
-			);
-			let pathField: TextComponent | undefined;
-			folderSetting
-				.addText((text) => {
-					pathField = text.setValue(data.remoteVaultFolderId ?? "").setDisabled(true);
-				});
-			void provider?.getRemoteVaultDisplayPath?.(settings)
-				.then((path) => { if (path) pathField?.setValue(path); })
-				.catch(() => { /* keep the id shown */ });
+			// No "Choose folder" once bound — same gate as the default-folder button below.
+			renderBoundFolderField(folderSetting, {
+				desc: "The Google Drive folder this vault syncs into.",
+				folderId: data.remoteVaultFolderId,
+				resolvePath: () => provider?.getRemoteVaultDisplayPath?.(settings),
+			});
 		} else {
 			// Not bound yet: use the default folder (obsidian-air-sync/<Vault Name>), or
 			// pick an existing one. Binding only happens on an explicit choice here.
@@ -195,38 +164,19 @@ export class GoogleDriveCustomSettingsRenderer implements IBackendSettingsRender
 					})
 			);
 
-		let statusDesc: string;
-		let statusClass: string;
-		if (isConnected) {
-			statusDesc = "● Connected";
-			statusClass = "air-sync-status-connected";
-		} else {
-			statusDesc = "● Not connected";
-			statusClass = "air-sync-status-disconnected";
-		}
-		const statusSetting = new Setting(containerEl)
-			.setName("Connection status")
-			.setDesc(statusDesc);
-		statusSetting.settingEl.addClass(statusClass);
-		statusSetting
-			.addButton((button) =>
-				button
-					.setButtonText(
-						isConnected ? "Disconnect" : "Connect to Google Drive"
-					)
-					.onClick(async () => {
-						if (isConnected) {
-							await actions.disconnect();
-						} else {
-							const current = (settings.backendData ?? {}) as Partial<GoogleDriveCustomBackendData>;
-							if (!current.remoteVaultFolderId) {
-								new Notice("Enter a remote vault folder ID first");
-								return;
-							}
-							await actions.startAuth();
-						}
-						actions.refreshDisplay();
-					})
-			);
+		renderConnectionStatus(containerEl, {
+			connected: isConnected,
+			connectLabel: "Connect to Google Drive",
+			actions,
+			onConnect: async () => {
+				const current = (settings.backendData ?? {}) as Partial<GoogleDriveCustomBackendData>;
+				if (!current.remoteVaultFolderId) {
+					new Notice("Enter a remote vault folder ID first");
+					return false;
+				}
+				await actions.startAuth();
+				return true;
+			},
+		});
 	}
 }

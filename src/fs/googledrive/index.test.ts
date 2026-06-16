@@ -631,6 +631,36 @@ describe("GoogleDriveFs children index", () => {
 	});
 });
 
+describe("GoogleDriveFs.delete concurrent overlap safety", () => {
+	it("delete() short-circuits (no client.deleteFile) when the cache already lost the path", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const deleteFile = vi.fn().mockResolvedValue(undefined);
+		const mockClient = {
+			listAllFiles: vi.fn().mockResolvedValue([
+				{ id: "fA", name: "A", mimeType: "application/vnd.google-apps.folder", parents: ["root"] },
+				{ id: "fChild", name: "child.md", mimeType: "text/markdown", parents: ["fA"] },
+			]),
+			getChangesStartToken: vi.fn().mockResolvedValue("token1"),
+			deleteFile,
+		} as never;
+
+		const fs = new GoogleDriveFs(mockClient, "root");
+		await fs.list(); // populate cache: A + A/child.md
+
+		// Delete the folder first: removeTree("A") evicts A AND A/child.md from the cache.
+		await fs.delete("A");
+		expect(deleteFile).toHaveBeenCalledTimes(1);
+		expect(deleteFile).toHaveBeenCalledWith("fA");
+
+		// The overlapping child delete now finds no cache entry (idAt → undefined) and is a
+		// no-op: it does NOT call client.deleteFile again. This is what keeps a pooled
+		// folder+descendant delete_remote safe on Google Drive, whose deleteFile re-throws
+		// 404 (unlike Dropbox/OneDrive, which swallow not_found). See ADR 0001 (delete guard).
+		await fs.delete("A/child.md");
+		expect(deleteFile).toHaveBeenCalledTimes(1); // still 1 — the child delete short-circuited
+	});
+});
+
 describe("GoogleDriveFs cache persistence", () => {
 
 	it("fullScan persists cache, loadFromCache restores it", async () => {

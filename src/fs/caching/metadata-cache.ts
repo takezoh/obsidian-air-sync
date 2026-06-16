@@ -300,24 +300,15 @@ export abstract class AbstractMetadataCache<TFile> {
 
 	/** Remove an entry and all its descendants from the cache */
 	removeTree(path: string): void {
-		const file = this.pathToFile.get(path);
-		if (file) {
-			this.idToPath.delete(this.extractId(file));
-		}
-		this.removeFromIndex(path);
-		this.pathToFile.delete(path);
-		this.folders.delete(path);
-
-		// Remove children via index
+		// Collect descendants before mutating; removeEntry only touches the parent's
+		// child-set, not `path`'s own children entry, so the snapshot stays complete.
 		const descendants = this.collectDescendants(path);
+		this.removeEntry(path);
 		for (const p of descendants) {
-			const df = this.pathToFile.get(p);
-			if (df) this.idToPath.delete(this.extractId(df));
-			this.removeFromIndex(p);
-			this.pathToFile.delete(p);
-			this.folders.delete(p);
+			this.removeEntry(p);
 		}
-		// Clean up the parent entry in the children index
+		// Drop `path`'s own children-index entry (removeEntry only clears its membership
+		// in the parent's set).
 		this.children.delete(path);
 	}
 

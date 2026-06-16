@@ -13,10 +13,74 @@
  * `xvfb-run -a electron … --no-sandbox`. Binds a fixed local port (overridable) so the
  * Node-side shim needs no cross-process coordination.
  */
-const { app, net } = require("electron");
+const { app, net, session } = require("electron");
 const http = require("http");
+const fs = require("fs");
+const { X509Certificate } = require("crypto");
 
 const PORT = Number(process.env.AIRSYNC_E2E_ELECTRON_NET_PORT || 39271);
+
+// Extra trust anchor for environments behind a TLS-intercepting egress proxy (e.g. the
+// hosted runner): Chromium's net stack on Linux ignores the system CA bundle and rejects
+// the proxy's re-signed certs with ERR_CERT_AUTHORITY_INVALID. When AIRSYNC_E2E_EXTRA_CA
+// points at a PEM bundle we install a verify proc that does REAL validation against it —
+// it walks the presented chain, checks each link's signature, requires the leaf to match
+// the host, and requires the chain to anchor in a CA from that bundle. It is NOT a blanket
+// "trust everything": an unrelated/forged cert still fails. Unset (the default) → no proc,
+// so Chromium's normal strict validation is unchanged for ordinary local runs.
+function installExtraCaTrust() {
+	const caFile = process.env.AIRSYNC_E2E_EXTRA_CA;
+	if (!caFile) return;
+	const pem = fs.readFileSync(caFile, "utf8");
+	const bundle = (pem.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g) || [])
+		.map((b) => {
+			try {
+				return new X509Certificate(b);
+			} catch {
+				return null;
+			}
+		})
+		.filter(Boolean);
+	process.stdout.write(`ELECTRON_NET_HOST_EXTRA_CA ${caFile} (${bundle.length} CAs)\n`);
+
+	// Electron hands us a linked leaf→issuer chain; rebuild detached X509Certificate copies.
+	const chainOf = (cert) => {
+		const out = [];
+		let c = cert;
+		let depth = 0;
+		while (c && depth < 10) {
+			out.push(new X509Certificate(c.data));
+			if (!c.issuerCert || c.issuerCert === c) break;
+			c = c.issuerCert;
+			depth++;
+		}
+		return out;
+	};
+	const chainTrusted = (presented, hostname) => {
+		if (!presented.length) return false;
+		if (hostname && presented[0].checkHost(hostname) === undefined) return false;
+		for (let i = 0; i < presented.length - 1; i++) {
+			if (!presented[i].verify(presented[i + 1].publicKey)) return false;
+		}
+		const top = presented[presented.length - 1];
+		return bundle.some((ca) => {
+			try {
+				return top.verify(ca.publicKey);
+			} catch {
+				return false;
+			}
+		});
+	};
+
+	session.defaultSession.setCertificateVerifyProc((request, callback) => {
+		if (request.errorCode === 0) return callback(0); // Chromium already trusts it.
+		try {
+			callback(chainTrusted(chainOf(request.certificate), request.hostname) ? 0 : -2);
+		} catch {
+			callback(-2);
+		}
+	});
+}
 
 /** Run one request through Electron `net` and resolve a serialisable result. */
 // Watchdog: a hung socket (accepted but no response/end) must fail fast with a clear
@@ -116,6 +180,9 @@ function startServer() {
 	server.listen(PORT, "127.0.0.1", () => process.stdout.write(`ELECTRON_NET_HOST_READY ${PORT}\n`));
 }
 
-app.whenReady().then(startServer);
+app.whenReady().then(() => {
+	installExtraCaTrust();
+	startServer();
+});
 // No windows — keep the process alive (don't quit on window-all-closed).
 app.on("window-all-closed", () => {});

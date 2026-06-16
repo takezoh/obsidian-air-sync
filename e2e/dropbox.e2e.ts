@@ -1,8 +1,8 @@
-import { afterAll, beforeAll, describe } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DropboxAuth } from "../src/fs/dropbox/auth";
 import { DROPBOX_AUTH } from "../src/fs/auth-config";
 import { DropboxFs } from "../src/fs/dropbox/index";
-import { runIFileSystemContract } from "../src/fs/ifilesystem-contract";
+import { runIFileSystemContract, bytes } from "../src/fs/ifilesystem-contract";
 import { RetryingDropboxClient } from "./helpers/dropbox-retry-client";
 import { readCreds } from "./helpers/env";
 import {
@@ -69,4 +69,37 @@ if (!creds) {
 		// Verified by this e2e; see ADR 0003 / dropbox/types.ts.
 		{ computesHashOnStat: false, preservesWrittenMtime: false },
 	);
+
+	// The IFileSystem contract above never drives `getChangedPaths()`, so the delta's
+	// rename SHAPE is unverified against real Dropbox — exactly the ADR 0003 blind spot.
+	// This pins it: an out-of-band folder rename must come back as ONE renamed pair, not
+	// a subtree of delete+add (ADR 0006). Lives in the one Dropbox e2e file on purpose —
+	// a second `*.e2e.ts` matching "dropbox" would run concurrently and share its
+	// rate-limit bucket (vitest fileParallelism; see vitest.e2e.config.ts).
+	describe("DropboxFs delta — out-of-band rename via getChangedPaths (real)", () => {
+		it("reports a remote folder rename as a single renamed pair", async () => {
+			const childId = await makeDropboxChild(client, parentPath);
+			const fs = new DropboxFs(client, childId);
+
+			// Seed a folder with two files, then drain + commit so the cursor is at "now".
+			await fs.write("dir/b.md", bytes("beta"), 1000);
+			await fs.write("dir/c.md", bytes("gamma"), 1000);
+			await fs.list();
+			await fs.commitCheckpoint();
+
+			// Rename the folder OUT-OF-BAND (as a second device / the web UI would),
+			// bypassing the FS cache, so the delta is the only source of truth.
+			await client.move(`${childId}/dir`, `${childId}/papers`);
+
+			const delta = await fs.checkpoint.getChangedPaths();
+			expect(delta).not.toBeNull();
+			expect(delta!.renamed ?? []).toContainEqual({
+				oldPath: "dir",
+				newPath: "papers",
+				isFolder: true,
+			});
+			// Exactly one folder pair — not N per-file renames, and not delete+add.
+			expect((delta!.renamed ?? []).filter((p) => p.isFolder)).toHaveLength(1);
+		});
+	});
 }

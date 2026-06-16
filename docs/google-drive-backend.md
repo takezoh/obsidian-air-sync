@@ -11,7 +11,7 @@ The remote delta cursor (`changesPageToken`) has a single source of truth: the `
 On first `list()`, `stat()`, `read()`, or `write()`, `ensureInitialized()` runs:
 
 1. **Checkpoint present** (file map + cursor restored together): `loadFromCache()` reads both the file map and the cursor (`META_STORE`) from IndexedDB — they were committed in one transaction, so a checkpoint exists only when **both** are present. An incremental replay is warranted.
-2. **No checkpoint** (genuine first sync, an empty/missing store, or after a rescan / state clear): `fullScan()` clears the cache, fetches a fresh changes start token BEFORE listing (so changes that land during the scan are not missed), runs `listAllFiles()` recursively with `AsyncPool(3)` concurrency, builds the `GoogleDriveMetadataCache` from the flat file list, and marks the FS initialized. No replay is warranted — the token is "now". Persistence is deferred to the checkpoint commit (a clean cycle), not eager.
+2. **No checkpoint** (genuine first sync, an empty/missing store, or after a rescan / state clear): `fullScan()` clears the cache, fetches a fresh changes start token BEFORE listing (so changes that land during the scan are not missed), runs `listAllFiles()` recursively with **adaptive** concurrency (an `AdaptivePool` starting at 3, ramping toward 8 on sustained success and halving on a rate-limit — see [Full-scan listing concurrency](#full-scan-listing-concurrency)), builds the `GoogleDriveMetadataCache` from the flat file list, and marks the FS initialized. No replay is warranted — the token is "now". Persistence is deferred to the checkpoint commit (a clean cycle), not eager.
 
 `list()` and `getChangedPaths()` apply an incremental `changes.list` only when a replay is warranted (checkpoint restored, or the FS was already initialized); a fresh full scan reports no delta. The cache is scoped to `vaultId` so a plugin reinstall (which regenerates `vaultId`) starts with a fresh cache, preventing stale entries.
 
@@ -36,7 +36,7 @@ This step 3 is the **compare-and-swap** of an optimistic protocol: releasing the
 
 ### stat() and hash
 
-`stat()` always returns `hash: ""`. The sync engine uses `backendMeta.contentChecksum` (Google Drive's `md5Checksum`) for remote change detection via `hasRemoteChanged()`. This avoids downloading file content just to compute a hash.
+`stat()` always returns `hash: ""`. The sync engine uses `remoteChecksum` (Google Drive's `md5Checksum`, tagged `{ algo: "md5", value }`) for remote change detection via `hasRemoteChanged()`. This avoids downloading file content just to compute a hash.
 
 `stat()` and `read()` deliberately do NOT apply incremental changes -- `list()` is always called first in the sync cycle and refreshes the cache, so these only read it. For folders, the returned entity is `{ isDirectory:true, size:0, mtime:0, hash:"" }` with no `backendMeta`.
 
@@ -63,7 +63,7 @@ Key operations:
 - `applyFileChangeDetectMove(file)`: wraps `applyFileChange()` with before/after path comparison. Returns `{ oldPath, newPath, wasFolder, oldDescendants }` for move detection.
 - `removeTree(path)`: removes a path and all descendants (via `collectDescendants()`).
 - `rewriteChildPaths(old, new)`: rewrites descendant paths when a folder is renamed.
-- `googleDriveFileToEntity(path, googleDriveFile)`: converts cached metadata to `FileEntity` without downloading content. Folders → `{ isDirectory:true, size:0, mtime:0, hash:"" }` (no `backendMeta`). Files → `size = parseInt(size||"0")`, `mtime = new Date(modifiedTime).getTime()` (0 if NaN/absent), `hash:""`, `backendMeta:{ googleDriveId, contentChecksum: md5Checksum }`. This `contentChecksum == Google Drive md5` is what makes hash-enrichment and `hasRemoteChanged()` work without a download.
+- `googleDriveFileToEntity(path, googleDriveFile)`: converts cached metadata to `FileEntity` without downloading content. Folders → `{ isDirectory:true, size:0, mtime:0, hash:"" }` (no `backendMeta`). Files → `size = parseInt(size||"0")`, `mtime = new Date(modifiedTime).getTime()` (0 if NaN/absent), `hash:""`, `remoteChecksum:{ algo:"md5", value: md5Checksum }`, `backendMeta:{ googleDriveId }`. That `remoteChecksum` (Google Drive md5) is what makes hash-enrichment and `hasRemoteChanged()` work without a download.
 
 ## Incremental sync
 
@@ -91,7 +91,7 @@ Key methods:
 
 | Method | Description |
 |--------|-------------|
-| `listAllFiles(rootId)` | Recursive listing with `AsyncPool(3)` concurrency |
+| `listAllFiles(rootId)` | Recursive listing with **adaptive** concurrency (`AdaptivePool`, start 3 / max 8) + per-page rate-limit retry — see [Full-scan listing concurrency](#full-scan-listing-concurrency) |
 | `uploadFile(...)` | Multipart upload for files <= 5 MB, delegates to `ResumableUploader` for larger files |
 | `downloadFile(fileId)` | `GET /files/{id}?alt=media` |
 | `getChangesStartToken()` | `GET /changes/startPageToken` |
@@ -100,9 +100,13 @@ Key methods:
 | `findChildByName(parentId, name, mimeType?)` | Query `'<parent>' in parents and name = '<escaped name>' and trashed = false` (plus optional `mimeType`), `pageSize` 1; returns the first match or null. Both parent ID and name are backslash/quote-escaped. Dedupes folder creation against Google Drive's same-name-folder behavior |
 | `updateFileMetadata(...)` | PATCH for rename/move with `addParents`/`removeParents` |
 
+### Full-scan listing concurrency
+
+`listAllFiles()` is the cold/initial enumeration: it walks the folder tree one `files.list` per folder (the `drive.file` scope can't flat-list the whole drive), reached only on a first sync / rescan / 410 cursor-expiry full-scan — never on the steady-state hot/warm delta path. It runs on an **`AdaptivePool`** (AIMD): it starts at concurrency **3** (the historical fixed value ⇒ no change at t=0), ramps **+1 every 8** cleanly-listed folders up to **8**, and **halves** (floor 1) on a rate-limit. Each page (`listFiles`) is wrapped in a bounded retry (`MAX_LIST_RETRIES = 3`) via `classifyGoogleDriveError` + `decideRetry`/`sleep`: a `rateLimit` (incl. Google's 403-means-rate-limit) or `transient` error is retried honoring `Retry-After`, and on a rate-limit the pool is signalled (`noteRateLimit`) **before** the backoff sleep so its ceiling drops immediately while the task holds its slot (a natural throttle). `auth`/`permission`/`notFound` propagate, failing the scan exactly as before. This lets a folder-heavy vault's initial enumeration discover the sustainable rate instead of a fixed 3. The recursive walk lives in `list-all.ts` as a free function (`client.listAllFiles` is a thin delegate), so it is testable in isolation; its `sleepFn` is injectable for fast deterministic tests. (Mirrors the sync engine's transfer-phase `AdaptivePool` + `withIoRetry`; the AIMD primitive is shared in `queue/`, and the classification + `decideRetry` policy in `fs/errors.ts`.)
+
 ### Transport-level 401 retry
 
-`request()` injects `Authorization: Bearer <token>` and, on a 401 from the first attempt only, forces a token refresh via `getToken(true)` and retries the request exactly once (guarded by the `retried` flag). Every Google Drive error is re-thrown as `Error("Google Drive API <operation> failed: <msg>")` that copies `status`, `headers`, and `json` from the original, so `getErrorInfo()` (status/headers) and `isRateLimitError()` (json) can classify it -- and so upstream 410 (changes-token-expired) and 308 (resumable-resume) handling can read them.
+`request()` injects `Authorization: Bearer <token>` and, on a 401 from the first attempt only, forces a token refresh via `getToken(true)` and retries the request exactly once (guarded by the `retried` flag). Every Google Drive error is re-thrown as `Error("Google Drive API <operation> failed: <msg>")` that copies `status`, `headers`, and `json` from the original, so `classifyGoogleDriveError()` (status/headers via `classifyHttpError`, plus the `error.json` rate-limit reasons) can classify it -- and so upstream 410 (changes-token-expired) handling can read them.
 
 ## Authentication
 
@@ -141,11 +145,9 @@ Tokens (`refreshToken`, `accessToken`) are stored in Obsidian's `SecretStorage` 
 `ResumableUploader` (`resumable-upload.ts`) handles files > 5 MB (`RESUMABLE_THRESHOLD`):
 
 1. Initiate a resumable upload session (POST/PATCH with `uploadType=resumable`)
-2. Upload the entire content in a single PUT (chunked upload is avoided due to Obsidian's `requestUrl` limitations with 308 responses)
-3. On failure, cache the upload URL (6-hour TTL) so the next retry can resume:
-   - Resume entries are keyed by `existingFileId` (or `${parentId}/${name}` for new files), reused only if the cached `totalSize` equals the current byte length and `createdAt` is within the 6 h TTL, and are deleted before the resume attempt so a failed resume falls through to a fresh upload
-   - Query Google for bytes received with a status `PUT` carrying `Content-Range: bytes */total`. A 200/201 means the upload already completed (returns the `GoogleDriveFile`); on 308 the `range: bytes=0-N` header gives `bytesReceived = N+1` (0 if unparseable); any other status returns null and the caller restarts a fresh upload
-   - Send only the remaining `content.slice(bytesReceived)` with `Content-Range: bytes <recv>-<total-1>/<total>`
+2. Upload the entire content in a **single PUT** — chunked upload is impossible here because Obsidian's `requestUrl` (Electron `net`) can't reliably handle the `308 Resume Incomplete` responses chunking depends on
+
+A failed PUT is simply retried as a fresh upload on the next sync cycle; the resumable session is only an envelope for the single PUT, not a byte-range resume.
 
 ## Provider model
 

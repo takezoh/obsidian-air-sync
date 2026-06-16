@@ -4,7 +4,7 @@ import type { OneDriveClient } from "./client";
 import type { OneDriveItem, OneDriveDeltaResponse } from "./types";
 import { MetadataStore } from "../../store/metadata-store";
 import { OneDriveFs } from "./index";
-import { odFile, odDeleted } from "./test-helpers";
+import { odFile, odFolder, odDeleted } from "./test-helpers";
 import { runCachingRemoteFsContract } from "../caching/remote-fs-contract";
 import type { CachingRemoteFsHarness } from "../caching/remote-fs-contract";
 
@@ -48,11 +48,32 @@ function makeOneDriveHarness(): CachingRemoteFsHarness<OneDriveItem> {
 			const id = `f${++idSeq}`;
 			baseline.set(path, { id, item: odFile(id, path.split("/").pop()!, ROOT_ID) });
 		},
+		seedFolderWithChild: (folderPath, childName) => {
+			const folderId = `d${++idSeq}`;
+			const childId = `f${++idSeq}`;
+			baseline.set(folderPath, { id: folderId, item: odFolder(folderId, folderPath, ROOT_ID) });
+			baseline.set(`${folderPath}/${childName}`, { id: childId, item: odFile(childId, childName, folderId) });
+		},
 		stageRemoteDelete: (path) => {
 			const entry = baseline.get(path);
 			if (!entry) throw new Error(`stageRemoteDelete: no such file "${path}"`);
 			baseline.delete(path);
 			events.push(odDeleted(entry.id));
+		},
+		// OneDrive is id-addressed: a rename re-emits the item with its new name (the
+		// parentReference id is unchanged). A folder's children keep their parent id, so
+		// only the folder item is re-emitted — the cache reparents the subtree.
+		stageRemoteRename: (oldPath, newPath, opts) => {
+			const entry = baseline.get(oldPath);
+			if (!entry) throw new Error(`stageRemoteRename: no such path "${oldPath}"`);
+			const oldPrefix = oldPath + "/";
+			for (const [p, e] of [...baseline.entries()]) {
+				const isSelf = p === oldPath;
+				if (!isSelf && !(opts?.isFolder && p.startsWith(oldPrefix))) continue;
+				baseline.delete(p);
+				baseline.set(isSelf ? newPath : newPath + "/" + p.substring(oldPrefix.length), e);
+			}
+			events.push({ ...entry.item, name: newPath.split("/").pop()! });
 		},
 	};
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { AsyncMutex, AsyncPool } from "./async-queue";
+import { AsyncMutex, AsyncPool, AdaptivePool } from "./async-queue";
 
 /** Helper that creates a promise resolvable from outside */
 function deferred<T = void>() {
@@ -174,5 +174,138 @@ describe("AsyncPool", () => {
 		await Promise.all(promises);
 		expect(completed).toEqual(expect.arrayContaining([0, 2, 3]));
 		expect(completed).toHaveLength(3);
+	});
+});
+
+describe("AdaptivePool", () => {
+	const ok = () => Promise.resolve();
+
+	it("validates opts and clamps start into [min, max]", () => {
+		expect(() => new AdaptivePool({ min: 0, start: 1, max: 1, rampAfter: 1 })).toThrow("min must be at least 1");
+		expect(() => new AdaptivePool({ min: 2, start: 2, max: 1, rampAfter: 1 })).toThrow("max must be >= min");
+		expect(() => new AdaptivePool({ min: 1, start: 1, max: 1, rampAfter: 0 })).toThrow("rampAfter must be at least 1");
+		expect(new AdaptivePool({ min: 2, start: 1, max: 5, rampAfter: 1 }).limit).toBe(2); // clamped up to min
+		expect(new AdaptivePool({ min: 2, start: 99, max: 5, rampAfter: 1 }).limit).toBe(5); // clamped down to max
+	});
+
+	it("admits at most `limit` tasks concurrently", async () => {
+		const pool = new AdaptivePool({ min: 1, start: 2, max: 2, rampAfter: 100 });
+		let running = 0;
+		let maxRunning = 0;
+		const task = async () => {
+			running++;
+			maxRunning = Math.max(maxRunning, running);
+			await new Promise((r) => setTimeout(r, 10));
+			running--;
+		};
+		await Promise.all(Array.from({ length: 5 }, () => pool.run(task)));
+		expect(maxRunning).toBe(2);
+	});
+
+	it("ramps the limit +1 after `rampAfter` clean runs, capped at `max`", async () => {
+		const pool = new AdaptivePool({ min: 1, start: 2, max: 4, rampAfter: 3 });
+		expect(pool.limit).toBe(2);
+		for (let i = 0; i < 3; i++) await pool.run(ok);
+		expect(pool.limit).toBe(3);
+		for (let i = 0; i < 3; i++) await pool.run(ok);
+		expect(pool.limit).toBe(4);
+		for (let i = 0; i < 3; i++) await pool.run(ok);
+		expect(pool.limit).toBe(4); // capped at max
+	});
+
+	it("halves the limit on noteRateLimit, floored at `min`", () => {
+		const pool = new AdaptivePool({ min: 1, start: 8, max: 8, rampAfter: 100 });
+		pool.noteRateLimit();
+		expect(pool.limit).toBe(4);
+		pool.noteRateLimit();
+		expect(pool.limit).toBe(2);
+		pool.noteRateLimit();
+		expect(pool.limit).toBe(1);
+		pool.noteRateLimit();
+		expect(pool.limit).toBe(1); // floored at min
+	});
+
+	it("coalesces a burst: rate-limit signals while above the reduced ceiling don't re-halve", async () => {
+		const pool = new AdaptivePool({ min: 1, start: 8, max: 8, rampAfter: 100 });
+		let release!: () => void;
+		const gate = new Promise<void>((r) => { release = r; });
+		// Fill the pool: 8 tasks holding their slots (start == limit == 8).
+		const inflight = Array.from({ length: 8 }, () => pool.run(() => gate));
+		await Promise.resolve();
+		expect(pool.running).toBe(8);
+
+		pool.noteRateLimit(); // running(8) > limit(8)? no → halve to 4
+		expect(pool.limit).toBe(4);
+		pool.noteRateLimit(); // running(8) > limit(4)? yes → same episode, ignored
+		pool.noteRateLimit();
+		expect(pool.limit).toBe(4); // one decrease, not collapsed toward min
+
+		release();
+		await Promise.all(inflight);
+	});
+
+	it("resets the success streak on a rate-limit (pre-signal successes don't count)", async () => {
+		const pool = new AdaptivePool({ min: 1, start: 4, max: 8, rampAfter: 3 });
+		await pool.run(ok);
+		await pool.run(ok); // streak 2
+		pool.noteRateLimit(); // limit 2, streak reset
+		expect(pool.limit).toBe(2);
+		await pool.run(ok);
+		await pool.run(ok); // streak 2 (not 4) → no ramp
+		expect(pool.limit).toBe(2);
+		await pool.run(ok); // streak 3 → ramp
+		expect(pool.limit).toBe(3);
+	});
+
+	it("resets the success streak on a rejected run (never ramps while failing)", async () => {
+		const pool = new AdaptivePool({ min: 1, start: 4, max: 8, rampAfter: 3 });
+		await pool.run(ok);
+		await pool.run(ok); // streak 2
+		await expect(pool.run(() => Promise.reject(new Error("boom")))).rejects.toThrow("boom"); // streak reset
+		await pool.run(ok);
+		await pool.run(ok); // streak 2
+		expect(pool.limit).toBe(4); // not ramped
+		await pool.run(ok); // streak 3 → ramp
+		expect(pool.limit).toBe(5);
+	});
+
+	it("a woken waiter re-checks a shrunk limit (no admission while running >= limit)", async () => {
+		const pool = new AdaptivePool({ min: 1, start: 3, max: 3, rampAfter: 100 });
+		const g1 = deferred();
+		const g2 = deferred();
+		const g3 = deferred();
+		const p1 = pool.run(() => g1.promise);
+		const p2 = pool.run(() => g2.promise);
+		const p3 = pool.run(() => g3.promise);
+		await Promise.resolve();
+		expect(pool.running).toBe(3); // all admitted at start=3
+
+		// Queue a 4th while full; it waits.
+		let fourthStarted = false;
+		const p4 = pool.run(() => { fourthStarted = true; return Promise.resolve(); });
+
+		// Shrink the limit to 1 mid-flight.
+		pool.noteRateLimit();
+		expect(pool.limit).toBe(1);
+
+		// running 3→2: still >= 1, 4th must NOT start.
+		g1.resolve();
+		await p1;
+		await Promise.resolve();
+		expect(fourthStarted).toBe(false);
+		expect(pool.running).toBe(2);
+
+		// running 2→1: still >= 1, 4th must NOT start.
+		g2.resolve();
+		await p2;
+		await Promise.resolve();
+		expect(fourthStarted).toBe(false);
+		expect(pool.running).toBe(1);
+
+		// running 1→0: now < 1, the 4th is admitted.
+		g3.resolve();
+		await p3;
+		await p4;
+		expect(fourthStarted).toBe(true);
 	});
 });

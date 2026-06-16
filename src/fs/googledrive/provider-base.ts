@@ -1,7 +1,6 @@
 import type { App } from "obsidian";
-import { Notice, Platform } from "obsidian";
+import { Platform } from "obsidian";
 import type { IBackendProvider, WebFolderPicker } from "../backend";
-import type { IAuthProvider } from "../auth";
 import type { ISecretStore } from "../secret-store";
 import type { IFileSystem } from "../interface";
 import type { AirSyncSettings } from "../../settings";
@@ -18,29 +17,13 @@ import { classifyGoogleDriveError } from "./errors";
 import { FOLDER_MIME } from "./types";
 import type { GoogleDriveFile } from "./types";
 import type { GoogleDriveBackendData } from "./provider";
-import { setBackendSecret, getBackendSecret, hasBackendSecret, clearBackendSecrets } from "../token-store";
-
-interface GoogleDriveTokens {
-	refreshToken: string;
-	accessToken: string;
-}
-
-/** Read the Google Drive refresh+access tokens from SecretStorage. */
-function readGoogleDriveTokens(store: ISecretStore, type: string): GoogleDriveTokens {
-	return {
-		refreshToken: getBackendSecret(store, type, "refresh"),
-		accessToken: getBackendSecret(store, type, "access"),
-	};
-}
-
-/** Persist the Google Drive refresh+access tokens to SecretStorage (empty values are skipped). */
-function storeGoogleDriveTokens(store: ISecretStore, type: string, tokens: GoogleDriveTokens): void {
-	setBackendSecret(store, type, "refresh", tokens.refreshToken);
-	setBackendSecret(store, type, "access", tokens.accessToken);
-}
-
-/** Plugin-owned secret names every Google Drive backend stores under air-sync-<type>-<name>-token. */
-const GOOGLE_DRIVE_SECRET_NAMES = ["refresh", "access"];
+import { hasBackendSecret, clearBackendSecrets } from "../token-store";
+import {
+	GoogleDriveAuthProviderBase,
+	readGoogleDriveTokens,
+	storeGoogleDriveTokens,
+	GOOGLE_DRIVE_SECRET_NAMES,
+} from "./auth-provider-base";
 
 /**
  * Web page (on the OAuth relay domain) that hosts the Google Picker. The plugin opens
@@ -71,166 +54,6 @@ function randomState(): string {
 /** A Google Drive file id is a URL-safe base64 token; reject anything else so a crafted
  *  deep link can't inject path/query segments into the getFile URL. */
 const GOOGLE_DRIVE_ID_RE = /^[A-Za-z0-9_-]+$/;
-
-/**
- * Parse auth callback input (URL from auth server containing tokens or code).
- * Built-in flow: obsidian://air-sync-auth?access_token=...&refresh_token=...&expires_in=...&state=...
- * Custom flow: obsidian://air-sync-auth?code=...&state=...
- */
-export function parseAuthCallbackParams(input: string): Record<string, string | undefined> {
-	const trimmed = input.trim();
-	if (!trimmed) {
-		throw new Error("Auth callback is empty");
-	}
-
-	try {
-		const url = new URL(trimmed);
-		const accessToken = url.searchParams.get("access_token");
-		const code = url.searchParams.get("code");
-		if (!accessToken && !code) {
-			throw new Error("Missing access_token or code in auth callback");
-		}
-		const result: Record<string, string | undefined> = {
-			state: url.searchParams.get("state") ?? undefined,
-		};
-		if (accessToken) {
-			result.access_token = accessToken;
-			result.refresh_token = url.searchParams.get("refresh_token") ?? undefined;
-			result.expires_in = url.searchParams.get("expires_in") ?? "3600";
-		}
-		if (code) {
-			result.code = code;
-		}
-		return result;
-	} catch (e) {
-		if (e instanceof Error && (e.message.includes("access_token") || e.message.includes("code"))) {
-			throw e;
-		}
-		throw new Error("Invalid auth callback URL");
-	}
-}
-
-/**
- * Base auth provider for Google Drive variants.
- * Subclasses implement `createAuth` and `createAuthIfNeeded` for their specific GoogleAuth type.
- */
-export abstract class GoogleDriveAuthProviderBase implements IAuthProvider {
-	protected googleAuth: IGoogleAuth | null = null;
-	protected readonly secretStore: ISecretStore;
-
-	/** The backend type used for SecretStorage key generation. Set by subclass provider. */
-	abstract readonly backendType: string;
-
-	constructor(secretStore: ISecretStore) {
-		this.secretStore = secretStore;
-	}
-
-	isAuthenticated(_backendData: Record<string, unknown>): boolean {
-		return hasBackendSecret(this.secretStore, this.backendType, "refresh");
-	}
-
-	async startAuth(_backendData: Record<string, unknown>): Promise<Record<string, unknown>> {
-		try {
-			const auth = this.createAuth(_backendData);
-			if (!auth) return {};
-
-			const url = await auth.getAuthorizationUrl();
-			const pendingAuthState = auth.getAuthState() ?? "";
-			const pendingCodeVerifier = auth.getCodeVerifier() ?? "";
-
-			if (Platform.isMobile) {
-				window.location.href = url;
-			} else {
-				window.open(url);
-			}
-			new Notice("Complete authorization in your browser");
-
-			return { pendingAuthState, pendingCodeVerifier };
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			throw new Error(`Failed to start authorization: ${msg}`);
-		}
-	}
-
-	async completeAuth(
-		input: string,
-		backendData: Record<string, unknown>,
-	): Promise<Record<string, unknown>> {
-		const data = backendData as Partial<GoogleDriveBackendData & { pendingCodeVerifier?: string }>;
-		const auth = this.createAuthIfNeeded(backendData);
-		if (!auth) {
-			throw new Error("OAuth credentials are missing");
-		}
-		// Restore CSRF state and PKCE verifier if auth lacks them (survives plugin reload)
-		if (!auth.getAuthState() && data.pendingAuthState) {
-			auth.setAuthState(data.pendingAuthState);
-		}
-		if (!auth.getCodeVerifier() && data.pendingCodeVerifier) {
-			auth.setCodeVerifier(data.pendingCodeVerifier);
-		}
-
-		const params = parseAuthCallbackParams(input);
-		await auth.handleAuthCallback(params);
-		const tokens = auth.getTokenState();
-
-		// Store tokens in SecretStorage instead of returning them for backendData
-		storeGoogleDriveTokens(this.secretStore, this.backendType, tokens);
-
-		return {
-			accessTokenExpiry: tokens.accessTokenExpiry,
-			pendingAuthState: "",
-			pendingCodeVerifier: "",
-		};
-	}
-
-	/** Return the current in-memory token state (for persistence after refresh). */
-	getTokenState(): { refreshToken: string; accessToken: string; accessTokenExpiry: number } | null {
-		return this.googleAuth?.getTokenState() ?? null;
-	}
-
-	/** Revoke the current token (called by provider.disconnect) */
-	async revokeAuth(): Promise<void> {
-		if (this.googleAuth) {
-			await this.googleAuth.revokeToken();
-		}
-		this.googleAuth = null;
-	}
-
-	/**
-	 * Create a new auth instance for starting the auth flow.
-	 * Returns null if preconditions are not met (e.g. missing credentials for custom).
-	 */
-	protected abstract createAuth(backendData: Record<string, unknown>): IGoogleAuth | null;
-
-	/**
-	 * Create an auth instance if one doesn't exist (for completeAuth).
-	 * Returns null if credentials are missing.
-	 */
-	protected abstract createAuthIfNeeded(backendData: Record<string, unknown>): IGoogleAuth | null;
-
-	/** Get or create a GoogleAuth instance for FS creation. */
-	abstract getOrCreateGoogleAuth(data: GoogleDriveBackendData, logger: Logger | undefined): IGoogleAuth;
-
-	/**
-	 * Create a fresh, UNSHARED auth instance for one-off reads (settings folder-path
-	 * display, folder pick) that must not reset the live sync's shared in-memory tokens.
-	 */
-	abstract createDetachedGoogleAuth(data: GoogleDriveBackendData, logger: Logger | undefined): IGoogleAuth;
-
-	/**
-	 * Wire a detached auth so a refresh that ROTATES the refresh token persists the
-	 * new value to SecretStorage. Without this, a rotated token would live only on
-	 * the throwaway instance and be discarded, leaving the stored (and shared
-	 * in-memory) token stale so the next real sync's refresh fails. Subclasses call
-	 * this on the instance they return from {@link createDetachedGoogleAuth}.
-	 */
-	protected wireDetachedRefreshPersistence(auth: IGoogleAuth): IGoogleAuth {
-		auth.setRefreshTokenRotatedHook((refreshToken) => {
-			setBackendSecret(this.secretStore, this.backendType, "refresh", refreshToken);
-		});
-		return auth;
-	}
-}
 
 /**
  * Base provider for Google Drive variants.
