@@ -140,9 +140,9 @@ const MAX_ACTION_RETRIES = 3;
  * files can't blow memory — with no effect on normal vaults.
  */
 export const DESKTOP_TRANSFER_POOL: AdaptivePoolOpts =
-	{ min: 2, start: 5, max: 10, rampAfter: 8, byteBudget: 128 * 1024 * 1024 };
+	{ min: 2, start: 5, max: 10, rampAfter: 8, byteBudget: 1024 * 1024 * 1024 };
 export const MOBILE_TRANSFER_POOL: AdaptivePoolOpts =
-	{ min: 1, start: 3, max: 8, rampAfter: 8, byteBudget: 48 * 1024 * 1024 };
+	{ min: 1, start: 3, max: 8, rampAfter: 8, byteBudget: 512 * 1024 * 1024 };
 /**
  * Max concurrent deletes, per lane. Deletes are metadata-only (trash / delete by
  * id) and could run hotter, but they share the backend rate-limit budget, so kept
