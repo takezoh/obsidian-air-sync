@@ -18,11 +18,13 @@ let providerMap = new Map<string, IBackendProvider>();
 /** Initialize the provider registry with the given secret store. */
 export function initRegistry(secretStore: ISecretStore): void {
 	providers = [
+		// Built-in backends first, then the custom-app variants grouped below them — the
+		// registration order drives the backend selector dropdown.
 		new GoogleDriveProvider(secretStore),
-		new GoogleDriveCustomProvider(secretStore),
 		new OneDriveProvider(secretStore),
-		new OneDriveCustomProvider(secretStore),
 		new DropboxProvider(secretStore),
+		new GoogleDriveCustomProvider(secretStore),
+		new OneDriveCustomProvider(secretStore),
 		new DropboxCustomProvider(secretStore),
 	];
 	providerMap = new Map<string, IBackendProvider>();
