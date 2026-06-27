@@ -69,7 +69,10 @@ export class OneDriveCustomAuthProvider extends PkceAuthProvider<OneDriveAuth> {
 	}
 
 	protected hasCredentials(backendData: Record<string, unknown>): boolean {
-		return !!this.resolveClientId(backendData);
+		// Fail closed on the "tenant selected, GUID not yet entered" sentinel (`""`): otherwise
+		// `resolveAuthority` would coerce it to the personal `consumers` tenant and silently
+		// authorize against the wrong tenant. `undefined` is the personal default — allowed.
+		return !!this.resolveClientId(backendData) && backendData.customAuthority !== "";
 	}
 
 	protected onMissingCredentials(): void {

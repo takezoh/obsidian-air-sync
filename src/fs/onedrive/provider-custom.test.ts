@@ -68,6 +68,19 @@ describe("OneDriveCustomAuthProvider.startAuth", () => {
 		expect(out).toEqual({});
 		expect(opened).toBe(false);
 	});
+
+	it("fails closed on the empty tenant sentinel — never silently authorizes against consumers", async () => {
+		let opened = false;
+		vi.stubGlobal("window", { open: () => { opened = true; }, location: { href: "" } });
+
+		// customAuthority === "" means "Specific tenant…" was picked but no GUID typed yet.
+		// resolveAuthority would coerce "" → consumers; hasCredentials must block it.
+		const { auth } = await makeAuth();
+		const out = await auth.startAuth({ customClientId: "user-cid", customAuthority: "" });
+
+		expect(out).toEqual({});
+		expect(opened).toBe(false);
+	});
 });
 
 describe("OneDriveCustomAuthProvider.completeAuth", () => {
