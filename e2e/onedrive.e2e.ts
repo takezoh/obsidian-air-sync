@@ -16,9 +16,10 @@ import {
  * drift between `makeFakeOneDriveClient` and the real `OneDriveClient`.
  *
  * Skips (with a warning, never failing) when the refresh token OR the client id is
- * absent. The shipped OneDrive client id is a placeholder (REPLACE_ME), so — exactly
- * like Google's own-GCP-client requirement — the e2e needs the developer's OWN Entra
- * app client id: PKCE refresh is bound to the client the token was minted against.
+ * absent. The shipped OneDrive app uses the obsidian:// redirect (not capturable by a
+ * loopback), so — exactly like Google's own-GCP-client requirement — the e2e needs the
+ * developer's OWN Entra app client id with a localhost redirect: PKCE refresh is bound
+ * to the client the token was minted against.
  * Get a token via `npm run e2e:bootstrap -- onedrive`. See docs/e2e-testing.md.
  */
 const creds = readCreds("AIRSYNC_E2E_ONEDRIVE_REFRESH_TOKEN");

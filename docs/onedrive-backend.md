@@ -117,9 +117,10 @@ client); the plugin then exchanges the code for tokens directly with Microsoft.
   cycle. Microsoft's consumer endpoint has no programmatic token revoke, so
   disconnect clears the SecretStorage tokens (sufficient) and drops the in-memory
   manager.
-- The committed `client_id` is a placeholder (`REPLACE_ME`); the maintainer must
-  register the Entra app (personal accounts only, redirect `obsidian://air-sync-auth`)
-  and drop in the real id before release.
+- The built-in `client_id` is the real Entra (Azure AD) application id, committed in
+  `fs/auth-config.ts` (`ONEDRIVE_AUTH`) and registered for personal accounts only with
+  redirect `obsidian://air-sync-auth`. Work/school accounts use the `onedrive-custom`
+  backend instead.
 
 ## Custom app (`onedrive-custom`)
 

@@ -46,8 +46,9 @@ redirect URI once:
 - **Dropbox** — on the app at <https://www.dropbox.com/developers/apps> add
   `http://localhost:53682/callback` under **Redirect URIs**. It uses the public PKCE client id
   (no secret).
-- **OneDrive** — the shipped client id is a placeholder (`REPLACE_ME`), so the e2e uses **your
-  own** Entra app, exactly like Google. At <https://entra.microsoft.com> register an app with
+- **OneDrive** — the shipped app is registered only with the `obsidian://air-sync-auth` redirect
+  (and you don't own it), but the headless e2e needs a `http://localhost:53682/callback` loopback,
+  so it uses **your own** Entra app, exactly like Google. At <https://entra.microsoft.com> register an app with
   **"Personal Microsoft accounts only"**, the **Files.ReadWrite.AppFolder** delegated
   permission, and a `http://localhost:53682/callback` redirect URI (platform "Mobile and
   desktop"); put its application (client) id in `.env.e2e` (`AIRSYNC_E2E_ONEDRIVE_CLIENT_ID`).
@@ -104,7 +105,7 @@ npm run test:e2e:onedrive  # OneDrive only
 > Running Google individually needs `AIRSYNC_E2E_GOOGLE_CLIENT_ID`/`_CLIENT_SECRET` in
 > `.env.e2e` (the refresh token alone falls back to the built-in auth server, which can't
 > refresh a token minted by your own OAuth client). OneDrive likewise needs
-> `AIRSYNC_E2E_ONEDRIVE_CLIENT_ID` (the shipped placeholder client id can't refresh your token).
+> `AIRSYNC_E2E_ONEDRIVE_CLIENT_ID` (the refresh token is bound to your own client; the shipped app has no localhost redirect).
 
 ## Running behind a TLS-intercepting proxy
 

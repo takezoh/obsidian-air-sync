@@ -76,8 +76,8 @@ async function bootstrapDropbox(): Promise<void> {
 }
 
 async function bootstrapOnedrive(): Promise<void> {
-	// OneDrive's shipped client id is a placeholder (REPLACE_ME) and its in-plugin
-	// flow returns to obsidian:// — not capturable by a loopback. So, like Google, the
+	// OneDrive's shipped in-plugin flow returns to obsidian:// — not capturable by a
+	// loopback — and the shipped app has no localhost redirect. So, like Google, the
 	// bootstrap uses the developer's OWN Entra app client id with a localhost redirect.
 	const loopback = await startLoopback(loopbackPort());
 	try {

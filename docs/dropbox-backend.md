@@ -127,8 +127,8 @@ with Dropbox. Refreshing an access token needs only the `client_id`.
 - **Token storage**: refresh + access tokens in Obsidian SecretStorage (keyed per
   backend type); the access-token expiry lives in `settings.backendData`. Tokens
   refreshed mid-sync are written back after the cycle.
-- The committed app key is a placeholder (`REPLACE_WITH_DROPBOX_APP_KEY`),
-  replaced at build/deploy time.
+- The built-in app key is committed in `fs/auth-config.ts` (`DROPBOX_AUTH`); it is a
+  public PKCE identifier (no secret), so it ships embedded and connects with no per-user setup.
 
 ## Custom app (`dropbox-custom`)
 
