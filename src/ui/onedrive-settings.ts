@@ -46,6 +46,11 @@ export class OneDriveSettingsRenderer implements IBackendSettingsRenderer {
 		const authed = provider?.auth.isAuthenticated(settings.backendData ?? {}) ?? false;
 		const data = (settings.backendData ?? {}) as Partial<OneDriveBackendData>;
 
+		// Always-visible note: the built-in app is personal-only; org accounts need the custom app.
+		new Setting(containerEl)
+			.setName("Supported accounts")
+			.setDesc('This built-in connection supports personal accounts only. For work or school (organization) accounts, use the "OneDrive (custom app)" backend.');
+
 		renderConnectionStatus(containerEl, {
 			connected: authed,
 			connectLabel: "Connect to OneDrive",

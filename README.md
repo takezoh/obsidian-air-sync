@@ -5,7 +5,7 @@ Your Obsidian notes, always up to date on every device — without ever thinking
 Works on desktop and mobile, powered by your own cloud storage:
 
 - **Google Drive**
-- **OneDrive** — personal Microsoft accounts (built-in); work/school accounts with a custom app (see Advanced)
+- **OneDrive**
 - **Dropbox**
 
 ## What you get
@@ -100,7 +100,7 @@ This is what lets a custom OneDrive app reach work/school accounts the built-in 
 Air Sync connects only to the cloud storage you choose, to sync your files:
 
 - **Google Drive** — `googleapis.com` for sync; sign-in happens on `accounts.google.com`, and a small auth server (`auth-airsync.takezo.dev`) performs the sign-in token exchange.
-- **OneDrive** — `graph.microsoft.com` for sync; sign-in happens on `login.microsoftonline.com` and returns directly to Obsidian (no relay or picker page — the folder is chosen in-app). Personal Microsoft accounts with the built-in connection; work/school accounts with a custom app.
+- **OneDrive** — `graph.microsoft.com` for sync; sign-in happens on `login.microsoftonline.com` and returns directly to Obsidian (no relay or picker page — the folder is chosen in-app).
 - **Dropbox** — `api.dropboxapi.com` / `content.dropboxapi.com` for sync; sign-in happens on `dropbox.com` and returns directly to Obsidian (no relay or picker page — the folder is chosen in-app).
 
 Your vault data is sent only to your chosen storage provider — never to the auth, redirect, or picker pages.
