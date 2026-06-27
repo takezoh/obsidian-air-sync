@@ -5,7 +5,7 @@ Your Obsidian notes, always up to date on every device — without ever thinking
 Works on desktop and mobile, powered by your own cloud storage:
 
 - **Google Drive**
-- **OneDrive** — personal Microsoft accounts only
+- **OneDrive** — personal Microsoft accounts (built-in); work/school accounts with a custom app (see Advanced)
 - **Dropbox**
 
 ## What you get
@@ -71,6 +71,23 @@ The authorization code exchange is protected by PKCE — the code cannot be used
 
 > **Note**: Tokens are stored in Obsidian's secret storage, which is accessible to other plugins. The built-in OAuth limits exposure with the `drive.file` scope. Custom OAuth may increase risk depending on the scope you configure.
 
+### Custom app (OneDrive & Dropbox)
+
+OneDrive and Dropbox also offer a **custom app** backend, where you register your own app and enter its client id (Dropbox app key / Entra application ID). The id is a public PKCE identifier — there is no secret to manage. Register `obsidian://air-sync-auth` as a redirect URI in your app.
+
+For **OneDrive**, the custom app additionally lets you choose the **account type**:
+
+| Account type | Who can sign in |
+|---|---|
+| Personal accounts only | Personal Microsoft accounts (same as the built-in) |
+| Work/school + personal | Both work/school (Azure AD) and personal accounts |
+| Work/school only | Work/school (Azure AD) accounts |
+| Specific tenant | A single Azure AD directory (enter its tenant ID) |
+
+This is what lets a custom OneDrive app reach work/school accounts the built-in (personal-only) connection cannot. Your selection must match the supported account types configured in your app registration, and work/school sign-in may still require your organization's admin consent.
+
+> **Note**: The custom app still uses the same App Folder scope, so access stays confined to the plugin's own folder.
+
 ## Troubleshooting
 
 - **Sync looks stuck or incomplete** (for example after Obsidian was closed mid-sync): Open **Settings → Air Sync → Advanced** and click **Rescan**. It re-checks everything against your cloud storage and finishes any leftover work — comparing files rather than re-downloading what you already have, and keeping your sync history.
@@ -83,7 +100,7 @@ The authorization code exchange is protected by PKCE — the code cannot be used
 Air Sync connects only to the cloud storage you choose, to sync your files:
 
 - **Google Drive** — `googleapis.com` for sync; sign-in happens on `accounts.google.com`, and a small auth server (`auth-airsync.takezo.dev`) performs the sign-in token exchange.
-- **OneDrive** — `graph.microsoft.com` for sync; sign-in happens on `login.microsoftonline.com` and returns directly to Obsidian (no relay or picker page — the folder is chosen in-app). Personal Microsoft accounts only.
+- **OneDrive** — `graph.microsoft.com` for sync; sign-in happens on `login.microsoftonline.com` and returns directly to Obsidian (no relay or picker page — the folder is chosen in-app). Personal Microsoft accounts with the built-in connection; work/school accounts with a custom app.
 - **Dropbox** — `api.dropboxapi.com` / `content.dropboxapi.com` for sync; sign-in happens on `dropbox.com` and returns directly to Obsidian (no relay or picker page — the folder is chosen in-app).
 
 Your vault data is sent only to your chosen storage provider — never to the auth, redirect, or picker pages.

@@ -1,11 +1,14 @@
 import type { App } from "obsidian";
-import { Setting } from "obsidian";
+import { Notice, Setting } from "obsidian";
 import type { AirSyncSettings } from "../settings";
 import type {
 	BackendConnectionActions,
 	IBackendSettingsRenderer,
 } from "../fs/settings-renderer";
 import type { DropboxBackendData, DropboxProvider } from "../fs/dropbox/provider";
+import type { DropboxProviderBase } from "../fs/dropbox/provider-base";
+import type { DropboxCustomData } from "../fs/dropbox/provider-custom";
+import { PLUGIN_REDIRECT_URI } from "../fs/auth-config";
 import { getBackendProvider } from "../fs/registry";
 import { renderBoundFolderField, renderConnectionStatus, renderUnboundAppFolderField } from "./backend-settings-ui";
 
@@ -51,6 +54,69 @@ export class DropboxSettingsRenderer implements IBackendSettingsRenderer {
 			});
 		} else {
 			// Not bound yet: default folder is /<Vault Name> directly under the app folder.
+			renderUnboundAppFolderField(folderSetting, {
+				app, settings, provider, actions, onSave,
+				defaultLabel: `/${app.vault.getName()}`,
+				modalTitle: "Choose a Dropbox folder",
+			});
+		}
+	}
+}
+
+/**
+ * Renders the custom-app Dropbox settings UI: the user's own app key, then the same
+ * connection + folder UI as the built-in. The app key is a PUBLIC PKCE identifier (no
+ * secret), so it is a plain text field, not a {@link SecretComponent}.
+ */
+export class DropboxCustomSettingsRenderer implements IBackendSettingsRenderer {
+	readonly backendType = "dropbox-custom";
+
+	render(
+		containerEl: HTMLElement,
+		settings: AirSyncSettings,
+		onSave: (updates: Record<string, unknown>) => Promise<void>,
+		actions: BackendConnectionActions,
+		app: App,
+	): void {
+		const provider = getBackendProvider("dropbox-custom") as DropboxProviderBase | undefined;
+		const authed = provider?.auth.isAuthenticated(settings.backendData ?? {}) ?? false;
+		const data = (settings.backendData ?? {}) as Partial<DropboxCustomData>;
+
+		new Setting(containerEl)
+			.setName("App key")
+			.setDesc(`Your Dropbox app's app key. Register ${PLUGIN_REDIRECT_URI} as a redirect URI in that app.`)
+			.addText((text) =>
+				text
+					.setValue(data.customClientId ?? "")
+					.setDisabled(authed) // can't swap the app while a token from it exists
+					.onChange(async (value) => { await onSave({ customClientId: value.trim() }); }),
+			);
+
+		renderConnectionStatus(containerEl, {
+			connected: authed,
+			connectLabel: "Connect to Dropbox",
+			actions,
+			onConnect: async () => {
+				const current = (settings.backendData ?? {}) as Partial<DropboxCustomData>;
+				if (!current.customClientId) {
+					new Notice("Enter your Dropbox app key first");
+					return false;
+				}
+				await actions.startAuth();
+				return true;
+			},
+		});
+
+		if (!authed) return;
+
+		const folderSetting = new Setting(containerEl).setName("Remote vault folder");
+		if (data.remoteVaultFolderId) {
+			renderBoundFolderField(folderSetting, {
+				desc: "The folder this vault syncs into, inside the app folder.",
+				folderId: data.remoteVaultFolderId,
+				resolvePath: () => provider?.getRemoteVaultDisplayPath?.(settings),
+			});
+		} else {
 			renderUnboundAppFolderField(folderSetting, {
 				app, settings, provider, actions, onSave,
 				defaultLabel: `/${app.vault.getName()}`,

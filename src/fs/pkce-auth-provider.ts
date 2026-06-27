@@ -41,14 +41,39 @@ export abstract class PkceAuthProvider<TAuth extends PkceTokenManager> implement
 		protected logger?: Logger,
 	) {}
 
-	/** Build the provider's token manager (one instance per FS lifetime). */
-	protected abstract createAuth(clientId: string, logger?: Logger): TAuth;
+	/**
+	 * Build the provider's token manager (one instance per FS lifetime). The active
+	 * `backendData` is passed so a custom-app variant can read per-vault config (e.g. the
+	 * OneDrive authority); the built-ins ignore it and use the ctor `clientId`.
+	 */
+	protected abstract createAuth(clientId: string, backendData: Record<string, unknown>, logger?: Logger): TAuth;
 	/** Build the provider's authorize URL for the in-plugin redirect. */
-	protected abstract buildAuthorizeUrl(opts: { clientId: string; codeChallenge: string; state: string }): string;
+	protected abstract buildAuthorizeUrl(
+		opts: { clientId: string; codeChallenge: string; state: string },
+		backendData: Record<string, unknown>,
+	): string;
+
+	/**
+	 * Resolve the effective client id from the active `backendData`. The built-ins use the
+	 * ctor `clientId`; a custom-app variant overrides this to read the user-entered id.
+	 */
+	protected resolveClientId(_backendData: Record<string, unknown>): string {
+		return this.clientId;
+	}
+
+	/** Whether the active `backendData` carries usable credentials (custom variants override). */
+	protected hasCredentials(_backendData: Record<string, unknown>): boolean {
+		return true;
+	}
+
+	/** Notify the user on the start path when credentials are missing (custom variants override). */
+	protected onMissingCredentials(): void {}
 
 	/** Get or lazily create the shared token manager (so refreshed tokens are persistable). */
-	getOrCreateAuth(logger?: Logger): TAuth {
-		if (!this.tokenAuth) this.tokenAuth = this.createAuth(this.clientId, logger ?? this.logger);
+	getOrCreateAuth(backendData: Record<string, unknown>, logger?: Logger): TAuth {
+		if (!this.tokenAuth) {
+			this.tokenAuth = this.createAuth(this.resolveClientId(backendData), backendData, logger ?? this.logger);
+		}
 		return this.tokenAuth;
 	}
 
@@ -59,8 +84,8 @@ export abstract class PkceAuthProvider<TAuth extends PkceTokenManager> implement
 	 * refresh token from a detached refresh is persisted to SecretStorage — otherwise it
 	 * would be discarded with this instance, leaving the stored token stale.
 	 */
-	createDetachedAuth(logger?: Logger): TAuth {
-		const auth = this.createAuth(this.clientId, logger ?? this.logger);
+	createDetachedAuth(backendData: Record<string, unknown>, logger?: Logger): TAuth {
+		const auth = this.createAuth(this.resolveClientId(backendData), backendData, logger ?? this.logger);
 		auth.setRefreshTokenRotatedHook((rt) => setBackendSecret(this.secretStore, this.backendType, "refresh", rt));
 		return auth;
 	}
@@ -79,13 +104,17 @@ export abstract class PkceAuthProvider<TAuth extends PkceTokenManager> implement
 		return hasBackendSecret(this.secretStore, this.backendType, "refresh");
 	}
 
-	async startAuth(_backendData: Record<string, unknown>): Promise<Record<string, unknown>> {
+	async startAuth(backendData: Record<string, unknown>): Promise<Record<string, unknown>> {
+		if (!this.hasCredentials(backendData)) {
+			this.onMissingCredentials();
+			return {};
+		}
 		const codeVerifier = generateRandomString(64);
 		const codeChallenge = await computeS256Challenge(codeVerifier);
 		// base64url state (URL-transit safe); it returns through the
 		// obsidian://air-sync-auth deep link and is validated in completeAuth.
 		const state = buildOAuthState();
-		const url = this.buildAuthorizeUrl({ clientId: this.clientId, codeChallenge, state });
+		const url = this.buildAuthorizeUrl({ clientId: this.resolveClientId(backendData), codeChallenge, state }, backendData);
 		if (Platform.isMobile) {
 			window.location.href = url;
 		} else {
@@ -106,7 +135,7 @@ export abstract class PkceAuthProvider<TAuth extends PkceTokenManager> implement
 			throw new Error("PKCE code verifier is missing. Please restart the authorization flow.");
 		}
 
-		const auth = this.getOrCreateAuth();
+		const auth = this.getOrCreateAuth(backendData);
 		await auth.exchangeCode(params.code, codeVerifier);
 		const tokens = auth.getTokenState();
 		setBackendSecret(this.secretStore, this.backendType, "refresh", tokens.refreshToken);

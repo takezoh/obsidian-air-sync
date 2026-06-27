@@ -24,6 +24,11 @@ export interface PkceAppFolderData {
 	pendingPickedFolderPath: string;
 }
 
+/** Widen the typed backend data to the loose `Record` the auth provider's seams take. */
+function asBackendData(data: PkceAppFolderData): Record<string, unknown> {
+	return data as unknown as Record<string, unknown>;
+}
+
 /**
  * Shared backend provider for an in-plugin PKCE, App-Folder-scoped cloud (Dropbox,
  * OneDrive). Owns every part that is identical across them: data defaulting,
@@ -78,13 +83,13 @@ export abstract class PkceAppFolderProvider<
 
 	/** Build a token-bearing client from the stored secrets + expiry (shared auth). */
 	protected makeClient(data: TData, logger?: Logger): TClient {
-		return this.clientFromAuth(this.auth.getOrCreateAuth(logger), data, logger);
+		return this.clientFromAuth(this.auth.getOrCreateAuth(asBackendData(data), logger), data, logger);
 	}
 
 	/** A client on a throwaway auth — for one-off settings reads that must not reset the
 	 *  live sync's shared in-memory tokens. */
 	protected makeDetachedClient(data: TData, logger?: Logger): TClient {
-		return this.clientFromAuth(this.auth.createDetachedAuth(logger), data, logger);
+		return this.clientFromAuth(this.auth.createDetachedAuth(asBackendData(data), logger), data, logger);
 	}
 
 	private clientFromAuth(auth: TAuth, data: TData, logger?: Logger): TClient {

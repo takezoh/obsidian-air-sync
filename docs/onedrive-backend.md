@@ -12,8 +12,10 @@ OneDrive — like Google Drive, and unlike Dropbox — references each item's pa
 therefore drives it unchanged. Only the wire protocol (Microsoft Graph v1.0) and
 the PKCE auth (Dropbox-style, no relay) are OneDrive-specific.
 
-> Personal Microsoft accounts only (the `consumers` authority). OneDrive for
-> Business / SharePoint is out of scope (different checksum + tenant model).
+> The **built-in** `onedrive` backend is personal Microsoft accounts only (the
+> `consumers` authority). The **`onedrive-custom`** backend (see below) lets the user
+> pick the authority (`common`/`organizations`/a tenant GUID), reaching work/school
+> (Azure AD) accounts the built-in cannot.
 
 ## OneDriveFs
 
@@ -97,8 +99,11 @@ Obsidian's `requestUrl` (never `fetch`), with `throw: false` + `assertOk`. Notes
 ## Authentication
 
 In-plugin **Authorization Code + PKCE**, fully worker-less (`fs/onedrive/auth.ts`),
-on the `consumers` authority (`login.microsoftonline.com/consumers/oauth2/v2.0`).
-The `client_id` is public and there is **no client secret** — the ephemeral
+on the `consumers` authority (`login.microsoftonline.com/consumers/oauth2/v2.0`) for
+the built-in backend. The authority host segment is parameterized — `authorizeUrlFor`/
+`tokenUrlFor(authority)` build the endpoints, and `OneDriveAuth`/`buildOneDriveAuthorizeUrl`
+take an `authority` (default `consumers`) — so the custom backend can target `common`/
+`organizations`/a tenant GUID. The `client_id` is public and there is **no client secret** — the ephemeral
 `code_verifier` is the proof. The authorization code returns **directly** via the
 existing `obsidian://air-sync-auth` protocol handler (no relay page is needed,
 since Entra permits the custom-scheme redirect for a desktop/mobile public
@@ -115,6 +120,29 @@ client); the plugin then exchanges the code for tokens directly with Microsoft.
 - The committed `client_id` is a placeholder (`REPLACE_ME`); the maintainer must
   register the Entra app (personal accounts only, redirect `obsidian://air-sync-auth`)
   and drop in the real id before release.
+
+## Custom app (`onedrive-custom`)
+
+`OneDriveCustomProvider` (`fs/onedrive/provider-custom.ts`) is a thin subclass of the
+shared `OneDriveProviderBase` — identical client/FS/folder-binding/error behaviour, same
+App Folder scope — that swaps the auth identity. The user supplies their own Entra
+**Application (client) ID** and an **account type**, both stored in `backendData`
+(`customClientId`, `customAuthority`) as plain values (the client id is a public PKCE
+identifier — no secret). `OneDriveCustomAuthProvider` overrides the PKCE seams to read
+the client id and authority from `backendData` per call, so the authorize URL and token
+endpoint hit the chosen tenant. Tokens live under the `onedrive-custom` SecretStorage
+keys, separate from the built-in. `disconnect` clears the tokens but preserves
+`customClientId`/`customAuthority` so a reconnect needs no re-entry.
+
+The account-type dropdown maps to the authority host segment: Personal →`consumers`,
+Work/school + personal →`common`, Work/school →`organizations`, Specific tenant →the
+typed GUID. This is the lever that reaches **work/school (Azure AD)** accounts.
+
+> **OneDrive for Business / SharePoint checksums.** Business drives expose
+> `sha1Hash`/`sha256Hash` rather than personal's `quickXorHash`; the metadata cache
+> already keeps those as fallbacks (`types.ts` hash selection), so change detection
+> works without an FS-layer change. This path is exercised only by the opt-in e2e — a
+> real Business tenant is the remaining verification gap.
 
 ## Provider model
 

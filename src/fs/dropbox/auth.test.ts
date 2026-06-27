@@ -138,7 +138,7 @@ describe("DropboxAuthProvider detached auth refresh-token rotation", () => {
 
 	it("persists a rotated refresh token from a detached refresh to SecretStorage", async () => {
 		const { auth, store } = await makeProvider(CONNECTED);
-		const detached = auth.createDetachedAuth();
+		const detached = auth.createDetachedAuth({});
 		detached.setTokens("RT", "AT", 0); // expired → the detached auth must refresh
 
 		// The refresh endpoint rotates the refresh token (returns a NEW one).
@@ -155,7 +155,7 @@ describe("DropboxAuthProvider detached auth refresh-token rotation", () => {
 
 	it("leaves the stored refresh token untouched when the provider does not rotate it", async () => {
 		const { auth, store } = await makeProvider(CONNECTED);
-		const detached = auth.createDetachedAuth();
+		const detached = auth.createDetachedAuth({});
 		detached.setTokens("RT", "AT", 0);
 
 		(await spyRequestUrl()).mockResolvedValue(

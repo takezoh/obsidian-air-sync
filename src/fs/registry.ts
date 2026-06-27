@@ -3,7 +3,9 @@ import type { ISecretStore } from "./secret-store";
 import { GoogleDriveProvider } from "./googledrive/provider";
 import { GoogleDriveCustomProvider } from "./googledrive/provider-custom";
 import { DropboxProvider } from "./dropbox/provider";
+import { DropboxCustomProvider } from "./dropbox/provider-custom";
 import { OneDriveProvider } from "./onedrive/provider";
+import { OneDriveCustomProvider } from "./onedrive/provider-custom";
 
 /**
  * Registry of available backend providers.
@@ -19,7 +21,9 @@ export function initRegistry(secretStore: ISecretStore): void {
 		new GoogleDriveProvider(secretStore),
 		new GoogleDriveCustomProvider(secretStore),
 		new OneDriveProvider(secretStore),
+		new OneDriveCustomProvider(secretStore),
 		new DropboxProvider(secretStore),
+		new DropboxCustomProvider(secretStore),
 	];
 	providerMap = new Map<string, IBackendProvider>();
 	for (const p of providers) {

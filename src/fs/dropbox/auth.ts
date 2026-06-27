@@ -144,11 +144,14 @@ export class DropboxAuthProvider extends PkceAuthProvider<DropboxAuth> {
 		super(secretStore, BACKEND_TYPE, clientId, logger);
 	}
 
-	protected createAuth(clientId: string, logger?: Logger): DropboxAuth {
+	protected createAuth(clientId: string, _backendData: Record<string, unknown>, logger?: Logger): DropboxAuth {
 		return new DropboxAuth(clientId, logger);
 	}
 
-	protected buildAuthorizeUrl(opts: { clientId: string; codeChallenge: string; state: string }): string {
+	protected buildAuthorizeUrl(
+		opts: { clientId: string; codeChallenge: string; state: string },
+		_backendData: Record<string, unknown>,
+	): string {
 		return buildDropboxAuthorizeUrl(opts);
 	}
 }

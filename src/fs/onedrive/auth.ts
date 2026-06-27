@@ -7,9 +7,21 @@ import { PkceAuthProvider } from "../pkce-auth-provider";
 import { ONEDRIVE_AUTH } from "../auth-config";
 import { assertMicrosoftTokenResponse } from "./types";
 
-/** Personal Microsoft accounts only — the `consumers` authority host. */
-const AUTHORIZE_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize";
-const TOKEN_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
+/**
+ * The Microsoft identity-platform host. The authority *segment* that follows selects the
+ * account set: `consumers` (personal MSA only — the built-in default), `common` (work/school
+ * + personal), `organizations` (work/school only), or a tenant GUID (a single Entra tenant).
+ * The built-in backend is `consumers`; the custom-app backend lets the user pick.
+ */
+const AUTHORITY_BASE = "https://login.microsoftonline.com";
+/** The built-in OneDrive backend's authority: personal Microsoft accounts only. */
+export const DEFAULT_ONEDRIVE_AUTHORITY = "consumers";
+export function authorizeUrlFor(authority: string): string {
+	return `${AUTHORITY_BASE}/${authority}/oauth2/v2.0/authorize`;
+}
+export function tokenUrlFor(authority: string): string {
+	return `${AUTHORITY_BASE}/${authority}/oauth2/v2.0/token`;
+}
 /** App Folder scope: the vault lives under /me/drive/special/approot; offline_access enables refresh. */
 const SCOPES = "Files.ReadWrite.AppFolder offline_access";
 const BACKEND_TYPE = "onedrive";
@@ -25,6 +37,7 @@ export function buildOneDriveAuthorizeUrl(opts: {
 	codeChallenge: string;
 	state: string;
 	redirectUri?: string;
+	authority?: string;
 }): string {
 	const params = new URLSearchParams({
 		client_id: opts.clientId,
@@ -35,7 +48,7 @@ export function buildOneDriveAuthorizeUrl(opts: {
 		redirect_uri: opts.redirectUri ?? ONEDRIVE_AUTH.redirectUri,
 		state: opts.state,
 	});
-	return `${AUTHORIZE_URL}?${params.toString()}`;
+	return `${authorizeUrlFor(opts.authority ?? DEFAULT_ONEDRIVE_AUTHORITY)}?${params.toString()}`;
 }
 
 /**
@@ -46,7 +59,11 @@ export function buildOneDriveAuthorizeUrl(opts: {
  * class supplies only Microsoft's wire protocol. One instance per FS lifetime.
  */
 export class OneDriveAuth extends BaseOAuthTokenManager {
-	constructor(private clientId: string, logger?: Logger) {
+	constructor(
+		private clientId: string,
+		private authority: string = DEFAULT_ONEDRIVE_AUTHORITY,
+		logger?: Logger,
+	) {
 		super();
 		this.logger = logger;
 	}
@@ -69,7 +86,7 @@ export class OneDriveAuth extends BaseOAuthTokenManager {
 	 */
 	async exchangeCode(code: string, codeVerifier: string, redirectUri: string = ONEDRIVE_AUTH.redirectUri): Promise<void> {
 		const res = await requestUrl({
-			url: TOKEN_URL,
+			url: tokenUrlFor(this.authority),
 			method: "POST",
 			throw: false,
 			headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -94,7 +111,7 @@ export class OneDriveAuth extends BaseOAuthTokenManager {
 		let res;
 		try {
 			res = await requestUrl({
-				url: TOKEN_URL,
+				url: tokenUrlFor(this.authority),
 				method: "POST",
 				throw: false,
 				headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -136,11 +153,14 @@ export class OneDriveAuthProvider extends PkceAuthProvider<OneDriveAuth> {
 		super(secretStore, BACKEND_TYPE, clientId, logger);
 	}
 
-	protected createAuth(clientId: string, logger?: Logger): OneDriveAuth {
-		return new OneDriveAuth(clientId, logger);
+	protected createAuth(clientId: string, _backendData: Record<string, unknown>, logger?: Logger): OneDriveAuth {
+		return new OneDriveAuth(clientId, DEFAULT_ONEDRIVE_AUTHORITY, logger);
 	}
 
-	protected buildAuthorizeUrl(opts: { clientId: string; codeChallenge: string; state: string }): string {
+	protected buildAuthorizeUrl(
+		opts: { clientId: string; codeChallenge: string; state: string },
+		_backendData: Record<string, unknown>,
+	): string {
 		return buildOneDriveAuthorizeUrl(opts);
 	}
 }

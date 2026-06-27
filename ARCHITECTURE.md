@@ -298,7 +298,7 @@ interface IAuthProvider {
 }
 ```
 
-The provider registry (`fs/registry.ts`) maps backend types to provider instances. New backends register here; no changes needed elsewhere. `initRegistry(secretStore)` must be called once during plugin load (`main.ts` onload) before any `getBackendProvider` call; it injects `ISecretStore` into the provider constructors. Until then the registry is empty and `getBackendProvider` returns undefined. Built-in providers: `GoogleDriveProvider` (type `googledrive`), `GoogleDriveCustomProvider` (type `googledrive-custom`), `DropboxProvider` (type `dropbox`), and `OneDriveProvider` (type `onedrive`). On a duplicate `type`, the first registration wins (later ones are skipped in the type lookup).
+The provider registry (`fs/registry.ts`) maps backend types to provider instances. New backends register here; no changes needed elsewhere. `initRegistry(secretStore)` must be called once during plugin load (`main.ts` onload) before any `getBackendProvider` call; it injects `ISecretStore` into the provider constructors. Until then the registry is empty and `getBackendProvider` returns undefined. Registered providers: `GoogleDriveProvider` (`googledrive`), `GoogleDriveCustomProvider` (`googledrive-custom`), `OneDriveProvider` (`onedrive`), `OneDriveCustomProvider` (`onedrive-custom`), `DropboxProvider` (`dropbox`), and `DropboxCustomProvider` (`dropbox-custom`). Each `*-custom` variant is a thin subclass of a renderer-free base (`provider-base.ts`) where the user supplies their own public PKCE client id (and, for OneDrive, the authority/account-type) via `backendData`. On a duplicate `type`, the first registration wins (later ones are skipped in the type lookup).
 
 ## Detailed documentation
 

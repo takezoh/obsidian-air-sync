@@ -130,6 +130,19 @@ with Dropbox. Refreshing an access token needs only the `client_id`.
 - The committed app key is a placeholder (`REPLACE_WITH_DROPBOX_APP_KEY`),
   replaced at build/deploy time.
 
+## Custom app (`dropbox-custom`)
+
+`DropboxCustomProvider` (`fs/dropbox/provider-custom.ts`) is a thin subclass of the
+shared `DropboxProviderBase` — identical client/FS/folder behaviour and the same App
+Folder scope — that swaps the auth identity. The user supplies **their own Dropbox app
+key** (a public PKCE identifier — no secret), stored in `backendData.customClientId` as a
+plain value; they must register `obsidian://air-sync-auth` as a redirect URI in that app.
+`DropboxCustomAuthProvider` overrides the PKCE seams to read the app key from
+`backendData` per call. Tokens live under the `dropbox-custom` SecretStorage keys,
+separate from the built-in. `disconnect` clears the tokens but preserves `customClientId`
+so a reconnect needs no re-entry. (Dropbox has no authority/account-type concept, so —
+unlike `onedrive-custom` — there is no account-type selector.)
+
 ## Provider model
 
 `DropboxProvider` (`fs/dropbox/provider.ts`, type `dropbox`):

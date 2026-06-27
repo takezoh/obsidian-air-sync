@@ -45,6 +45,17 @@ describe("backend registry ↔ checkpoint-store pairing", () => {
 	// checkpoint-bearing backend also ships the by-key clear. Pin it here: a backend that
 	// forgets clearCheckpointStore would silently orphan its store on a no-live-FS
 	// disconnect, leaving a stale checkpoint to mislead a later reconnect.
+	it("registers the built-in and custom-app variants of every backend", () => {
+		const types = getAllBackendProviders().map((p) => p.type);
+		expect(types).toEqual(
+			expect.arrayContaining([
+				"googledrive", "googledrive-custom",
+				"onedrive", "onedrive-custom",
+				"dropbox", "dropbox-custom",
+			]),
+		);
+	});
+
 	it("a backend ships clearCheckpointStore iff its FS carries a checkpoint", () => {
 		const providers = getAllBackendProviders();
 		expect(providers.length).toBeGreaterThan(0);

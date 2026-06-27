@@ -177,7 +177,7 @@ describe("OneDriveAuthProvider detached auth refresh-token rotation", () => {
 
 	it("persists a rotated refresh token from a detached refresh to SecretStorage", async () => {
 		const { auth, store } = await makeProvider(CONNECTED);
-		const detached = auth.createDetachedAuth();
+		const detached = auth.createDetachedAuth({});
 		detached.setTokens("RT", "AT", 0); // expired → must refresh
 
 		(await spyRequestUrl()).mockResolvedValue(
@@ -192,7 +192,7 @@ describe("OneDriveAuthProvider detached auth refresh-token rotation", () => {
 
 	it("leaves the stored refresh token untouched when the provider does not rotate it", async () => {
 		const { auth, store } = await makeProvider(CONNECTED);
-		const detached = auth.createDetachedAuth();
+		const detached = auth.createDetachedAuth({});
 		detached.setTokens("RT", "AT", 0);
 
 		(await spyRequestUrl()).mockResolvedValue(mockRes({ access_token: "AT2", expires_in: 3600 }));
