@@ -51,6 +51,8 @@ If you want to try syncing Obsidian's config directory (`.obsidian/`), add it to
 
 > **Warning**: The config directory contains Obsidian's internal metadata. Syncing it across devices may cause settings loss, layout corruption, or plugin malfunction.
 
+Not officially supported — feel free to try it, but you're on your own if it breaks.
+
 Example:
 
 ```
