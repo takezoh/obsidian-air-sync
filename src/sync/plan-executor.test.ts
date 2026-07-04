@@ -59,6 +59,28 @@ describe("executePlan", () => {
 			expect(remoteFs.files.has("a.md")).toBe(true);
 			expect(stateStore.records.has("a.md")).toBe(true);
 		});
+
+		it("records blocked actions without executing I/O", async () => {
+			const ctx = makeCtx({
+				isActionBlocked: (action) => action.path === "blocked.md" ? "known permanent failure" : null,
+			});
+			const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
+			const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+			addFile(localFs, "blocked.md", "content");
+			const writeSpy = vi.spyOn(remoteFs, "write");
+
+			const result = await executePlan(makePlan([{
+				path: "blocked.md",
+				action: "push",
+				local: { path: "blocked.md", isDirectory: false, size: 7, mtime: 1000, hash: "" },
+			}]), ctx);
+
+			expect(result.blocked).toHaveLength(1);
+			expect(result.blocked[0]!.reason).toBe("known permanent failure");
+			expect(result.succeeded).toHaveLength(0);
+			expect(result.failed).toHaveLength(0);
+			expect(writeSpy).not.toHaveBeenCalled();
+		});
 	});
 
 	describe("pull", () => {

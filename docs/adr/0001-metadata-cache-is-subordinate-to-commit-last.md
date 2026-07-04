@@ -32,12 +32,18 @@ converges by re-running** — but the derivation is **not** "A + B, therefore co
 2. **Same-session failure** (the FS object lives on): C has already advanced past the
    un-committed work, so a warm delta replay would **miss** the gap and `hasCheckpoint()`
    (which reads the in-memory token) stays true. What recovers it is neither A nor B but
-   `recoverViaColdScan = failed > 0` (`orchestrator.ts`), forcing the **next** cycle to
+   `recoverViaColdScan` (`orchestrator.ts`), forcing at least one **next** cycle to
    cold-reconcile (full list × `SyncRecord` baseline join) — catching the gap regardless of
-   cursor position. Delete it and a remote-only add/delete, or a push-failed local edit, is
-   **silently and permanently dropped for the rest of the session.** FS-level crash tests
-   stay green (they rebuild the FS and exercise only path 1); only `orchestrator.test.ts`
-   *"forces a cold reconcile on the cycle after a failure"* catches the regression.
+   cursor position. Only after that recovery debt is paid may the engine temporarily block
+   the same repeated `permanent` **local-origin** poison action (`push`, `delete_remote`,
+   `rename_remote`) in memory. Transient/rate-limit failures remain retryable after
+   recovery and are not blockable. Remote-origin actions (`pull`, `delete_local`,
+   `rename_local`) and `conflict` are never blocked, because hiding them can lose remote
+   changes. Delete the cold recovery and a remote-only add/delete, or a push-failed local
+   edit before the recovery pass, is **silently and permanently dropped for the rest of the
+   session.** FS-level crash tests stay green (they rebuild the FS and exercise only path
+   1); only `orchestrator.test.ts` *"forces a cold reconcile on the cycle after a failure"*
+   catches the regression.
 
 An already-synced file is skipped; an incompletely-synced one is re-pushed/-pulled/-deleted
 ⇒ committed ⇒ converged — via whichever of the two paths the failure mode selects.
@@ -125,10 +131,17 @@ FS (`resetCheckpoint()`), not by editing settings.
 - eager / mid-cycle cache persistence;
 - swallowing a cache-persist failure and continuing to advance the cursor;
 - treating the cache as authoritative for change detection or deletion;
-- **terminal-failure "quarantine" that advances the cursor despite a failed action** —
-  this violates rule A (one failure ⇒ cursor holds). Keeping genuinely un-syncable inputs
-  *out of the pipeline* (e.g. `isSystemJunkFile` for OS-generated files some backends
-  reject) is the sanctioned escape valve; silently skipping a real failure is not;
+- **terminal-failure "quarantine" that advances the cursor despite a failed action before
+  recovery** — this violates rule A (one failure ⇒ at least one cold recovery). The allowed
+  exception is narrow: after the recovery pass has run, an in-memory tracker may block the
+  same repeated `permanent` local-origin poison action (`push`, `delete_remote`,
+  `rename_remote`) for a short TTL and report it as `result.blocked`. This is not a blanket
+  cursor advance per failed action: transient/rate-limit failures, remote-origin actions,
+  and conflicts are not blocked, plugin reload clears the state, and action/content changes
+  or a non-eligible failure classification clear the signature. Keeping genuinely un-syncable
+  inputs *out of the pipeline* (e.g. `isSystemJunkFile` for OS-generated files some backends
+  reject) remains the preferred escape valve; silently skipping a real remote-origin failure
+  is not;
 - **pooling `conflict` actions with transfer-phase writes.** Conflict resolution mints a
   **planner-invisible** `.conflict` sibling path (`conflict.ts` `generateConflictPath` →
   `duplicate`) via cross-filesystem existence probing and writes it to both sides. The
@@ -207,6 +220,11 @@ FS (`resetCheckpoint()`), not by editing settings.
   **path 2 (same-session)**. Deleting `recoverViaColdScan` on the belief that the committed
   cursor alone closes the gap re-opens the silent in-session data loss this ADR exists to
   prevent; the path-1 tests above stay green, so this test is the only guard.
+- `orchestrator.test.ts` → *"does not keep cold-scanning and re-pushing the same poison file
+  after repeated identical failures"* and *"does not quarantine persistent pull failures"* —
+  pin the allowed exception: only same-signature permanent local-origin poison actions can be
+  blocked after the recovery pass; remote-origin failures keep recovery safety. The repeated
+  transient/rateLimit failure test pins that recoverable failures are never quarantined.
 - `index.test.ts` → *"GoogleDriveFs.commitCheckpoint persistence-failure safety"*,
   *"re-reports an un-pulled remote DELETION after a crash…"*, *"treats an empty store as
   no checkpoint: full-scans fresh and warrants no replay"*, and the rest of the

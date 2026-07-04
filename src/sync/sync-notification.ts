@@ -5,6 +5,7 @@ export interface SyncCycleResult {
 	result: ExecutionResult;
 	succeeded: number;
 	failed: number;
+	blocked: number;
 	conflicts: number;
 }
 
@@ -26,6 +27,7 @@ export function buildNotificationMessage(result: ExecutionResult): string {
 	if (counts.renamed > 0) parts.push(`${counts.renamed} renamed`);
 	if (result.conflicts.length > 0) parts.push(`${result.conflicts.length} conflicts`);
 	if (result.failed.length > 0) parts.push(`${result.failed.length} errors`);
+	if (result.blocked.length > 0) parts.push(`${result.blocked.length} blocked`);
 	return parts.length === 0 ? "Everything up to date" : `Sync: ${parts.join(", ")}`;
 }
 
@@ -37,7 +39,7 @@ export function buildNotificationMessage(result: ExecutionResult): string {
  * while collapsing repeated "Everything up to date" cycles into one message.
  */
 export class CycleSummary {
-	private readonly merged: ExecutionResult = { succeeded: [], failed: [], conflicts: [] };
+	private readonly merged: ExecutionResult = { succeeded: [], failed: [], blocked: [], conflicts: [] };
 
 	add(cycle: ExecutionResult): void {
 		// Append element-by-element, not `push(...arr)`: a cold full-scan cycle can
@@ -45,6 +47,7 @@ export class CycleSummary {
 		// overflow the engine's argument limit (RangeError) on mobile.
 		for (const a of cycle.succeeded) this.merged.succeeded.push(a);
 		for (const f of cycle.failed) this.merged.failed.push(f);
+		for (const b of cycle.blocked) this.merged.blocked.push(b);
 		for (const c of cycle.conflicts) this.merged.conflicts.push(c);
 	}
 

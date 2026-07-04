@@ -24,19 +24,20 @@ It handles both Fetch API `Headers` objects and plain `Record<string, string>` h
 | `rateLimit` | 429 | retry, honoring `retryAfterMs` |
 | `notFound` | 404 | stop retrying |
 | `transient` | network blip / 5xx / unknown | retry with backoff |
+| `permanent` | explicit backend/protocol invariant failure (for example a 2xx resumable-upload init without `Location`) | stop retrying |
 
 A backend with a quirkier convention wraps this in its own `classifyError` (the `IBackendProvider` hook). Google Drive does: `classifyGoogleDriveError()` (`fs/googledrive/errors.ts`) re-tags a **403 that is actually a rate limit** as `rateLimit` (retry) rather than `permission` (abort), detected by inspecting `error.json.error.errors[].reason` for `rateLimitExceeded` / `userRateLimitExceeded` / `dailyLimitExceeded`. This is the one Drive-specific wrinkle the neutral classifier can't know; everything else defers to `classifyHttpError`.
 
 ## Retry strategy
 
-The retry **policy** is one pure function — `decideRetry(classification, attempt, maxRetries, rng)` (`fs/errors.ts`) — shared by every retry site so behaviour can't drift between them and the policy is unit-testable with an injected `rng`. Given a classification it returns `abort` (`auth`/`permission`), `stop` (`notFound`), `retry` (with a `delayMs`), or `exhausted`. The delay honors a server-set `retryAfterMs` when present, else full-jitter exponential backoff: `2^(attempt-1) * 1000 * (0.5 + rng())` ms.
+The retry **policy** is one pure function — `decideRetry(classification, attempt, maxRetries, rng)` (`fs/errors.ts`) — shared by every retry site so behaviour can't drift between them and the policy is unit-testable with an injected `rng`. Given a classification it returns `abort` (`auth`/`permission`), `stop` (`notFound`/`permanent`), `retry` (with a `delayMs`), or `exhausted`. The delay honors a server-set `retryAfterMs` when present, else full-jitter exponential backoff: `2^(attempt-1) * 1000 * (0.5 + rng())` ms.
 
 `SyncOrchestrator.executeWithRetry()` drives each `executeSyncOnce()` cycle through that policy:
 
 - **Classify**: `provider.classifyError?.(err) ?? classifyHttpError(err)` — the backend override (e.g. Google's 403-means-rate-limit) when present, else the neutral classifier.
 - **Decide**: `decideRetry(classification, attempt, MAX_RETRIES = 3, Math.random)` — `abort`/`stop` end the loop early (no backoff); `retry` sleeps `delayMs` then re-runs; `exhausted` falls through to the generic failure tail.
 
-Only a *thrown* error from `executeSyncOnce()` triggers a *cycle-level* retry. Per-file failures are caught inside `executePlan` (in `executeAction`/`executeConflictAction`) and recorded in `result.failed` without throwing, so they never cause a cycle-level retry — a sync with failed actions returns a normal result reported as `"partial_error"`. The only error that propagates out of action execution is `AuthError` (re-thrown to abort the whole sync). Errors thrown *outside* per-action try/catch — change detection (`collectChanges`), planning (`planSync`/`refinePlan`), or `saveSettings` — do reach the retry loop.
+Only a *thrown* error from `executeSyncOnce()` triggers a *cycle-level* retry. Per-file failures are caught inside `executePlan` (in `executeAction`/`executeConflictAction`) and recorded in `result.failed` without throwing, so they never cause a cycle-level retry — a sync with failed or blocked actions returns a normal result reported as `"partial_error"`. The only error that propagates out of action execution is `AuthError` (re-thrown to abort the whole sync). Errors thrown *outside* per-action try/catch — change detection (`collectChanges`), planning (`planSync`/`refinePlan`), or `saveSettings` — do reach the retry loop.
 
 ### Two retry layers
 
@@ -53,7 +54,7 @@ Worst case for a single action is `MAX_ACTION_RETRIES` (3) I/O attempts; it neve
 |-------|----------|
 | `AuthError` | Immediate abort, status set to `"error"`, notification to reconnect |
 | 403 (non-rate-limit) | Immediate abort, permission denied notification |
-| 404 | Break the retry loop immediately (no backoff); falls through to the generic failure tail → status `error`, notification `Sync error: <message>`, returns null. The retries-exhausted case (`attempt === MAX_RETRIES`) reaches the same tail. |
+| 404 / `permanent` | Break the retry loop immediately (no backoff); falls through to the generic failure tail for cycle-level errors. For per-action errors, the action lands in `result.failed` without in-cycle retry. |
 
 ## Rate limiting
 
@@ -76,7 +77,7 @@ A transport-level 401 auto-refresh-retry happens inside `GoogleDriveClient.reque
 | Crash mid-sync | State is committed per action after successful I/O; uncommitted actions are re-detected next cycle. See [sync-pipeline.md § State commit](sync-pipeline.md#state-commit). |
 | IndexedDB eviction | `GoogleDriveFs` falls back to cold path (full scan). `SyncStateStore` returns empty `getAll()`, triggering cold change detection which does a full outer join. `resolveEmptyHashes` is implicit: cold mode treats all paths as candidates. |
 | Auth error | `AuthError` causes immediate abort. On a 400/401 token-refresh failure, `GoogleAuthBase.handleRefreshError()` records `authFailedAt = Date.now()`; for the next `AUTH_FAILED_COOLDOWN` (60 s) `getAccessToken()` short-circuits and throws `AuthError(401)` without attempting a refresh. After the cooldown a refresh is retried. Reconnecting (`setTokens()`) or any successful token store/refresh (`storeTokenResponse()`) resets `authFailedAt = 0`. Non-400/401 refresh errors are re-thrown unchanged and do not arm the cooldown. |
-| Individual file error | Caught per-action; the failed action is recorded in `result.failed`, other actions continue, status set to `"partial_error"`. See [sync-pipeline.md § Execution phases](sync-pipeline.md#execution-phases-lanetier-scheduling) and [Per-file error isolation](#per-file-error-isolation) below. |
+| Individual file error | Caught per-action; the failed action is recorded in `result.failed`, other actions continue, status set to `"partial_error"`. After one forced cold recovery, the same repeated local-origin poison action classified as `permanent` may be recorded in `result.blocked` for 5 minutes instead of being executed again. See [sync-pipeline.md § Execution phases](sync-pipeline.md#execution-phases-lanetier-scheduling) and [Per-file error isolation](#per-file-error-isolation) below. |
 | Mass deletion | No volume-based abort; erroneous deletions are prevented structurally. See [sync-pipeline.md § Deletion safety](sync-pipeline.md#deletion-safety). |
 | Stale cache (Google Drive) | `withCacheMutex()` verifies the file ID hasn't changed during I/O. If stale, the cache update is skipped with a warning. |
 
@@ -99,6 +100,8 @@ try {
 ```
 
 Execution runs in three phases (lane/tier scheduling — see [sync-pipeline.md](sync-pipeline.md)). Phase 1 runs transfers (`push`, `pull`) concurrently via an `AdaptivePool` (AIMD: desktop start 5 / max 10, mobile start 3 / max 8; +1 every 8 clean runs, halve on a rate-limit; plus a byte budget — in-flight bytes ≤ desktop 1 GB / mobile 512 MB — bounding peak memory), with the state-only `match`/`cleanup` run inline; Phase 2 runs `conflict` serially in its own phase via `executeConflictAction`; Phase 3 runs the remote and local structural lanes concurrently, each doing its renames serially then its deletes pooled (`AsyncPool(DELETE_CONCURRENCY = 5)`). Both `executeAction` and `executeConflictAction` apply the same per-action isolation (and the per-action `withIoRetry` above): each action is wrapped in its own try/catch that re-throws only `AuthError` (aborting the whole sync) and records every other error in `result.failed` so remaining actions continue.
+
+`SyncOrchestrator` also keeps an in-memory failed-action tracker. It never persists across plugin reloads. Only local-origin actions that are safe to skip after recovery (`push`, `delete_remote`, `rename_remote`) and whose failure classification is `permanent` are eligible. If the same backend/action/path/classification/message signature fails in two consecutive cycles, the third cycle records it in `result.blocked` without executing its I/O. Success, action/content changes, action type changes, a non-eligible failure classification, or the 5 minute TTL clear the block. Remote-origin and conflict actions are deliberately excluded, and `transient` / `rateLimit` failures are deliberately excluded so a recovered network/provider is retried immediately.
 
 ## Acknowledge pattern
 

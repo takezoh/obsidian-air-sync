@@ -23,6 +23,11 @@ export interface FailedAction {
 	error: Error;
 }
 
+export interface BlockedAction {
+	action: SyncAction;
+	reason: string;
+}
+
 export interface ResolvedConflict {
 	action: SyncAction;
 	resolution: ConflictResolutionResult;
@@ -33,6 +38,7 @@ export interface ResolvedConflict {
 export interface ExecutionResult {
 	succeeded: CompletedAction[];
 	failed: FailedAction[];
+	blocked: BlockedAction[];
 	conflicts: ResolvedConflict[];
 }
 
@@ -84,6 +90,8 @@ export interface ExecutionContext {
 	rng?: () => number;
 	/** Test seam: backoff sleep (default the real `sleep` from `./error`). */
 	sleep?: (ms: number) => Promise<void>;
+	/** この cycle で action を skip すべき場合に、その理由を返す。 */
+	isActionBlocked?: (action: SyncAction) => string | null;
 }
 
 type Lane = "remote" | "local" | "both" | "none";
@@ -191,7 +199,15 @@ export async function executePlan(
 	const result: ExecutionResult = {
 		succeeded: [],
 		failed: [],
+		blocked: [],
 		conflicts: [],
+	};
+
+	const total = plan.actions.length;
+	let completed = 0;
+	const reportProgress = () => {
+		completed++;
+		ctx.onProgress?.(completed, total);
 	};
 
 	// Partition by (lane, tier). Conflict is its own phase; match/cleanup are
@@ -205,6 +221,17 @@ export async function executePlan(
 	const deleteLocal: SyncAction[] = [];
 
 	for (const action of plan.actions) {
+		const blockedReason = ctx.isActionBlocked?.(action);
+		if (blockedReason) {
+			result.blocked.push({ action, reason: blockedReason });
+			ctx.logger?.warn("executePlan: action blocked", {
+				path: action.path,
+				action: action.action,
+				reason: blockedReason,
+			});
+			reportProgress();
+			continue;
+		}
 		const { lane, tier } = ACTION_CLASS[action.action];
 		if (action.action === "conflict") {
 			conflicts.push(action);
@@ -218,13 +245,6 @@ export async function executePlan(
 			(lane === "remote" ? deleteRemote : deleteLocal).push(action);
 		}
 	}
-
-	const total = plan.actions.length;
-	let completed = 0;
-	const reportProgress = () => {
-		completed++;
-		ctx.onProgress?.(completed, total);
-	};
 
 	// ── Phase 1 — transfers (adaptive pool) + state-only (bounded pool). ──
 	// One action per path ⇒ concurrent transfers target disjoint paths. State-only
