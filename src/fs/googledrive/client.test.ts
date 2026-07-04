@@ -206,6 +206,67 @@ describe("GoogleDriveClient resumable upload", () => {
 		mockRequestUrl.mockRestore();
 	});
 
+	it("accepts Android-style title-case Location header from resumable init", async () => {
+		const { GoogleDriveClient } = await import("./client");
+
+		let callCount = 0;
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(() => {
+			callCount++;
+			if (callCount === 1) {
+				return Promise.resolve(mockRes({}, { headers: { Location: "https://upload.example.com/android-session" } }));
+			}
+			return Promise.resolve(mockRes({
+				id: "uploaded-file",
+				name: "large.bin",
+				mimeType: "application/octet-stream",
+				md5Checksum: "finalhash",
+			}));
+		});
+
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
+		const content = new ArrayBuffer(12 * 1024 * 1024);
+		const result = await client.uploadFile(
+			"large.bin",
+			"parent-id",
+			content,
+			"application/octet-stream",
+			undefined,
+			Date.now()
+		);
+
+		expect(result.id).toBe("uploaded-file");
+		expect(callCount).toBe(2);
+		expect(mockRequestUrl.mock.calls[1]![0]).toMatchObject({
+			url: "https://upload.example.com/android-session",
+			method: "PUT",
+		});
+
+		mockRequestUrl.mockRestore();
+	});
+
+	it("reports status and response header keys when resumable init omits Location", async () => {
+		const { GoogleDriveClient } = await import("./client");
+
+		const mockRequestUrl = (await spyRequestUrl()).mockResolvedValue(
+			mockRes({}, { status: 200, headers: { "X-Goog-Upload-Status": "active" } })
+		);
+
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
+		const content = new ArrayBuffer(12 * 1024 * 1024);
+
+		await expect(client.uploadFile(
+			"large.bin",
+			"parent-id",
+			content,
+			"application/octet-stream",
+			undefined,
+			Date.now()
+		)).rejects.toThrow("status 200; headers: X-Goog-Upload-Status");
+		expect(mockRequestUrl).toHaveBeenCalledTimes(1);
+
+		mockRequestUrl.mockRestore();
+	});
+
 	it("propagates errors during resumable upload", async () => {
 		const { GoogleDriveClient } = await import("./client");
 

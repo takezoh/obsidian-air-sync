@@ -1,3 +1,5 @@
+import { getHeader } from "./headers";
+
 export class AuthError extends Error {
 	readonly status: number;
 	constructor(message: string, status: number) {
@@ -16,8 +18,9 @@ export class AuthError extends Error {
  * - `rateLimit` — throttled ⇒ retry, honouring `retryAfterMs` when the server set one.
  * - `notFound` — the target is gone (404) ⇒ stop retrying.
  * - `transient` — network blip / 5xx / unknown ⇒ retry with backoff.
+ * - `permanent` — 構造的に不正な backend/protocol 応答 ⇒ retry しない。
  */
-export type ErrorKind = "auth" | "permission" | "rateLimit" | "notFound" | "transient";
+export type ErrorKind = "auth" | "permission" | "rateLimit" | "notFound" | "transient" | "permanent";
 
 export interface ErrorClassification {
 	kind: ErrorKind;
@@ -43,14 +46,7 @@ export function getErrorInfo(err: unknown): ErrorInfo {
 		let retryAfter: number | null = null;
 		if ("headers" in err) {
 			const headers = (err as { headers: unknown }).headers;
-			let ra: string | null | undefined;
-			if (headers && typeof headers === "object" && "get" in headers && typeof (headers as { get: unknown }).get === "function") {
-				// Fetch API Headers object
-				ra = (headers as Headers).get("retry-after");
-			} else if (headers && typeof headers === "object") {
-				const h = headers as Record<string, string>;
-				ra = h["retry-after"] ?? h["Retry-After"];
-			}
+			const ra = getHeader(headers as Headers | Record<string, string>, "retry-after");
 			if (ra) {
 				const parsed = Number(ra);
 				if (!isNaN(parsed)) {
@@ -81,6 +77,9 @@ export function getErrorInfo(err: unknown): ErrorInfo {
  */
 export function classifyHttpError(err: unknown): ErrorClassification {
 	if (err instanceof AuthError) return { kind: "auth" };
+	if (err && typeof err === "object" && (err as { permanent?: unknown }).permanent === true) {
+		return { kind: "permanent" };
+	}
 	const { status, retryAfter } = getErrorInfo(err);
 	const retryAfterMs = retryAfter !== null ? retryAfter * 1000 : undefined;
 	if (status === 401) return { kind: "auth" };
@@ -102,7 +101,8 @@ const MAX_RETRY_DELAY_MS = 64_000;
  * can be unit-tested in isolation (with an injected rng for the jitter).
  *
  * - `abort` — give up now and surface a user-facing message (`auth` / `permission`).
- * - `stop`  — stop retrying without a backoff (e.g. 404: the target is gone).
+ * - `stop`  — stop retrying without a backoff (e.g. 404: the target is gone,
+ *             または恒久的な backend/protocol failure）。
  * - `retry` — wait `delayMs`, then try again.
  * - `exhausted` — out of attempts; the caller falls through to its generic failure.
  */
@@ -129,7 +129,7 @@ export function decideRetry(
 ): RetryDecision {
 	if (classification.kind === "auth") return { action: "abort", kind: "auth" };
 	if (classification.kind === "permission") return { action: "abort", kind: "permission" };
-	if (classification.kind === "notFound") return { action: "stop" };
+	if (classification.kind === "notFound" || classification.kind === "permanent") return { action: "stop" };
 	if (attempt >= maxRetries) return { action: "exhausted" };
 
 	const rawDelay = classification.retryAfterMs != null

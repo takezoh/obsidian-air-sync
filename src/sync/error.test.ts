@@ -18,6 +18,10 @@ describe("decideRetry", () => {
 		expect(decideRetry({ kind: "notFound" }, 1, MAX, halfRng)).toEqual({ action: "stop" });
 	});
 
+	it("stops (no backoff) on permanent backend/protocol failures", () => {
+		expect(decideRetry({ kind: "permanent" }, 1, MAX, halfRng)).toEqual({ action: "stop" });
+	});
+
 	it("retries transient/rateLimit while attempts remain", () => {
 		expect(decideRetry({ kind: "transient" }, 1, MAX, halfRng).action).toBe("retry");
 		expect(decideRetry({ kind: "rateLimit" }, 2, MAX, halfRng).action).toBe("retry");

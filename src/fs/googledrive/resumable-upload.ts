@@ -1,5 +1,6 @@
 import type { RequestUrlParam, RequestUrlResponse } from "obsidian";
 import type { Logger } from "../../logging/logger";
+import { getHeader, headerKeys } from "../headers";
 import type { GoogleDriveFile } from "./types";
 import { assertGoogleDriveFile, buildUploadMetadata } from "./types";
 
@@ -65,9 +66,18 @@ export class ResumableUploader {
 			body: JSON.stringify(metadata),
 		});
 
-		const uploadUrl = initResponse.headers["location"];
+		const uploadUrl = getHeader(initResponse.headers, "location");
 		if (!uploadUrl) {
-			throw new Error("Resumable upload: no upload URL in response");
+			const keys = headerKeys(initResponse.headers);
+			const error = new Error(
+				`Resumable upload: no upload URL in response (status ${initResponse.status}; headers: ${keys.length > 0 ? keys.join(", ") : "none"})`
+			);
+			Object.assign(error, {
+				permanent: true,
+				status: initResponse.status,
+				headers: initResponse.headers,
+			});
+			throw error;
 		}
 
 		// Upload the entire content in a single PUT (see class doc for why not chunked).

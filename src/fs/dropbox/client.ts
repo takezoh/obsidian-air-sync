@@ -1,6 +1,7 @@
 import { requestUrl } from "obsidian";
 import type { RequestUrlParam, RequestUrlResponse } from "obsidian";
 import type { Logger } from "../../logging/logger";
+import { getHeader } from "../headers";
 import type {
 	DropboxEntry,
 	DropboxListFolderResponse,
@@ -35,7 +36,7 @@ const defaultSleep: SleepFn = (ms) => new Promise((resolve) => window.setTimeout
 
 /** Backoff for a 429: honor `Retry-After` (seconds) when present, else exponential; always capped. */
 function rateLimitDelayMs(res: RequestUrlResponse, attempt: number): number {
-	const header = res.headers?.["retry-after"] ?? res.headers?.["Retry-After"];
+	const header = getHeader(res.headers, "retry-after");
 	const retryAfter = header ? Number(header) : NaN;
 	const raw = Number.isFinite(retryAfter) && retryAfter >= 0 ? retryAfter * 1000 : 500 * 2 ** attempt;
 	return Math.min(raw, MAX_RATE_LIMIT_DELAY_MS); // exponential is 0.5/1/2/4s; cap guards Retry-After

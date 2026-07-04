@@ -19,6 +19,7 @@ describe("getErrorInfo", () => {
 	it("reads Retry-After from a plain headers record (either casing)", () => {
 		expect(getErrorInfo({ status: 429, headers: { "retry-after": "12" } }).retryAfter).toBe(12);
 		expect(getErrorInfo({ status: 429, headers: { "Retry-After": "7" } }).retryAfter).toBe(7);
+		expect(getErrorInfo({ status: 429, headers: { "ReTrY-AfTeR": "3" } }).retryAfter).toBe(3);
 	});
 
 	it("parses an HTTP-date Retry-After into a non-negative seconds delay", () => {
@@ -34,6 +35,10 @@ describe("getErrorInfo", () => {
 describe("classifyHttpError", () => {
 	it("maps an AuthError to auth regardless of its status", () => {
 		expect(classifyHttpError(new AuthError("nope", 403))).toEqual({ kind: "auth" });
+	});
+
+	it("maps explicit permanent errors to permanent", () => {
+		expect(classifyHttpError(Object.assign(new Error("bad response"), { permanent: true }))).toEqual({ kind: "permanent" });
 	});
 
 	it("treats a RAW 401 (not an AuthError) as auth — abort, do not retry", () => {
