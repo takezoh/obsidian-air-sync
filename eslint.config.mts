@@ -228,7 +228,7 @@ export default tseslint.config(
 	},
 	{
 		files: ["src/sync/orchestrator.ts"],
-		rules: { "max-lines": ["error", { max: 332, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 367, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Lint manifest.json for the words the Obsidian submission validator

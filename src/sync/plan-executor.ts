@@ -1,8 +1,8 @@
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
-import type { ConflictRecord, ConflictStrategy, SyncAction, SyncActionType, SyncPlan } from "./types";
+import type { ConflictStrategy, SyncAction, SyncActionType, SyncPlan } from "./types";
 import type { StateCommitterContext } from "./state-committer";
-import type { ConflictResolverContext, ConflictResolutionResult } from "./conflict-resolver";
+import type { ConflictResolverContext } from "./conflict-resolver";
 import type { Logger } from "../logging/logger";
 import { commitAction } from "./state-committer";
 import { resolveConflict } from "./conflict-resolver";
@@ -11,62 +11,9 @@ import type { ErrorClassification } from "../fs/errors";
 import { AsyncPool, AdaptivePool } from "../queue/async-queue";
 import type { AdaptivePoolOpts } from "../queue/async-queue";
 import { decideRetry, sleep } from "./error";
-
-export interface CompletedAction {
-	action: SyncAction;
-	localEntity?: FileEntity;
-	remoteEntity?: FileEntity;
-}
-
-export interface FailedAction {
-	action: SyncAction;
-	error: Error;
-}
-
-export interface BlockedAction {
-	action: SyncAction;
-	reason: string;
-}
-
-export interface ResolvedConflict {
-	action: SyncAction;
-	resolution: ConflictResolutionResult;
-	localEntity?: FileEntity;
-	remoteEntity?: FileEntity;
-}
-
-export interface ExecutionResult {
-	succeeded: CompletedAction[];
-	failed: FailedAction[];
-	blocked: BlockedAction[];
-	conflicts: ResolvedConflict[];
-}
-
-/**
- * Bridge resolved conflicts into audit-history records (one per resolution). Pure,
- * so the writer (ConflictHistory) stays separate from both resolution and this
- * mapping — the caller stamps a session id and timestamp and hands the records to
- * the writer once per cycle.
- */
-export function toConflictRecords(
-	conflicts: ResolvedConflict[],
-	strategy: ConflictStrategy,
-	sessionId: string,
-	resolvedAt: string,
-): ConflictRecord[] {
-	return conflicts.map((c) => ({
-		path: c.action.path,
-		actionType: c.action.action,
-		strategy,
-		action: c.resolution.action,
-		local: c.localEntity,
-		remote: c.remoteEntity,
-		duplicatePath: c.resolution.duplicatePath,
-		hasConflictMarkers: c.resolution.hasConflictMarkers,
-		resolvedAt,
-		sessionId,
-	}));
-}
+import type { ExecutionResult } from "./execution-result";
+export type { BlockedAction, CompletedAction, ExecutionResult, FailedAction, ResolvedConflict } from "./execution-result";
+export { toConflictRecords } from "./execution-result";
 
 export interface ExecutionContext {
 	localFs: IFileSystem;
