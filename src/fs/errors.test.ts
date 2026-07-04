@@ -41,6 +41,13 @@ describe("classifyHttpError", () => {
 		expect(classifyHttpError(Object.assign(new Error("bad response"), { permanent: true }))).toEqual({ kind: "permanent" });
 	});
 
+	it("preserves a stable permanentCode for quarantine policy", () => {
+		expect(classifyHttpError(Object.assign(new Error("bad response"), {
+			permanent: true,
+			permanentCode: "backend.protocol.bad_response",
+		}))).toEqual({ kind: "permanent", permanentCode: "backend.protocol.bad_response" });
+	});
+
 	it("treats a RAW 401 (not an AuthError) as auth — abort, do not retry", () => {
 		// Intentional behaviour shift from the pre-refactor loop, which only special-cased
 		// `instanceof AuthError` and would have retried a bare 401 with backoff. A 401 is

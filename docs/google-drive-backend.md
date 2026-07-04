@@ -147,7 +147,7 @@ Tokens (`refreshToken`, `accessToken`) are stored in Obsidian's `SecretStorage` 
 1. Initiate a resumable upload session (POST/PATCH with `uploadType=resumable`)
 2. Upload the entire content in a **single PUT** — chunked upload is impossible here because Obsidian's `requestUrl` (Electron `net`) can't reliably handle the `308 Resume Incomplete` responses chunking depends on
 
-The init response's `Location` header is read case-insensitively because Obsidian desktop and mobile runtimes may expose response header keys with different casing. If Drive returns 2xx without an upload URL, the error includes the response status and header keys and is classified as `permanent` so in-cycle retry does not repeat a structurally invalid protocol response.
+The init response's `Location` header is read case-insensitively because Obsidian desktop and mobile runtimes may expose response header keys with different casing. If Drive returns 2xx without an upload URL, the error includes the response status and sorted header keys and is classified as `permanent` with `permanentCode = "googledrive.resumable_upload.missing_location"` so in-cycle retry does not repeat a structurally invalid protocol response and sync quarantine does not depend on human-readable diagnostics.
 
 A failed PUT is simply retried as a fresh upload on the next sync cycle; the resumable session is only an envelope for the single PUT, not a byte-range resume.
 

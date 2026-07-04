@@ -22,7 +22,7 @@ export function headerKeys(headers: HeaderBag): string[] {
 	if (isHeaders(headers)) {
 		const keys: string[] = [];
 		headers.forEach((_, key) => keys.push(key));
-		return keys;
+		return keys.sort();
 	}
-	return Object.keys(headers);
+	return Object.keys(headers).sort();
 }

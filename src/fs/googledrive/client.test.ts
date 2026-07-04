@@ -254,14 +254,21 @@ describe("GoogleDriveClient resumable upload", () => {
 		const client = new GoogleDriveClient(() => Promise.resolve("access"));
 		const content = new ArrayBuffer(12 * 1024 * 1024);
 
-		await expect(client.uploadFile(
-			"large.bin",
-			"parent-id",
-			content,
-			"application/octet-stream",
-			undefined,
-			Date.now()
-		)).rejects.toThrow("status 200; headers: X-Goog-Upload-Status");
+		try {
+			await client.uploadFile(
+				"large.bin",
+				"parent-id",
+				content,
+				"application/octet-stream",
+				undefined,
+				Date.now()
+			);
+			expect.fail("should have thrown");
+		} catch (err) {
+			expect(err).toBeInstanceOf(Error);
+			expect((err as Error).message).toContain("status 200; headers: X-Goog-Upload-Status");
+			expect((err as { permanentCode?: unknown }).permanentCode).toBe("googledrive.resumable_upload.missing_location");
+		}
 		expect(mockRequestUrl).toHaveBeenCalledTimes(1);
 
 		mockRequestUrl.mockRestore();

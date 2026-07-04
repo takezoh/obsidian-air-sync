@@ -26,6 +26,8 @@ export interface ErrorClassification {
 	kind: ErrorKind;
 	/** Server-requested delay before retry, derived from a Retry-After header (ms). */
 	retryAfterMs?: number;
+	/** 恒久失敗を quarantine するための安定した機械可読 code。 */
+	permanentCode?: string;
 }
 
 export interface ErrorInfo {
@@ -78,7 +80,10 @@ export function getErrorInfo(err: unknown): ErrorInfo {
 export function classifyHttpError(err: unknown): ErrorClassification {
 	if (err instanceof AuthError) return { kind: "auth" };
 	if (err && typeof err === "object" && (err as { permanent?: unknown }).permanent === true) {
-		return { kind: "permanent" };
+		const permanentCode = (err as { permanentCode?: unknown }).permanentCode;
+		return typeof permanentCode === "string" && permanentCode.length > 0
+			? { kind: "permanent", permanentCode }
+			: { kind: "permanent" };
 	}
 	const { status, retryAfter } = getErrorInfo(err);
 	const retryAfterMs = retryAfter !== null ? retryAfter * 1000 : undefined;

@@ -12,7 +12,7 @@ describe("header helpers", () => {
 		expect(getHeader({ LOCATION: "https://upload.example.com/session" }, "location")).toBe("https://upload.example.com/session");
 	});
 
-	it("returns header keys for diagnostics", () => {
-		expect(headerKeys({ Location: "x", "X-Goog-Upload": "y" })).toEqual(["Location", "X-Goog-Upload"]);
+	it("returns sorted header keys for stable diagnostics", () => {
+		expect(headerKeys({ "X-Goog-Upload": "y", Location: "x" })).toEqual(["Location", "X-Goog-Upload"]);
 	});
 });

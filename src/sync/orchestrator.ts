@@ -45,7 +45,11 @@ export interface SyncOrchestratorDeps {
 }
 
 const MAX_RETRIES = 3;
+// 2 回目の同一 permanent failure で初めて block する。これにより、失敗後の
+// cold recovery を 1 回は必ず支払い、3 cycle 目から poison action だけを抑制する。
 const FAILED_ACTION_BLOCK_THRESHOLD = 2;
+// mobile で同じ poison action を短時間に回し続けないための短い冷却時間。
+// 永続化しないので plugin reload / Obsidian restart では解除される。
 const FAILED_ACTION_BLOCK_TTL_MS = 5 * 60 * 1000;
 const BLOCKABLE_LOCAL_ORIGIN_ACTIONS = new Set<SyncActionType>(["push", "delete_remote", "rename_remote"]);
 
@@ -89,11 +93,12 @@ class FailedActionTracker {
 	): void {
 		if (!isBlockableLocalOriginAction(failed.action)) return;
 		this.expire(now);
-		if (!isQuarantineEligibleClassification(classification)) {
+		const failureCode = quarantineFailureCode(classification);
+		if (!failureCode) {
 			this.clearAction(backendType, failed.action);
 			return;
 		}
-		const key = this.key(backendType, failed.action, classification, failed.error.message);
+		const key = this.key(backendType, failed.action, failureCode);
 		const fingerprint = actionFingerprint(failed.action);
 		const existing = this.entries.get(key);
 		const consecutiveFailures = existing?.actionFingerprint === fingerprint
@@ -117,8 +122,9 @@ class FailedActionTracker {
 		now = Date.now(),
 	): boolean {
 		if (!isBlockableLocalOriginAction(failed.action)) return false;
-		if (!isQuarantineEligibleClassification(classification)) return false;
-		const entry = this.entries.get(this.key(backendType, failed.action, classification, failed.error.message));
+		const failureCode = quarantineFailureCode(classification);
+		if (!failureCode) return false;
+		const entry = this.entries.get(this.key(backendType, failed.action, failureCode));
 		return !!entry && entry.actionFingerprint === actionFingerprint(failed.action) && entry.blockedUntil > now;
 	}
 
@@ -139,8 +145,8 @@ class FailedActionTracker {
 		}
 	}
 
-	private key(backendType: string, action: SyncAction, classification: ErrorClassification, message: string): string {
-		return `${this.actionPrefix(backendType, action)}${classification.kind}\u0000${normalizeFailureMessage(message)}`;
+	private key(backendType: string, action: SyncAction, failureCode: string): string {
+		return `${this.actionPrefix(backendType, action)}permanent\u0000${failureCode}`;
 	}
 }
 
@@ -148,12 +154,10 @@ function isBlockableLocalOriginAction(action: SyncAction): boolean {
 	return BLOCKABLE_LOCAL_ORIGIN_ACTIONS.has(action.action);
 }
 
-function isQuarantineEligibleClassification(classification: ErrorClassification): boolean {
-	return classification.kind === "permanent";
-}
-
-function normalizeFailureMessage(message: string): string {
-	return message.trim().replace(/\s+/g, " ");
+function quarantineFailureCode(classification: ErrorClassification): string | null {
+	return classification.kind === "permanent" && classification.permanentCode
+		? classification.permanentCode
+		: null;
 }
 
 function actionFingerprint(action: SyncAction): string {

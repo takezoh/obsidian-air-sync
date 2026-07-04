@@ -36,8 +36,8 @@ converges by re-running** — but the derivation is **not** "A + B, therefore co
    cold-reconcile (full list × `SyncRecord` baseline join) — catching the gap regardless of
    cursor position. Only after that recovery debt is paid may the engine temporarily block
    the same repeated `permanent` **local-origin** poison action (`push`, `delete_remote`,
-   `rename_remote`) in memory. Transient/rate-limit failures remain retryable after
-   recovery and are not blockable. Remote-origin actions (`pull`, `delete_local`,
+   `rename_remote`) with a stable `permanentCode` in memory. Transient/rate-limit failures
+   remain retryable after recovery and are not blockable. Remote-origin actions (`pull`, `delete_local`,
    `rename_local`) and `conflict` are never blocked, because hiding them can lose remote
    changes. Delete the cold recovery and a remote-only add/delete, or a push-failed local
    edit before the recovery pass, is **silently and permanently dropped for the rest of the
@@ -135,10 +135,13 @@ FS (`resetCheckpoint()`), not by editing settings.
   recovery** — this violates rule A (one failure ⇒ at least one cold recovery). The allowed
   exception is narrow: after the recovery pass has run, an in-memory tracker may block the
   same repeated `permanent` local-origin poison action (`push`, `delete_remote`,
-  `rename_remote`) for a short TTL and report it as `result.blocked`. This is not a blanket
+  `rename_remote`) with a stable `permanentCode` for a short TTL and report it as
+  `result.blocked`. This is not a blanket
   cursor advance per failed action: transient/rate-limit failures, remote-origin actions,
   and conflicts are not blocked, plugin reload clears the state, and action/content changes
-  or a non-eligible failure classification clear the signature. Keeping genuinely un-syncable
+  or a non-eligible failure classification clear the signature. The threshold is two failed
+  cycles so one cold recovery pass is always paid first; the TTL is 5 minutes to limit mobile
+  battery/network churn without making the quarantine durable. Keeping genuinely un-syncable
   inputs *out of the pipeline* (e.g. `isSystemJunkFile` for OS-generated files some backends
   reject) remains the preferred escape valve; silently skipping a real remote-origin failure
   is not;
@@ -222,9 +225,10 @@ FS (`resetCheckpoint()`), not by editing settings.
   prevent; the path-1 tests above stay green, so this test is the only guard.
 - `orchestrator.test.ts` → *"does not keep cold-scanning and re-pushing the same poison file
   after repeated identical failures"* and *"does not quarantine persistent pull failures"* —
-  pin the allowed exception: only same-signature permanent local-origin poison actions can be
-  blocked after the recovery pass; remote-origin failures keep recovery safety. The repeated
-  transient/rateLimit failure test pins that recoverable failures are never quarantined.
+  pin the allowed exception: only same-signature permanent local-origin poison actions with a
+  stable code can be blocked after the recovery pass; remote-origin failures keep recovery
+  safety. The repeated transient/rateLimit failure test pins that recoverable failures are
+  never quarantined.
 - `index.test.ts` → *"GoogleDriveFs.commitCheckpoint persistence-failure safety"*,
   *"re-reports an un-pulled remote DELETION after a crash…"*, *"treats an empty store as
   no checkpoint: full-scans fresh and warrants no replay"*, and the rest of the
