@@ -2,12 +2,20 @@ import type { ChecksumAlgo } from "../fs/types";
 import { md5 } from "./md5";
 import { quickXorHashBase64 } from "./quickxor";
 
+const HEX_DIGITS = "0123456789abcdef";
+
+function hexDigit(value: number): string {
+	return HEX_DIGITS.charAt(value & 0x0f);
+}
+
 /** Convert a digest ArrayBuffer to a lowercase hex string. */
 function toHex(buffer: ArrayBuffer): string {
 	const bytes = new Uint8Array(buffer);
 	let hex = "";
 	for (let i = 0; i < bytes.length; i++) {
-		hex += bytes[i]!.toString(16).padStart(2, "0");
+		const byte = bytes[i];
+		if (byte === undefined) continue;
+		hex += hexDigit(byte >> 4) + hexDigit(byte);
 	}
 	return hex;
 }

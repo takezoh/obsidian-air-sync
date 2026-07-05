@@ -126,7 +126,10 @@ export function assertOk(res: { status: number; json?: unknown; text?: string },
 	}
 	const summary = body?.error_summary ?? (typeof res.text === "string" ? res.text : "");
 	const tag = body?.error?.[".tag"] ?? summary.split("/")[0] ?? "";
-	const message = `Dropbox API ${op} failed: ${res.status} ${summary || tag}`.trimEnd();
+	const detail = summary || tag;
+	const message = detail
+		? `Dropbox API ${op} failed: ${res.status} ${detail}`
+		: `Dropbox API ${op} failed: ${res.status}`;
 	if (res.status === 401 || AUTH_ERROR_TAGS.has(tag)) {
 		throw new AuthError(message, 401);
 	}

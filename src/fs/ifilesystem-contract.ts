@@ -102,7 +102,7 @@ export interface IFileSystemContractCtx {
 
 /** Encode text as an ArrayBuffer. */
 export function bytes(text: string): ArrayBuffer {
-	return new TextEncoder().encode(text).buffer as ArrayBuffer;
+	return new TextEncoder().encode(text).buffer.slice(0);
 }
 
 /** Decode an ArrayBuffer as UTF-8 text. */

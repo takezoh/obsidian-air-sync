@@ -1,14 +1,11 @@
 import { deflateSync as rawDeflateSync, inflateSync as rawInflateSync } from "fflate";
 
-// fflate 0.8.x declares these as returning `Uint8Array<ArrayBuffer>` (the
-// generic Uint8Array form). The community submission bot lints on a toolchain
-// where that generic does not resolve, so the return type degrades to `any`
-// and the typed-lint rules flag every downstream use. Pin the signatures to a
-// plain, always-resolvable `Uint8Array` so the codec stays type-safe in every
-// environment; the cast through `unknown` launders the unresolved type.
-type ByteCodec = (data: Uint8Array) => Uint8Array;
-const deflateSync = rawDeflateSync as unknown as ByteCodec;
-const inflateSync = rawInflateSync as unknown as ByteCodec;
+// fflate's exposed type can drift across toolchains. Narrow the runtime result
+// explicitly so typed-lint never depends on how that generic resolves.
+function expectUint8Array(value: unknown, op: string): Uint8Array {
+	if (value instanceof Uint8Array) return value;
+	throw new Error(`fflate ${op} returned a non-Uint8Array result`);
+}
 
 /**
  * Codec for base (3-way merge) content stored in IndexedDB.
@@ -28,7 +25,7 @@ const FORMAT_DEFLATE = 0x01; // body is raw-deflate compressed
 /** Compress content for storage, prefixing a 1-byte format header. */
 export function encodeContent(buf: ArrayBuffer): ArrayBuffer {
 	const input = new Uint8Array(buf);
-	const compressed = deflateSync(input);
+	const compressed = expectUint8Array(rawDeflateSync(input), "deflateSync");
 	// Skip compression when it does not shrink the input (tiny/incompressible
 	// data, where the deflate overhead would otherwise grow it).
 	const useDeflate = compressed.length < input.length;
@@ -46,10 +43,9 @@ export function decodeContent(buf: ArrayBuffer): ArrayBuffer {
 	const body = bytes.subarray(1);
 	if (format === FORMAT_DEFLATE) {
 		// fflate returns a fresh, offset-0, exactly-sized Uint8Array, so its
-		// `.buffer` is safe to hand back directly (zero-copy). The cast only
-		// re-narrows ArrayBufferLike → ArrayBuffer, lost when ByteCodec pins the
-		// return to a plain Uint8Array.
-		return inflateSync(body).buffer as ArrayBuffer;
+		// `.buffer.slice(0)` preserves a standalone ArrayBuffer type across
+		// toolchains whose DOM libs widen `.buffer` to ArrayBufferLike.
+		return expectUint8Array(rawInflateSync(body), "inflateSync").buffer.slice(0);
 	}
 	if (format === FORMAT_RAW) {
 		// .slice() copies the subarray into a standalone buffer so the returned

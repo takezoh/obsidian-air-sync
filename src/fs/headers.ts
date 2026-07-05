@@ -10,7 +10,12 @@ export function getHeader(headers: HeaderBag, name: string): string | null {
 	if (isHeaders(headers)) return headers.get(name);
 
 	const target = name.toLowerCase();
-	for (const [key, value] of Object.entries(headers)) {
+	const pairs: Array<[string, string]> = [];
+	for (const key of Object.keys(headers)) {
+		const value = headers[key];
+		if (typeof value === "string") pairs.push([key, value]);
+	}
+	for (const [key, value] of pairs) {
 		if (key.toLowerCase() === target) return value;
 	}
 	return null;

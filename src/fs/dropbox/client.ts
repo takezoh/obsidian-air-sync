@@ -22,6 +22,11 @@ export const MAX_RATE_LIMIT_RETRIES = 4;
 
 /** Cap a single 429 backoff so a large `Retry-After` can't freeze the sync for minutes. */
 const MAX_RATE_LIMIT_DELAY_MS = 64_000;
+const HEX_DIGITS = "0123456789abcdef";
+
+function hexDigit(value: number): string {
+	return HEX_DIGITS.charAt(value & 0x0f);
+}
 
 /**
  * Hard cap on pagination drain loops (full list and delta). Reaching it means the
@@ -51,11 +56,19 @@ function rateLimitDelayMs(res: RequestUrlResponse, attempt: number): number {
  * non-ASCII (e.g. Japanese) paths work.
  */
 function toApiArgHeader(arg: unknown): string {
-	const json = JSON.stringify(arg);
+	const json = JSON.stringify(arg) ?? "null";
 	let out = "";
 	for (let i = 0; i < json.length; i++) {
 		const code = json.charCodeAt(i);
-		out += code >= 0x7f ? "\\u" + code.toString(16).padStart(4, "0") : json[i];
+		if (code >= 0x7f) {
+			out += "\\u"
+				+ hexDigit(code >> 12)
+				+ hexDigit(code >> 8)
+				+ hexDigit(code >> 4)
+				+ hexDigit(code);
+			continue;
+		}
+		out += json[i] ?? "";
 	}
 	return out;
 }

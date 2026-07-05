@@ -7,6 +7,13 @@ const RATE_LIMIT_REASONS = new Set([
 	"dailyLimitExceeded",
 ]);
 
+function hasStringReason(value: unknown): value is { reason: string } {
+	return !!value
+		&& typeof value === "object"
+		&& "reason" in value
+		&& typeof value.reason === "string";
+}
+
 /**
  * Google Drive returns **403** for both genuine permission failures AND rate limits;
  * only a rate-limit carries one of {@link RATE_LIMIT_REASONS} in `error.errors[].reason`.
@@ -22,12 +29,7 @@ function isGoogleDriveRateLimit(err: unknown): boolean {
 		const errList = (errors as Record<string, unknown>).errors;
 		if (!Array.isArray(errList)) return false;
 		return errList.some(
-			(e: unknown) =>
-				e &&
-				typeof e === "object" &&
-				"reason" in e &&
-				typeof (e as { reason: unknown }).reason === "string" &&
-				RATE_LIMIT_REASONS.has((e as { reason: string }).reason)
+			(e: unknown) => hasStringReason(e) && RATE_LIMIT_REASONS.has(e.reason)
 		);
 	} catch {
 		return false;

@@ -41,13 +41,20 @@ const FOLDER_PICKER_URL = "https://airsync.takezo.dev/googledrive-folder";
  * in Cloud Console to the Picker API + referrer `airsync.takezo.dev/*`.
  */
 const PICKER_API_KEY = "AIzaSyDyXTKejmlaTcBIDCx3lJYFhDMmyRKRZwc";
+const HEX_DIGITS = "0123456789abcdef";
+
+function hexDigit(value: number): string {
+	return HEX_DIGITS.charAt(value & 0x0f);
+}
 
 /** Random hex nonce for the folder-pick CSRF `state`. */
 function randomState(): string {
 	const arr = new Uint8Array(24);
 	crypto.getRandomValues(arr);
 	let out = "";
-	for (const b of arr) out += b.toString(16).padStart(2, "0");
+	for (const b of arr) {
+		out += hexDigit(b >> 4) + hexDigit(b);
+	}
 	return out;
 }
 

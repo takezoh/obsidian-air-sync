@@ -131,7 +131,10 @@ export function assertOk(res: { status: number; json?: unknown; text?: string },
 	}
 	const code = body?.error?.code ?? "";
 	const detail = body?.error?.message ?? (typeof res.text === "string" ? res.text : "");
-	const message = `OneDrive API ${op} failed: ${res.status} ${code || detail}`.trimEnd();
+	const suffix = code || detail;
+	const message = suffix
+		? `OneDrive API ${op} failed: ${res.status} ${suffix}`
+		: `OneDrive API ${op} failed: ${res.status}`;
 	if (res.status === 401 || AUTH_ERROR_CODES.has(code)) {
 		throw new AuthError(message, 401);
 	}

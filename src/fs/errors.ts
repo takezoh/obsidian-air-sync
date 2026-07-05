@@ -1,5 +1,13 @@
 import { getHeader } from "./headers";
 
+function hasNumberStatus(err: object): err is { status: number } {
+	return "status" in err && typeof err.status === "number";
+}
+
+function getHeadersValue(err: object): unknown {
+	return "headers" in err ? err.headers : undefined;
+}
+
 export class AuthError extends Error {
 	readonly status: number;
 	constructor(message: string, status: number) {
@@ -43,24 +51,26 @@ export interface ErrorInfo {
  */
 export function getErrorInfo(err: unknown): ErrorInfo {
 	if (err && typeof err === "object") {
-		const status =
-			"status" in err ? (err as { status: number }).status : null;
+		const status = hasNumberStatus(err) ? err.status : null;
 		let retryAfter: number | null = null;
-		if ("headers" in err) {
-			const headers = (err as { headers: unknown }).headers;
-			const ra = getHeader(headers as Headers | Record<string, string>, "retry-after");
-			if (ra) {
-				const parsed = Number(ra);
-				if (!isNaN(parsed)) {
-					// Clamp: a malformed negative Retry-After must not become a negative
-					// (immediately-resolving) sleep that defeats throttling.
-					retryAfter = Math.max(0, parsed);
-				} else {
-					// RFC 7231: Retry-After can be an HTTP-date
-					const dateMs = Date.parse(ra);
-					if (!isNaN(dateMs)) {
-						retryAfter = Math.max(0, Math.ceil((dateMs - Date.now()) / 1000));
-					}
+		const headers = getHeadersValue(err);
+		const ra = getHeader(
+			headers instanceof Headers || typeof headers === "object"
+				? (headers as Headers | Record<string, string> | null | undefined)
+				: undefined,
+			"retry-after",
+		);
+		if (ra) {
+			const parsed = Number(ra);
+			if (!isNaN(parsed)) {
+				// Clamp: a malformed negative Retry-After must not become a negative
+				// (immediately-resolving) sleep that defeats throttling.
+				retryAfter = Math.max(0, parsed);
+			} else {
+				// RFC 7231: Retry-After can be an HTTP-date
+				const dateMs = Date.parse(ra);
+				if (!isNaN(dateMs)) {
+					retryAfter = Math.max(0, Math.ceil((dateMs - Date.now()) / 1000));
 				}
 			}
 		}

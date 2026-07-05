@@ -13,7 +13,7 @@ export async function spyRequestUrl() {
 
 /** Shorthand to build a partial RequestUrlResponse for mocks */
 export function mockRes(json: unknown, extra?: Partial<RequestUrlResponse>): RequestUrlResponse {
-	return { status: 200, headers: {}, arrayBuffer: new ArrayBuffer(0), text: "", json, ...extra } as RequestUrlResponse;
+	return { status: 200, headers: {}, arrayBuffer: new ArrayBuffer(0), text: "", json, ...extra };
 }
 
 /** Type for accessing private fields on GoogleDriveFs in tests */
@@ -33,7 +33,10 @@ export interface GoogleDriveCustomAuthProviderInternal {
 
 /** Create a mock ISecretStore for tests */
 export function createMockSecretStore(secrets: Record<string, string> = {}): ISecretStore {
-	const store = new Map(Object.entries(secrets));
+	const store = new Map<string, string>();
+	for (const key of Object.keys(secrets)) {
+		store.set(key, secrets[key] ?? "");
+	}
 	return {
 		getSecret: (id: string) => store.get(id) ?? null,
 		setSecret: (id: string, secret: string) => { store.set(id, secret); },

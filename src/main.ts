@@ -14,6 +14,16 @@ import { LocalChangeTracker } from "./sync/local-tracker";
 import { Logger, getDeviceName } from "./logging/logger";
 import { ConflictHistory } from "./sync/conflict-history";
 
+function protocolParamsEntries(params: unknown): Array<[string, string]> {
+	if (!params || typeof params !== "object") return [];
+	const entries: Array<[string, string]> = [];
+	for (const key of Object.keys(params)) {
+		const value = (params as Record<string, unknown>)[key];
+		if (typeof value === "string") entries.push([key, value]);
+	}
+	return entries;
+}
+
 export default class AirSyncPlugin extends Plugin {
 	settings!: AirSyncSettings;
 	private localFs: LocalFs | null = null;
@@ -139,7 +149,7 @@ export default class AirSyncPlugin extends Plugin {
 			}
 			// Synthetic URL to pass tokens/code to completeAuth(), which parses callback URL params
 			const url = new URL("https://callback");
-			for (const [key, value] of Object.entries(params)) {
+			for (const [key, value] of protocolParamsEntries(params)) {
 				url.searchParams.set(key, value);
 			}
 			void this.backendManager.completeBackendConnect(url.toString());
