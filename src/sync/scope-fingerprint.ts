@@ -29,5 +29,5 @@ export async function computeScopeFingerprint(
 		configDir,
 		pluginId,
 	});
-	return sha256(new TextEncoder().encode(canonical).buffer as ArrayBuffer);
+	return sha256(new TextEncoder().encode(canonical).buffer);
 }
