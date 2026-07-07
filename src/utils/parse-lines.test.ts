@@ -18,17 +18,13 @@ describe("parseLines", () => {
 		expect(parseLines("build/\nx", {})).toEqual(["build/", "x"]);
 	});
 
-	it("keeps only lines with the required prefix", () => {
-		expect(parseLines(".a\nb\n.c", { requirePrefix: "." })).toEqual([".a", ".c"]);
-	});
-
 	it("dedupes preserving first-seen order", () => {
 		expect(parseLines("a\nb\na", { dedupe: true })).toEqual(["a", "b"]);
 	});
 
-	it("composes the dot-paths recipe (strip slash + require '.' + dedupe)", () => {
-		expect(parseLines(".t/\n.t\nx\n.s", { stripTrailingSlash: true, requirePrefix: ".", dedupe: true }))
-			.toEqual([".t", ".s"]);
+	it("composes the dot-paths recipe (strip slash + dedupe)", () => {
+		expect(parseLines(".t/\n.t\nx\n.s", { stripTrailingSlash: true, dedupe: true }))
+			.toEqual([".t", "x", ".s"]);
 	});
 
 	it("returns an empty list for empty/whitespace input", () => {

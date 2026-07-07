@@ -4,6 +4,7 @@ import type { ConflictStrategy } from "../sync/types";
 import { getAllBackendProviders, getBackendProvider } from "../fs/registry";
 import { getBackendSettingsRenderer } from "./backend-settings";
 import { parseLines } from "../utils/parse-lines";
+import { isDotPrefixed } from "../utils/path";
 import { getConfigSyncIgnorePatterns } from "../config-sync";
 
 export class AirSyncSettingTab extends PluginSettingTab {
@@ -111,20 +112,19 @@ export class AirSyncSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Dot-prefixed paths to sync")
 			.setDesc(
-				"Dot-prefixed folders to include in sync, one per line (e.g. .templates)."
+				"Dot-prefixed folders to include in sync, one per line."
 			)
 			.addTextArea((text) =>
 				text
-					.setPlaceholder(".templates\n.stversions")
+					.setPlaceholder(".templates\nfoo/.bar")
 					.setValue(
 						this.plugin.settings.syncDotPaths.join("\n")
 					)
 					.onChange(async (value) => {
 						this.plugin.settings.syncDotPaths = parseLines(value, {
 							stripTrailingSlash: true,
-							requirePrefix: ".",
 							dedupe: true,
-						});
+						}).filter(isDotPrefixed);
 						await this.plugin.saveSettings();
 					})
 			);
