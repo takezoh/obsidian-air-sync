@@ -1,6 +1,7 @@
 import { Notice, Platform, Plugin, setIcon, setTooltip } from "obsidian";
 import { DEFAULT_SETTINGS, AirSyncSettings } from "./settings";
 import { liftActiveBackendData, normalizeConflictStrategy } from "./settings-normalize";
+import { getEffectiveSyncDotPaths } from "./config-sync";
 import { AirSyncSettingTab } from "./ui/settings";
 import { LocalFs } from "./fs/local/index";
 import { BackendManager } from "./fs/backend-manager";
@@ -50,7 +51,9 @@ export default class AirSyncPlugin extends Plugin {
 
 		await this.loadSettings();
 
-		this.localFs = new LocalFs(this.app, () => this.settings.syncDotPaths);
+		this.localFs = new LocalFs(this.app, () =>
+			getEffectiveSyncDotPaths(this.settings, this.app.vault.configDir)
+		);
 
 		const deviceName = getDeviceName(Platform.isMobile, this.settings.vaultId);
 		// vault.adapter is a structural superset of RawFsAdapter — no cast needed.
@@ -102,6 +105,8 @@ export default class AirSyncPlugin extends Plugin {
 		this.orchestrator = new SyncOrchestrator({
 			getSettings: () => this.settings,
 			saveSettings: () => this.saveSettings(),
+			configDir: () => this.app.vault.configDir,
+			pluginId: () => this.manifest.id,
 			localFs: () => this.localFs,
 			remoteFs: () => this.backendManager.getRemoteFs(),
 			backendProvider: () => this.backendManager.getBackendProvider(),

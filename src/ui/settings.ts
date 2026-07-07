@@ -4,6 +4,7 @@ import type { ConflictStrategy } from "../sync/types";
 import { getAllBackendProviders, getBackendProvider } from "../fs/registry";
 import { getBackendSettingsRenderer } from "./backend-settings";
 import { parseLines } from "../utils/parse-lines";
+import { getConfigSyncIgnorePatterns } from "../config-sync";
 
 export class AirSyncSettingTab extends PluginSettingTab {
 	plugin: AirSyncPlugin;
@@ -226,5 +227,36 @@ export class AirSyncSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					})
 			);
+
+		// --- Experimental settings ---
+		new Setting(containerEl).setName("Experimental").setHeading();
+
+		const configDir = this.app.vault.configDir;
+
+		new Setting(containerEl)
+			.setName("Sync Obsidian config (experimental)")
+			.setDesc(
+				`Sync Obsidian's own config directory (${configDir}/) — hotkeys, plugin settings, and other ` +
+					"portable settings. Device-specific window layout is deliberately excluded. This is Obsidian's " +
+					"internal metadata; syncing it across devices may cause settings loss or plugin malfunction."
+			)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.enableConfigSync)
+					.onChange(async (value) => {
+						this.plugin.settings.enableConfigSync = value;
+						await this.plugin.saveSettings();
+						this.display();
+					})
+			);
+
+		if (this.plugin.settings.enableConfigSync) {
+			new Setting(containerEl)
+				.setName("Injected ignore patterns")
+				.setDesc(
+					"Added automatically to the top of your Ignore patterns above:\n" +
+						getConfigSyncIgnorePatterns(configDir, this.plugin.manifest.id).join("\n")
+				);
+		}
 	}
 }

@@ -350,6 +350,7 @@ export function mockSettings(
 		syncDotPaths: [],
 		// Mirror production DEFAULT_SETTINGS for behaviour-affecting flags so tests
 		// don't run under a configuration real users never have.
+		enableConfigSync: false,
 		enableThreeWayMerge: true,
 		mobileMaxFileSizeMB: 10,
 		screenWakeLockOnSync: false,

@@ -22,6 +22,15 @@ vi.mock("./error", async (importOriginal) => {
 	return { ...actual, sleep: () => Promise.resolve() };
 });
 
+// A vault's configDir is user-configurable, so tests use a value distinct from
+// the (arbitrary) Obsidian default to prove the logic doesn't hardcode it. It's
+// dot-prefixed like every real configDir, since that's what puts it under the
+// syncDotPaths scope gate in the first place.
+const TEST_CONFIG_DIR = ".cfg";
+// Distinct from the real manifest id ("air-sync") to prove the exclusion logic
+// derives it from deps rather than hardcoding it.
+const TEST_PLUGIN_ID = "test-plugin";
+
 function mockSettings(): AirSyncSettings {
 	// Unique vaultId per call keeps each orchestrator's fake-indexeddb store isolated.
 	return baseMockSettings({
@@ -38,6 +47,8 @@ function createDeps(
 	return {
 		getSettings: () => mockSettings(),
 		saveSettings: vi.fn().mockResolvedValue(undefined),
+		configDir: () => TEST_CONFIG_DIR,
+		pluginId: () => TEST_PLUGIN_ID,
 		localFs: () => localFs,
 		remoteFs: () => remoteFs,
 		backendProvider: () => null,
@@ -710,6 +721,63 @@ describe("SyncOrchestrator", () => {
 			expect(orchestrator.isExcluded("notes/.DS_Store")).toBe(true);
 			// Real content is unaffected.
 			expect(orchestrator.isExcluded("notes/hello.md")).toBe(false);
+		});
+
+		it("does not sync the config directory by default (enableConfigSync off)", () => {
+			const settings = mockSettings();
+			settings.enableConfigSync = false;
+			settings.syncDotPaths = [];
+			settings.ignorePatterns = [];
+			const deps = createDeps({ getSettings: () => settings });
+			const orchestrator = new SyncOrchestrator(deps);
+
+			expect(orchestrator.isExcluded(`${TEST_CONFIG_DIR}/app.json`)).toBe(true);
+		});
+
+		it("syncs allowed config-dir paths and excludes this plugin's own data.json when enableConfigSync is on", () => {
+			const settings = mockSettings();
+			settings.enableConfigSync = true;
+			settings.syncDotPaths = [];
+			settings.ignorePatterns = [];
+			const deps = createDeps({ getSettings: () => settings });
+			const orchestrator = new SyncOrchestrator(deps);
+
+			// Portable settings sync...
+			expect(orchestrator.isExcluded(`${TEST_CONFIG_DIR}/app.json`)).toBe(false);
+			expect(orchestrator.isExcluded(`${TEST_CONFIG_DIR}/plugins/some-other-plugin/data.json`)).toBe(false);
+			// ...but device-specific layout and this plugin's own data.json don't.
+			expect(orchestrator.isExcluded(`${TEST_CONFIG_DIR}/workspace.json`)).toBe(true);
+			expect(orchestrator.isExcluded(`${TEST_CONFIG_DIR}/plugins/${TEST_PLUGIN_ID}/data.json`)).toBe(true);
+		});
+
+		it("never syncs this plugin's own data.json, even if the user's own ignorePatterns tries to un-ignore it", () => {
+			const settings = mockSettings();
+			settings.enableConfigSync = true;
+			settings.syncDotPaths = [];
+			// A broad negation a user might add to "sync everything" — without the
+			// unconditional isOwnPluginDataPath check, gitignore's last-match-wins
+			// semantics would let this override the built-in exclusion and leak
+			// this device's backend credentials/vaultId to another device.
+			settings.ignorePatterns = ["!**"];
+			const deps = createDeps({ getSettings: () => settings });
+			const orchestrator = new SyncOrchestrator(deps);
+
+			expect(orchestrator.isExcluded(`${TEST_CONFIG_DIR}/plugins/${TEST_PLUGIN_ID}/data.json`)).toBe(true);
+		});
+
+		it("never syncs this plugin's own data.json even with enableConfigSync off, if the user manually opted the config dir into syncDotPaths", () => {
+			// The pre-existing, still-fully-functional manual workflow (typing the
+			// config dir into "Dot-prefixed paths to sync" without ever touching the
+			// new toggle) must stay protected too — isOwnPluginDataPath is checked
+			// unconditionally in isExcluded(), not gated on settings.enableConfigSync.
+			const settings = mockSettings();
+			settings.enableConfigSync = false;
+			settings.syncDotPaths = [TEST_CONFIG_DIR];
+			settings.ignorePatterns = ["!**"];
+			const deps = createDeps({ getSettings: () => settings });
+			const orchestrator = new SyncOrchestrator(deps);
+
+			expect(orchestrator.isExcluded(`${TEST_CONFIG_DIR}/plugins/${TEST_PLUGIN_ID}/data.json`)).toBe(true);
 		});
 	});
 

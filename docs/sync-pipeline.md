@@ -13,10 +13,12 @@ The orchestrator (`SyncOrchestrator.executeSyncOnce()`) drives this pipeline, ap
 
 **Scope filter (`SyncOrchestrator.isExcluded()`)** — a path is synced only if it passes **both** gates:
 
-1. **Dot-path scope** (`isDotPathOutOfScope`): a dot-prefixed/hidden path (`.airsync`, `.obsidian`, `.git`, …) is in scope only when it sits under a configured `syncDotPaths` root. Normal paths always pass. This is applied symmetrically to local and remote entries, so an out-of-scope hidden path on the remote (e.g. another device's `.airsync/logs/`) is never pulled, and never produces a `delete_remote` (the gate runs before `planSync`).
-2. **Ignore patterns** (`isIgnored`): gitignore-style `ignorePatterns`.
+1. **Dot-path scope** (`isDotPathOutOfScope`): a dot-prefixed/hidden path (`.airsync`, `.obsidian`, `.git`, …) is in scope only when it sits under a configured `syncDotPaths` root — `settings.syncDotPaths` augmented with the vault's config directory when `enableConfigSync` is on (`getEffectiveSyncDotPaths`, `config-sync.ts`). Normal paths always pass. This is applied symmetrically to local and remote entries, so an out-of-scope hidden path on the remote (e.g. another device's `.airsync/logs/`) is never pulled, and never produces a `delete_remote` (the gate runs before `planSync`).
+2. **Ignore patterns** (`isIgnored`): gitignore-style `ignorePatterns` — likewise augmented with a built-in pattern set (`getEffectiveIgnorePatterns`) prepended when `enableConfigSync` is on, letting through hotkeys/plugin settings under the config directory while excluding device-specific layout.
 
-`isExcluded()` also reserves the backend's own metadata path (`INTERNAL_METADATA_PATH` = `.airsync/metadata.json`, `sync/remote-vault.ts`): it is never synced from either side, even when `.airsync` is opted into `syncDotPaths`. The remote FS hides it too; excluding it here keeps the exclusion symmetric (otherwise a local copy would be pushed, then deleted as a phantom remote deletion).
+`isExcluded()` also reserves two paths unconditionally, ahead of both gates, so neither `syncDotPaths` nor `ignorePatterns` can ever pull them back into scope:
+- The backend's own metadata path (`INTERNAL_METADATA_PATH` = `.airsync/metadata.json`, `sync/remote-vault.ts`): never synced from either side, even when `.airsync` is opted into `syncDotPaths`. The remote FS hides it too; excluding it here keeps the exclusion symmetric (otherwise a local copy would be pushed, then deleted as a phantom remote deletion).
+- This plugin's own settings file under the config directory (`isOwnPluginDataPath`, `config-sync.ts`): checked regardless of `enableConfigSync`, since a user can opt the config directory into `syncDotPaths` by hand without the toggle. Syncing it would let one device's backend credentials/vaultId overwrite another's — a soft `ignorePatterns` entry alone can't guarantee this (gitignore's last-match-wins semantics would let a user's own pattern override it), so it's enforced as a reserved path instead.
 
 The same `isExcluded()` gates the vault-event dirty tracking (scheduler), so push and pull use one scope rule across hot and cold paths.
 

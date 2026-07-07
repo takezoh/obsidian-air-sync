@@ -5,6 +5,7 @@ import type { Logger } from "../logging/logger";
 import { AsyncMutex } from "../queue/async-queue";
 import { isIgnored, isSystemJunkFile } from "../utils/ignore";
 import { isDotPathOutOfScope } from "../utils/path";
+import { getEffectiveIgnorePatterns, getEffectiveSyncDotPaths, isOwnPluginDataPath } from "../config-sync";
 import { INTERNAL_METADATA_PATH } from "../fs/remote-vault-contract";
 import { SyncStateStore } from "./state";
 import { LocalChangeTracker, type TrackerSnapshot } from "./local-tracker";
@@ -27,6 +28,10 @@ export type { SyncStatus };
 export interface SyncOrchestratorDeps {
 	getSettings: () => AirSyncSettings;
 	saveSettings: () => Promise<void>;
+	/** The vault's configured config directory (`Vault#configDir`), for config sync. */
+	configDir: () => string;
+	/** This plugin's manifest id (`Plugin#manifest.id`), for config sync. */
+	pluginId: () => string;
 	localFs: () => IFileSystem | null;
 	remoteFs: () => IFileSystem | null;
 	backendProvider: () => IBackendProvider | null;
@@ -113,11 +118,18 @@ export class SyncOrchestrator {
 		// being noise, some backends (Dropbox) reject these outright, which would
 		// otherwise fail every cycle and block the delta checkpoint.
 		if (isSystemJunkFile(path)) return true;
+		const configDir = this.deps.configDir();
+		// This plugin's own data.json (backend credentials/vaultId) is reserved
+		// the same way, regardless of enableConfigSync — a user can put configDir
+		// into syncDotPaths by hand without the toggle, and this must still hold
+		// so a user's own ignorePatterns entry can never override it and leak
+		// credentials across devices (see isOwnPluginDataPath's doc comment).
+		if (isOwnPluginDataPath(path, configDir, this.deps.pluginId())) return true;
 		// A path syncs only if it passes BOTH gates: the dot-path scope
 		// (hidden paths are in scope only when opted into syncDotPaths) AND
 		// the user's ignore patterns.
-		if (isDotPathOutOfScope(path, settings.syncDotPaths)) return true;
-		return isIgnored(path, settings.ignorePatterns);
+		if (isDotPathOutOfScope(path, getEffectiveSyncDotPaths(settings, configDir))) return true;
+		return isIgnored(path, getEffectiveIgnorePatterns(settings, configDir, this.deps.pluginId()));
 	}
 
 	/**

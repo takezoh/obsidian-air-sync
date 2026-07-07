@@ -13,6 +13,8 @@ export interface AirSyncSettings {
 	enableThreeWayMerge: boolean;
 	/** Dot-prefixed paths to include in sync (e.g. [".templates", ".stversions"]) */
 	syncDotPaths: string[];
+	/** Enable experimental sync of Obsidian's own config directory (.obsidian/) */
+	enableConfigSync: boolean;
 	/** Maximum file size in MB to sync on mobile */
 	mobileMaxFileSizeMB: number;
 	/** Hold a screen wake lock while syncing so mobile devices don't sleep mid-sync */
@@ -49,6 +51,7 @@ export const DEFAULT_SETTINGS: AirSyncSettings = {
 	conflictStrategy: "auto_merge",
 	ignorePatterns: [],
 	syncDotPaths: [],
+	enableConfigSync: false,
 	enableThreeWayMerge: true,
 	mobileMaxFileSizeMB: 10,
 	screenWakeLockOnSync: false,

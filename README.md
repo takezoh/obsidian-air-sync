@@ -16,6 +16,7 @@ Works on desktop and mobile, powered by your own cloud storage:
 - **Two-device edits, merged**: Edits from two devices come together when they can — no messy "conflicted copy" files.
 - **Set up in a minute**: Connect once; almost nothing to configure.
 - **Choose what syncs**: Skip big attachments or a private folder.
+- **Config sync (experimental)**: Optionally sync Obsidian's own settings (hotkeys, plugin settings) too — opt in under Settings → Experimental.
 
 ## Getting started
 
@@ -44,26 +45,6 @@ The first sync scans your remote folder, so it may take a little while. After th
 ---
 
 ## Advanced
-
-### Syncing the config directory
-
-If you want to try syncing Obsidian's config directory (`.obsidian/`), add it to **Dot-prefixed paths to sync** and use **Ignore patterns** to select what to include.
-
-> **Warning**: The config directory contains Obsidian's internal metadata. Syncing it across devices may cause settings loss, layout corruption, or plugin malfunction.
-
-Not actively supported — feel free to try it, but you're on your own if it breaks.
-
-Example:
-
-```
-.obsidian/**
-!.obsidian/*.json
-.obsidian/workspace.json
-.obsidian/workspace-mobile.json
-!.obsidian/plugins/
-!.obsidian/plugins/**
-.obsidian/plugins/*/data.json
-```
 
 ### Custom OAuth (Google Drive)
 

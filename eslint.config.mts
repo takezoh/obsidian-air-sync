@@ -227,8 +227,12 @@ export default tseslint.config(
 		rules: { "max-lines": ["error", { max: 337, skipBlankLines: true, skipComments: true }] },
 	},
 	{
+		// Re-pinned from 367 for the config-sync feature (configDir/pluginId deps +
+		// effective dot-path/ignore-pattern lookups, plus the unconditional
+		// isOwnPluginDataPath guard, in isExcluded()) — cohesive addition to the
+		// existing exclusion gate, not a natural split point.
 		files: ["src/sync/orchestrator.ts"],
-		rules: { "max-lines": ["error", { max: 367, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 374, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Lint manifest.json for the words the Obsidian submission validator
