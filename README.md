@@ -43,7 +43,7 @@ The first sync scans your remote folder, so it may take a little while. After th
 
 ---
 
-## Advanced
+## Custom OAuth apps
 
 ### Custom OAuth (Google Drive)
 
