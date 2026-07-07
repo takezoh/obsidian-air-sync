@@ -34,7 +34,7 @@ export function getConfigSyncIgnorePatterns(configDir: string, pluginId: string)
 		// Display-only: always shadowed by the unconditional isOwnPluginDataPath()
 		// check in isExcluded(), which enforces this regardless of ignorePatterns.
 		// Kept here only so the Settings UI can show the full injected list.
-		`${dir}/plugins/${escapeGlobChars(pluginId)}/data.json`,
+		`${dir}/plugins/${escapeGlobChars(pluginId)}/**`,
 	];
 }
 

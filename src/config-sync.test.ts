@@ -54,6 +54,7 @@ describe("getConfigSyncIgnorePatterns", () => {
 
 		expect(matcher.ignores("!cfg/workspace.json")).toBe(true);
 		expect(matcher.ignores("!cfg/plugins/plugin[x]/data.json")).toBe(true);
+		expect(matcher.ignores("!cfg/plugins/plugin[x]/other-file.json")).toBe(true);
 		expect(matcher.ignores("!cfg/plugins/other-plugin/data.json")).toBe(false);
 	});
 });
