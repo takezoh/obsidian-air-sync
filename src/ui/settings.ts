@@ -251,12 +251,12 @@ export class AirSyncSettingTab extends PluginSettingTab {
 			);
 
 		if (this.plugin.settings.enableConfigSync) {
-			new Setting(containerEl)
-				.setName("Injected ignore patterns")
-				.setDesc(
-					"Added automatically to the top of your Ignore patterns above:\n" +
-						getConfigSyncIgnorePatterns(configDir, this.plugin.manifest.id).join("\n")
-				);
+			const desc = document.createDocumentFragment();
+			desc.appendText("Added automatically to the top of your Ignore patterns above:");
+			desc.createEl("pre", {
+				text: getConfigSyncIgnorePatterns(configDir, this.plugin.manifest.id).join("\n"),
+			});
+			new Setting(containerEl).setName("Injected ignore patterns").setDesc(desc);
 		}
 	}
 }
