@@ -234,7 +234,7 @@ export class AirSyncSettingTab extends PluginSettingTab {
 		const configDir = this.app.vault.configDir;
 
 		new Setting(containerEl)
-			.setName("Sync Obsidian config (experimental)")
+			.setName("Sync Obsidian config")
 			.setDesc(
 				`Sync Obsidian's own config directory (${configDir}/) — hotkeys, plugin settings, and other ` +
 					"portable settings. Device-specific window layout is deliberately excluded. This is Obsidian's " +
