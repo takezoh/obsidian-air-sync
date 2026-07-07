@@ -61,6 +61,16 @@ function createDeps(
 	};
 }
 
+/** Minimal IBackendProvider double exposing only what the orchestrator uses. */
+function mockProvider(
+	over: Partial<import("../fs/backend").IBackendProvider> & { type?: string },
+): import("../fs/backend").IBackendProvider {
+	return {
+		type: "test",
+		...over,
+	} as unknown as import("../fs/backend").IBackendProvider;
+}
+
 describe("SyncOrchestrator", () => {
 	describe("isSyncing()", () => {
 		it("returns false when not syncing", async () => {
@@ -861,16 +871,6 @@ describe("SyncOrchestrator", () => {
 	});
 
 	describe("crash recovery via hasCheckpoint", () => {
-		/** Minimal IBackendProvider double exposing only what the orchestrator uses. */
-		function mockProvider(
-			over: Partial<import("../fs/backend").IBackendProvider> & { type?: string },
-		): import("../fs/backend").IBackendProvider {
-			return {
-				type: "test",
-				...over,
-			} as unknown as import("../fs/backend").IBackendProvider;
-		}
-
 		/**
 		 * Reproduces the reported bug: a sync interrupted before pulling a remote
 		 * file leaves the vault half-synced. On restart, baselines exist (so the
@@ -1259,6 +1259,130 @@ describe("SyncOrchestrator", () => {
 			// surfaces an error rather than silently reporting success.
 			expect(readBackendState).not.toHaveBeenCalled();
 			expect(deps.onStatusChange).toHaveBeenCalledWith("error");
+			await orchestrator.close();
+		});
+	});
+
+	describe("scope-fingerprint forces a cold reconcile on scope change", () => {
+		/**
+		 * A stateful scope-fingerprint mock mirroring CachingRemoteFs's real semantics:
+		 * `commitCheckpoint({scopeFingerprint})` persists it, `getScopeFingerprint()`
+		 * reads back the last committed value (or the seed, or null).
+		 */
+		function wireScopeFingerprint(
+			remoteFs: ReturnType<typeof createMockFs>,
+			seed: string | null,
+		): void {
+			let committed = seed;
+			remoteFs.checkpoint!.getScopeFingerprint = vi.fn().mockImplementation(() => Promise.resolve(committed));
+			remoteFs.checkpoint!.commitCheckpoint = vi.fn().mockImplementation(
+				(context?: { scopeFingerprint?: string }) => {
+					if (context?.scopeFingerprint !== undefined) committed = context.scopeFingerprint;
+					return Promise.resolve();
+				},
+			);
+		}
+
+		it("reruns cold and pulls a remote-only path once enableConfigSync widens scope", async () => {
+			const localFs = createMockFs("local");
+			const remoteFs = createMockFs("remote");
+			// A remote-only file under the config dir — always existed on the remote,
+			// but out of scope until enableConfigSync is turned on. The delta cursor has
+			// already passed it (empty getChangedPaths), so only a forced cold reconcile
+			// can surface it.
+			addFile(remoteFs, `${TEST_CONFIG_DIR}/hotkeys.json`, "keys", 1000);
+
+			const settings = baseMockSettings({
+				backendType: "test",
+				vaultId: `test-${Math.random()}`,
+				enableConfigSync: false,
+			});
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
+			wireScopeFingerprint(remoteFs, null);
+
+			const deps = createDeps({
+				getSettings: () => settings,
+				localFs: () => localFs,
+				remoteFs: () => remoteFs,
+				backendProvider: () => mockProvider({}),
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+
+			// Cycle 1 with config sync off: commits a fingerprint, config dir stays
+			// out of scope, nothing pulled.
+			await orchestrator.runSync();
+			expect(localFs.files.has(`${TEST_CONFIG_DIR}/hotkeys.json`)).toBe(false);
+
+			// Turn on config sync — scope widens to include the config dir.
+			settings.enableConfigSync = true;
+			await orchestrator.runSync();
+
+			expect(localFs.files.has(`${TEST_CONFIG_DIR}/hotkeys.json`)).toBe(true);
+			await orchestrator.close();
+		});
+
+		it("does not force cold when settings are unchanged between cycles", async () => {
+			const localFs = createMockFs("local");
+			const remoteFs = createMockFs("remote");
+			addFile(remoteFs, "synced.md", "kept", 1000);
+			addFile(localFs, "synced.md", "kept", 1000);
+
+			const settings = baseMockSettings({ backendType: "test", vaultId: `test-${Math.random()}` });
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
+			wireScopeFingerprint(remoteFs, null);
+
+			const infoSpy = vi.fn();
+			const deps = createDeps({
+				getSettings: () => settings,
+				localFs: () => localFs,
+				remoteFs: () => remoteFs,
+				backendProvider: () => mockProvider({}),
+				logger: {
+					debug: vi.fn(),
+					info: infoSpy,
+					warn: vi.fn(),
+					error: vi.fn(),
+					flush: vi.fn().mockResolvedValue(undefined),
+				} as unknown as import("../logging/logger").Logger,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+
+			await orchestrator.runSync(); // cycle 1: commits the fingerprint (migration)
+			infoSpy.mockClear();
+
+			await orchestrator.runSync(); // cycle 2: settings unchanged → no scope change
+			const startedCall = infoSpy.mock.calls.find((c) => c[0] === "Sync started");
+			expect(startedCall?.[1]).toMatchObject({ scopeChanged: false });
+			await orchestrator.close();
+		});
+
+		it("treats a checkpoint with no committed fingerprint as changed (one-time migration)", async () => {
+			const localFs = createMockFs("local");
+			const remoteFs = createMockFs("remote");
+			addFile(remoteFs, `${TEST_CONFIG_DIR}/hotkeys.json`, "keys", 1000);
+
+			const settings = baseMockSettings({
+				backendType: "test",
+				vaultId: `test-${Math.random()}`,
+				enableConfigSync: true,
+			});
+			// Simulates a checkpoint committed by pre-fix code: hasCheckpoint is true,
+			// but getScopeFingerprint has never been set (always null).
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
+			wireScopeFingerprint(remoteFs, null);
+
+			const deps = createDeps({
+				getSettings: () => settings,
+				localFs: () => localFs,
+				remoteFs: () => remoteFs,
+				backendProvider: () => mockProvider({}),
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+
+			await orchestrator.runSync();
+
+			expect(localFs.files.has(`${TEST_CONFIG_DIR}/hotkeys.json`)).toBe(true);
+			expect(await remoteFs.checkpoint!.getScopeFingerprint!()).not.toBeNull();
 			await orchestrator.close();
 		});
 	});

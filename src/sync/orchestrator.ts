@@ -10,6 +10,7 @@ import { INTERNAL_METADATA_PATH } from "../fs/remote-vault-contract";
 import { SyncStateStore } from "./state";
 import { LocalChangeTracker, type TrackerSnapshot } from "./local-tracker";
 import { collectChanges } from "./change-detector";
+import { computeScopeFingerprint } from "./scope-fingerprint";
 import { planSync } from "./decision-engine";
 import { refinePlan } from "./rename-optimizer";
 import { executePlan, toConflictRecords, DESKTOP_TRANSFER_POOL, MOBILE_TRANSFER_POOL } from "./plan-executor";
@@ -188,17 +189,34 @@ export class SyncOrchestrator {
 
 				// Force a full cold reconcile when delta-based detection can't be
 				// trusted: no committed remote checkpoint (last sync never completed
-				// or was reset), or the previous cycle failed (its in-memory cursor
-				// may have advanced past un-committed work). Cold recovers either via
-				// a full list × baseline join. The checkpoint (delta cursor) lives in
-				// the backend's own store now, so this is an async FS query.
+				// or was reset), the previous cycle failed (its in-memory cursor
+				// may have advanced past un-committed work), or the sync SCOPE
+				// changed since the last clean cycle (a settings change widened
+				// scope to include remote paths the delta cursor already passed —
+				// see scope-fingerprint.ts). Cold recovers all three via a full
+				// list × baseline join. The checkpoint (delta cursor + fingerprint)
+				// lives in the backend's own store now, so this is an async FS query.
 				const noCheckpoint = remoteFs.checkpoint
 					? !(await remoteFs.checkpoint.hasCheckpoint())
 					: false;
-				const forceFullScan = noCheckpoint || this.recoverViaColdScan;
-				this.deps.logger?.info("Sync started", { forceFullScan });
+				const scopeFingerprint = await computeScopeFingerprint(
+					this.deps.getSettings(),
+					this.deps.configDir(),
+					this.deps.pluginId(),
+				);
+				// A checkpoint capability without getScopeFingerprint doesn't track
+				// scope at all — skip the check rather than force a spurious cold
+				// reconcile every cycle. When it IS present, a committed `null`
+				// (checkpoint predates this field, or was never committed) compares
+				// unequal to any real fingerprint — this doubles as the one-time
+				// back-fill cold reconcile for existing checkpoints.
+				const scopeChanged = remoteFs.checkpoint?.getScopeFingerprint
+					? (await remoteFs.checkpoint.getScopeFingerprint()) !== scopeFingerprint
+					: false;
+				const forceFullScan = noCheckpoint || this.recoverViaColdScan || scopeChanged;
+				this.deps.logger?.info("Sync started", { forceFullScan, scopeChanged });
 
-				const result = await this.executeWithRetry(forceFullScan, snapshot);
+				const result = await this.executeWithRetry(forceFullScan, snapshot, scopeFingerprint);
 				if (!result) return; // Fatal error already handled
 
 				const { succeeded, failed, blocked, conflicts } = result;
@@ -244,13 +262,17 @@ export class SyncOrchestrator {
 	/**
 	 * Execute sync with retry logic. Returns null on fatal error (already reported).
 	 */
-	private async executeWithRetry(forceFullScan: boolean, snapshot: TrackerSnapshot): Promise<SyncCycleResult | null> {
+	private async executeWithRetry(
+		forceFullScan: boolean,
+		snapshot: TrackerSnapshot,
+		scopeFingerprint: string,
+	): Promise<SyncCycleResult | null> {
 		let lastError: unknown = null;
 		let lastResult: ExecutionResult | null = null;
 
 		for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
 			try {
-				lastResult = await this.executeSyncOnce(forceFullScan, snapshot);
+				lastResult = await this.executeSyncOnce(forceFullScan, snapshot, scopeFingerprint);
 				return {
 					result: lastResult,
 					succeeded: lastResult.succeeded.length,
@@ -337,7 +359,7 @@ export class SyncOrchestrator {
 		return this.syncMutex.isLocked ? "syncing" : "idle";
 	}
 
-	private async executeSyncOnce(forceFullScan: boolean, snapshot: TrackerSnapshot) {
+	private async executeSyncOnce(forceFullScan: boolean, snapshot: TrackerSnapshot, scopeFingerprint: string) {
 		const localFs = this.deps.localFs();
 		const remoteFs = this.deps.remoteFs();
 		if (!localFs || !remoteFs) {
@@ -454,7 +476,7 @@ export class SyncOrchestrator {
 		// The checkpoint lives on the FS now (no provider downcast): flush it only on a
 		// fully clean cycle so a partial sync keeps the prior committed cursor.
 		if (cleanCycle && remoteFs?.checkpoint) {
-			await remoteFs.checkpoint.commitCheckpoint();
+			await remoteFs.checkpoint.commitCheckpoint({ scopeFingerprint });
 		}
 		// readBackendState now persists only non-secret token state (the cursor lives
 		// in the backend store, committed above) — safe to run every cycle.

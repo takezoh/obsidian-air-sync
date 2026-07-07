@@ -29,6 +29,15 @@ export type IncrementalChangesResult =
 const CURSOR_META_KEY = "changesStartPageToken";
 
 /**
+ * IndexedDB meta key under which the scope fingerprint (see
+ * `computeScopeFingerprint` in `src/sync/scope-fingerprint.ts`) is persisted,
+ * co-located with the cursor in the same transaction as {@link CURSOR_META_KEY}.
+ * Absence (a checkpoint committed before this field existed, or a fresh
+ * checkpoint) is read back as `null` by {@link CachingRemoteFs.getScopeFingerprint}.
+ */
+const SCOPE_FINGERPRINT_META_KEY = "scopeFingerprint";
+
+/**
  * Shared base for an id-addressed remote backend with an incremental delta cursor
  * and a crash-safe, co-located metadata checkpoint (ADR 0001).
  *
@@ -57,6 +66,13 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	private initialized = false;
 	/** Latest changes start page token (for incremental sync) */
 	private _changesPageToken: string | null = null;
+	/**
+	 * Scope fingerprint committed with the last clean cycle (see
+	 * {@link IncrementalCheckpoint.getScopeFingerprint}). Kept in memory once
+	 * initialized, same lifecycle as `_changesPageToken`; both are written to the
+	 * store in the same transaction at commit time.
+	 */
+	private _scopeFingerprint: string | null = null;
 
 	/**
 	 * Cache changes not yet flushed to IndexedDB — persistence is deferred to the
@@ -213,6 +229,7 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 			this.cache.clear();
 			this.cache.bulkLoad(files.map((r): [string, TFile] => [r.path, r.file]));
 			this._changesPageToken = cursor;
+			this._scopeFingerprint = meta.get(SCOPE_FINGERPRINT_META_KEY) ?? null;
 			this.initialized = true;
 			this.logger?.info("Cache loaded from IndexedDB", { fileCount: files.length });
 			return true;
@@ -241,9 +258,12 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	 * next run the replay re-detects any un-flushed work. The buffer is cleared only
 	 * after success (a throw propagates and retains it for the next clean cycle's retry).
 	 */
-	async commitCheckpoint(): Promise<void> {
+	async commitCheckpoint(context?: { scopeFingerprint?: string }): Promise<void> {
 		if (!this.metadataStore) return;
 		await this.cacheMutex.run(async () => {
+			if (context?.scopeFingerprint !== undefined) {
+				this._scopeFingerprint = context.scopeFingerprint;
+			}
 			await this.commitCache();
 			this.pendingFullPersist = false;
 			this.touchedPaths.clear();
@@ -255,16 +275,19 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	 * (after a full scan); otherwise the touched paths are reconciled against the live
 	 * cache — present → upsert, absent → delete. The reconcile reads the final cache
 	 * state, so it is order-independent and correct even when `touched` spans several
-	 * earlier failed cycles. The cursor is written in the SAME transaction as the file
-	 * changes, so the persisted cache can never run ahead of (or behind) the cursor.
+	 * earlier failed cycles. The cursor AND scope fingerprint are written in the SAME
+	 * transaction as the file changes (`saveAll`/`commitIncremental` both clear/overwrite
+	 * only the meta keys given here), so the persisted cache can never run ahead of (or
+	 * behind) the cursor, and a `saveAll` full persist can never silently drop the
+	 * previously-committed fingerprint by omission.
 	 */
 	private async commitCache(): Promise<void> {
 		const store = this.metadataStore;
 		if (!store) return;
 		await store.open();
-		const meta = this._changesPageToken
-			? new Map([[CURSOR_META_KEY, this._changesPageToken]])
-			: new Map<string, string>();
+		const meta = new Map<string, string>();
+		if (this._changesPageToken !== null) meta.set(CURSOR_META_KEY, this._changesPageToken);
+		if (this._scopeFingerprint !== null) meta.set(SCOPE_FINGERPRINT_META_KEY, this._scopeFingerprint);
 		if (this.pendingFullPersist) {
 			await store.saveAll(this.cache.exportRecords(), meta);
 			return;
@@ -280,25 +303,38 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	}
 
 	/**
-	 * Whether a committed delta checkpoint exists. The orchestrator uses this to force
-	 * a cold reconcile when there is none (first sync, or after a rescan). Reads the
-	 * in-memory cursor once initialized, otherwise peeks the IDB store — the cursor is
-	 * co-located with the cache, so its presence is the checkpoint.
+	 * Read a meta key's committed value: the in-memory field once initialized (the
+	 * common case — no store round-trip), otherwise peek IndexedDB directly without
+	 * mutating any in-memory state. Shared by {@link hasCheckpoint} and
+	 * {@link getScopeFingerprint}, which differ only in which key/field they read and
+	 * how they fall back when nothing is there.
 	 */
-	async hasCheckpoint(): Promise<boolean> {
-		if (this.initialized) return !!this._changesPageToken;
-		if (!this.metadataStore) return false;
+	private async peekMeta(
+		key: string,
+		inMemoryValue: string | null,
+	): Promise<string | null> {
+		if (this.initialized) return inMemoryValue;
+		if (!this.metadataStore) return null;
 		try {
 			await this.metadataStore.open();
-			return !!(await this.metadataStore.getMeta(CURSOR_META_KEY));
+			return (await this.metadataStore.getMeta(key)) ?? null;
 		} catch {
-			return false;
+			return null;
 		}
 	}
 
 	/**
-	 * Discard the committed checkpoint (cursor + cache) so the next sync cold-
-	 * reconciles. Used by the Rescan action and an identity change. Losing the
+	 * Whether a committed delta checkpoint exists. The orchestrator uses this to force
+	 * a cold reconcile when there is none (first sync, or after a rescan). The cursor
+	 * is co-located with the cache, so its presence is the checkpoint.
+	 */
+	async hasCheckpoint(): Promise<boolean> {
+		return (await this.peekMeta(CURSOR_META_KEY, this._changesPageToken)) !== null;
+	}
+
+	/**
+	 * Discard the committed checkpoint (cursor + cache + scope fingerprint) so the next
+	 * sync cold-reconciles. Used by the Rescan action and an identity change. Losing the
 	 * checkpoint is safe — a cold full list × SyncRecord baseline join re-derives every
 	 * change (ADR 0001). Runs under `cacheMutex` (like every other mutator) so it can't
 	 * corrupt a concurrent op; the IDB clear runs first, so if it throws the in-memory
@@ -311,11 +347,21 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 				await this.metadataStore.clear();
 			}
 			this._changesPageToken = null;
+			this._scopeFingerprint = null;
 			this.cache.clear();
 			this.initialized = false;
 			this.touchedPaths.clear();
 			this.pendingFullPersist = false;
 		});
+	}
+
+	/**
+	 * The scope fingerprint committed with the last clean cycle, or `null` if none was
+	 * ever committed. Shares {@link peekMeta}'s in-memory-vs-peek-the-store split with
+	 * {@link hasCheckpoint}.
+	 */
+	async getScopeFingerprint(): Promise<string | null> {
+		return this.peekMeta(SCOPE_FINGERPRINT_META_KEY, this._scopeFingerprint);
 	}
 
 	// ── Incremental replay + 410 full-scan-and-diff fallback ──

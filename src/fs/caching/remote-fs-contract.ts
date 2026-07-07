@@ -154,6 +154,69 @@ export function runCachingRemoteFsContract<TFile>(
 			await store.close();
 		});
 
+		// ── Scope fingerprint (see src/sync/scope-fingerprint.ts) ──
+		// Persisted alongside the delta cursor so the orchestrator can force one cold
+		// reconcile when a settings change widens sync scope past what the cursor
+		// already skipped over.
+
+		it("a fresh checkpoint has no committed scope fingerprint", async () => {
+			const h = makeHarness();
+			h.seedFile("a.md");
+			const store = h.makeStore("contract-scope-fresh");
+			const fs = h.makeFs(store);
+
+			expect(await fs.getScopeFingerprint?.()).toBeNull();
+			await store.close();
+		});
+
+		it("commitCheckpoint persists a given scope fingerprint alongside the cursor", async () => {
+			const h = makeHarness();
+			h.seedFile("a.md");
+			const store = h.makeStore("contract-scope-commit");
+
+			const fs1 = h.makeFs(store);
+			await fs1.list();
+			await fs1.commitCheckpoint({ scopeFingerprint: "fp-1" });
+			expect(await fs1.getScopeFingerprint?.()).toBe("fp-1");
+
+			// Survives a restart — same transaction as the cursor (co-located, ADR 0001).
+			const fs2 = h.makeFs(store);
+			expect(await fs2.getScopeFingerprint?.()).toBe("fp-1");
+			await store.close();
+		});
+
+		it("commitCheckpoint without a scope fingerprint keeps the previously-committed one", async () => {
+			const h = makeHarness();
+			h.seedFile("a.md");
+			const store = h.makeStore("contract-scope-keep");
+
+			const fs = h.makeFs(store);
+			await fs.list();
+			await fs.commitCheckpoint({ scopeFingerprint: "fp-1" });
+
+			h.stageRemoteDelete("a.md");
+			await fs.getChangedPaths();
+			await fs.commitCheckpoint(); // no scopeFingerprint given
+
+			expect(await fs.getScopeFingerprint?.()).toBe("fp-1");
+			await store.close();
+		});
+
+		it("resetCheckpoint discards the committed scope fingerprint", async () => {
+			const h = makeHarness();
+			h.seedFile("a.md");
+			const store = h.makeStore("contract-scope-reset");
+
+			const fs = h.makeFs(store);
+			await fs.list();
+			await fs.commitCheckpoint({ scopeFingerprint: "fp-1" });
+			expect(await fs.getScopeFingerprint?.()).toBe("fp-1");
+
+			await fs.resetCheckpoint();
+			expect(await fs.getScopeFingerprint?.()).toBeNull();
+			await store.close();
+		});
+
 		// ── Remote rename detection (ADR 0006) ──
 		// A remote rename must surface as a single `renamed` pair, not a delete+add the
 		// engine can't coalesce. Each backend's harness emits its own faithful delta;

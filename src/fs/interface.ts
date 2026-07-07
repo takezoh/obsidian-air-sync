@@ -107,10 +107,18 @@ export interface IFileSystem {
 /**
  * A backend's incremental-sync capability: a delta cursor for change detection and a
  * crash-safe, atomically-committed checkpoint (ADR 0001). Exposed as one object on
- * {@link IFileSystem.checkpoint} so the four methods travel together — a backend that
- * can detect deltas (`getChangedPaths`) MUST also expose the full checkpoint lifecycle
- * (`hasCheckpoint`/`resetCheckpoint`/`commitCheckpoint`), because a half-implementation
- * would silently degrade crash recovery. The type enforces all-or-nothing (B1-3).
+ * {@link IFileSystem.checkpoint} so the four core methods travel together — a backend
+ * that can detect deltas (`getChangedPaths`) MUST also expose the full checkpoint
+ * lifecycle (`hasCheckpoint`/`resetCheckpoint`/`commitCheckpoint`), because a
+ * half-implementation would silently degrade crash recovery. The type enforces
+ * all-or-nothing for those four (B1-3).
+ *
+ * `getScopeFingerprint` is a later, orthogonal addition and stays OPTIONAL: real
+ * backends (`CachingRemoteFs`) always implement it, but a test double that only
+ * needs the original four methods can omit it — the sync engine treats a missing
+ * `getScopeFingerprint` as "this capability doesn't track scope", not as a
+ * mismatched fingerprint, and skips the scope-change check entirely rather than
+ * forcing a spurious cold reconcile.
  */
 export interface IncrementalCheckpoint {
 	/**
@@ -135,7 +143,9 @@ export interface IncrementalCheckpoint {
 	/**
 	 * Discard the committed checkpoint (delta cursor + any derived cache) so the next
 	 * sync does a full cold reconcile. Used by the Rescan action. Losing the
-	 * checkpoint is safe — a cold list × baseline join re-derives every change.
+	 * checkpoint is safe — a cold list × baseline join re-derives every change. Also
+	 * discards the committed scope fingerprint (see {@link getScopeFingerprint}) —
+	 * a rescan resets everything the checkpoint tracks.
 	 */
 	resetCheckpoint(): Promise<void>;
 
@@ -146,6 +156,23 @@ export interface IncrementalCheckpoint {
 	 * leaves cache+cursor at the last committed state so the next run re-detects the
 	 * un-synced work. Lives on the FS (not the provider) so the engine never has to
 	 * downcast.
+	 *
+	 * `context.scopeFingerprint`, when given, is persisted alongside the cursor in the
+	 * SAME transaction (see {@link getScopeFingerprint}). Omitting it leaves the
+	 * previously-committed fingerprint untouched.
 	 */
-	commitCheckpoint(): Promise<void>;
+	commitCheckpoint(context?: { scopeFingerprint?: string }): Promise<void>;
+
+	/**
+	 * The scope fingerprint committed with the last clean cycle, or `null` if none was
+	 * ever committed (fresh checkpoint, or a checkpoint from before this field existed).
+	 * The sync engine compares this against the CURRENT scope fingerprint
+	 * (`computeScopeFingerprint`) to force one cold reconcile when a settings change
+	 * has widened sync scope to include remote paths the delta cursor already passed —
+	 * warm/hot detection would otherwise never surface them (see
+	 * `src/sync/scope-fingerprint.ts`). `null` compares unequal to any real
+	 * fingerprint, so it also drives the one-time cold reconcile that back-fills
+	 * existing checkpoints predating this field. Optional — see the interface doc.
+	 */
+	getScopeFingerprint?(): Promise<string | null>;
 }

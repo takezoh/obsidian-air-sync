@@ -227,12 +227,20 @@ export default tseslint.config(
 		rules: { "max-lines": ["error", { max: 337, skipBlankLines: true, skipComments: true }] },
 	},
 	{
-		// Re-pinned from 367 for the config-sync feature (configDir/pluginId deps +
-		// effective dot-path/ignore-pattern lookups, plus the unconditional
-		// isOwnPluginDataPath guard, in isExcluded()) — cohesive addition to the
-		// existing exclusion gate, not a natural split point.
+		// Re-pinned from 374 for the scope-fingerprint fix (compute + compare the
+		// current vs committed scope fingerprint in runSync, thread it through
+		// executeWithRetry/executeSyncOnce to commitCheckpoint) — cohesive addition
+		// to the existing cold-reconcile decision, not a natural split point.
 		files: ["src/sync/orchestrator.ts"],
-		rules: { "max-lines": ["error", { max: 374, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 385, skipBlankLines: true, skipComments: true }] },
+	},
+	{
+		// New override for the scope-fingerprint fix: CachingRemoteFs now persists
+		// a scope fingerprint alongside the delta cursor (getScopeFingerprint,
+		// commitCheckpoint's context param, resetCheckpoint clearing it) — cohesive
+		// addition to the existing checkpoint machinery, not a natural split point.
+		files: ["src/fs/caching/remote-fs.ts"],
+		rules: { "max-lines": ["error", { max: 317, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Lint manifest.json for the words the Obsidian submission validator
