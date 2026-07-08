@@ -242,8 +242,10 @@ export class AirSyncSettingTab extends PluginSettingTab {
 		});
 		configSyncDesc.createEl("p", {
 			text:
-				"After a sync finishes, reload the affected plugins (or restart Obsidian) for the synced " +
-				"settings to take effect.",
+				"Config changes aren't synced immediately — they're picked up the next time a sync runs " +
+				"(triggered by another vault change, returning to the app, or Sync now). After a sync " +
+				"finishes, reload the affected plugins (or restart Obsidian) for the synced settings to " +
+				"take effect.",
 		});
 
 		new Setting(containerEl)
