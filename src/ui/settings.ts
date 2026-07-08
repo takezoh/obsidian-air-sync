@@ -233,13 +233,22 @@ export class AirSyncSettingTab extends PluginSettingTab {
 
 		const configDir = this.app.vault.configDir;
 
+		const configSyncDesc = document.createDocumentFragment();
+		configSyncDesc.createEl("p", {
+			text:
+				`Sync Obsidian's own config directory (${configDir}/) — hotkeys, plugin settings, and other ` +
+				"portable settings. Device-specific window layout is deliberately excluded. This is Obsidian's " +
+				"internal metadata; syncing it across devices may cause settings loss or plugin malfunction.",
+		});
+		configSyncDesc.createEl("p", {
+			text:
+				"After a sync finishes, reload the affected plugins (or restart Obsidian) for the synced " +
+				"settings to take effect.",
+		});
+
 		new Setting(containerEl)
 			.setName("Sync Obsidian config")
-			.setDesc(
-				`Sync Obsidian's own config directory (${configDir}/) — hotkeys, plugin settings, and other ` +
-					"portable settings. Device-specific window layout is deliberately excluded. This is Obsidian's " +
-					"internal metadata; syncing it across devices may cause settings loss or plugin malfunction."
-			)
+			.setDesc(configSyncDesc)
 			.addToggle((toggle) =>
 				toggle
 					.setValue(this.plugin.settings.enableConfigSync)
