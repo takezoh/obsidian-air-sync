@@ -233,24 +233,13 @@ export class AirSyncSettingTab extends PluginSettingTab {
 
 		const configDir = this.app.vault.configDir;
 
-		const configSyncDesc = document.createDocumentFragment();
-		configSyncDesc.createEl("p", {
-			text:
-				`Sync Obsidian's own config directory (${configDir}/) — hotkeys, plugin settings, and other ` +
-				"portable settings. Device-specific window layout is deliberately excluded. This is Obsidian's " +
-				"internal metadata; syncing it across devices may cause settings loss or plugin malfunction.",
-		});
-		configSyncDesc.createEl("p", {
-			text:
-				"Config changes aren't synced immediately — they're picked up the next time a sync runs " +
-				"(triggered by another vault change, returning to the app, or Sync now). After a sync " +
-				"finishes, reload the affected plugins (or restart Obsidian) for the synced settings to " +
-				"take effect.",
-		});
-
 		new Setting(containerEl)
 			.setName("Sync Obsidian config")
-			.setDesc(configSyncDesc)
+			.setDesc(
+				`Sync Obsidian's own config directory (${configDir}/) — hotkeys, plugin settings, and other ` +
+					"portable settings. Device-specific window layout is deliberately excluded. This is Obsidian's " +
+					"internal metadata; syncing it across devices may cause settings loss or plugin malfunction."
+			)
 			.addToggle((toggle) =>
 				toggle
 					.setValue(this.plugin.settings.enableConfigSync)
@@ -262,6 +251,19 @@ export class AirSyncSettingTab extends PluginSettingTab {
 			);
 
 		if (this.plugin.settings.enableConfigSync) {
+			const timingDesc = document.createDocumentFragment();
+			timingDesc.createEl("p", {
+				text:
+					"Config changes aren't synced immediately — they're picked up the next time a sync runs " +
+					"(triggered by another vault change, returning to the app, or Sync now).",
+			});
+			timingDesc.createEl("p", {
+				text:
+					"After a sync finishes, reload the affected plugins (or restart Obsidian) for the synced " +
+					"settings to take effect.",
+			});
+			new Setting(containerEl).setName("Sync timing").setDesc(timingDesc);
+
 			const desc = document.createDocumentFragment();
 			desc.appendText("Added automatically to the top of your Ignore patterns above:");
 			desc.createEl("pre", {
