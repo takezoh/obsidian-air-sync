@@ -28,6 +28,14 @@ That's it — Air Sync syncs into that folder from then on.
 
 The first sync scans your remote folder, so it may take a little while. After that, syncing is fast.
 
+### Your vault and your devices
+
+- **Keep your vault in local storage.** Create your Obsidian vault on your device — **not** inside a folder that another cloud drive already syncs (iCloud Drive, or the Dropbox / OneDrive / Google Drive desktop apps). Air Sync copies your notes to the cloud for you.
+- **Don't open the cloud folder as a vault.** The folder Air Sync creates in your cloud storage is a managed mirror — opening it directly in Obsidian as a vault is not supported. Keep working in your local vault; Air Sync keeps the cloud copy in step.
+- **Let Air Sync be the only sync tool for a vault.** Two sync mechanisms managing the same files at once is a common cause of conflicts.
+- **Use the same folder on every device.** During setup you choose which cloud folder to sync into — pick the **same folder** on each device so they share one set of notes.
+- **Conflicting changes keep both versions.** Your edits and deletions sync normally. But when two changes genuinely clash — the same note edited on two devices, or edited on one and deleted on another — Air Sync saves both as a conflict copy rather than silently overwriting or dropping one. See [Conflict resolution strategies](#conflict-resolution-strategies) for how it decides.
+
 ## Conflict resolution strategies
 
 | Strategy | Behavior |
@@ -45,35 +53,18 @@ The first sync scans your remote folder, so it may take a little while. After th
 
 ## Custom OAuth apps
 
-### Custom OAuth (Google Drive)
+Prefer your own cloud app over the built-in connection? Air Sync supports a **custom app / custom OAuth** backend for Google Drive, OneDrive, and Dropbox — you register the app with the provider and enter its identifiers in Air Sync. This is also the way to reach OneDrive work/school accounts.
 
-The built-in Google Drive connection uses the `drive.file` scope, which only allows access to files the plugin itself created. With custom OAuth, you can use your own Google Cloud OAuth client and manage authorization independently.
+See the **[custom app setup guide](docs/custom-apps.md)** for what each backend needs and how it maps to Air Sync's settings. The guide links to each provider's official developer documentation for the registration steps themselves.
 
-The authorization code exchange is protected by PKCE — the code cannot be used without the verifier held only by the plugin.
-
-> **Note**: Tokens are stored in Obsidian's secret storage, which is accessible to other plugins. The built-in OAuth limits exposure with the `drive.file` scope. Custom OAuth may increase risk depending on the scope you configure.
-
-### Custom app (OneDrive & Dropbox)
-
-OneDrive and Dropbox also offer a **custom app** backend, where you register your own app and enter its client id (Dropbox app key / Entra application ID). The id is a public PKCE identifier — there is no secret to manage. Register `obsidian://air-sync-auth` as a redirect URI in your app.
-
-For **OneDrive**, the custom app additionally lets you choose the **account type**:
-
-| Account type | Who can sign in |
-|---|---|
-| Personal accounts only | Personal Microsoft accounts (same as the built-in) |
-| Work/school + personal | Both work/school (Azure AD) and personal accounts |
-| Work/school only | Work/school (Azure AD) accounts |
-| Specific tenant | A single Azure AD directory (enter its tenant ID) |
-
-This is what lets a custom OneDrive app reach work/school accounts the built-in (personal-only) connection cannot. Your selection must match the supported account types configured in your app registration, and work/school sign-in may still require your organization's admin consent.
-
-> **Note**: The custom app still uses the same App Folder scope, so access stays confined to the plugin's own folder.
+> **Note**: Custom apps still use a scoped / App Folder connection, so access stays confined to the plugin's own folder. Tokens are stored in Obsidian's secret storage (accessible to other plugins); a broader scope you configure yourself may increase exposure.
 
 ## Troubleshooting
 
 - **Sync looks stuck or incomplete** (for example after Obsidian was closed mid-sync): Open **Settings → Air Sync → Advanced** and click **Rescan**. It re-checks everything against your cloud storage and finishes any leftover work — comparing files rather than re-downloading what you already have, and keeping your sync history.
-- **Authentication completes but sync doesn't start**: Restart the plugin (disable → enable in Community plugins settings), then try syncing manually.
+- **Connected, but no files download**: Connecting only authorizes Air Sync — it doesn't sync yet. Make sure you've chosen a remote folder (the **default folder** or **pick an existing folder**); the first sync starts as soon as a folder is selected. On mobile, keep Obsidian open in the foreground while it runs.
+- **Authentication completes but sync doesn't start**: First confirm a remote folder is chosen (see above). If it still doesn't start, restart the plugin (disable → enable in Community plugins settings), then try syncing manually.
+- **Seeing conflicts or `.conflict` files**: These appear when the same file changed on two devices, or when another sync tool is also writing your vault (see [Your vault and your devices](#your-vault-and-your-devices)). When reporting a conflict, please include the file path(s), which devices were involved and the order you edited them, your selected conflict strategy, and — if logging is enabled — the diagnostic logs. That's what distinguishes a sync-engine issue from a multiple-writer setup.
 - **Token error after successful authorization**: Check that the device has a stable network connection — token exchange requires connectivity immediately after authorization.
 - **The browser callback didn't return to Obsidian**: Try disconnecting and reconnecting from the plugin settings.
 
