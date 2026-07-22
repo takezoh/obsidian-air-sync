@@ -25,8 +25,8 @@ export type { ConflictResolutionResult };
  *   text file + base content → 3-way merge → success: write merged to both sides
  *                                           → fail: keep newer
  *   else → keep newer
- *   keep newer: mtime comparable → newer wins, older saved as .conflict backup
- *               else → duplicate
+ *   keep newer: mtime comparable → newer wins (older side overwritten, no backup)
+ *               equal/unknown mtime → identical content keeps local, else duplicate
  *   duplicate: save remote as .conflict file, keep local at original path
  */
 export async function resolveConflict(
