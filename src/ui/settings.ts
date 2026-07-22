@@ -1,11 +1,4 @@
-import {
-	App,
-	Notice,
-	Platform,
-	PluginSettingTab,
-	Setting,
-	type SettingDefinitionItem,
-} from "obsidian";
+import { App, Notice, Platform, PluginSettingTab, Setting } from "obsidian";
 import type AirSyncPlugin from "../main";
 import type { ConflictStrategy } from "../sync/types";
 import { getAllBackendProviders, getBackendProvider } from "../fs/registry";
@@ -22,14 +15,16 @@ export class AirSyncSettingTab extends PluginSettingTab {
 		this.plugin = plugin;
 	}
 
-	// Obsidian 1.13+ renders a settings tab from getSettingDefinitions() when it
-	// returns a non-empty array; an empty array (the base default) tells it to use
-	// the imperative display() below instead — the backward-compat path every
-	// pre-1.13 tab relies on. We keep rendering imperatively because the
-	// backend-connection section is drawn by each backend's own renderer, which
-	// doesn't map onto declarative definitions. Defining this method also
-	// satisfies obsidianmd/settings-tab/prefer-setting-definitions.
-	getSettingDefinitions(): SettingDefinitionItem[] {
+	// Declarative settings API (Obsidian 1.13+). We target the current public
+	// release (1.12.x), which predates it, so this returns an empty array: on
+	// 1.13 an empty result makes Obsidian fall back to the imperative display()
+	// below (the same path every pre-1.13 tab uses), and on 1.12.x the method is
+	// simply never called. Its presence satisfies
+	// obsidianmd/settings-tab/prefer-setting-definitions. The return type is left
+	// inferred so this compiles against the 1.12.x types (which lack the
+	// SettingDefinitionItem type) while still overriding cleanly on 1.13. Populate
+	// it with real definitions once 1.13 is public and can be verified live.
+	getSettingDefinitions() {
 		return [];
 	}
 
