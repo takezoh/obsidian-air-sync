@@ -98,9 +98,10 @@ export default class AirSyncPlugin extends Plugin {
 				new Notice(message);
 			},
 			refreshSettingsDisplay: () => {
-				// Declarative settings (1.13+): update() re-evaluates the definitions
-				// and re-renders. display() is deprecated and no longer overridden.
-				this.settingTab?.update();
+				// Re-render the settings tab in place. renderContent() is the
+				// imperative renderer; we call it directly rather than the deprecated
+				// display() so this stays version-agnostic.
+				this.settingTab?.renderContent();
 			},
 		});
 
