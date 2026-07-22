@@ -2,7 +2,7 @@
 	"id": "air-sync",
 	"name": "Air Sync",
 	"version": "0.1.36",
-	"minAppVersion": "1.11.4",
+	"minAppVersion": "1.13.0",
 	"description": "Sync your vault with cloud storage (Google Drive, OneDrive, Dropbox).",
 	"author": "Takehito Gondo",
 	"authorUrl": "https://github.com/takezoh",

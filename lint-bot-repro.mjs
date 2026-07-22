@@ -18,13 +18,18 @@ const targets = [
 	"src/fs/googledrive/errors.ts",
 	"src/fs/ifilesystem-contract.ts",
 	"src/store/content-codec.ts",
+	"src/ui/settings.ts",
 ];
 
 const packageSpecs = [
 	`eslint@${process.env.BOT_REPRO_ESLINT ?? "latest"}`,
 	`typescript-eslint@${process.env.BOT_REPRO_TYPESCRIPT_ESLINT ?? "latest"}`,
 	`eslint-plugin-obsidianmd@${process.env.BOT_REPRO_OBSIDIANMD ?? "latest"}`,
-	`typescript@${process.env.BOT_REPRO_TYPESCRIPT ?? "latest"}`,
+	// typescript-eslint's peer range is `<6.1.0`; npm's `typescript@latest` is now
+	// on the 6/7 line, which it refuses to resolve against. Track the project's
+	// major (5.x) so the type-aware toolchain installs; override once
+	// typescript-eslint widens its peer range.
+	`typescript@${process.env.BOT_REPRO_TYPESCRIPT ?? "5"}`,
 	`@eslint/js@${process.env.BOT_REPRO_ESLINT_JS ?? "latest"}`,
 	`globals@${process.env.BOT_REPRO_GLOBALS ?? "latest"}`,
 	`obsidian@${process.env.BOT_REPRO_OBSIDIAN ?? "latest"}`,
@@ -48,7 +53,11 @@ try {
 	symlinkSync(resolve(root, "src"), resolve(tmpRoot, "src"), "dir");
 
 	run("npm", ["install", "--package-lock=false", "--no-save", ...packageSpecs], tmpRoot);
-	run("npx", ["eslint", "--quiet", ...targets], tmpRoot);
+	// NOT --quiet: the community submission bot surfaces warn-level rules too
+	// (e.g. prefer-create-el, settings-tab/prefer-setting-definitions), so the
+	// repro must fail on warnings, not just errors. --max-warnings 0 makes any
+	// finding on a curated target a non-zero exit.
+	run("npx", ["eslint", "--max-warnings", "0", ...targets], tmpRoot);
 } finally {
 	rmSync(tmpRoot, { recursive: true, force: true });
 }
