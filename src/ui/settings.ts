@@ -1,4 +1,11 @@
-import { App, Notice, Platform, PluginSettingTab, Setting } from "obsidian";
+import {
+	App,
+	Notice,
+	Platform,
+	PluginSettingTab,
+	Setting,
+	type SettingDefinitionItem,
+} from "obsidian";
 import type AirSyncPlugin from "../main";
 import type { ConflictStrategy } from "../sync/types";
 import { getAllBackendProviders, getBackendProvider } from "../fs/registry";
@@ -15,7 +22,24 @@ export class AirSyncSettingTab extends PluginSettingTab {
 		this.plugin = plugin;
 	}
 
+	// Obsidian 1.13+ renders a settings tab from getSettingDefinitions() when it
+	// returns a non-empty array; an empty array (the base default) tells it to use
+	// the imperative display() below instead — the backward-compat path every
+	// pre-1.13 tab relies on. We keep rendering imperatively because the
+	// backend-connection section is drawn by each backend's own renderer, which
+	// doesn't map onto declarative definitions. Defining this method also
+	// satisfies obsidianmd/settings-tab/prefer-setting-definitions.
+	getSettingDefinitions(): SettingDefinitionItem[] {
+		return [];
+	}
+
 	display(): void {
+		this.renderContent();
+	}
+
+	// The imperative renderer. Kept as its own method (not inlined into display())
+	// so in-place refreshes can re-render without calling the deprecated display().
+	renderContent(): void {
 		const { containerEl } = this;
 		containerEl.empty();
 
@@ -56,7 +80,7 @@ export class AirSyncSettingTab extends PluginSettingTab {
 								// backend's plugin tokens, so the new one starts clean.
 								await this.plugin.backendManager.switchBackend(value);
 							}
-							this.display();
+							this.renderContent();
 						});
 				});
 		}
@@ -86,7 +110,7 @@ export class AirSyncSettingTab extends PluginSettingTab {
 					completeAuth: (code: string) =>
 						this.plugin.backendManager.completeBackendConnect(code),
 					disconnect: () => this.plugin.backendManager.disconnectBackend(),
-					refreshDisplay: () => this.display(),
+					refreshDisplay: () => this.renderContent(),
 					startFolderPick: () => this.plugin.backendManager.startBackendFolderPick(),
 					bindDefaultFolder: () => this.plugin.backendManager.bindDefaultRemoteVault(),
 				},
@@ -246,12 +270,12 @@ export class AirSyncSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						this.plugin.settings.enableConfigSync = value;
 						await this.plugin.saveSettings();
-						this.display();
+						this.renderContent();
 					})
 			);
 
 		if (this.plugin.settings.enableConfigSync) {
-			const timingDesc = document.createDocumentFragment();
+			const timingDesc = createFragment();
 			timingDesc.createEl("p", {
 				text:
 					"Config changes aren't synced immediately — they're picked up the next time a sync runs " +
@@ -264,7 +288,7 @@ export class AirSyncSettingTab extends PluginSettingTab {
 			});
 			new Setting(containerEl).setName("Sync timing").setDesc(timingDesc);
 
-			const desc = document.createDocumentFragment();
+			const desc = createFragment();
 			desc.appendText("Added automatically to the top of your Ignore patterns above:");
 			desc.createEl("pre", {
 				text: getConfigSyncIgnorePatterns(configDir, this.plugin.manifest.id).join("\n"),

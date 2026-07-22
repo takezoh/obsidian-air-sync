@@ -122,6 +122,16 @@ export default tseslint.config(
 			globals: {
 				...globals.browser,
 				process: "readonly",
+				// Obsidian augments the global scope with DOM helpers (obsidian.d.ts
+				// `declare global`). They are the sanctioned alternative to native
+				// document.createElement / createDocumentFragment (see the
+				// obsidianmd/prefer-create-el rule), so declare them as readonly
+				// globals for no-undef.
+				createEl: "readonly",
+				createDiv: "readonly",
+				createSpan: "readonly",
+				createSvg: "readonly",
+				createFragment: "readonly",
 			},
 			parserOptions: {
 				projectService: {

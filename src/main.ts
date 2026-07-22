@@ -98,7 +98,10 @@ export default class AirSyncPlugin extends Plugin {
 				new Notice(message);
 			},
 			refreshSettingsDisplay: () => {
-				this.settingTab?.display();
+				// Re-render the settings tab in place. renderContent() is the
+				// imperative renderer; we call it directly rather than the deprecated
+				// display() so this stays version-agnostic.
+				this.settingTab?.renderContent();
 			},
 		});
 
