@@ -82,6 +82,15 @@ export default class AirSyncPlugin extends Plugin {
 				this.syncStatus = "not_connected";
 				this.updateStatusBar();
 			},
+			// A remote target was just bound mid-session — run the first sync now so
+			// files start transferring without waiting for an incidental
+			// foreground/vault/online event (issue #33). Routed through runSync (the
+			// wrapper), NOT orchestrator.runSync: the wrapper's try/catch resolves a
+			// failed first sync to a terminal "error" status, so the status bar never
+			// sticks at "Syncing…". Keep this pointed at runSync for that guarantee.
+			onRemoteBound: () => {
+				void this.runSync();
+			},
 			clearSyncBaseline: async () => {
 				await this.orchestrator?.clearSyncState();
 			},

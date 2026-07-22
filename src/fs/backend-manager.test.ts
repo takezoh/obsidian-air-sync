@@ -42,6 +42,7 @@ function createDeps(
 		getVaultName: () => "Test Vault",
 		onConnected: vi.fn(),
 		onDisconnected: vi.fn(),
+		onRemoteBound: vi.fn(),
 		clearSyncBaseline: vi.fn().mockResolvedValue(undefined),
 		notify: vi.fn(),
 		refreshSettingsDisplay: vi.fn(),
@@ -843,5 +844,116 @@ describe("BackendManager — isConnecting flag", () => {
 
 		resolve();
 		await completePromise;
+	});
+});
+
+describe("BackendManager — onRemoteBound (initial sync after a mid-session bind, issue #33)", () => {
+	it("fires onRemoteBound after initBackend builds a remote FS", async () => {
+		const settings = mockSettings();
+		const deps = createDeps(settings);
+		const onRemoteBound = deps.onRemoteBound as ReturnType<typeof vi.fn>;
+		const mgr = new BackendManager(deps);
+
+		await mgr.initBackend();
+
+		expect(onRemoteBound).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not fire onRemoteBound when initBackend builds no FS", async () => {
+		const settings = mockSettings();
+		fakeProvider.isConnected = () => false; // initBackend won't build an FS
+		fakeProvider.createFs = () => null;
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+
+		await mgr.initBackend();
+
+		expect(deps.onRemoteBound).not.toHaveBeenCalled();
+	});
+
+	it("fires onRemoteBound only after `connecting` is cleared", async () => {
+		// Regression guard: firing while still mid-connect would be swallowed by the
+		// orchestrator's isBackendConnecting gate, so the bound-time trigger must run
+		// with connecting === false.
+		const settings = mockSettings();
+		let mgr!: BackendManager;
+		let connectingAtCall: boolean | null = null;
+		const onRemoteBound = vi.fn(() => { connectingAtCall = mgr.isConnecting(); });
+		mgr = new BackendManager(createDeps(settings, { onRemoteBound }));
+
+		await mgr.initBackend();
+
+		expect(onRemoteBound).toHaveBeenCalledTimes(1);
+		expect(connectingAtCall).toBe(false);
+	});
+
+	it("fires onRemoteBound after bindDefaultRemoteVault binds the default folder", async () => {
+		const settings = mockSettings();
+		fakeProvider.getIdentity = () => {
+			const id = settings.backendData.remoteVaultFolderId as string | undefined;
+			return id ? `test:${id}` : "test:folder-A";
+		};
+		fakeProvider.resolveRemoteVault = vi.fn().mockResolvedValue({
+			backendUpdates: { remoteVaultFolderId: "id:default" },
+		});
+		const deps = createDeps(settings);
+		const onRemoteBound = deps.onRemoteBound as ReturnType<typeof vi.fn>;
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend();
+		onRemoteBound.mockClear();
+
+		await mgr.bindDefaultRemoteVault();
+
+		expect(onRemoteBound).toHaveBeenCalledTimes(1);
+	});
+
+	it("fires onRemoteBound after completeBackendFolderPick binds a picked folder", async () => {
+		const settings = mockSettings();
+		fakeProvider.getIdentity = () => {
+			const id = settings.backendData.remoteVaultFolderId as string | undefined;
+			return id ? `test:${id}` : "test:folder-A";
+		};
+		fakeProvider.picker!.completeWebFolderPick = vi.fn().mockResolvedValue({
+			backendUpdates: { remoteVaultFolderId: "id:new", pendingFolderPickState: "" },
+		});
+		const deps = createDeps(settings);
+		const onRemoteBound = deps.onRemoteBound as ReturnType<typeof vi.fn>;
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend();
+		onRemoteBound.mockClear();
+
+		await mgr.completeBackendFolderPick({ id: "id:new", state: "S" });
+
+		expect(onRemoteBound).toHaveBeenCalledTimes(1);
+	});
+
+	it("fires onRemoteBound on a reconnect that rebuilds a bound FS", async () => {
+		const settings = mockSettings();
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend(); // sets backendProvider; createFs → fakeFs (bound)
+		(deps.onRemoteBound as ReturnType<typeof vi.fn>).mockClear();
+		fakeProvider.auth.completeAuth = () => Promise.resolve({});
+
+		await mgr.completeBackendConnect("auth-code");
+
+		expect(deps.onRemoteBound).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not fire onRemoteBound on a fresh connect with no folder bound, and points to the next step", async () => {
+		const settings = mockSettings();
+		fakeProvider.createFs = () => null; // fresh connect: folder not chosen yet
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend(); // no FS built (createFs → null)
+		(deps.onRemoteBound as ReturnType<typeof vi.fn>).mockClear();
+		fakeProvider.auth.completeAuth = () => Promise.resolve({});
+
+		await mgr.completeBackendConnect("auth-code");
+
+		expect(deps.onRemoteBound).not.toHaveBeenCalled();
+		expect(deps.notify).toHaveBeenCalledWith(
+			"Connected to Test — choose a remote folder to start syncing",
+		);
 	});
 });
