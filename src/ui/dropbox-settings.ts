@@ -84,7 +84,7 @@ export class DropboxCustomSettingsRenderer implements IBackendSettingsRenderer {
 
 		new Setting(containerEl)
 			.setName("App key")
-			.setDesc(`Your Dropbox app's app key. Register ${PLUGIN_REDIRECT_URI} as a redirect URI in that app.`)
+			.setDesc(`Your Dropbox app's app key. Use App folder access and register ${PLUGIN_REDIRECT_URI} as a redirect URI. See the custom app setup guide for the required permissions.`)
 			.addText((text) =>
 				text
 					.setValue(data.customClientId ?? "")
