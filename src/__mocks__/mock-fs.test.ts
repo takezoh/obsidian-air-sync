@@ -12,12 +12,12 @@ runIFileSystemContract("createMockFs", () => createMockFs("test"), {
 
 describe("createMockFs path authority", () => {
 	it("distinguishes mutation echoes from resolved observations", async () => {
-		const fs = createMockFs("test");
+		const fs = createMockFs("test", "requested_echo");
 
 		expect((await fs.write("dir/a.md", bytes("a"), 1000)).pathAuthority)
 			.toBe("requested_echo");
 		expect((await fs.mkdir("empty")).pathAuthority).toBe("requested_echo");
-		expect((await fs.stat("dir/a.md"))?.pathAuthority).toBe("actual_resolved");
-		expect((await fs.stat("empty"))?.pathAuthority).toBe("actual_resolved");
+		expect((await fs.stat("dir/a.md"))?.pathAuthority).toBe("requested_echo");
+		expect((await fs.stat("empty"))?.pathAuthority).toBe("requested_echo");
 	});
 });

@@ -205,7 +205,7 @@ export class GoogleDriveFs extends CachingRemoteFs<GoogleDriveFile> {
 				this.cache.removeEntry(oldPath);
 				this.cache.setFile(newPath, result);
 				if (r.wasFolder) {
-					this.cache.rewriteChildPaths(oldPath, newPath, "requested_echo");
+					this.cache.rewriteChildPaths(oldPath, newPath);
 				}
 			},
 		});

@@ -71,16 +71,20 @@ describe("DropboxMetadataCache.removeTree / rewriteChildPaths", () => {
 		expect(cache.getPathById("id:3")).toBe("renamed/b.md");
 	});
 
-	it("degrades descendant authority when a requested folder rename supplies the new prefix", () => {
+	it("restores resolved descendants after a requested folder prefix is confirmed", () => {
 		const cache = makeCache();
 		cache.buildFromFiles([dbxFolder("2", "/root/dir"), dbxFile("3", "/root/dir/b.md")]);
 
 		cache.removeEntry("dir");
 		cache.setEntry("Renamed", dbxFolder("2", "/root/Renamed"));
-		cache.rewriteChildPaths("dir", "Renamed", "requested_echo");
+		cache.rewriteChildPaths("dir", "Renamed");
 
 		const child = cache.getFile("Renamed/b.md")!;
 		expect(cache.toEntity("Renamed/b.md", child).pathAuthority).toBe("requested_echo");
+
+		cache.setEntry("Renamed", dbxFolder("2", "/root/Renamed"), "actual_resolved");
+
+		expect(cache.toEntity("Renamed/b.md", child).pathAuthority).toBe("actual_resolved");
 	});
 });
 

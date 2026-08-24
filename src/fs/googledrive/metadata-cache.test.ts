@@ -138,6 +138,12 @@ describe("setFile", () => {
 		expect(cache.hasFile("new")).toBe(true);
 		expect(cache.hasFile("new/child.txt")).toBe(true);
 		expect(cache.getPathById("c1")).toBe("new/child.txt");
+		expect(cache.getPathAuthority("new/child.txt")).toBe("requested_echo");
+		expect(cache.exportRecords().find((record) => record.path === "new/child.txt")?.pathAuthority)
+			.toBe("actual_resolved");
+
+		cache.setFile("new", makeFolder({ id: "d1", name: "new" }), "actual_resolved");
+
 		expect(cache.getPathAuthority("new/child.txt")).toBe("actual_resolved");
 	});
 

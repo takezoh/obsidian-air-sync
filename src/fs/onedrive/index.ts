@@ -167,7 +167,7 @@ export class OneDriveFs extends CachingRemoteFs<OneDriveItem> {
 				}
 				this.cache.removeEntry(oldPath);
 				this.cache.setFile(newPath, result);
-				if (r.wasFolder) this.cache.rewriteChildPaths(oldPath, newPath, "requested_echo");
+				if (r.wasFolder) this.cache.rewriteChildPaths(oldPath, newPath);
 			},
 		});
 	}

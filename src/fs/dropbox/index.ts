@@ -234,7 +234,7 @@ export class DropboxFs extends CachingRemoteFs<DropboxEntry> {
 				// from the known prior type so the cache keeps classifying a moved folder
 				// as a folder (else a later write into it fails with "is a file").
 				this.cache.setEntry(newPath, { ...result, ".tag": r.wasFolder ? "folder" : "file" });
-				if (r.wasFolder) this.cache.rewriteChildPaths(oldPath, newPath, "requested_echo");
+				if (r.wasFolder) this.cache.rewriteChildPaths(oldPath, newPath);
 			},
 		});
 	}

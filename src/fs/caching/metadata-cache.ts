@@ -1,7 +1,7 @@
 import type { FileEntity, PathAuthority } from "../types";
 import type { Logger } from "../../logging/logger";
 import { INTERNAL_METADATA_PATH } from "../remote-vault-contract";
-import { resolvePathAuthority } from "./path-authority";
+import { resolveCachedPathAuthority, resolvePathAuthority, resolveStoredPathAuthority } from "./path-authority";
 
 export interface FileChangeResult {
 	oldPath: string | undefined;
@@ -67,7 +67,7 @@ export abstract class AbstractMetadataCache<TFile> {
 	hasId(id: string): boolean { return this.idToPath.has(id); }
 	getChildren(path: string): ReadonlySet<string> | undefined { return this.children.get(path); }
 	getPathAuthority(path: string): PathAuthority {
-		return this.pathAuthorities.get(path) ?? "requested_echo";
+		return resolveCachedPathAuthority(path, this.pathToFile, this.pathAuthorities);
 	}
 	get size(): number { return this.pathToFile.size; }
 	entries(): IterableIterator<[string, TFile]> { return this.pathToFile.entries(); }
@@ -173,7 +173,7 @@ export abstract class AbstractMetadataCache<TFile> {
 			path,
 			file,
 			isFolder: this.folders.has(path),
-			pathAuthority: this.getPathAuthority(path),
+			pathAuthority: resolveStoredPathAuthority(path, this.pathAuthorities),
 		}));
 	}
 
@@ -344,13 +344,13 @@ export abstract class AbstractMetadataCache<TFile> {
 	}
 
 	/** Rewrite all cached child paths when a folder is renamed/moved */
-	rewriteChildPaths(oldPath: string, newPath: string, pathAuthority?: PathAuthority): void {
+	rewriteChildPaths(oldPath: string, newPath: string): void {
 		const oldPrefix = oldPath + "/";
 		const descendants = this.collectDescendants(oldPath);
 		for (const childPath of descendants) {
 			const childFile = this.pathToFile.get(childPath);
 			if (!childFile) continue;
-			const childAuthority = pathAuthority ?? this.getPathAuthority(childPath);
+			const childAuthority = resolveStoredPathAuthority(childPath, this.pathAuthorities);
 			const newChildPath = newPath + "/" + childPath.substring(oldPrefix.length);
 			this.removeFromIndex(childPath);
 			this.pathToFile.delete(childPath);

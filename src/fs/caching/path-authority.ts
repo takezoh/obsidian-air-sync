@@ -42,3 +42,26 @@ function remember(
 	resolved.set(id, authority);
 	return authority;
 }
+
+/** Project stored entry authority through any unresolved cached ancestor. */
+export function resolveCachedPathAuthority(
+	path: string,
+	entries: ReadonlyMap<string, unknown>,
+	authorities: ReadonlyMap<string, PathAuthority>,
+): PathAuthority {
+	let current = path;
+	while (current) {
+		if (entries.has(current) && resolveStoredPathAuthority(current, authorities) === "requested_echo") {
+			return "requested_echo";
+		}
+		const separator = current.lastIndexOf("/");
+		current = separator === -1 ? "" : current.substring(0, separator);
+	}
+	return "actual_resolved";
+}
+
+export function resolveStoredPathAuthority(
+	path: string, authorities: ReadonlyMap<string, PathAuthority>,
+): PathAuthority {
+	return authorities.get(path) ?? "requested_echo";
+}
