@@ -6,7 +6,7 @@ import type { TrackerSnapshot } from "./local-tracker";
 import { hasChanged, hasRemoteChanged } from "./change-compare";
 import { sha256, digest, isLocallyComputable } from "../utils/hash";
 import { AsyncPool } from "../queue/async-queue";
-import { collectLocalRenameEvidence, completeIdentityEvidence } from "./identity-evidence";
+import { collectLocalRenameEvidence, completeIdentityEvidence, renameOptimizerView } from "./identity-evidence";
 import {
 	getRemoteChanges,
 	hasFolderRename,
@@ -15,6 +15,7 @@ import {
 } from "./remote-change-source";
 import {
 	confirmBaselineAbsences,
+	confirmCarriedRenameOppositeEndpoints,
 	confirmUnknownRenameEndpoints,
 	ensureRenameEndpointObservations,
 	exactEntity,
@@ -34,6 +35,7 @@ export interface ChangeDetectorDeps {
 	remoteFs: IFileSystem;
 	stateStore: SyncStateStore;
 	changes: TrackerSnapshot;
+	onRemoteIdentityEvidence?: (evidence: readonly IdentityEvidence[]) => void;
 }
 
 export interface CollectChangesOptions {
@@ -44,6 +46,8 @@ export interface CollectChangesOptions {
 	 * (the cursor has moved past them). A full remote list vs records can.
 	 */
 	forceFullScan?: boolean;
+	/** Durable local rename evidence replayed before endpoint confirmation/hash enrichment. */
+	carriedIdentityEvidence?: readonly IdentityEvidence[];
 }
 
 /**
@@ -66,7 +70,7 @@ export async function collectChanges(
 	// Determine temperature
 	if (!opts.forceFullScan && changes.initialized && changes.dirtyPaths.size > 0 &&
 		changes.folderRenamePairs.size === 0) {
-		const remoteChanges = await getRemoteChanges(deps.remoteFs);
+		const remoteChanges = await getRemoteChanges(deps.remoteFs, deps.onRemoteIdentityEvidence);
 		if (hasFolderRename(remoteChanges)) {
 			changeSet = await collectCold(
 				deps,
@@ -84,9 +88,16 @@ export async function collectChanges(
 			? await collectCold(deps, allRecords)
 			: await collectWarm(deps, allRecords);
 	}
-	changeSet.identityEvidence.unshift(...collectLocalRenameEvidence(changes));
+	changeSet.identityEvidence.unshift(...(opts.carriedIdentityEvidence ?? []),
+		...collectLocalRenameEvidence(changes));
 	ensureRenameEndpointObservations(changeSet.observations, changeSet.identityEvidence);
 	await confirmUnknownRenameEndpoints(changeSet, deps.localFs, deps.remoteFs);
+	await confirmCarriedRenameOppositeEndpoints(
+		changeSet.observations,
+		opts.carriedIdentityEvidence ?? [],
+		deps.localFs,
+		deps.remoteFs,
+	);
 
 	// WARM/COLD listings can under-report. Confirm every baseline path whose current
 	// side is missing before planning; a thrown stat aborts rather than becoming absence.
@@ -96,7 +107,8 @@ export async function collectChanges(
 	// Hash enrichment operates only on exact entries and cannot upgrade observations.
 	await enrichHashesForInitialMatch(changeSet.entries, deps.localFs);
 	await enrichHashesForRenames(
-		changeSet.entries, changeSet.observations, deps.localFs, changes.renamePairs,
+		changeSet.entries, changeSet.observations, deps.localFs,
+		renameOptimizerView(changeSet.identityEvidence).localFiles,
 	);
 	changeSet.identityEvidence = completeIdentityEvidence(
 		changeSet.identityEvidence,
@@ -179,7 +191,7 @@ async function collectWarm(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): 
 
 	const [localFiles, remoteChanges] = await Promise.all([
 		localFs.list(),
-		getRemoteChanges(remoteFs),
+		getRemoteChanges(remoteFs, deps.onRemoteIdentityEvidence),
 	]);
 	if (hasFolderRename(remoteChanges)) {
 		return collectCold(

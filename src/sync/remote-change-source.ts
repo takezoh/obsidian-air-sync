@@ -21,11 +21,15 @@ export async function remoteSnapshotAfterDelta(remoteFs: IFileSystem): Promise<F
 	return checkpoint.listCurrentSnapshot();
 }
 
-export async function getRemoteChanges(remoteFs: IFileSystem): Promise<RemoteChanges> {
+export async function getRemoteChanges(
+	remoteFs: IFileSystem,
+	onIdentityEvidence?: (evidence: readonly RenameEvidence[]) => void,
+): Promise<RemoteChanges> {
 	if (!remoteFs.checkpoint) return emptyRemoteChanges();
 	const result = await remoteFs.checkpoint.getChangedPaths();
 	if (!result) return emptyRemoteChanges();
 	const renameEvidence = collectRemoteRenameEvidence(result.renamed ?? []);
+	onIdentityEvidence?.(renameEvidence);
 	return {
 		paths: [
 			...result.modified,

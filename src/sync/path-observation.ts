@@ -108,6 +108,33 @@ export async function confirmUnknownRenameEndpoints(
 	})));
 }
 
+/** Confirm the other side of durable rename evidence so a clean replay can retire its debt. */
+export async function confirmCarriedRenameOppositeEndpoints(
+	observations: PathObservation[],
+	evidence: readonly IdentityEvidence[],
+	localFs: IFileSystem,
+	remoteFs: IFileSystem,
+): Promise<void> {
+	const candidates = new Map<string, { side: SyncSide; path: string; fs: IFileSystem }>();
+	for (const item of evidence) {
+		if (item.kind !== "rename") continue;
+		const side = item.side === "local" ? "remote" : "local";
+		const fs = side === "local" ? localFs : remoteFs;
+		for (const path of [item.oldPath, item.newPath]) {
+			const existing = observations.find((observation) =>
+				observation.side === side && observation.requestedPath === path);
+			if (!existing || existing.kind === "unknown" ||
+				(existing.kind === "present_unresolved" && existing.source === "list")) {
+				candidates.set(`${side}\0${path}`, { side, path, fs });
+			}
+		}
+	}
+	const pool = new AsyncPool(10);
+	await Promise.all([...candidates.values()].map(({ side, path, fs }) => pool.run(async () => {
+		replaceObservation(observations, observePath(side, path, await fs.stat(path)));
+	})));
+}
+
 export function replaceObservation(observations: PathObservation[], replacement: PathObservation): void {
 	const index = observations.findIndex((observation) =>
 		observation.side === replacement.side && observation.requestedPath === replacement.requestedPath);

@@ -1,6 +1,7 @@
 import type { FileEntity } from "../fs/types";
 import type { ConflictRecord, ConflictStrategy, SyncAction } from "./types";
 import type { ConflictResolutionResult } from "./conflict-resolver";
+import type { DeferredComponent } from "./plan-admission";
 
 export interface CompletedAction {
 	action: SyncAction;
@@ -30,6 +31,7 @@ export interface ExecutionResult {
 	failed: FailedAction[];
 	blocked: BlockedAction[];
 	conflicts: ResolvedConflict[];
+	deferred: DeferredComponent[];
 }
 
 export function toConflictRecords(

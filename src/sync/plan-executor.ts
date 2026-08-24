@@ -148,6 +148,7 @@ export async function executePlan(
 		failed: [],
 		blocked: [],
 		conflicts: [],
+		deferred: [],
 	};
 
 	const total = plan.actions.length;

@@ -11,19 +11,19 @@ import { SyncStateStore } from "./state";
 import { LocalChangeTracker, type TrackerSnapshot } from "./local-tracker";
 import { collectChanges } from "./change-detector";
 import { computeScopeFingerprint } from "./scope-fingerprint";
-import { planSync } from "./decision-engine";
-import { refinePlan } from "./rename-optimizer";
 import { executePlan, toConflictRecords, DESKTOP_TRANSFER_POOL, MOBILE_TRANSFER_POOL } from "./plan-executor";
 import type { ExecutionContext, ExecutionResult } from "./plan-executor";
 import { classifyHttpError } from "../fs/errors";
 import type { ErrorClassification } from "../fs/errors";
 import { decideRetry, sleep } from "./error";
-import type { ConflictRecord, SyncStatus } from "./types";
+import type { ConflictRecord, IdentityEvidence, SyncStatus } from "./types";
 import { buildSyncRecord } from "./state-committer";
 import { CycleSummary } from "./sync-notification";
 import type { SyncCycleResult } from "./sync-notification";
 import { FailedActionTracker } from "./failed-action-tracker";
-import { projectScope } from "./scope-projection";
+import { mergeIdentityEvidence, renameDebtEvidence } from "./rename-debt";
+import { logChangeDetection, prepareSyncCyclePlan } from "./sync-cycle-planning";
+import { finalizeSyncCycle } from "./sync-cycle-finalization";
 
 export type { SyncStatus };
 
@@ -65,6 +65,8 @@ export class SyncOrchestrator {
 	 * cycle cold — a full list × baseline join recovers it regardless of cursor.
 	 */
 	private recoverViaColdScan = false;
+	/** Reported edges retained until a clean checkpoint; remote edges are not durable debt. */
+	private pendingAdmissionEvidence: IdentityEvidence[] = [];
 	private failedActionTracker = new FailedActionTracker();
 	/** Stable id grouping this plugin session's conflict-history records. */
 	private readonly sessionId = crypto.randomUUID();
@@ -93,8 +95,15 @@ export class SyncOrchestrator {
 	}
 
 	async clearSyncState(): Promise<void> {
-		this.deps.logger?.info("Clearing sync state");
-		await this.stateStore.clear();
+		// Serialize target teardown with execution. Otherwise an old-target cycle can
+		// recreate debt after disconnect/switch has cleared its namespace.
+		await this.syncMutex.run(async () => {
+			this.deps.logger?.info("Clearing sync state");
+			await this.stateStore.clear();
+			this.pendingAdmissionEvidence = [];
+			this.recoverViaColdScan = false;
+			this.syncPending = false;
+		});
 	}
 
 	shouldSync(): boolean {
@@ -220,17 +229,21 @@ export class SyncOrchestrator {
 				const result = await this.executeWithRetry(forceFullScan, snapshot, scopeFingerprint);
 				if (!result) return; // Fatal error already handled
 
-				const { succeeded, failed, blocked, conflicts } = result;
+				const { succeeded, failed, blocked, conflicts, deferred } = result;
 				// failed cycle では cursor が committed state より先に進んでいる可能性がある。
 				// ただし cold recovery を一度支払い済みの local-origin action だけが
 				// quarantine 対象なら、次 cycle の cold scan は不要。
 				this.recoverViaColdScan = this.needsColdRecovery(result.result);
-				if (failed > 0 || blocked > 0) {
+				if (failed > 0 || blocked > 0 || deferred > 0) {
 					this.deps.onStatusChange("partial_error");
-					this.deps.logger?.warn("Sync completed with errors", { succeeded, conflicts, failed, blocked });
+					this.deps.logger?.warn("Sync completed with errors", {
+						succeeded, conflicts, failed, blocked, deferred,
+					});
 				} else {
 					this.deps.onStatusChange("idle");
-					this.deps.logger?.info("Sync completed", { succeeded, conflicts, failed, blocked });
+					this.deps.logger?.info("Sync completed", {
+						succeeded, conflicts, failed, blocked, deferred,
+					});
 				}
 
 				summary.add(result.result);
@@ -280,6 +293,7 @@ export class SyncOrchestrator {
 					failed: lastResult.failed.length,
 					blocked: lastResult.blocked.length,
 					conflicts: lastResult.conflicts.length,
+					deferred: lastResult.deferred.length,
 				};
 			} catch (err) {
 				lastError = err;
@@ -367,59 +381,43 @@ export class SyncOrchestrator {
 			throw new Error("Cannot sync: local or remote filesystem is not available");
 		}
 		const settings = this.deps.getSettings();
+		const provider = this.deps.backendProvider();
+		const debtNamespace = (provider?.getIdentity?.(settings) ?? settings.lastSyncedIdentity) ||
+			`${settings.backendType}:${settings.vaultId}`;
+		const persistedDebts = await this.stateStore.getRenameDebts(debtNamespace);
+		const carriedEvidence = mergeIdentityEvidence(
+			this.pendingAdmissionEvidence,
+			persistedDebts.map(renameDebtEvidence),
+		);
 
 		const changeSet = await collectChanges({
 			localFs,
 			remoteFs,
 			stateStore: this.stateStore,
 			changes: snapshot,
-		}, { forceFullScan });
-
-		const { renamePairs, folderRenamePairs } = snapshot;
-		const remoteOnlyPaths = changeSet.entries.filter((e) => !e.local && e.remote).map((e) => e.path);
-		this.deps.logger?.info("Change detection completed", {
-			temperature: changeSet.temperature,
-			entries: changeSet.entries.length,
-			localOnly: changeSet.entries.filter((e) => e.local && !e.remote).length,
-			remoteOnly: remoteOnlyPaths.length,
-			both: changeSet.entries.filter((e) => e.local && e.remote).length,
-			enriched: changeSet.entries.filter((e) => e.local?.hash && !e.prevSync).length,
-			renamePairs: renamePairs.size,
+			onRemoteIdentityEvidence: (evidence) => {
+				this.pendingAdmissionEvidence = mergeIdentityEvidence(
+					this.pendingAdmissionEvidence,
+					evidence.filter((item) => item.kind === "rename"),
+				);
+			},
+		}, {
+			forceFullScan: forceFullScan || persistedDebts.length > 0,
+			carriedIdentityEvidence: carriedEvidence,
 		});
-		if (remoteOnlyPaths.length > 0) {
-			this.deps.logger?.debug("Remote-only paths", { paths: remoteOnlyPaths });
-		}
-		if (renamePairs.size > 0) {
-			const rpPaths = new Set([...renamePairs.keys(), ...renamePairs.values()]);
-			const rpEntries = changeSet.entries
-				.filter((e) => rpPaths.has(e.path))
-				.map((e) => ({
-					path: e.path,
-					local: !!e.local,
-					remote: !!e.remote,
-					prevSync: !!e.prevSync,
-					hash: (e.local?.hash || e.prevSync?.hash || "").substring(0, 8) || undefined,
-				}));
-			this.deps.logger?.debug("Rename entry details", { entries: rpEntries });
-		}
+		const { renamePairs, folderRenamePairs } = snapshot;
+		logChangeDetection(changeSet, renamePairs, this.deps.logger);
 
 		const isMobile = this.deps.isMobile();
 		const maxBytes = settings.mobileMaxFileSizeMB * 1024 * 1024;
-		const scopeProjection = projectScope(changeSet, {
+		const planning = prepareSyncCyclePlan(changeSet, persistedDebts, debtNamespace, {
 			classifyPath: (path) => this.isExcluded(path) ? "policy_out" : "included",
 			mobileMaxBytes: isMobile ? maxBytes : undefined,
-		});
-		const filtered = changeSet.entries.filter((e) => {
-			return scopeProjection.byEndpoint.get(e.path) === "included";
-		});
-
-		if (filtered.length !== changeSet.entries.length) {
-			this.deps.logger?.debug("Files filtered", {
-				total: changeSet.entries.length,
-				afterFilter: filtered.length,
-				excluded: changeSet.entries.length - filtered.length,
-			});
-		}
+		}, this.deps.logger);
+		this.pendingAdmissionEvidence = mergeIdentityEvidence(
+			this.pendingAdmissionEvidence,
+			changeSet.identityEvidence.filter((item) => item.kind === "rename"),
+		);
 
 		if (folderRenamePairs.size > 0) {
 			this.deps.logger?.info("Folder rename pairs detected", {
@@ -427,24 +425,11 @@ export class SyncOrchestrator {
 				pairs: [...folderRenamePairs.entries()].map(([n, o]) => `${o} → ${n}`),
 			});
 		}
-		const plan = refinePlan(
-			planSync(filtered),
-			changeSet.identityEvidence,
-			this.deps.logger,
-		);
+		// This write is deliberately before executePlan: a crash after tracker capture
+		// must not erase the only authoritative local rename edge.
+		await this.stateStore.upsertRenameDebts(planning.localRenameDebts);
+		const total = planning.admission.executable.actions.length;
 
-		const actionBreakdown: Record<string, number> = {};
-		for (const a of plan.actions) {
-			actionBreakdown[a.action] = (actionBreakdown[a.action] ?? 0) + 1;
-		}
-		this.deps.logger?.info("Sync plan created", {
-			total: plan.actions.length,
-			...actionBreakdown,
-		});
-
-		const total = plan.actions.length;
-
-		const provider = this.deps.backendProvider();
 		const classifyError = (err: unknown) => provider?.classifyError?.(err) ?? classifyHttpError(err);
 		const ctx: ExecutionContext = {
 			localFs,
@@ -465,17 +450,18 @@ export class SyncOrchestrator {
 			transferPool: this.deps.isMobile() ? MOBILE_TRANSFER_POOL : DESKTOP_TRANSFER_POOL,
 		};
 
-		const result = await executePlan(plan, ctx);
+		const execution = await executePlan(planning.admission.executable, ctx);
+		const result: ExecutionResult = { ...execution, deferred: planning.admission.deferred };
 		this.updateFailedActionTracker(settings.backendType, result, classifyError);
 
 		// Persist backend state. commitCheckpoint advances the delta cursor (+ file map,
 		// atomically) only on a fully clean cycle; a partial sync keeps the prior cursor.
-		const cleanCycle = result.failed.length === 0;
-		// The checkpoint lives on the FS now (no provider downcast): flush it only on a
-		// fully clean cycle so a partial sync keeps the prior committed cursor.
-		if (cleanCycle && remoteFs?.checkpoint) {
-			await remoteFs.checkpoint.commitCheckpoint({ scopeFingerprint });
-		}
+		this.pendingAdmissionEvidence = await finalizeSyncCycle({
+			result, pendingEvidence: this.pendingAdmissionEvidence, persistedDebts,
+			localRenameDebts: planning.localRenameDebts,
+			scopeProjection: planning.scopeProjection, observations: changeSet.observations,
+			checkpoint: remoteFs.checkpoint, scopeFingerprint, stateStore: this.stateStore,
+		});
 		// readBackendState now persists only non-secret token state (the cursor lives
 		// in the backend store, committed above) — safe to run every cycle.
 		if (provider?.readBackendState) {
@@ -510,7 +496,7 @@ export class SyncOrchestrator {
 		const settings = this.deps.getSettings();
 		const provider = this.deps.backendProvider();
 		const classifyError = (err: unknown) => provider?.classifyError?.(err) ?? classifyHttpError(err);
-		return result.failed.some((failed) =>
+		return result.deferred.length > 0 || result.failed.some((failed) =>
 			!this.failedActionTracker.isBlockingFailure(
 				settings.backendType,
 				failed,
