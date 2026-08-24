@@ -119,6 +119,11 @@ async function collectHot(deps: ChangeDetectorDeps): Promise<ChangeSet> {
 		if (!prev) return true;
 		// Local deleted but remote still exists (e.g. rename source)
 		if (!e.local && e.remote) return true;
+		// A checkpoint tombstone is authoritative remote absence. Preserve it even
+		// when the surviving local file is unchanged so the decision engine can
+		// propagate the deletion. Do not infer this from remote stat() absence alone:
+		// locally dirty paths also pass through HOT without a remote change signal.
+		if (e.local && !e.remote && remoteChanges.deletedPaths.has(e.path)) return true;
 		// Local changed
 		if (e.local && hasChanged(e.local, prev)) return true;
 		// Remote changed
@@ -335,15 +340,17 @@ async function confirmLocalDeletions(
 
 interface RemoteChanges {
 	paths: string[];
+	deletedPaths: ReadonlySet<string>;
 	renamed: RenamePair[];
 }
 
 async function getRemoteChanges(remoteFs: IFileSystem): Promise<RemoteChanges> {
-	if (!remoteFs.checkpoint) return { paths: [], renamed: [] };
+	if (!remoteFs.checkpoint) return { paths: [], deletedPaths: new Set(), renamed: [] };
 	const result = await remoteFs.checkpoint.getChangedPaths();
-	if (!result) return { paths: [], renamed: [] };
+	if (!result) return { paths: [], deletedPaths: new Set(), renamed: [] };
 	return {
 		paths: [...result.modified, ...result.deleted],
+		deletedPaths: new Set(result.deleted),
 		renamed: result.renamed ?? [],
 	};
 }
