@@ -232,6 +232,112 @@ describe("DropboxFs stale-cache guards (CAS mechanism)", () => {
 });
 
 describe("DropboxFs.rename", () => {
+	type CacheView = {
+		setEntry(path: string, entry: DropboxEntry): void;
+		getFile(path: string): DropboxEntry | undefined;
+	};
+
+	async function caseRenameFs() {
+		const fs = await makeFs();
+		(fs as unknown as DropboxFsInternal).initialized = true;
+		const cache = (fs as unknown as { cache: CacheView }).cache;
+		cache.setEntry("Case.md", dbxFile("case", "/root/Case.md"));
+		return { fs, cache };
+	}
+
+	function notFound() {
+		return mockRes({ error_summary: "path/not_found/", error: { ".tag": "path" } }, { status: 409 });
+	}
+
+	it("performs a case-only rename through a deterministic intermediate path", async () => {
+		const { fs } = await caseRenameFs();
+		const moves: Array<{ from_path: string; to_path: string }> = [];
+		(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
+			const request = opts as RequestUrlParam;
+			if (request.url.includes("get_metadata")) return Promise.resolve(notFound());
+			if (request.url.includes("move_v2")) {
+				const body = JSON.parse(request.body as string) as { from_path: string; to_path: string };
+				moves.push(body);
+				const path = moves.length === 1 ? "/root/.airsync-case-rename" : "/root/case.md";
+				return Promise.resolve(mockRes({ metadata: untagged(dbxFile("case", path)) }));
+			}
+			return Promise.resolve(mockRes({}));
+		});
+
+		await fs.rename("Case.md", "case.md");
+
+		expect(moves).toHaveLength(2);
+		expect(moves[0]!.from_path).toBe("id:root/Case.md");
+		expect(moves[0]!.to_path).toMatch(/^id:root\/\.airsync-case-rename-[0-9a-f]{8}$/);
+		expect(moves[1]).toMatchObject({ from_path: moves[0]!.to_path, to_path: "id:root/case.md" });
+		expect((await fs.stat("case.md"))?.identityKey).toBe("id:case");
+	});
+
+	it("resumes the second leg when the deterministic intermediate already holds the source id", async () => {
+		const { fs } = await caseRenameFs();
+		const moves: Array<{ from_path: string; to_path: string }> = [];
+		(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
+			const request = opts as RequestUrlParam;
+			if (request.url.includes("get_metadata")) {
+				return Promise.resolve(mockRes(dbxFile("case", "/root/.airsync-case-rename-existing")));
+			}
+			if (request.url.includes("move_v2")) {
+				moves.push(JSON.parse(request.body as string) as { from_path: string; to_path: string });
+				return Promise.resolve(mockRes({ metadata: untagged(dbxFile("case", "/root/case.md")) }));
+			}
+			return Promise.resolve(mockRes({}));
+		});
+
+		await fs.rename("Case.md", "case.md");
+
+		expect(moves).toHaveLength(1);
+		expect(moves[0]!.from_path).toMatch(/^id:root\/\.airsync-case-rename-[0-9a-f]{8}$/);
+		expect(moves[0]!.to_path).toBe("id:root/case.md");
+	});
+
+	it("fails before moving when the deterministic intermediate is occupied by another id", async () => {
+		const { fs } = await caseRenameFs();
+		const move = vi.fn();
+		(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
+			const request = opts as RequestUrlParam;
+			if (request.url.includes("get_metadata")) {
+				return Promise.resolve(mockRes(dbxFile("foreign", "/root/.airsync-case-rename-occupied")));
+			}
+			if (request.url.includes("move_v2")) move();
+			return Promise.resolve(mockRes({}));
+		});
+
+		await expect(fs.rename("Case.md", "case.md")).rejects.toThrow("temporary path is occupied");
+		expect(move).not.toHaveBeenCalled();
+	});
+
+	it("rolls the first leg back when the final move fails", async () => {
+		const { fs, cache } = await caseRenameFs();
+		const moves: Array<{ from_path: string; to_path: string }> = [];
+		(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
+			const request = opts as RequestUrlParam;
+			if (request.url.includes("get_metadata")) return Promise.resolve(notFound());
+			if (request.url.includes("move_v2")) {
+				moves.push(JSON.parse(request.body as string) as { from_path: string; to_path: string });
+				if (moves.length === 2) {
+					return Promise.resolve(mockRes(
+						{ error_summary: "to/conflict/file/", error: { ".tag": "to" } },
+						{ status: 409 },
+					));
+				}
+				return Promise.resolve(mockRes({ metadata: untagged(dbxFile("case", "/root/Case.md")) }));
+			}
+			return Promise.resolve(mockRes({}));
+		});
+
+		await expect(fs.rename("Case.md", "case.md")).rejects.toThrow("Dropbox API move failed");
+
+		expect(moves).toHaveLength(3);
+		expect(moves[2]).toMatchObject({ from_path: moves[0]!.to_path, to_path: "id:root/Case.md" });
+		expect(cache.getFile("Case.md")?.id).toBe("id:case");
+		expect(cache.getFile("case.md")).toBeUndefined();
+	});
+
 	it("keeps a moved folder classified as a folder even when move_v2 returns it untagged", async () => {
 		(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
 			const url = typeof opts === "string" ? opts : opts.url;
