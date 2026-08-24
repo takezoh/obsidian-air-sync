@@ -4,6 +4,9 @@ import type { PathAuthority } from "../fs/types";
 const FILES_STORE = "files";
 const META_STORE = "meta";
 
+/** Bump whenever persisted file-record semantics require a cold cache rebuild. */
+export const METADATA_CACHE_VERSION = 2;
+
 export interface FileRecord<T> {
 	path: string;
 	file: T;

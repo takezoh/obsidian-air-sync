@@ -6,6 +6,7 @@ import { LocalChangeTracker } from "./local-tracker";
 import {
 	createMockFs,
 	addFile,
+	readText,
 	mockSettings as baseMockSettings,
 } from "../__mocks__/sync-test-helpers";
 import type { AirSyncSettings } from "../settings";
@@ -582,6 +583,25 @@ describe("SyncOrchestrator", () => {
 
 			// Out of scope → never pulled locally, and not deleted from the remote.
 			expect(localFs.files.has(".airsync/logs/d/x.log")).toBe(false);
+			expect(remoteFs.files.has(".airsync/logs/d/x.log")).toBe(true);
+			expect(deps.onStatusChange).toHaveBeenCalledWith("idle");
+			await orchestrator.close();
+		});
+
+		it("pulls a remote-only hidden path when its root is opted in", async () => {
+			const settings = mockSettings();
+			settings.syncDotPaths = [".airsync"];
+			const deps = createDeps({ getSettings: () => settings });
+			const localFs = createMockFs("local");
+			const remoteFs = createMockFs("remote");
+			deps.localFs = () => localFs;
+			deps.remoteFs = () => remoteFs;
+			addFile(remoteFs, ".airsync/logs/d/x.log", "log");
+
+			const orchestrator = new SyncOrchestrator(deps);
+			await orchestrator.runSync();
+
+			expect(readText(localFs, ".airsync/logs/d/x.log")).toBe("log");
 			expect(remoteFs.files.has(".airsync/logs/d/x.log")).toBe(true);
 			expect(deps.onStatusChange).toHaveBeenCalledWith("idle");
 			await orchestrator.close();

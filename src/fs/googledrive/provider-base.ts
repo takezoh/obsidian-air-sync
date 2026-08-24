@@ -8,7 +8,7 @@ import type { RemoteVaultResolution } from "../remote-vault-contract";
 import type { IGoogleAuth } from "./auth";
 import { GoogleDriveClient } from "./client";
 import { GoogleDriveFs } from "./index";
-import { MetadataStore } from "../../store/metadata-store";
+import { METADATA_CACHE_VERSION, MetadataStore } from "../../store/metadata-store";
 import { resolveGoogleDriveRemoteVault } from "./remote-vault";
 import { resolveFolderPath } from "./folder-path";
 import { isHttpError } from "./incremental-sync";
@@ -69,7 +69,7 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 		if (!data.remoteVaultFolderId) return null;
 		return new MetadataStore<GoogleDriveFile>(`${settings.vaultId}-${data.remoteVaultFolderId}`, {
 			dbNamePrefix: "air-sync-googledrive",
-			version: 1,
+			version: METADATA_CACHE_VERSION,
 		});
 	}
 

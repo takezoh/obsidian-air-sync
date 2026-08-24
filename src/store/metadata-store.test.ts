@@ -1,6 +1,6 @@
 import "fake-indexeddb/auto";
 import { describe, it, expect } from "vitest";
-import { MetadataStore } from "./metadata-store";
+import { METADATA_CACHE_VERSION, MetadataStore } from "./metadata-store";
 
 interface TestFile {
 	id: string;
@@ -92,5 +92,29 @@ describe("MetadataStore", () => {
 		expect(loaded.files).toHaveLength(1);
 
 		await store.close();
+	});
+
+	it("cold-starts when persisted record semantics bump the cache version", async () => {
+		const legacy = new MetadataStore<TestFile>("upgrade-vault", {
+			dbNamePrefix: "test-metadata-upgrade",
+			version: METADATA_CACHE_VERSION - 1,
+		});
+		await legacy.open();
+		await legacy.saveAll(
+			[{ path: "legacy.md", file: { id: "1", name: "legacy.md", mimeType: "text/plain" }, isFolder: false }],
+			new Map([["changesStartPageToken", "legacy-cursor"]]),
+		);
+		await legacy.close();
+
+		const current = new MetadataStore<TestFile>("upgrade-vault", {
+			dbNamePrefix: "test-metadata-upgrade",
+			version: METADATA_CACHE_VERSION,
+		});
+		await current.open();
+		const loaded = await current.loadAll();
+
+		expect(loaded.files).toEqual([]);
+		expect(loaded.meta.size).toBe(0);
+		await current.close();
 	});
 });

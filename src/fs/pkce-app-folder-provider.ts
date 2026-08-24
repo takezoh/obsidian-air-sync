@@ -7,7 +7,7 @@ import type { IBackendSettingsRenderer } from "./settings-renderer";
 import type { AirSyncSettings } from "../settings";
 import type { Logger } from "../logging/logger";
 import type { RemoteVaultResolution } from "./remote-vault-contract";
-import { MetadataStore } from "../store/metadata-store";
+import { METADATA_CACHE_VERSION, MetadataStore } from "../store/metadata-store";
 import { getBackendSecret, setBackendSecret, hasBackendSecret, clearBackendSecrets } from "./token-store";
 import type { PkceAuthProvider, PkceTokenManager } from "./pkce-auth-provider";
 
@@ -111,7 +111,10 @@ export abstract class PkceAppFolderProvider<
 	protected metadataStoreFor(settings: AirSyncSettings): MetadataStore<TFile> | null {
 		const id = this.getData(settings).remoteVaultFolderId;
 		if (!id) return null;
-		return new MetadataStore<TFile>(`${settings.vaultId}-${id}`, { dbNamePrefix: this.dbNamePrefix, version: 1 });
+		return new MetadataStore<TFile>(`${settings.vaultId}-${id}`, {
+			dbNamePrefix: this.dbNamePrefix,
+			version: METADATA_CACHE_VERSION,
+		});
 	}
 
 	/** A usable token exists if either secret is present (a refresh OR a live access token). */

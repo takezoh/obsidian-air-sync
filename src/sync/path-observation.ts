@@ -26,14 +26,13 @@ export function exactEntity(observation: PathObservation): FileEntity | undefine
 		: undefined;
 }
 
-/** Replace listing uncertainty with authoritative stat observations for baseline paths. */
-export async function confirmBaselineAbsences(
+/** Replace listing uncertainty with authoritative stat observations before planning absence. */
+export async function confirmEntryAbsences(
 	changeSet: { entries: MixedEntity[]; observations: PathObservation[] },
 	localFs: IFileSystem,
 	remoteFs: IFileSystem,
 ): Promise<void> {
 	const candidates = changeSet.entries.flatMap((entry) => {
-		if (!entry.prevSync) return [];
 		const missing: Array<{ side: SyncSide; fs: IFileSystem }> = [];
 		if (!entry.local && needsConfirmation(changeSet.observations, "local", entry.path)) {
 			missing.push({ side: "local", fs: localFs });

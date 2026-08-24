@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { collectChanges, enrichHashesForRenames } from "./change-detector";
+import { collectChanges } from "./change-detector";
+import { enrichHashesForRenames } from "./change-hash-enrichment";
 import { planSync } from "./decision-engine";
 import type { ChangeDetectorDeps } from "./change-detector";
 import { LocalChangeTracker } from "./local-tracker";
@@ -264,6 +265,25 @@ describe("collectChanges — temperature selection", () => {
 			const entry = result.entries.find((e) => e.path === "remote-changed.md");
 			expect(entry).toBeDefined();
 			expect(entry?.remote).toBeDefined();
+		});
+
+		it("confirms local absence for a new remote-only delta path", async () => {
+			await stateStore.put(makeRecord("existing.md"));
+			addFile(remoteFs, "new-remote.md", "remote", 2000);
+			remoteFs.checkpoint!.getChangedPaths = () => Promise.resolve({
+				modified: ["new-remote.md"], deleted: [],
+			});
+
+			const result = await collectChanges(makeDeps());
+
+			expect(result.entries.find((entry) => entry.path === "new-remote.md")).toMatchObject({
+				local: undefined,
+				remote: { path: "new-remote.md" },
+				prevSync: undefined,
+			});
+			expect(result.observations).toContainEqual({
+				kind: "absent", side: "local", requestedPath: "new-remote.md", authority: "stat",
+			});
 		});
 	});
 

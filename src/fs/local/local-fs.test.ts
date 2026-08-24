@@ -116,7 +116,7 @@ describe("LocalFs", () => {
 			expect(entity!.isDirectory).toBe(false);
 			expect(entity!.hash).not.toBe("");
 			expect(entity!.path).toBe(".airsync/logs/test.log");
-			expect(entity!.pathAuthority).toBe("requested_echo");
+			expect(entity!.pathAuthority).toBe("actual_resolved");
 		});
 
 		it("returns FileEntity for a .airsync directory", async () => {
@@ -151,7 +151,7 @@ describe("LocalFs", () => {
 			expect(entity!.isDirectory).toBe(false);
 			expect(entity!.size).toBe(2);
 			expect(entity!.hash).not.toBe("");
-			expect(entity!.pathAuthority).toBe("requested_echo");
+			expect(entity!.pathAuthority).toBe("actual_resolved");
 		});
 
 		it("marks an indexed stat as resolved and preserves the index's actual spelling", async () => {

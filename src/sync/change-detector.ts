@@ -4,8 +4,7 @@ import type { IdentityEvidence, MixedEntity, PathObservation, SyncRecord } from 
 import type { SyncStateStore } from "./state";
 import type { TrackerSnapshot } from "./local-tracker";
 import { hasChanged, hasRemoteChanged } from "./change-compare";
-import { sha256, digest, isLocallyComputable } from "../utils/hash";
-import { AsyncPool } from "../queue/async-queue";
+import { enrichHashesForInitialMatch, enrichHashesForRenames } from "./change-hash-enrichment";
 import { collectLocalRenameEvidence, completeIdentityEvidence, renameOptimizerView } from "./identity-evidence";
 import {
 	getRemoteChanges,
@@ -14,13 +13,12 @@ import {
 	type RemoteChanges,
 } from "./remote-change-source";
 import {
-	confirmBaselineAbsences,
+	confirmEntryAbsences,
 	confirmCarriedRenameOppositeEndpoints,
 	confirmUnknownRenameEndpoints,
 	ensureRenameEndpointObservations,
 	exactEntity,
 	observePath,
-	replaceObservation,
 } from "./path-observation";
 
 export interface ChangeSet {
@@ -102,7 +100,7 @@ export async function collectChanges(
 	// WARM/COLD listings can under-report. Confirm every baseline path whose current
 	// side is missing before planning; a thrown stat aborts rather than becoming absence.
 	if (changeSet.temperature !== "hot") {
-		await confirmBaselineAbsences(changeSet, deps.localFs, deps.remoteFs);
+		await confirmEntryAbsences(changeSet, deps.localFs, deps.remoteFs);
 	}
 	// Hash enrichment operates only on exact entries and cannot upgrade observations.
 	await enrichHashesForInitialMatch(changeSet.entries, deps.localFs);
@@ -330,80 +328,4 @@ async function collectCold(
 		identityEvidence: remoteChanges?.renameEvidence ?? [],
 		temperature: "cold",
 	};
-}
-
-/**
- * Enrich empty hashes for entries without baseline by comparing the local
- * digest with the remote's backend-provided checksum. Runs for all temperature
- * modes to handle partial initial syncs and simultaneous file creation.
- *
- * Only fires when the remote checksum's algorithm is locally computable
- * (everything except `"opaque"` — md5/sha1/sha256/dropbox/quickxor). Backends
- * whose checksum is "opaque" (e.g. pCloud's internal content hash) cannot be
- * matched against local content, so their entries are skipped here and left to
- * the normal conflict path.
- */
-async function enrichHashesForInitialMatch(
-	entries: MixedEntity[],
-	localFs: IFileSystem,
-): Promise<void> {
-	const candidates = entries.filter(
-		(e) => e.local && e.remote && !e.prevSync &&
-			!e.local.hash && !e.remote.hash &&
-			e.local.size === e.remote.size &&
-			e.remote.remoteChecksum !== undefined &&
-			isLocallyComputable(e.remote.remoteChecksum.algo)
-	);
-	if (candidates.length === 0) return;
-
-	const pool = new AsyncPool(10);
-	await Promise.all(
-		candidates.map((entry) =>
-			pool.run(async () => {
-				try {
-					const remoteChecksum = entry.remote!.remoteChecksum!;
-					const content = await localFs.read(entry.path);
-					const localDigest = await digest(content, remoteChecksum.algo);
-					if (localDigest === remoteChecksum.value) {
-						const contentHash = await sha256(content);
-						entry.local = { ...entry.local!, hash: contentHash };
-						entry.remote = { ...entry.remote!, hash: contentHash };
-					}
-				} catch {
-					// Skip failed reads — entry stays unenriched (conflict, safe side)
-				}
-			})
-		)
-	);
-}
-
-/**
- * Ensure rename destination entries have hashes via stat().
- * In WARM/COLD mode, list() returns hash:"" — the rename optimizer
- * needs a real hash to verify content equivalence.
- */
-export async function enrichHashesForRenames(
-	entries: MixedEntity[],
-	observations: PathObservation[],
-	localFs: IFileSystem,
-	renamePairs: ReadonlyMap<string, string>,
-): Promise<void> {
-	if (renamePairs.size === 0) return;
-
-	const newPaths = new Set(renamePairs.keys());
-	const candidates = entries.filter(
-		(e) => newPaths.has(e.path) && e.local && !e.local.hash,
-	);
-	if (candidates.length === 0) return;
-
-	await Promise.all(
-		candidates.map(async (entry) => {
-			const observation = observePath("local", entry.path, await localFs.stat(entry.path));
-			replaceObservation(observations, observation);
-			const statEntity = exactEntity(observation);
-			entry.local = statEntity
-				? { ...entry.local!, hash: statEntity.hash }
-				: undefined;
-		})
-	);
 }

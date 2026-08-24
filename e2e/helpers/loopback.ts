@@ -64,7 +64,7 @@ export function startLoopback(port: number): Promise<LoopbackCapture> {
 			response.end(
 				"<!doctype html><meta charset=\"utf-8\"><body style=\"font-family:sans-serif\">" +
 					"<h2>⚠ Callback rejected</h2>" +
-					`<p>${detail}.</p>` +
+					"<p>The callback did not match the current authorization run.</p>" +
 					"<p>Open the authorize URL printed by this bootstrap run — copying it by hand " +
 					"corrupts <code>state</code>. Still waiting for a matching callback.</p></body>",
 			);
@@ -77,7 +77,7 @@ export function startLoopback(port: number): Promise<LoopbackCapture> {
 			`<!doctype html><meta charset="utf-8"><body style="font-family:sans-serif">` +
 				(ok
 					? `<h2>✓ Authorized</h2><p>You can close this tab and return to the terminal.</p>`
-					: `<h2>⚠ No authorization code in callback</h2><pre>${JSON.stringify(params)}</pre>`) +
+					: `<h2>⚠ No authorization code in callback</h2><p>See the terminal for details.</p>`) +
 				`</body>`,
 		);
 		if (ok) resolveParams(params);
@@ -130,8 +130,7 @@ export function announceAuthorizeUrl(backend: string, url: string): void {
 	//
 	// A missing opener surfaces as an ASYNC 'error' (ENOENT), never a throw, so the
 	// fallback chain has to advance from that handler — a synchronous loop would always
-	// stop at the first candidate whether or not it exists. `explorer.exe` precedes
-	// `xdg-open` because on WSL both resolve but only the former reaches a browser.
+	// stop at the first candidate whether or not it exists.
 	const tryOpen = (candidates: string[]): void => {
 		const [opener, ...rest] = candidates;
 		if (!opener) return;
@@ -139,7 +138,7 @@ export function announceAuthorizeUrl(backend: string, url: string): void {
 		child.on("error", () => tryOpen(rest));
 		child.unref();
 	};
-	tryOpen(["wslview", "explorer.exe", "xdg-open", "open"]);
+	tryOpen(["wslview", "xdg-open", "open"]);
 }
 
 /**

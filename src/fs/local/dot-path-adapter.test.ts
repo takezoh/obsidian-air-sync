@@ -18,7 +18,7 @@ function createAdapter(dotRoots: string[] = [".airsync"]): {
 
 describe("DotPathAdapter", () => {
 	describe("stat", () => {
-		it("marks the requested spelling as an echo because the raw adapter cannot resolve casing", async () => {
+		it("resolves the actual spelling from the parent listing", async () => {
 			const { vault, adapter } = createAdapter();
 			await vault.adapter.writeBinary(".airsync/a.md", new Uint8Array([1]).buffer);
 
@@ -26,13 +26,13 @@ describe("DotPathAdapter", () => {
 
 			expect(entity).toMatchObject({
 				path: ".airsync/a.md",
-				pathAuthority: "requested_echo",
+				pathAuthority: "actual_resolved",
 			});
 		});
 	});
 
 	describe("listAll", () => {
-		it("marks raw adapter listings as requested echoes", async () => {
+		it("marks raw adapter listings as resolved provider paths", async () => {
 			const { vault, adapter } = createAdapter();
 			const vaultInternal = vault as unknown as { files: Map<string, unknown> };
 			vaultInternal.files.set(".airsync", { type: "folder" });
@@ -47,7 +47,7 @@ describe("DotPathAdapter", () => {
 			await adapter.listAll(entities as never);
 
 			expect(entities).not.toHaveLength(0);
-			expect(entities.every((entity) => entity.pathAuthority === "requested_echo")).toBe(true);
+			expect(entities.every((entity) => entity.pathAuthority === "actual_resolved")).toBe(true);
 		});
 
 		it("lists files from all dot roots", async () => {
@@ -83,7 +83,7 @@ describe("DotPathAdapter", () => {
 	});
 
 	describe("listDir", () => {
-		it("marks direct raw adapter listings as requested echoes", async () => {
+		it("marks direct raw adapter listings as resolved provider paths", async () => {
 			const { vault, adapter } = createAdapter([".templates"]);
 			const vaultInternal = vault as unknown as { files: Map<string, unknown> };
 			vaultInternal.files.set(".templates", { type: "folder" });
@@ -97,7 +97,7 @@ describe("DotPathAdapter", () => {
 			const entities = await adapter.listDir(".templates");
 
 			expect(entities).not.toHaveLength(0);
-			expect(entities.every((entity) => entity.pathAuthority === "requested_echo")).toBe(true);
+			expect(entities.every((entity) => entity.pathAuthority === "actual_resolved")).toBe(true);
 		});
 
 		it("lists direct children of a dot path", async () => {
