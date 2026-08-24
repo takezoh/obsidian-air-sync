@@ -94,9 +94,18 @@ async function collectHot(deps: ChangeDetectorDeps): Promise<ChangeSet> {
 		Promise.all(pathArray.map((p) => remoteFs.stat(p))),
 		stateStore.getMany(pathArray),
 	]);
+	const renameSourcePaths = new Set(changes.renamePairs.values());
 
 	const entries: MixedEntity[] = pathArray.map((path, i) => {
-		const local = localStats[i] ?? undefined;
+		const localStat = localStats[i] ?? undefined;
+		// A case-insensitive filesystem can resolve a recorded rename source to
+		// the destination file. The tracker is authoritative for the logical
+		// rename: only accept the source as still present when stat() returns that
+		// exact path (for example, the user recreated the source before syncing).
+		const isRenameSourceAlias =
+			renameSourcePaths.has(path) &&
+			localStat?.path !== path;
+		const local = isRenameSourceAlias ? undefined : localStat;
 		const remote = remoteStats[i] ?? undefined;
 		const prevSync = syncRecords.get(path);
 		return {

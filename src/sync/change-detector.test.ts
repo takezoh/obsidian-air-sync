@@ -435,6 +435,61 @@ describe("collectChanges — temperature selection", () => {
 			expect(paths).toContain("old.md");
 		});
 
+		it("hot mode: treats a case-insensitive stat alias as an absent rename source", async () => {
+			await stateStore.put(makeRecord("PRUEBA.md", {
+				hash: "sha256abc",
+				localMtime: 1000,
+				localSize: 7,
+			}));
+			addFile(localFs, "PRUEBa.md", "content", 1000);
+			addFile(remoteFs, "PRUEBA.md", "content", 1000);
+
+			localTracker.acknowledge(localTracker.snapshot());
+			localTracker.markRenamed("PRUEBa.md", "PRUEBA.md");
+
+			const exactStat = localFs.stat.bind(localFs);
+			localFs.stat = async (path: string) => {
+				const exact = await exactStat(path);
+				if (exact) return exact;
+				const alias = [...localFs.files.keys()].find(
+					(candidate) => candidate.toLowerCase() === path.toLowerCase(),
+				);
+				return alias ? exactStat(alias) : null;
+			};
+
+			const result = await collectChanges(makeDeps());
+			const source = result.entries.find((entry) => entry.path === "PRUEBA.md");
+			const destination = result.entries.find((entry) => entry.path === "PRUEBa.md");
+
+			expect(result.temperature).toBe("hot");
+			expect(source).toMatchObject({
+				path: "PRUEBA.md",
+				local: undefined,
+			});
+			expect(source?.remote).toBeDefined();
+			expect(source?.prevSync).toBeDefined();
+			expect(destination?.local?.path).toBe("PRUEBa.md");
+		});
+
+		it("hot mode: preserves a rename source that was recreated before syncing", async () => {
+			await stateStore.put(makeRecord("PRUEBA.md", {
+				hash: "sha256abc",
+				localMtime: 1000,
+				localSize: 7,
+			}));
+			addFile(localFs, "PRUEBA.md", "recreated source", 2000);
+			addFile(localFs, "PRUEBa.md", "content", 1000);
+			addFile(remoteFs, "PRUEBA.md", "content", 1000);
+
+			localTracker.acknowledge(localTracker.snapshot());
+			localTracker.markRenamed("PRUEBa.md", "PRUEBA.md");
+
+			const result = await collectChanges(makeDeps());
+			const source = result.entries.find((entry) => entry.path === "PRUEBA.md");
+
+			expect(source?.local?.path).toBe("PRUEBA.md");
+		});
+
 		it("hot mode: remote rename pairs are included in ChangeSet", async () => {
 			await stateStore.put(makeRecord("a.md"));
 			addFile(localFs, "a.md", "content", 1000);

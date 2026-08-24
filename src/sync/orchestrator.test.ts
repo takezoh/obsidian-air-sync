@@ -391,6 +391,57 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.close();
 		});
 
+		// Regression (issue #43): Windows resolves the source spelling of a case-only
+		// rename to the same on-disk file. The tracker is authoritative that the old
+		// logical path was renamed, so that alias must not make the old endpoint look
+		// locally present and suppress the delete_remote half of the rename pair.
+		it("optimizes a case-only local rename on a case-insensitive filesystem", async () => {
+			const deps = createDeps();
+			const localFs = createMockFs("local");
+			const remoteFs = createMockFs("remote");
+			deps.localFs = () => localFs;
+			deps.remoteFs = () => remoteFs;
+
+			const localEntity = addFile(localFs, "PRUEBa.md", "content", 1000);
+			localEntity.hash = "h1";
+			const remoteEntity = addFile(remoteFs, "PRUEBA.md", "content", 1000);
+			remoteEntity.hash = "h1";
+
+			// Model Windows/Obsidian adapter fallback: stat(old spelling) resolves the
+			// file now indexed under the new spelling instead of reporting it absent.
+			const exactStat = localFs.stat.bind(localFs);
+			vi.spyOn(localFs, "stat").mockImplementation(async (path) => {
+				const exact = await exactStat(path);
+				if (exact) return exact;
+				const alias = [...localFs.files.keys()].find(
+					(candidate) => candidate.toLowerCase() === path.toLowerCase(),
+				);
+				return alias ? exactStat(alias) : null;
+			});
+
+			deps.localTracker.acknowledge(deps.localTracker.snapshot());
+			deps.localTracker.markRenamed("PRUEBa.md", "PRUEBA.md");
+
+			const orchestrator = new SyncOrchestrator(deps);
+			await orchestrator.state.put({
+				path: "PRUEBA.md",
+				hash: "h1",
+				localMtime: 1000,
+				remoteMtime: 1000,
+				localSize: 7,
+				remoteSize: 7,
+				syncedAt: 900,
+			});
+
+			const renameSpy = vi.spyOn(remoteFs, "rename");
+			const writeSpy = vi.spyOn(remoteFs, "write");
+			await orchestrator.runSync();
+
+			expect(renameSpy).toHaveBeenCalledWith("PRUEBA.md", "PRUEBa.md");
+			expect(writeSpy).not.toHaveBeenCalled();
+			await orchestrator.close();
+		});
+
 		it("acknowledges dirty paths after sync", async () => {
 			const deps = createDeps();
 			const localFs = createMockFs("local");
