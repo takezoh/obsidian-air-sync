@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { FileEntity } from "../fs/types";
-import { exactEntity, observePath } from "./path-observation";
+import type { IFileSystem } from "../fs/interface";
+import type { PathObservation } from "./types";
+import { confirmEntryAbsences, exactEntity, observePath } from "./path-observation";
 
 function entity(path: string, pathAuthority?: FileEntity["pathAuthority"]): FileEntity {
 	return { path, pathAuthority, isDirectory: false, size: 1, mtime: 1, hash: "h" };
@@ -41,5 +43,31 @@ describe("observePath", () => {
 		expect(observePath("local", "A.md", null)).toEqual({
 			kind: "absent", side: "local", requestedPath: "A.md", authority: "stat",
 		});
+	});
+});
+
+describe("confirmEntryAbsences", () => {
+	it("indexes observations once instead of rescanning them for every entry", async () => {
+		const count = 80;
+		const entries = Array.from({ length: count }, (_, index) => ({
+			path: `file-${index}.md`, remote: entity(`file-${index}.md`, "actual_resolved"),
+		}));
+		const backing: PathObservation[] = entries.map(({ path }) => ({
+			kind: "unknown" as const, side: "local" as const, requestedPath: path,
+			reason: "not_observed" as const,
+		}));
+		let indexedReads = 0;
+		const observations = new Proxy(backing, {
+			get(target, property, receiver): unknown {
+				if (typeof property === "string" && /^\d+$/.test(property)) indexedReads += 1;
+				return Reflect.get(target, property, receiver) as unknown;
+			},
+		});
+		const fs = { stat: () => Promise.resolve(null) } as unknown as IFileSystem;
+
+		await confirmEntryAbsences({ entries, observations }, fs, fs);
+
+		expect(indexedReads).toBeLessThan(count * 5);
+		expect(observations.every((item) => item.kind === "absent")).toBe(true);
 	});
 });

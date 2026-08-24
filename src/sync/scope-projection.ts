@@ -1,6 +1,7 @@
 import type { ChangeSet } from "./change-detector";
 import type {
 	IdentityEvidence,
+	PathObservation,
 	RenameEvidence,
 	ScopeDisposition,
 	ScopeProjection,
@@ -35,14 +36,16 @@ export function projectScope(
 	changeSet: Pick<ChangeSet, "entries" | "observations" | "identityEvidence">,
 	policy: ScopeProjectionPolicy,
 ): ScopeProjection {
-	const paths = collectScopePaths(changeSet.identityEvidence);
+	const requiredPaths = collectScopePaths(changeSet.identityEvidence);
+	for (const entry of changeSet.entries) requiredPaths.add(entry.path);
+	const paths = new Set(requiredPaths);
 	const knownPaths = new Set<string>();
 	const unknownPaths = new Set<string>();
 	for (const entry of changeSet.entries) {
-		paths.add(entry.path);
 		if (entry.local || entry.remote) knownPaths.add(entry.path);
 	}
 	for (const observation of changeSet.observations) {
+		if (isIncidentalDirectory(observation, requiredPaths)) continue;
 		paths.add(observation.requestedPath);
 		if (observation.kind === "unknown") {
 			unknownPaths.add(observation.requestedPath);
@@ -66,6 +69,7 @@ export function projectScope(
 		}
 	}
 	for (const observation of changeSet.observations) {
+		if (isIncidentalDirectory(observation, requiredPaths)) continue;
 		if (observation.kind === "exact" || observation.kind === "present_unresolved") {
 			rememberLargestSize(sizes, observation.requestedPath, observation.entity.size);
 		} else if (observation.kind === "alias") {
@@ -98,6 +102,21 @@ export function projectScope(
 		);
 	}
 	return { byEndpoint };
+}
+
+function isIncidentalDirectory(
+	observation: PathObservation,
+	requiredPaths: ReadonlySet<string>,
+): boolean {
+	if (observation.kind !== "exact" && observation.kind !== "alias" &&
+		observation.kind !== "present_unresolved") return false;
+	if (!observation.entity.isDirectory) return false;
+	const endpointPaths = observation.kind === "alias"
+		? [observation.requestedPath, observation.resolvedPath]
+		: observation.kind === "present_unresolved"
+			? [observation.requestedPath, observation.returnedPath]
+			: [observation.requestedPath];
+	return endpointPaths.every((path) => !requiredPaths.has(path));
 }
 
 /** The only action kind scope permits for one normative reported rename. */

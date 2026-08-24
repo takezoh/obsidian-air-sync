@@ -16,6 +16,15 @@ function isCaseOnlyRename(oldPath: string, newPath: string): boolean {
 	return oldPath !== newPath && oldPath.toLowerCase() === newPath.toLowerCase();
 }
 
+const CASE_RENAME_PENDING_META_KEY = "dropboxCaseRenamePending";
+
+interface PendingCaseRename {
+	oldPath: string;
+	newPath: string;
+	tempPath: string;
+	expectedId: string;
+}
+
 /** Deterministic so a retry can resume a move interrupted after its first leg. */
 function caseRenameTempPath(path: string, identity: string): string {
 	let hash = 0x811c9dc5;
@@ -42,6 +51,7 @@ function caseRenameTempPath(path: string, identity: string): string {
 export class DropboxFs extends CachingRemoteFs<DropboxEntry> {
 	readonly name = "dropbox";
 	private client: DropboxClient;
+	private pendingCaseRenameSettled = false;
 	// The base stores the cache as AbstractMetadataCache; narrow it so the
 	// Dropbox-specific seams (relativize/setRootPath/setEntry) are visible. The
 	// runtime value IS a DropboxMetadataCache (passed to super below).
@@ -77,6 +87,14 @@ export class DropboxFs extends CachingRemoteFs<DropboxEntry> {
 			throw new Error(`Dropbox vault folder ${this.rootFolderId} has no path (deleted?)`);
 		}
 		this.cache.setRootPath(meta.path_display);
+	}
+
+	protected async ensureInitialized(): Promise<boolean> {
+		if (!this.pendingCaseRenameSettled) {
+			await this.recoverPendingCaseRename();
+			this.pendingCaseRenameSettled = true;
+		}
+		return super.ensureInitialized();
 	}
 
 	// ── Dropbox-specific seams ──
@@ -223,8 +241,9 @@ export class DropboxFs extends CachingRemoteFs<DropboxEntry> {
 
 	/**
 	 * Dropbox move_v2 explicitly does not support case-only renames. Use a
-	 * deterministic intermediate path so a retry can resume after a crash between
-	 * the two moves. A foreign occupant at that path fails before touching source.
+	 * deterministic intermediate path and persist the intent before the first move,
+	 * so a fresh process can resume after a crash between the two moves. A foreign
+	 * occupant at that path fails before touching source.
 	 */
 	private async moveCaseOnly(
 		oldPath: string,
@@ -232,30 +251,87 @@ export class DropboxFs extends CachingRemoteFs<DropboxEntry> {
 		tempPath: string,
 		expectedId: string,
 	): Promise<DropboxEntry> {
-		const oldAddress = this.addr(oldPath);
-		const newAddress = this.addr(newPath);
-		const tempAddress = this.addr(tempPath);
-		const existingTemp = await this.getOptionalMetadata(tempAddress);
-		if (existingTemp && existingTemp.id !== expectedId) {
-			throw new Error(`Dropbox case-only rename temporary path is occupied: ${tempPath}`);
+		const pending = { oldPath, newPath, tempPath, expectedId };
+		await this.savePendingCaseRename(pending);
+		return this.resumeCaseOnlyRename(pending, true);
+	}
+
+	private async recoverPendingCaseRename(): Promise<void> {
+		const raw = await this.metadataStore?.getMeta(CASE_RENAME_PENDING_META_KEY);
+		if (!raw) return;
+		await this.resumeCaseOnlyRename(parsePendingCaseRename(raw), false);
+	}
+
+	private async savePendingCaseRename(pending: PendingCaseRename): Promise<void> {
+		await this.metadataStore?.setMeta(CASE_RENAME_PENDING_META_KEY, JSON.stringify(pending));
+		this.pendingCaseRenameSettled = false;
+	}
+
+	private async clearPendingCaseRename(): Promise<void> {
+		await this.metadataStore?.deleteMeta(CASE_RENAME_PENDING_META_KEY);
+		this.pendingCaseRenameSettled = true;
+	}
+
+	private async resumeCaseOnlyRename(
+		pending: PendingCaseRename,
+		sourceKnown: boolean,
+	): Promise<DropboxEntry> {
+		const existingTemp = await this.getOptionalMetadata(this.addr(pending.tempPath));
+		if (existingTemp && existingTemp.id !== pending.expectedId) {
+			if (sourceKnown || (await this.getOptionalMetadata(this.addr(pending.oldPath)))?.id === pending.expectedId) {
+				await this.clearPendingCaseRename();
+			}
+			throw new Error(`Dropbox case-only rename temporary path is occupied: ${pending.tempPath}`);
 		}
-		if (!existingTemp) {
-			await this.client.move(oldAddress, tempAddress);
+		if (existingTemp) return this.finishCaseOnlyRename(pending);
+
+		const destination = await this.getOptionalMetadata(this.addr(pending.newPath));
+		if (destination?.id === pending.expectedId) {
+			await this.clearPendingCaseRename();
+			return destination;
 		}
+		if (destination) {
+			if (sourceKnown || (await this.getOptionalMetadata(this.addr(pending.oldPath)))?.id === pending.expectedId) {
+				await this.clearPendingCaseRename();
+			}
+			throw new Error(`Dropbox case-only rename destination is occupied: ${pending.newPath}`);
+		}
+		if (!sourceKnown) {
+			const source = await this.getOptionalMetadata(this.addr(pending.oldPath));
+			if (source?.id !== pending.expectedId) {
+				throw new Error(`Dropbox case-only rename source is missing: ${pending.oldPath}`);
+			}
+		}
+		await this.client.move(this.addr(pending.oldPath), this.addr(pending.tempPath));
+		return this.finishCaseOnlyRename(pending);
+	}
+
+	private async finishCaseOnlyRename(pending: PendingCaseRename): Promise<DropboxEntry> {
+		let result: DropboxEntry;
 		try {
-			return await this.client.move(tempAddress, newAddress);
+			result = await this.client.move(this.addr(pending.tempPath), this.addr(pending.newPath));
 		} catch (err) {
+			const source = await this.getOptionalMetadata(this.addr(pending.oldPath));
+			if (source) {
+				throw new Error(
+					`Dropbox case-only rename failed and source path is occupied; retry will resume from ${pending.tempPath}`,
+					{ cause: err },
+				);
+			}
 			try {
-				await this.client.move(tempAddress, oldAddress);
+				await this.client.move(this.addr(pending.tempPath), this.addr(pending.oldPath));
+				await this.clearPendingCaseRename();
 			} catch (rollbackErr) {
 				throw new Error(
-					`Dropbox case-only rename failed and rollback failed; retry will resume from ${tempPath}: ` +
+					`Dropbox case-only rename failed and rollback failed; retry will resume from ${pending.tempPath}: ` +
 					`${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`,
 					{ cause: err },
 				);
 			}
 			throw err;
 		}
+		await this.clearPendingCaseRename();
+		return result;
 	}
 
 	private async getOptionalMetadata(path: string): Promise<DropboxEntry | null> {
@@ -282,4 +358,24 @@ export class DropboxFs extends CachingRemoteFs<DropboxEntry> {
 			this.cache.setEntry(currentPath, folder);
 		}
 	}
+}
+
+function parsePendingCaseRename(raw: string): PendingCaseRename {
+	let value: unknown;
+	try {
+		value = JSON.parse(raw);
+	} catch {
+		throw new Error("Invalid persisted Dropbox case-only rename operation");
+	}
+	if (!value || typeof value !== "object") {
+		throw new Error("Invalid persisted Dropbox case-only rename operation");
+	}
+	const pending = value as Partial<PendingCaseRename>;
+	if (typeof pending.oldPath !== "string" || typeof pending.newPath !== "string" ||
+		typeof pending.tempPath !== "string" || typeof pending.expectedId !== "string" ||
+		!isCaseOnlyRename(pending.oldPath, pending.newPath) ||
+		pending.tempPath !== caseRenameTempPath(pending.oldPath, pending.expectedId)) {
+		throw new Error("Invalid persisted Dropbox case-only rename operation");
+	}
+	return pending as PendingCaseRename;
 }

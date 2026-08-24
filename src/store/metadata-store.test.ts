@@ -79,6 +79,21 @@ describe("MetadataStore", () => {
 		await store.close();
 	});
 
+	it("sets and deletes one durable operation marker without replacing cache metadata", async () => {
+		const store = new MetadataStore<TestFile>("test-vault-operation", CONFIG);
+		await store.open();
+		await store.saveAll([], new Map([["changesStartPageToken", "cursor"]]));
+
+		await store.setMeta("pendingOperation", "payload");
+		expect(await store.getMeta("pendingOperation")).toBe("payload");
+		expect(await store.getMeta("changesStartPageToken")).toBe("cursor");
+
+		await store.deleteMeta("pendingOperation");
+		expect(await store.getMeta("pendingOperation")).toBeUndefined();
+		expect(await store.getMeta("changesStartPageToken")).toBe("cursor");
+		await store.close();
+	});
+
 	it("uses config for db name prefix", async () => {
 		const store = new MetadataStore<TestFile>("my-vault", { dbNamePrefix: "custom-prefix", version: 1 });
 		await store.open();

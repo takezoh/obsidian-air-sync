@@ -124,6 +124,29 @@ describe("projectScope", () => {
 		]));
 	});
 
+	it("does not require incidental directory observations as folder-rename descendants", () => {
+		const folderRename: RenameEvidence = {
+			...rename("local", "old", "new"), isFolder: true,
+		};
+		const result = projectScope(changeSet({
+			entries: [
+				{ path: "old/nested/a.md", local: entity("old/nested/a.md") },
+				{ path: "new/nested/a.md", local: entity("new/nested/a.md") },
+			],
+			observations: [
+				{ kind: "exact", side: "local", requestedPath: "old", entity: directory("old") },
+				{ kind: "exact", side: "local", requestedPath: "new", entity: directory("new") },
+				{ kind: "exact", side: "local", requestedPath: "old/nested", entity: directory("old/nested") },
+				{ kind: "exact", side: "local", requestedPath: "new/nested", entity: directory("new/nested") },
+			],
+			identityEvidence: [folderRename],
+		}), { classifyPath: () => "included" });
+
+		expect(result.byEndpoint.has("old/nested")).toBe(false);
+		expect(result.byEndpoint.has("new/nested")).toBe(false);
+		expect(projectRenameScope(folderRename, result).consequence).toBe("rename_remote");
+	});
+
 	it("keeps a not-observed included endpoint unknown", () => {
 		const result = projectScope(changeSet({
 			identityEvidence: [rename("local")],

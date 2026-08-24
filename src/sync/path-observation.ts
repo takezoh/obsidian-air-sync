@@ -32,33 +32,60 @@ export async function confirmEntryAbsences(
 	localFs: IFileSystem,
 	remoteFs: IFileSystem,
 ): Promise<void> {
+	const observationIndexes = new Map<string, number>();
+	changeSet.observations.forEach((observation, index) => {
+		const key = observationKey(observation.side, observation.requestedPath);
+		if (!observationIndexes.has(key)) observationIndexes.set(key, index);
+	});
 	const candidates = changeSet.entries.flatMap((entry) => {
 		const missing: Array<{ side: SyncSide; fs: IFileSystem }> = [];
-		if (!entry.local && needsConfirmation(changeSet.observations, "local", entry.path)) {
+		if (!entry.local && needsConfirmation(observationAt(
+			changeSet.observations, observationIndexes, "local", entry.path,
+		))) {
 			missing.push({ side: "local", fs: localFs });
 		}
-		if (!entry.remote && needsConfirmation(changeSet.observations, "remote", entry.path)) {
+		if (!entry.remote && needsConfirmation(observationAt(
+			changeSet.observations, observationIndexes, "remote", entry.path,
+		))) {
 			missing.push({ side: "remote", fs: remoteFs });
 		}
 		return missing.map(({ side, fs }) => ({ entry, side, fs }));
 	});
 	const pool = new AsyncPool(10);
-	await Promise.all(candidates.map(({ entry, side, fs }) => pool.run(async () => {
+	const confirmed = await Promise.all(candidates.map(({ entry, side, fs }) => pool.run(async () => {
 		const observation = observePath(side, entry.path, await fs.stat(entry.path));
-		replaceObservation(changeSet.observations, observation);
+		return { entry, side, observation };
+	})));
+	for (const { entry, side, observation } of confirmed) {
+		const key = observationKey(side, entry.path);
+		const index = observationIndexes.get(key);
+		if (index === undefined) {
+			observationIndexes.set(key, changeSet.observations.length);
+			changeSet.observations.push(observation);
+		} else {
+			changeSet.observations[index] = observation;
+		}
 		const entity = exactEntity(observation);
 		if (side === "local") entry.local = entity;
 		else entry.remote = entity;
-	})));
+	}
 }
 
-function needsConfirmation(
+function observationAt(
 	observations: readonly PathObservation[],
+	indexes: ReadonlyMap<string, number>,
 	side: SyncSide,
 	path: string,
-): boolean {
-	const observation = observations.find((candidate) =>
-		candidate.side === side && candidate.requestedPath === path);
+): PathObservation | undefined {
+	const index = indexes.get(observationKey(side, path));
+	return index === undefined ? undefined : observations[index];
+}
+
+function observationKey(side: SyncSide, path: string): string {
+	return `${side}\0${path}`;
+}
+
+function needsConfirmation(observation: PathObservation | undefined): boolean {
 	return !observation || observation.kind === "unknown" ||
 		(observation.kind === "present_unresolved" && observation.source === "list");
 }
