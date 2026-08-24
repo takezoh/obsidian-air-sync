@@ -1,6 +1,8 @@
 import { createServer } from "node:http";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { spawn } from "node:child_process";
+import { stdout } from "node:process";
 
 /**
  * Loopback OAuth capture for the e2e token bootstrap (ADR 0003). Starts a local
@@ -48,11 +50,23 @@ export function startLoopback(port: number): Promise<LoopbackCapture> {
 		}
 		const params = Object.fromEntries(url.searchParams.entries());
 		if (!expectedState || params.state !== expectedState) {
+			// A state mismatch is NOT an expiry: the provider echoes `state` back
+			// untouched, so a wrong value means the authorize URL that was opened is not
+			// the one this run printed (a stale tab, or a hand-copied URL). Say that —
+			// and log it, because otherwise the terminal just sits on "Waiting for the
+			// redirect..." while the browser shows an error, with no way to connect the two.
+			const detail = !expectedState
+				? "no authorization is in progress"
+				: `state mismatch (expected ${expectedState.slice(0, 12)}…, got ${(params.state ?? "(absent)").slice(0, 12)}…)`;
+			process.stderr.write(`\n[loopback] rejected callback: ${detail}\n`);
 			response.statusCode = 409;
 			response.setHeader("Content-Type", "text/html; charset=utf-8");
 			response.end(
-				"<!doctype html><meta charset=\"utf-8\"><h2>Authorization attempt expired</h2>" +
-					"<p>Use the most recently opened Google authorization tab.</p>",
+				"<!doctype html><meta charset=\"utf-8\"><body style=\"font-family:sans-serif\">" +
+					"<h2>⚠ Callback rejected</h2>" +
+					`<p>${detail}.</p>` +
+					"<p>Open the authorize URL printed by this bootstrap run — copying it by hand " +
+					"corrupts <code>state</code>. Still waiting for a matching callback.</p></body>",
 			);
 			return;
 		}
@@ -85,6 +99,47 @@ export function startLoopback(port: number): Promise<LoopbackCapture> {
 			});
 		});
 	});
+}
+
+/**
+ * Where {@link announceAuthorizeUrl} parks the authorize URL. A fixed path in the
+ * repo root (gitignored alongside `.env.e2e`) so the URL can be opened WITHOUT being
+ * retyped: printing it to stdout is not enough when the terminal is driven by a tool
+ * or an agent, and hand-copying an `authorize` URL silently corrupts the opaque
+ * `state`/`code_challenge` — which the loopback then rejects as a mismatch.
+ */
+export const AUTHORIZE_URL_FILE = ".env.e2e.authorize-url";
+
+/**
+ * Print the authorize URL AND write it to {@link AUTHORIZE_URL_FILE}, then try to
+ * open it in the default browser. Best-effort: a missing opener is not an error, the
+ * file and the printed URL remain.
+ */
+export function announceAuthorizeUrl(backend: string, url: string): void {
+	const path = resolve(process.cwd(), AUTHORIZE_URL_FILE);
+	writeFileSync(path, `${url}\n`);
+	stdout.write(
+		`\nAuthorize ${backend}:\n${url}\n\n` +
+			`(also written to ${AUTHORIZE_URL_FILE} — open THAT rather than copying the URL by hand)\n\n` +
+			"Waiting for the redirect...\n",
+	);
+	// Detached + unref'd, never spawnSync: an opener that does not exit (a WSL helper
+	// handing off to a Windows browser does not) would otherwise block Node's event loop,
+	// and the loopback server could not answer the very redirect it is waiting for — the
+	// browser would just spin on the callback URL.
+	//
+	// A missing opener surfaces as an ASYNC 'error' (ENOENT), never a throw, so the
+	// fallback chain has to advance from that handler — a synchronous loop would always
+	// stop at the first candidate whether or not it exists. `explorer.exe` precedes
+	// `xdg-open` because on WSL both resolve but only the former reaches a browser.
+	const tryOpen = (candidates: string[]): void => {
+		const [opener, ...rest] = candidates;
+		if (!opener) return;
+		const child = spawn(opener, [url], { stdio: "ignore", detached: true });
+		child.on("error", () => tryOpen(rest));
+		child.unref();
+	};
+	tryOpen(["wslview", "explorer.exe", "xdg-open", "open"]);
 }
 
 /**

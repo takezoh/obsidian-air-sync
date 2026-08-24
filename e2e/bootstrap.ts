@@ -5,7 +5,7 @@ import { DROPBOX_AUTH } from "../src/fs/auth-config";
 import { buildOneDriveAuthorizeUrl, OneDriveAuth } from "../src/fs/onedrive/auth";
 import { buildOAuthState, computeS256Challenge, generateRandomString } from "../src/fs/oauth-pkce";
 import { loadDotEnvE2e } from "./helpers/env";
-import { loopbackPort, startLoopback, writeEnvE2e } from "./helpers/loopback";
+import { announceAuthorizeUrl, loopbackPort, startLoopback, writeEnvE2e } from "./helpers/loopback";
 
 /**
  * One-time helper to mint a refresh token for the e2e suite (ADR 0003) WITHOUT a
@@ -40,7 +40,7 @@ async function bootstrapGoogle(): Promise<void> {
 		const url = await auth.getAuthorizationUrl();
 		const state = auth.getAuthState();
 		if (!state) throw new Error("Google authorization state was not generated.");
-		stdout.write(`\nOpen this URL and authorize Google Drive:\n${url}\n\nWaiting for the redirect...\n`);
+		announceAuthorizeUrl("Google Drive", url);
 		const params = await loopback.waitForCallback(state);
 		await auth.handleAuthCallback(params);
 		const path = writeEnvE2e("AIRSYNC_E2E_GOOGLE_REFRESH_TOKEN", auth.getTokenState().refreshToken);
@@ -64,7 +64,7 @@ async function bootstrapDropbox(): Promise<void> {
 			state,
 			redirectUri: loopback.redirectUri,
 		});
-		stdout.write(`\nOpen this URL and authorize Dropbox:\n${url}\n\nWaiting for the redirect...\n`);
+		announceAuthorizeUrl("Dropbox", url);
 		const params = await loopback.waitForCallback(state);
 		if (params.state !== state) throw new Error("State mismatch — possible CSRF; aborting.");
 		if (!params.code) throw new Error("No authorization code in the callback.");
@@ -95,7 +95,7 @@ async function bootstrapOnedrive(): Promise<void> {
 			state,
 			redirectUri: loopback.redirectUri,
 		});
-		stdout.write(`\nOpen this URL and authorize OneDrive:\n${url}\n\nWaiting for the redirect...\n`);
+		announceAuthorizeUrl("OneDrive", url);
 		const params = await loopback.waitForCallback(state);
 		if (params.state !== state) throw new Error("State mismatch — possible CSRF; aborting.");
 		if (!params.code) throw new Error("No authorization code in the callback.");

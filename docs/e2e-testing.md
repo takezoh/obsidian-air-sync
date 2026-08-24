@@ -102,6 +102,26 @@ npm run test:e2e:onedrive  # OneDrive only
 - **One token missing** → that backend warns and skips; the other runs.
 - **No tokens** → both warn and skip; exit 0.
 
+### Run it OUTSIDE an agent/CLI sandbox
+
+The e2e needs two things a command sandbox typically denies, and **both fail in ways that
+do not look like a sandbox problem**:
+
+- **Read access to `.env.e2e`.** A sandbox that masks the file (e.g. bind-mounting it to
+  `/dev/null`) leaves `readCreds` empty, so every backend takes the *skip* path and the run
+  exits **0 with a warning** — a green-looking run that never touched a live API. Check with
+  `ls -l .env.e2e`: a character device (`crw-rw-rw- … 1, 3`) instead of a regular file means
+  it is masked.
+- **Local sockets for the Electron net host.** `e2e/electron-net-setup.ts` starts an Electron
+  process so `requestUrl` runs on its real transport. Blocked loopback/dbus sockets surface as
+  `The platform failed to initialize` followed by
+  `Electron net host did not become healthy at http://127.0.0.1:<port>/health within 30000ms`,
+  and vitest then reports `No test files found` — the global-setup failure, not a missing test.
+
+So run the e2e from a plain shell. Under Claude Code that means
+`dangerouslyDisableSandbox: true` (or `/sandbox` to relax the policy); the sandboxed run is
+worse than useless because it is **green while proving nothing**.
+
 > Running Google individually needs `AIRSYNC_E2E_GOOGLE_CLIENT_ID`/`_CLIENT_SECRET` in
 > `.env.e2e` (the refresh token alone falls back to the built-in auth server, which can't
 > refresh a token minted by your own OAuth client). OneDrive likewise needs

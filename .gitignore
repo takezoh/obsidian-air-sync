@@ -23,6 +23,7 @@ main.js
 
 # e2e harness secrets + build artifacts (local-only, never committed)
 .env.e2e
+.env.e2e.authorize-url
 e2e/.bootstrap.bundle.mjs
 
 # obsidian
