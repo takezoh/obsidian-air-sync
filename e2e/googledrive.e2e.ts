@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, describe } from "vitest";
 import { GoogleDriveClient } from "../src/fs/googledrive/client";
 import { GoogleDriveFs } from "../src/fs/googledrive/index";
+import type { GoogleDriveFile } from "../src/fs/googledrive/types";
 import { runIFileSystemContract } from "../src/fs/ifilesystem-contract.test";
+import { MetadataStore } from "../src/store/metadata-store";
 import {
 	createGoogleE2EAuth,
 	GOOGLE_E2E_REFRESH_TOKEN_ENV,
@@ -12,6 +14,7 @@ import {
 	makeGoogleDriveChild,
 	makeGoogleDriveParent,
 } from "./helpers/isolation";
+import { runRenameSafetyE2E } from "./helpers/rename-safety";
 
 /**
  * Opt-in real-cloud e2e (ADR 0003): runs the SAME `runIFileSystemContract` the
@@ -58,6 +61,24 @@ if (!creds) {
 		// A fresh empty child folder per test → satisfies the contract's
 		// empty-start assumption. Runs in beforeEach, after the beforeAll above.
 		async () => new GoogleDriveFs(client, await makeGoogleDriveChild(client, parentId)),
-		{ computesHashOnStat: false }, // Google Drive round-trips full-ms mtime → default preservesWrittenMtime: true
+		{ computesHashOnStat: false, stableIdentity: true }, // Google Drive round-trips full-ms mtime → default preservesWrittenMtime: true
 	);
+
+	runRenameSafetyE2E("GoogleDriveFs", {
+		backendType: "googledrive",
+		makeBackend: async () => {
+			const childId = await makeGoogleDriveChild(client, parentId);
+			const store = new MetadataStore<GoogleDriveFile>(crypto.randomUUID(), {
+				dbNamePrefix: "air-sync-googledrive-e2e-rename",
+				version: 1,
+			});
+			const fs = new GoogleDriveFs(client, childId, undefined, store);
+			return {
+				fs,
+				renameOutOfBand: async (file, newPath) => {
+					await client.updateFileMetadata(file.identityKey!, { name: newPath });
+				},
+			};
+		},
+	});
 }
