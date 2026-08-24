@@ -1,4 +1,3 @@
-import type { RefinedSyncPlan } from "./rename-optimizer";
 import { projectRenameScope, type RenameScopeConsequence } from "./scope-projection";
 import { buildAdmissionComponents, type AdmissionComponent } from "./plan-admission-graph";
 import type {
@@ -7,6 +6,7 @@ import type {
 	RenameEvidence,
 	ScopeProjection,
 	SyncAction,
+	SyncPlan,
 } from "./types";
 
 export type AdmissionDeferralReason =
@@ -38,11 +38,12 @@ export interface AdmissionResult {
  * whose cross-path identity cannot be reconciled safely.
  */
 export function admitDestructivePlan(
-	plan: RefinedSyncPlan,
+	plan: SyncPlan,
+	identityEvidence: readonly IdentityEvidence[],
 	observations: readonly PathObservation[],
 	scope: ScopeProjection,
 ): AdmissionResult {
-	const components = buildAdmissionComponents(plan, observations, scope);
+	const components = buildAdmissionComponents(plan, identityEvidence, observations, scope);
 	const deferredActions = new Set<SyncAction>();
 	const deferred: DeferredComponent[] = [];
 	for (const component of components) {

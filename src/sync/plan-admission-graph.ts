@@ -1,5 +1,4 @@
-import type { RefinedSyncPlan } from "./rename-optimizer";
-import type { IdentityEvidence, PathObservation, ScopeProjection, SyncAction } from "./types";
+import type { IdentityEvidence, PathObservation, ScopeProjection, SyncAction, SyncPlan } from "./types";
 
 export interface AdmissionComponent {
 	paths: Set<string>;
@@ -9,20 +8,21 @@ export interface AdmissionComponent {
 }
 
 export function buildAdmissionComponents(
-	plan: RefinedSyncPlan,
+	plan: SyncPlan,
+	identityEvidence: readonly IdentityEvidence[],
 	observations: readonly PathObservation[],
 	scope: ScopeProjection,
 ): AdmissionComponent[] {
 	const graph = new PathGraph();
 	const actionPathSets = plan.actions.map(actionPaths);
-	const evidencePathSets = plan.identityEvidence.map(evidencePaths);
+	const evidencePathSets = identityEvidence.map(evidencePaths);
 	const observationPathSets = observations.map(observationPaths);
 	const knownPaths = new Set([
 		...actionPathSets.flat(), ...evidencePathSets.flat(), ...observationPathSets.flat(),
 		...scope.byEndpoint.keys(),
 	]);
 	for (const paths of actionPathSets) graph.connect(paths);
-	for (const [index, evidence] of plan.identityEvidence.entries()) {
+	for (const [index, evidence] of identityEvidence.entries()) {
 		const paths = evidencePathSets[index]!;
 		graph.connect(evidence.kind === "rename" && evidence.isFolder
 			? [...paths, ...folderDescendantPaths(evidence.oldPath, evidence.newPath, knownPaths)]
@@ -38,7 +38,7 @@ export function buildAdmissionComponents(
 		byRoot.set(root, component);
 	}
 	for (const action of plan.actions) componentFor(byRoot, graph, actionPaths(action)).actions.push(action);
-	for (const evidence of plan.identityEvidence) {
+	for (const evidence of identityEvidence) {
 		componentFor(byRoot, graph, evidencePaths(evidence)).evidence.push(evidence);
 	}
 	for (const observation of observations) {

@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import type { FileEntity } from "../fs/types";
-import type { RefinedSyncPlan } from "./rename-optimizer";
 import { admitDestructivePlan } from "./plan-admission";
 import type {
 	IdentityEvidence,
@@ -24,8 +23,7 @@ function admit(
 	observations: PathObservation[] = [],
 	scope: ScopeProjection = projection({}),
 ) {
-	const plan: RefinedSyncPlan = { actions, identityEvidence: evidence };
-	return admitDestructivePlan(plan, observations, scope);
+	return admitDestructivePlan({ actions }, evidence, observations, scope);
 }
 
 function remoteRename(overrides: Partial<Extract<IdentityEvidence, { kind: "rename" }>> = {}): IdentityEvidence {
@@ -392,11 +390,12 @@ describe("admitDestructivePlan", () => {
 		const evidence: IdentityEvidence[] = [];
 		const observations: PathObservation[] = [];
 		const scope = projection({ "gone.md": "included" });
-		const plan: RefinedSyncPlan = { actions: [action], identityEvidence: evidence };
+		const plan = { actions: [action] };
 
-		admitDestructivePlan(plan, observations, scope);
+		admitDestructivePlan(plan, evidence, observations, scope);
 
-		expect(plan).toEqual({ actions: [action], identityEvidence: [] });
+		expect(plan).toEqual({ actions: [action] });
+		expect(evidence).toEqual([]);
 		expect(observations).toEqual([]);
 		expect([...scope.byEndpoint]).toEqual([["gone.md", "included"]]);
 	});

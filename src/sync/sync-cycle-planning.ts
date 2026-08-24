@@ -78,7 +78,12 @@ export function prepareSyncCyclePlan(
 		completeChangeSet.identityEvidence,
 		logger,
 	);
-	const admission = admitDestructivePlan(plan, completeChangeSet.observations, scopeProjection);
+	const admission = admitDestructivePlan(
+		plan,
+		completeChangeSet.identityEvidence,
+		completeChangeSet.observations,
+		scopeProjection,
+	);
 	const localRenameDebts = collectLocalRenameDebts(
 		namespace,
 		completeChangeSet.identityEvidence,

@@ -47,25 +47,12 @@ function refine(
 }
 
 describe("refinePlan", () => {
-	it("preserves the exact identity-evidence collection beside the refined plan", () => {
-		const p = plan([{ path: "a.md", action: "push", local: entity("a.md", "h1") }]);
-		const identityEvidence: IdentityEvidence[] = [{
-			kind: "rename", side: "local", oldPath: "old.md", newPath: "new.md",
-			isFolder: false, authority: "reported",
-		}];
-
-		const result = refinePlan(p, identityEvidence);
-
-		expect(result.identityEvidence).toBe(identityEvidence);
-	});
-
 	it("returns plan unchanged when no rename pairs exist", () => {
 		const p = plan([
 			{ path: "a.md", action: "push", local: entity("a.md", "h1") },
 		]);
 		const result = refine(p, new Map(), new Map(), []);
 		expect(result.actions).toBe(p.actions);
-		expect(result.identityEvidence).toEqual([]);
 	});
 
 	it("optimizes local file rename into rename_remote", () => {

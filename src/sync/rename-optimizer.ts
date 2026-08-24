@@ -10,10 +10,6 @@ import {
 } from "./optimize-remote-renames";
 import { renameOptimizerView } from "./identity-evidence";
 
-export interface RefinedSyncPlan extends SyncPlan {
-	identityEvidence: readonly IdentityEvidence[];
-}
-
 /** Filter out consumed actions and append replacements. */
 export function replaceConsumed(
 	actions: SyncAction[],
@@ -35,7 +31,7 @@ export function refinePlan(
 	plan: SyncPlan,
 	identityEvidence: readonly IdentityEvidence[],
 	logger?: Logger,
-): RefinedSyncPlan {
+): SyncPlan {
 	const { localFiles: localRenamePairs, localFolders: localFolderRenamePairs, remote: remoteRenamePairs } =
 		renameOptimizerView(identityEvidence);
 	let actions = plan.actions;
@@ -99,5 +95,5 @@ export function refinePlan(
 		}
 	}
 
-	return { actions, identityEvidence };
+	return { actions };
 }
