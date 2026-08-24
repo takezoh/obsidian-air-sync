@@ -99,14 +99,42 @@ export abstract class AbstractMetadataCache<TFile> {
 	/** Add or update a file in the cache with full index maintenance */
 	setFile(path: string, file: TFile, pathAuthority: PathAuthority = "requested_echo"): void {
 		if (this.isReserved(path)) return;
-		const isNew = !this.pathToFile.has(path);
+		const id = this.extractId(file);
+		const incomingIsFolder = this.isFolderEntry(file);
+		const oldPath = this.idToPath.get(id);
+		const occupant = this.pathToFile.get(path);
+
+		// Provider upserts may re-key a stable id without a preceding tombstone.
+		// Keep the path and identity indexes bijective at their single mutation seam.
+		if (occupant && this.extractId(occupant) !== id) {
+			this.removeTree(path);
+		}
+
+		if (oldPath && oldPath !== path) {
+			const wasFolder = this.folders.has(oldPath);
+			if (wasFolder && !incomingIsFolder) {
+				this.removeTree(oldPath);
+			} else {
+				this.removeFromIndex(oldPath);
+				this.pathToFile.delete(oldPath);
+				this.pathAuthorities.delete(oldPath);
+				this.idToPath.delete(id);
+				this.folders.delete(oldPath);
+				if (wasFolder) this.rewriteChildPaths(oldPath, path);
+			}
+		} else if (oldPath === path && this.folders.has(path) && !incomingIsFolder) {
+			this.removeTree(path);
+		}
+
 		this.pathToFile.set(path, file);
 		this.pathAuthorities.set(path, pathAuthority);
-		this.idToPath.set(this.extractId(file), path);
-		if (this.isFolderEntry(file)) {
+		this.idToPath.set(id, path);
+		if (incomingIsFolder) {
 			this.folders.add(path);
+		} else {
+			this.folders.delete(path);
 		}
-		if (isNew) this.addToIndex(path);
+		this.addToIndex(path);
 	}
 
 	/** Remove a single entry from pathToFile/idToPath/folders and the children index */
@@ -121,17 +149,21 @@ export abstract class AbstractMetadataCache<TFile> {
 
 	/** Bulk-load files into the cache. Does NOT clear — callers clear() first when rebuilding. */
 	bulkLoad(items: Iterable<[string, TFile, PathAuthority?]>): void {
-		for (const [path, file, pathAuthority = "requested_echo"] of items) {
+		const records = [...items];
+		const seenIds = new Map<string, string>();
+		for (const [path, file] of records) {
 			if (this.isReserved(path)) continue;
-			this.pathToFile.set(path, file);
-			this.pathAuthorities.set(path, pathAuthority);
-			this.idToPath.set(this.extractId(file), path);
-			if (this.isFolderEntry(file)) {
-				this.folders.add(path);
+			const id = this.extractId(file);
+			const priorPath = seenIds.get(id);
+			if (priorPath !== undefined) {
+				throw new Error(
+					`Metadata cache contains duplicate stable id "${id}" at "${priorPath}" and "${path}"`,
+				);
 			}
+			seenIds.set(id, path);
 		}
-		for (const path of this.pathToFile.keys()) {
-			this.addToIndex(path);
+		for (const [path, file, pathAuthority = "requested_echo"] of records) {
+			this.setFile(path, file, pathAuthority);
 		}
 	}
 
@@ -384,37 +416,6 @@ export abstract class AbstractMetadataCache<TFile> {
 			return;
 		}
 
-		// A different entry already occupies this path with no preceding `deleted`
-		// tombstone (the provider didn't emit the delete first, or batched them out
-		// of order). Evict it — and, if it was a folder, its whole cached subtree —
-		// so stale descendants don't linger as phantom paths, and idToPath doesn't
-		// keep pointing the displaced id at this path.
-		const occupant = this.pathToFile.get(path);
-		if (occupant && this.extractId(occupant) !== id) {
-			this.removeTree(path);
-		}
-
-		// Remove old mapping if ID was at a different path (rename/move)
-		if (oldPath && oldPath !== path) {
-			const wasFolder = this.folders.has(oldPath);
-			this.removeFromIndex(oldPath);
-			this.pathToFile.delete(oldPath);
-			this.pathAuthorities.delete(oldPath);
-			this.idToPath.delete(id);
-			this.folders.delete(oldPath);
-			if (wasFolder) {
-				this.rewriteChildPaths(oldPath, path);
-			}
-		}
-
-		this.pathToFile.set(path, file);
-		this.pathAuthorities.set(path, observation?.pathAuthority ?? "requested_echo");
-		this.idToPath.set(id, path);
-		this.addToIndex(path);
-		if (this.isFolderEntry(file)) {
-			this.folders.add(path);
-		} else {
-			this.folders.delete(path);
-		}
+		this.setFile(path, file, observation?.pathAuthority ?? "requested_echo");
 	}
 }
