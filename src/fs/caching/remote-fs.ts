@@ -297,7 +297,7 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 		for (const path of this.touchedPaths) {
 			const file = this.cache.getFile(path);
 			if (file) updated.push({ path, file, isFolder: this.cache.isFolder(path),
-				pathAuthority: this.cache.getPathAuthority(path) });
+				pathAuthority: this.cache.getStoredPathAuthority(path) });
 			else deleted.push(path);
 		}
 		await store.commitIncremental(updated, deleted, meta);

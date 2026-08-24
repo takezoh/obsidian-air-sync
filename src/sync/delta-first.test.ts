@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { collectChanges } from "./change-detector";
 import { LocalChangeTracker } from "./local-tracker";
 import {
-	createMockFs,
+	createMockLocalFs, createMockRemoteFs,
 	createMockStateStore,
 	addFile,
 } from "../__mocks__/sync-test-helpers";
@@ -33,8 +33,8 @@ function baseline(path: string): SyncRecord {
 
 describe("the hot path is O(delta), not O(vault)", () => {
 	it("stats only the dirty path and never lists the whole vault", async () => {
-		const localFs = createMockFs("local");
-		const remoteFs = createMockFs("remote");
+		const localFs = createMockLocalFs();
+		const remoteFs = createMockRemoteFs();
 		const stateStore = createMockStateStore();
 		const localTracker = new LocalChangeTracker();
 
@@ -76,8 +76,8 @@ describe("the hot path is O(delta), not O(vault)", () => {
 	});
 
 	it("cold start is the one place a full scan is allowed", async () => {
-		const localFs = createMockFs("local");
-		const remoteFs = createMockFs("remote");
+		const localFs = createMockLocalFs();
+		const remoteFs = createMockRemoteFs();
 		const stateStore = createMockStateStore();
 		const localTracker = new LocalChangeTracker();
 

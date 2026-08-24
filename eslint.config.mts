@@ -47,6 +47,14 @@ const FS_INTERFACE_IMPORT = {
 		"Design principle #4 (pipeline as data): pure transform modules must not depend on IFileSystem. Operate on the FileEntity/SyncRecord data passed in.",
 };
 
+/** Sync tests must select a filesystem role, not hand-author stronger path evidence. */
+const RAW_SYNC_MOCK_FS_IMPORT = {
+	name: "../__mocks__/sync-test-helpers",
+	importNames: ["createMockFs"],
+	message:
+		"Use createMockLocalFs() or createMockRemoteFs() so mutation path authority matches the producer role. The raw constructor is reserved for mock contract tests.",
+};
+
 /**
  * The pure transform stages of the sync pipeline. Each is a deterministic
  * `data → data` function (principle #4): no I/O, no clock, no randomness.
@@ -224,6 +232,20 @@ export default defineConfig(
 				NO_DATE_NOW,
 				NO_MATH_RANDOM,
 				NO_MANUAL_CONTENT_LENGTH,
+			],
+		},
+	},
+	{
+		// Producer-qualified path evidence: sync tests choose a local/remote role;
+		// only the dedicated mock contract may select authority directly.
+		files: ["src/sync/**/*.test.ts"],
+		rules: {
+			"no-restricted-imports": [
+				"error",
+				{
+					paths: [AXIOS_IMPORT, RAW_SYNC_MOCK_FS_IMPORT],
+					patterns: [NODE_API_IMPORTS, BACKEND_SPECIFIC_IMPORTS],
+				},
 			],
 		},
 	},

@@ -1,6 +1,6 @@
 import "fake-indexeddb/auto";
 import { describe, expect, it, vi } from "vitest";
-import { createMockFs } from "../../src/__mocks__/sync-test-helpers";
+import { createMockLocalFs } from "../../src/__mocks__/sync-test-helpers";
 import type { IFileSystem } from "../../src/fs/interface";
 import type { FileEntity } from "../../src/fs/types";
 import { DEFAULT_SETTINGS } from "../../src/settings";
@@ -36,7 +36,7 @@ export function runRenameSafetyE2E(label: string, options: RenameSafetyOptions):
 				remoteDeltas.push(delta);
 				return delta;
 			};
-			const localFs = createMockFs("local");
+			const localFs = createMockLocalFs();
 			const tracker = new LocalChangeTracker();
 			const settings = {
 				...DEFAULT_SETTINGS,
@@ -75,12 +75,35 @@ export function runRenameSafetyE2E(label: string, options: RenameSafetyOptions):
 				await checkpoint.resetCheckpoint();
 				await orchestrator.runSync();
 
+				const nestedContent = bytes("folder-descendant-preserved");
+				await localFs.write("Drafts/nested/note.md", nestedContent, 1000);
+				tracker.markDirty("Drafts/nested/note.md");
+				await orchestrator.runSync();
+				expect((await remoteFs.stat("Drafts"))?.pathAuthority).toBe("requested_echo");
+				expect((await remoteFs.stat("Drafts/nested/note.md"))?.pathAuthority)
+					.toBe("requested_echo");
+
+				await localFs.rename("Drafts", "Published");
+				tracker.markFolderRenamed("Published", "Drafts");
+				for (let attempt = 0; attempt < 10 && !remoteRename.mock.calls.some(([old, next]) =>
+					old === "Drafts" && next === "Published"); attempt++) {
+					await orchestrator.runSync();
+					if (!remoteRename.mock.calls.some(([old, next]) =>
+						old === "Drafts" && next === "Published")) {
+						await new Promise((resolve) => setTimeout(resolve, 1000));
+					}
+				}
+				expect(remoteRename).toHaveBeenCalledWith("Drafts", "Published");
+				expect(new TextDecoder().decode(await remoteFs.read("Published/nested/note.md")))
+					.toBe("folder-descendant-preserved");
+
 				await localFs.rename("Case.md", "case.md");
 				tracker.markRenamed("case.md", "Case.md");
 				await orchestrator.runSync();
 				expect(remoteRename).toHaveBeenCalledWith("Case.md", "case.md");
-				expect((await remoteFs.list()).filter((item) => !item.isDirectory).map((item) => item.path))
-					.toEqual(["case.md"]);
+				expect((await remoteFs.list()).filter((item) => !item.isDirectory)
+					.map((item) => item.path).sort())
+					.toEqual(["Published/nested/note.md", "case.md"]);
 
 				const moved = await remoteFs.stat("case.md");
 				expect(moved).not.toBeNull();
@@ -103,12 +126,18 @@ export function runRenameSafetyE2E(label: string, options: RenameSafetyOptions):
 				await checkpoint.resetCheckpoint();
 				await orchestrator.runSync();
 				expect(remoteList).toHaveBeenCalledTimes(listsBeforeCold + 1);
-				expect((await localFs.list()).filter((item) => !item.isDirectory).map((item) => item.path))
-					.toEqual(["CASE.md"]);
-				expect((await remoteFs.list()).filter((item) => !item.isDirectory).map((item) => item.path))
-					.toEqual(["CASE.md"]);
+				expect((await localFs.list()).filter((item) => !item.isDirectory)
+					.map((item) => item.path).sort())
+					.toEqual(["CASE.md", "Published/nested/note.md"]);
+				expect((await remoteFs.list()).filter((item) => !item.isDirectory)
+					.map((item) => item.path).sort())
+					.toEqual(["CASE.md", "Published/nested/note.md"]);
 				expect(new TextDecoder().decode(await localFs.read("CASE.md"))).toBe("case-preserved");
 				expect(new TextDecoder().decode(await remoteFs.read("CASE.md"))).toBe("case-preserved");
+				expect(new TextDecoder().decode(await localFs.read("Published/nested/note.md")))
+					.toBe("folder-descendant-preserved");
+				expect(new TextDecoder().decode(await remoteFs.read("Published/nested/note.md")))
+					.toBe("folder-descendant-preserved");
 				expect(localDelete).not.toHaveBeenCalled();
 				expect(remoteDelete).not.toHaveBeenCalled();
 				expect(statuses.at(-1)).toBe("idle");

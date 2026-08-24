@@ -49,6 +49,7 @@ export function resolveCachedPathAuthority(
 	entries: ReadonlyMap<string, unknown>,
 	authorities: ReadonlyMap<string, PathAuthority>,
 ): PathAuthority {
+	if (!entries.has(path)) return "requested_echo";
 	let current = path;
 	while (current) {
 		if (entries.has(current) && resolveStoredPathAuthority(current, authorities) === "requested_echo") {

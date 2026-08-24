@@ -10,7 +10,7 @@ import {
 // detection contract as every real backend. It is NOT checksumBased (no
 // remoteChecksum), so the metadata-touch case does not apply.
 runRemoteChangeDetectionContract("createMockFs", () => {
-	const fs = createMockFs("remote");
+	const fs = createMockFs("remote-contract", "requested_echo");
 	const path = "note.md";
 	return Promise.resolve({
 		async observeWritten() {

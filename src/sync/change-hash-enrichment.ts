@@ -38,15 +38,19 @@ export async function enrichHashesForRenames(
 	observations: PathObservation[],
 	localFs: IFileSystem,
 	renamePairs: ReadonlyMap<string, string>,
+	folderRenamePairs: ReadonlyMap<string, string> = new Map(),
 ): Promise<void> {
 	const newPaths = new Set(renamePairs.keys());
+	const newFolderPrefixes = [...folderRenamePairs.keys()].map((path) => path + "/");
 	const candidates = entries.filter(
-		(entry) => newPaths.has(entry.path) && entry.local && !entry.local.hash,
+		(entry) => entry.local && !entry.local.isDirectory && !entry.local.hash &&
+			(newPaths.has(entry.path) || newFolderPrefixes.some((prefix) => entry.path.startsWith(prefix))),
 	);
-	await Promise.all(candidates.map(async (entry) => {
+	const pool = new AsyncPool(10);
+	await Promise.all(candidates.map((entry) => pool.run(async () => {
 		const observation = observePath("local", entry.path, await localFs.stat(entry.path));
 		replaceObservation(observations, observation);
 		const statEntity = exactEntity(observation);
 		entry.local = statEntity ? { ...entry.local!, hash: statEntity.hash } : undefined;
-	}));
+	})));
 }

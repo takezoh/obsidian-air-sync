@@ -104,9 +104,10 @@ export async function collectChanges(
 	}
 	// Hash enrichment operates only on exact entries and cannot upgrade observations.
 	await enrichHashesForInitialMatch(changeSet.entries, deps.localFs);
+	const renameView = renameOptimizerView(changeSet.identityEvidence);
 	await enrichHashesForRenames(
 		changeSet.entries, changeSet.observations, deps.localFs,
-		renameOptimizerView(changeSet.identityEvidence).localFiles,
+		renameView.localFiles, renameView.localFolders,
 	);
 	changeSet.identityEvidence = completeIdentityEvidence(
 		changeSet.identityEvidence,

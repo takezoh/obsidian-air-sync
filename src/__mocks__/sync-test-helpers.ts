@@ -17,12 +17,14 @@ import { normalizeSyncPath, validateRename } from "../utils/path";
  * when an accurate hash is needed). The `.files` map is exposed so tests can
  * seed/inspect state directly (e.g. attach a `remoteChecksum`).
  */
+export type MockFileSystem = IFileSystem & {
+	files: Map<string, { content: ArrayBuffer; entity: FileEntity }>;
+};
+
 export function createMockFs(
 	name: string,
-	mutationPathAuthority: PathAuthority = "actual_resolved",
-): IFileSystem & {
-	files: Map<string, { content: ArrayBuffer; entity: FileEntity }>;
-} {
+	mutationPathAuthority: PathAuthority,
+): MockFileSystem {
 	const files = new Map<
 		string,
 		{ content: ArrayBuffer; entity: FileEntity }
@@ -197,6 +199,27 @@ export function createMockFs(
 			commitCheckpoint: () => Promise.resolve(),
 		},
 	};
+}
+
+/** Local mutations are observed from the authoritative vault adapter. */
+export function createMockLocalFs(): MockFileSystem {
+	return createMockFs("local", "actual_resolved");
+}
+
+/** Remote mutations remain request echoes until a test models provider confirmation. */
+export function createMockRemoteFs(): MockFileSystem {
+	return createMockFs("remote", "requested_echo");
+}
+
+/** Model a provider observation that confirms one remote path and its descendants. */
+export function confirmMockPath(fs: MockFileSystem, path: string): void {
+	path = normalizeSyncPath(path);
+	const prefix = path + "/";
+	for (const [candidate, entry] of fs.files) {
+		if (candidate === path || candidate.startsWith(prefix)) {
+			entry.entity.pathAuthority = "actual_resolved";
+		}
+	}
 }
 
 /** In-memory mock SyncStateStore for unit tests */

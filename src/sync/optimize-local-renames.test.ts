@@ -235,7 +235,7 @@ describe("optimizeLocalFileRenames", () => {
 });
 
 describe("coalesceLocalFolderRenames", () => {
-	it("coalesces all child file renames into a single folder rename_remote", () => {
+	it("derives all child mappings from actions for a folder-only event", () => {
 		const actions: SyncAction[] = [
 			{
 				path: "A/f1.md",
@@ -253,10 +253,7 @@ describe("coalesceLocalFolderRenames", () => {
 			{ path: "B/f2.md", action: "push", local: entity("B/f2.md", "h2") },
 		];
 		const folderPairs = new Map([["B", "A"]]);
-		const filePairs = new Map([
-			["B/f1.md", "A/f1.md"],
-			["B/f2.md", "A/f2.md"],
-		]);
+		const filePairs = new Map<string, string>();
 		const result = coalesceLocalFolderRenames(
 			actions,
 			folderPairs,

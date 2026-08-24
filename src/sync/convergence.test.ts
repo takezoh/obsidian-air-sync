@@ -5,7 +5,7 @@ import { refinePlan } from "./rename-optimizer";
 import { executePlan } from "./plan-executor";
 import { LocalChangeTracker } from "./local-tracker";
 import {
-	createMockFs,
+	confirmMockPath, createMockLocalFs, createMockRemoteFs, type MockFileSystem,
 	createMockStateStore,
 	addFile,
 	readText,
@@ -30,16 +30,16 @@ import type { RenamePair, SyncPlan } from "./types";
  */
 
 interface Env {
-	localFs: ReturnType<typeof createMockFs>;
-	remoteFs: ReturnType<typeof createMockFs>;
+	localFs: MockFileSystem;
+	remoteFs: MockFileSystem;
 	stateStore: ReturnType<typeof createMockStateStore>;
 	localTracker: LocalChangeTracker;
 }
 
 function makeEnv(): Env {
 	return {
-		localFs: createMockFs("local"),
-		remoteFs: createMockFs("remote"),
+		localFs: createMockLocalFs(),
+		remoteFs: createMockRemoteFs(),
 		stateStore: createMockStateStore(),
 		localTracker: new LocalChangeTracker(),
 	};
@@ -183,6 +183,7 @@ describe("sync converges to a fixed point", () => {
 
 		// The folder is renamed on the remote: move it there and report the rename once.
 		await env.remoteFs.rename("dir", "papers");
+		confirmMockPath(env.remoteFs, "papers");
 		deliverOnce(env, {
 			modified: ["papers/b.md", "papers/c.md"],
 			deleted: ["dir/b.md", "dir/c.md"],
@@ -210,6 +211,7 @@ describe("sync converges to a fixed point", () => {
 		expect(actionTypes(await runCycle(env))).toEqual(["push"]);
 
 		await env.remoteFs.rename("note.md", "renamed.md");
+		confirmMockPath(env.remoteFs, "renamed.md");
 		deliverOnce(env, {
 			modified: ["renamed.md"],
 			deleted: ["note.md"],

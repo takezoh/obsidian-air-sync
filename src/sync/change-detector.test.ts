@@ -4,7 +4,7 @@ import { enrichHashesForRenames } from "./change-hash-enrichment";
 import { planSync } from "./decision-engine";
 import type { ChangeDetectorDeps } from "./change-detector";
 import { LocalChangeTracker } from "./local-tracker";
-import { createMockFs, createMockStateStore, addFile } from "../__mocks__/sync-test-helpers";
+import { createMockLocalFs, createMockRemoteFs, type MockFileSystem, createMockStateStore, addFile } from "../__mocks__/sync-test-helpers";
 import type { FileEntity, RemoteChecksum } from "../fs/types";
 import type { MixedEntity, PathObservation, SyncRecord } from "./types";
 import { md5 } from "../utils/md5";
@@ -25,8 +25,8 @@ function makeRecord(path: string, overrides: Partial<SyncRecord> = {}): SyncReco
 }
 
 describe("collectChanges — temperature selection", () => {
-	let localFs: ReturnType<typeof createMockFs>;
-	let remoteFs: ReturnType<typeof createMockFs>;
+	let localFs: MockFileSystem;
+	let remoteFs: MockFileSystem;
 	let stateStore: ReturnType<typeof createMockStateStore>;
 	let localTracker: LocalChangeTracker;
 
@@ -35,15 +35,15 @@ describe("collectChanges — temperature selection", () => {
 	}
 
 	beforeEach(() => {
-		localFs = createMockFs("local");
-		remoteFs = createMockFs("remote");
+		localFs = createMockLocalFs();
+		remoteFs = createMockRemoteFs();
 		stateStore = createMockStateStore();
 		localTracker = new LocalChangeTracker();
 	});
 
 	/** Add a file to mock FS with a remote-provided checksum (e.g. Google Drive md5). */
 	function addFileWithChecksum(
-		fs: ReturnType<typeof createMockFs>,
+		fs: MockFileSystem,
 		path: string,
 		text: string,
 		mtime: number,
@@ -987,12 +987,61 @@ describe("collectChanges — temperature selection", () => {
 
 			expect(entries[0]!.local!.hash).toBe("");
 		});
+
+		it("fills hashes for every file below a folder rename destination", async () => {
+			const entries = [
+				entry("Published/a.md", ""),
+				entry("Published/nested/b.md", ""),
+				entry("unrelated.md", ""),
+			];
+			addFile(localFs, "Published/a.md", "a", 1000).hash = "hash-a";
+			addFile(localFs, "Published/nested/b.md", "b", 1000).hash = "hash-b";
+			addFile(localFs, "unrelated.md", "other", 1000).hash = "hash-other";
+
+			await enrichHashesForRenames(
+				entries, observations, localFs, new Map(), new Map([["Published", "Drafts"]]),
+			);
+
+			expect(entries.map((candidate) => candidate.local?.hash)).toEqual([
+				"hash-a", "hash-b", "",
+			]);
+		});
+
+		it("bounds folder descendant stat work to ten concurrent operations", async () => {
+			const entries = Array.from({ length: 12 }, (_, index) =>
+				entry(`Published/${index}.md`, ""));
+			let active = 0;
+			let maxActive = 0;
+			let releaseStats!: () => void;
+			const statsReleased = new Promise<void>((resolve) => { releaseStats = resolve; });
+			localFs.stat = async (path) => {
+				active++;
+				maxActive = Math.max(maxActive, active);
+				await statsReleased;
+				active--;
+				return {
+					path, pathAuthority: "actual_resolved", isDirectory: false,
+					size: 7, mtime: 1000, hash: `hash-${path}`,
+				};
+			};
+
+			const enrichment = enrichHashesForRenames(
+				entries, observations, localFs, new Map(), new Map([["Published", "Drafts"]]),
+			);
+			await vi.waitFor(() => expect(maxActive).toBe(10));
+			releaseStats();
+			await enrichment;
+
+			expect(maxActive).toBe(10);
+			expect(entries.every((candidate) => candidate.local?.hash.startsWith("hash-")))
+				.toBe(true);
+		});
 	});
 });
 
 describe("collectChanges — warm deletion confirmation", () => {
-	let localFs: ReturnType<typeof createMockFs>;
-	let remoteFs: ReturnType<typeof createMockFs>;
+	let localFs: MockFileSystem;
+	let remoteFs: MockFileSystem;
 	let stateStore: ReturnType<typeof createMockStateStore>;
 	let localTracker: LocalChangeTracker;
 
@@ -1001,8 +1050,8 @@ describe("collectChanges — warm deletion confirmation", () => {
 	}
 
 	beforeEach(() => {
-		localFs = createMockFs("local");
-		remoteFs = createMockFs("remote");
+		localFs = createMockLocalFs();
+		remoteFs = createMockRemoteFs();
 		stateStore = createMockStateStore();
 		localTracker = new LocalChangeTracker();
 	});
@@ -1045,8 +1094,8 @@ describe("collectChanges — warm deletion confirmation", () => {
  * which is the only mode that rediscovers such orphans.
  */
 describe("collectChanges — forceFullScan rediscovers un-baselined remote files", () => {
-	let localFs: ReturnType<typeof createMockFs>;
-	let remoteFs: ReturnType<typeof createMockFs>;
+	let localFs: MockFileSystem;
+	let remoteFs: MockFileSystem;
 	let stateStore: ReturnType<typeof createMockStateStore>;
 	let localTracker: LocalChangeTracker;
 
@@ -1055,8 +1104,8 @@ describe("collectChanges — forceFullScan rediscovers un-baselined remote files
 	}
 
 	beforeEach(async () => {
-		localFs = createMockFs("local");
-		remoteFs = createMockFs("remote");
+		localFs = createMockLocalFs();
+		remoteFs = createMockRemoteFs();
 		stateStore = createMockStateStore();
 		localTracker = new LocalChangeTracker();
 		// Post-crash state: synced.md was pulled and its baseline committed;

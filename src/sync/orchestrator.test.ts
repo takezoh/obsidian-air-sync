@@ -4,7 +4,7 @@ import { SyncOrchestrator } from "./orchestrator";
 import type { SyncOrchestratorDeps } from "./orchestrator";
 import { LocalChangeTracker } from "./local-tracker";
 import {
-	createMockFs,
+	confirmMockPath, createMockLocalFs, createMockRemoteFs, type MockFileSystem,
 	addFile,
 	readText,
 	mockSettings as baseMockSettings,
@@ -45,8 +45,8 @@ function mockSettings(): AirSyncSettings {
 function createDeps(
 	overrides: Partial<SyncOrchestratorDeps> = {},
 ): SyncOrchestratorDeps {
-	const localFs = createMockFs("local");
-	const remoteFs = createMockFs("remote");
+	const localFs = createMockLocalFs();
+	const remoteFs = createMockRemoteFs();
 	return {
 		getSettings: () => mockSettings(),
 		saveSettings: vi.fn().mockResolvedValue(undefined),
@@ -76,9 +76,54 @@ function mockProvider(
 
 describe("SyncOrchestrator", () => {
 	describe("plan admission and durable rename debt", () => {
+		it("defers a mutation-backed folder rename until provider confirmation", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			const tracker = new LocalChangeTracker();
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`,
+				lastSyncedIdentity: "test:root",
+			});
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
+			const deps = createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+				localTracker: tracker,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			const localDelete = vi.spyOn(localFs, "delete");
+			const remoteDelete = vi.spyOn(remoteFs, "delete");
+			const remoteRename = vi.spyOn(remoteFs, "rename");
+
+			await localFs.write("Drafts/nested/note.md", new TextEncoder().encode("kept").buffer, 1000);
+			await orchestrator.runSync();
+			expect((await remoteFs.stat("Drafts"))?.pathAuthority).toBe("requested_echo");
+			expect((await remoteFs.stat("Drafts/nested/note.md"))?.pathAuthority).toBe("requested_echo");
+
+			await localFs.rename("Drafts", "Published");
+			tracker.markFolderRenamed("Published", "Drafts");
+			await orchestrator.runSync();
+
+			expect(remoteRename).not.toHaveBeenCalled();
+			expect(localDelete).not.toHaveBeenCalled();
+			expect(remoteDelete).not.toHaveBeenCalled();
+			expect(remoteFs.files.has("Drafts/nested/note.md")).toBe(true);
+			expect(await orchestrator.state.getRenameDebts("test:root")).toHaveLength(1);
+
+			confirmMockPath(remoteFs, "Drafts");
+			await orchestrator.runSync();
+
+			expect(remoteRename).toHaveBeenCalledWith("Drafts", "Published");
+			expect(remoteFs.files.has("Published/nested/note.md")).toBe(true);
+			expect(remoteFs.files.has("Drafts/nested/note.md")).toBe(false);
+			expect(localDelete).not.toHaveBeenCalled();
+			expect(remoteDelete).not.toHaveBeenCalled();
+			expect(await orchestrator.state.getRenameDebts("test:root")).toEqual([]);
+			await orchestrator.close();
+		});
+
 		it("defers a mismatched local rename component without I/O or checkpoint advance", async () => {
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			addFile(localFs, "a.md", "changed", 2000);
 			addFile(remoteFs, "A.md", "old", 1000);
 			const settings = baseMockSettings({
@@ -125,8 +170,8 @@ describe("SyncOrchestrator", () => {
 		});
 
 		it("retains a deferred remote rename edge across the same-session forced COLD cycle", async () => {
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			addFile(localFs, "A.md", "changed", 2000);
 			addFile(remoteFs, "a.md", "old", 1000);
 			const settings = baseMockSettings({ backendType: "test", vaultId: `test-${Math.random()}` });
@@ -159,8 +204,8 @@ describe("SyncOrchestrator", () => {
 		});
 
 		it("captures a remote rename before later stat failure so retry cannot commit past it", async () => {
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			addFile(localFs, "A.md", "changed", 2000);
 			addFile(remoteFs, "a.md", "old", 1000);
 			const settings = baseMockSettings({ backendType: "test", vaultId: `test-${Math.random()}` });
@@ -196,8 +241,8 @@ describe("SyncOrchestrator", () => {
 		});
 
 		it("deletes persisted debt only after the admitted rename and clean checkpoint succeed", async () => {
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			addFile(localFs, "a.md", "old", 1000);
 			addFile(remoteFs, "A.md", "old", 1000);
 			const settings = baseMockSettings({
@@ -228,8 +273,8 @@ describe("SyncOrchestrator", () => {
 		});
 
 		it("replays a deferred local rename from durable debt after orchestrator restart", async () => {
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			addFile(localFs, "a.md", "changed", 2000);
 			addFile(remoteFs, "A.md", "old", 1000);
 			const settings = baseMockSettings({
@@ -268,8 +313,8 @@ describe("SyncOrchestrator", () => {
 		});
 
 		it("retires debt after replay proves convergence when checkpoint commit failed after rename I/O", async () => {
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			addFile(localFs, "a.md", "old", 1000);
 			addFile(remoteFs, "A.md", "old", 1000);
 			const settings = baseMockSettings({
@@ -303,8 +348,8 @@ describe("SyncOrchestrator", () => {
 		});
 
 		it("surfaces debt persistence failure before plan I/O and tracker acknowledgement", async () => {
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			addFile(localFs, "a.md", "old", 1000);
 			addFile(remoteFs, "A.md", "old", 1000);
 			const settings = baseMockSettings({
@@ -341,8 +386,8 @@ describe("SyncOrchestrator", () => {
 
 		it("returns true while sync is running", async () => {
 			const deps = createDeps();
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			let resolveSync!: () => void;
 			const syncStarted = new Promise<void>((res) => {
 				resolveSync = res;
@@ -411,8 +456,8 @@ describe("SyncOrchestrator", () => {
 
 		it("queues a pending sync when called while locked", async () => {
 			const deps = createDeps();
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			deps.localFs = () => localFs;
 			deps.remoteFs = () => remoteFs;
 
@@ -446,8 +491,8 @@ describe("SyncOrchestrator", () => {
 			// The burst must emit a single notice, not one per cycle.
 			const settings = { ...mockSettings(), showSyncNotifications: true };
 			const deps = createDeps({ getSettings: () => settings });
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			deps.localFs = () => localFs;
 			deps.remoteFs = () => remoteFs;
 
@@ -478,8 +523,8 @@ describe("SyncOrchestrator", () => {
 
 		it("sets status to error and notifies on AuthError", async () => {
 			const deps = createDeps();
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			deps.localFs = () => localFs;
 			deps.remoteFs = () => remoteFs;
 
@@ -498,8 +543,8 @@ describe("SyncOrchestrator", () => {
 
 		it("retries on transient error and succeeds", async () => {
 			const deps = createDeps();
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			deps.localFs = () => localFs;
 			deps.remoteFs = () => remoteFs;
 
@@ -520,8 +565,8 @@ describe("SyncOrchestrator", () => {
 
 		it("fails after MAX_RETRIES and sets error status", async () => {
 			const deps = createDeps();
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			deps.localFs = () => localFs;
 			deps.remoteFs = () => remoteFs;
 
@@ -543,8 +588,8 @@ describe("SyncOrchestrator", () => {
 			const settings = mockSettings();
 			settings.ignorePatterns = ["*.tmp"];
 			const deps = createDeps({ getSettings: () => settings });
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			deps.localFs = () => localFs;
 			deps.remoteFs = () => remoteFs;
 			addFile(localFs, "file.tmp", "ignored");
@@ -571,8 +616,8 @@ describe("SyncOrchestrator", () => {
 			const settings = mockSettings();
 			settings.syncDotPaths = [];
 			const deps = createDeps({ getSettings: () => settings });
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			deps.localFs = () => localFs;
 			deps.remoteFs = () => remoteFs;
 			// A hidden path present only on the remote (e.g. another device's logs).
@@ -592,8 +637,8 @@ describe("SyncOrchestrator", () => {
 			const settings = mockSettings();
 			settings.syncDotPaths = [".airsync"];
 			const deps = createDeps({ getSettings: () => settings });
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			deps.localFs = () => localFs;
 			deps.remoteFs = () => remoteFs;
 			addFile(remoteFs, ".airsync/logs/d/x.log", "log");
@@ -632,8 +677,8 @@ describe("SyncOrchestrator", () => {
 		it("optimizes rename pair into rename_remote action", async () => {
 			const settings = { ...mockSettings(), showSyncNotifications: true };
 			const deps = createDeps({ getSettings: () => settings });
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			deps.localFs = () => localFs;
 			deps.remoteFs = () => remoteFs;
 
@@ -675,8 +720,8 @@ describe("SyncOrchestrator", () => {
 		// locally present and suppress the delete_remote half of the rename pair.
 		it("optimizes a case-only local rename on a case-insensitive filesystem", async () => {
 			const deps = createDeps();
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			deps.localFs = () => localFs;
 			deps.remoteFs = () => remoteFs;
 
@@ -722,8 +767,8 @@ describe("SyncOrchestrator", () => {
 
 		it("acknowledges dirty paths after sync", async () => {
 			const deps = createDeps();
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			deps.localFs = () => localFs;
 			deps.remoteFs = () => remoteFs;
 
@@ -749,8 +794,8 @@ describe("SyncOrchestrator", () => {
 			// The cycle must not sweep this path: it was never part of this cycle, so
 			// it must stay dirty (keeping it on the HOT path for the next cycle).
 			const deps = createDeps();
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			deps.localFs = () => localFs;
 			deps.remoteFs = () => remoteFs;
 
@@ -778,8 +823,8 @@ describe("SyncOrchestrator", () => {
 
 		it("retries a rate-limited transfer in-cycle, so the cycle completes clean", async () => {
 			const deps = createDeps();
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			deps.localFs = () => localFs;
 			deps.remoteFs = () => remoteFs;
 			addFile(localFs, "a.md", "content"); // local-only ⇒ push
@@ -802,8 +847,8 @@ describe("SyncOrchestrator", () => {
 
 		it("a persistent rate-limit fails the file in ONE cycle (no cycle-level retry storm)", async () => {
 			const deps = createDeps();
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			deps.localFs = () => localFs;
 			deps.remoteFs = () => remoteFs;
 			addFile(localFs, "a.md", "content");
@@ -828,8 +873,8 @@ describe("SyncOrchestrator", () => {
 	describe("pullSingle()", () => {
 		it("pulls a remote file and saves sync record", async () => {
 			const deps = createDeps();
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			deps.localFs = () => localFs;
 			deps.remoteFs = () => remoteFs;
 			addFile(remoteFs, "note.md", "remote content", 2000);
@@ -846,8 +891,8 @@ describe("SyncOrchestrator", () => {
 
 		it("acknowledges path after pull", async () => {
 			const deps = createDeps();
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			deps.localFs = () => localFs;
 			deps.remoteFs = () => remoteFs;
 			addFile(remoteFs, "note.md", "content", 2000);
@@ -873,8 +918,8 @@ describe("SyncOrchestrator", () => {
 					flush: vi.fn().mockResolvedValue(undefined),
 				} as unknown as SyncOrchestratorDeps["logger"],
 			});
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			deps.localFs = () => localFs;
 			deps.remoteFs = () => remoteFs;
 
@@ -911,8 +956,8 @@ describe("SyncOrchestrator", () => {
 					flush: vi.fn().mockResolvedValue(undefined),
 				} as unknown as SyncOrchestratorDeps["logger"],
 			});
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			deps.localFs = () => localFs;
 			deps.remoteFs = () => remoteFs;
 			// remote file does not exist
@@ -927,8 +972,8 @@ describe("SyncOrchestrator", () => {
 
 		it("runs pullSingle within mutex (exclusive with runSync)", async () => {
 			const deps = createDeps();
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			deps.localFs = () => localFs;
 			deps.remoteFs = () => remoteFs;
 			addFile(remoteFs, "note.md", "content", 2000);
@@ -1197,8 +1242,8 @@ describe("SyncOrchestrator", () => {
 			const orchestrator = new SyncOrchestrator(deps);
 
 			// Put a record first via a sync
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			deps.localFs = () => localFs;
 			deps.remoteFs = () => remoteFs;
 			addFile(remoteFs, "a.md", "content", 1000);
@@ -1212,8 +1257,8 @@ describe("SyncOrchestrator", () => {
 		});
 
 		it("waits for an in-flight old-target cycle before clearing its rename debt", async () => {
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			addFile(localFs, "a.md", "changed", 2000);
 			addFile(remoteFs, "A.md", "old", 1000);
 			const settings = baseMockSettings({
@@ -1258,8 +1303,8 @@ describe("SyncOrchestrator", () => {
 
 	describe("layoutReady gate", () => {
 		it("runSync is a no-op while the vault layout is not ready", async () => {
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			const listSpy = vi.spyOn(localFs, "list");
 			const deps = createDeps({
 				localFs: () => localFs,
@@ -1277,8 +1322,8 @@ describe("SyncOrchestrator", () => {
 
 		it("runs once the layout becomes ready", async () => {
 			let ready = false;
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			const deps = createDeps({
 				localFs: () => localFs,
 				remoteFs: () => remoteFs,
@@ -1316,8 +1361,8 @@ describe("SyncOrchestrator", () => {
 		 * COLD full reconcile that rediscovers and pulls the orphan.
 		 */
 		it("hasCheckpoint=false forces a cold reconcile that pulls the un-synced file", async () => {
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			addFile(localFs, "synced.md", "kept", 1000);
 			addFile(remoteFs, "synced.md", "kept", 1000);
 			addFile(remoteFs, "orphan.md", "left behind", 1000);
@@ -1359,8 +1404,8 @@ describe("SyncOrchestrator", () => {
 			// The reset must run through the orchestrator's sync mutex (not be fired
 			// straight at the live FS from outside) so it can't clear the cache mid-cycle
 			// and corrupt an in-flight sync. After the reset, hasCheckpoint is false → cold.
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			addFile(localFs, "synced.md", "kept", 1000);
 			addFile(remoteFs, "synced.md", "kept", 1000);
 			addFile(remoteFs, "orphan.md", "left behind", 1000); // only a COLD reconcile finds this
@@ -1400,8 +1445,8 @@ describe("SyncOrchestrator", () => {
 		 * changesStartPageToken, so the next run still re-detects the un-pulled work.
 		 */
 		it("forces a cold reconcile on the cycle after a failure (in-memory cursor may have advanced past the committed one)", async () => {
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			addFile(localFs, "synced.md", "kept", 1000);
 			addFile(localFs, "push.md", "body", 1000); // local-only → push, fails in cycle 1
 			addFile(remoteFs, "synced.md", "kept", 1000);
@@ -1449,8 +1494,8 @@ describe("SyncOrchestrator", () => {
 		});
 
 		it("does not keep cold-scanning and re-pushing the same poison file after repeated identical failures", async () => {
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			addFile(localFs, "synced.md", "kept", 1000);
 			addFile(localFs, "poison.zip", "large file", 1000);
 			addFile(remoteFs, "synced.md", "kept", 1000);
@@ -1507,8 +1552,8 @@ describe("SyncOrchestrator", () => {
 		});
 
 		it("does not quarantine uncoded permanent push failures", async () => {
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			addFile(localFs, "uncoded.md", "body", 1000);
 
 			const settings = baseMockSettings({
@@ -1541,8 +1586,8 @@ describe("SyncOrchestrator", () => {
 			["transient", () => new Error("network dropped")],
 			["rateLimit", () => Object.assign(new Error("rate limited"), { status: 429 })],
 		])("does not quarantine repeated %s push failures", async (_kind, makeError) => {
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			addFile(localFs, "flaky.md", "body", 1000);
 
 			const settings = baseMockSettings({
@@ -1578,8 +1623,8 @@ describe("SyncOrchestrator", () => {
 		});
 
 		it("does not quarantine persistent pull failures", async () => {
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			addFile(remoteFs, "remote.md", "body", 1000);
 
 			const settings = baseMockSettings({
@@ -1609,8 +1654,8 @@ describe("SyncOrchestrator", () => {
 		});
 
 		it("does not advance the committed cursor when a cycle has failures", async () => {
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			addFile(localFs, "push.md", "body", 1000); // local-only → planned push
 
 			// Pull/scan succeed; the push write fails → result.failed.length === 1.
@@ -1649,8 +1694,8 @@ describe("SyncOrchestrator", () => {
 		 * See docs/adr/0001-metadata-cache-is-subordinate-to-commit-last.md.
 		 */
 		it("does not advance the committed cursor when the checkpoint flush (cache persist) fails", async () => {
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			// Steady state, matching baseline → a CLEAN cycle (no failed actions), so the
 			// orchestrator reaches commitCheckpoint.
 			addFile(localFs, "synced.md", "kept", 1000);
@@ -1706,7 +1751,7 @@ describe("SyncOrchestrator", () => {
 		 * reads back the last committed value (or the seed, or null).
 		 */
 		function wireScopeFingerprint(
-			remoteFs: ReturnType<typeof createMockFs>,
+			remoteFs: MockFileSystem,
 			seed: string | null,
 		): void {
 			let committed = seed;
@@ -1720,8 +1765,8 @@ describe("SyncOrchestrator", () => {
 		}
 
 		it("reruns cold and pulls a remote-only path once enableConfigSync widens scope", async () => {
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			// A remote-only file under the config dir — always existed on the remote,
 			// but out of scope until enableConfigSync is turned on. The delta cursor has
 			// already passed it (empty getChangedPaths), so only a forced cold reconcile
@@ -1758,8 +1803,8 @@ describe("SyncOrchestrator", () => {
 		});
 
 		it("reruns cold and pulls a remote-only snippet once its config scope is enabled", async () => {
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			const path = `${TEST_CONFIG_DIR}/snippets/example.css`;
 			addFile(remoteFs, path, "css", 1000);
 
@@ -1791,8 +1836,8 @@ describe("SyncOrchestrator", () => {
 		});
 
 		it("does not force cold when settings are unchanged between cycles", async () => {
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			addFile(remoteFs, "synced.md", "kept", 1000);
 			addFile(localFs, "synced.md", "kept", 1000);
 
@@ -1826,8 +1871,8 @@ describe("SyncOrchestrator", () => {
 		});
 
 		it("treats a checkpoint with no committed fingerprint as changed (one-time migration)", async () => {
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			addFile(remoteFs, `${TEST_CONFIG_DIR}/hotkeys.json`, "keys", 1000);
 
 			const settings = baseMockSettings({
@@ -1858,8 +1903,8 @@ describe("SyncOrchestrator", () => {
 
 	describe("phantom warm deletion is prevented (not recovered)", () => {
 		it("does not delete a file missing from the listing but present on disk", async () => {
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			const deps = createDeps({
 				localFs: () => localFs,
 				remoteFs: () => remoteFs,

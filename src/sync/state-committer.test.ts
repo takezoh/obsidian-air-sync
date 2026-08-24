@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { commitAction, buildSyncRecord } from "./state-committer";
 import type { SyncAction } from "./types";
-import { createMockFs, createMockStateStore, makeFile } from "../__mocks__/sync-test-helpers";
+import { createMockLocalFs, type MockFileSystem, createMockStateStore, makeFile } from "../__mocks__/sync-test-helpers";
 import type { SyncStateStore } from "./state";
 import type { Logger } from "../logging/logger";
 
@@ -46,11 +46,11 @@ describe("buildSyncRecord", () => {
 
 describe("commitAction", () => {
 	let stateStore: ReturnType<typeof createMockStateStore>;
-	let localFs: ReturnType<typeof createMockFs>;
+	let localFs: MockFileSystem;
 
 	beforeEach(() => {
 		stateStore = createMockStateStore();
-		localFs = createMockFs("local");
+		localFs = createMockLocalFs();
 	});
 
 	function makeCtx(enableThreeWayMerge = false) {

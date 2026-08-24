@@ -2,15 +2,15 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { executePlan, toConflictRecords, DESKTOP_TRANSFER_POOL, MOBILE_TRANSFER_POOL } from "./plan-executor";
 import type { ExecutionContext, ResolvedConflict } from "./plan-executor";
 import type { SyncAction, SyncPlan } from "./types";
-import { createMockFs, createMockStateStore, addFile, readText, deferred, flush } from "../__mocks__/sync-test-helpers";
+import { createMockLocalFs, createMockRemoteFs, type MockFileSystem, createMockStateStore, addFile, readText, deferred, flush } from "../__mocks__/sync-test-helpers";
 import { AuthError, classifyHttpError } from "../fs/errors";
 import { AdaptivePool } from "../queue/async-queue";
 
 function makeCtx(
 	overrides: Partial<ExecutionContext> = {},
 ): ExecutionContext {
-	const localFs = createMockFs("local");
-	const remoteFs = createMockFs("remote");
+	const localFs = createMockLocalFs();
+	const remoteFs = createMockRemoteFs();
 	const stateStore = createMockStateStore();
 	return {
 		localFs,
@@ -40,8 +40,8 @@ describe("executePlan", () => {
 	describe("push", () => {
 		it("uploads local file to remote and commits state", async () => {
 			const ctx = makeCtx();
-			const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
-			const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+			const localFs = ctx.localFs as MockFileSystem;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
 			addFile(localFs, "a.md", "content");
 			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
 
@@ -63,8 +63,8 @@ describe("executePlan", () => {
 			const ctx = makeCtx({
 				isActionBlocked: (action) => action.path === "blocked.md" ? "known permanent failure" : null,
 			});
-			const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
-			const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+			const localFs = ctx.localFs as MockFileSystem;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
 			addFile(localFs, "blocked.md", "content");
 			const writeSpy = vi.spyOn(remoteFs, "write");
 
@@ -85,7 +85,7 @@ describe("executePlan", () => {
 	describe("pull", () => {
 		it("downloads remote file to local and commits state", async () => {
 			const ctx = makeCtx();
-			const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
 			addFile(remoteFs, "b.md", "remote content");
 			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
 
@@ -99,7 +99,7 @@ describe("executePlan", () => {
 
 			expect(result.succeeded).toHaveLength(1);
 			expect(result.failed).toHaveLength(0);
-			expect((ctx.localFs as ReturnType<typeof createMockFs>).files.has("b.md")).toBe(true);
+			expect((ctx.localFs as MockFileSystem).files.has("b.md")).toBe(true);
 			expect(stateStore.records.has("b.md")).toBe(true);
 		});
 	});
@@ -123,7 +123,7 @@ describe("executePlan", () => {
 	describe("delete_remote", () => {
 		it("deletes remote file and removes state record", async () => {
 			const ctx = makeCtx();
-			const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
 			addFile(remoteFs, "d.md", "to delete");
 			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
 			stateStore.records.set("d.md", {
@@ -144,7 +144,7 @@ describe("executePlan", () => {
 	describe("delete_local", () => {
 		it("deletes local file and removes state record", async () => {
 			const ctx = makeCtx();
-			const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
+			const localFs = ctx.localFs as MockFileSystem;
 			addFile(localFs, "e.md", "to delete");
 			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
 			stateStore.records.set("e.md", {
@@ -165,8 +165,8 @@ describe("executePlan", () => {
 	describe("rename_remote", () => {
 		it("renames remote file and commits state at new path", async () => {
 			const ctx = makeCtx();
-			const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
-			const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+			const localFs = ctx.localFs as MockFileSystem;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
 			addFile(localFs, "new.md", "content");
 			addFile(remoteFs, "old.md", "content");
 			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
@@ -199,8 +199,8 @@ describe("executePlan", () => {
 	describe("rename_remote with isFolder", () => {
 		it("renames folder on remote and rewrites descendant sync records", async () => {
 			const ctx = makeCtx();
-			const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
-			const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+			const localFs = ctx.localFs as MockFileSystem;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
 			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
 
 			// Set up: folder A with 2 files on remote, folder B with same files locally
@@ -266,8 +266,8 @@ describe("executePlan", () => {
 	describe("conflict", () => {
 		it("resolves conflict and records it in both succeeded and conflicts arrays", async () => {
 			const ctx = makeCtx({ conflictStrategy: "duplicate" });
-			const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
-			const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+			const localFs = ctx.localFs as MockFileSystem;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
 			addFile(localFs, "g.md", "local version");
 			addFile(remoteFs, "g.md", "remote version");
 
@@ -287,8 +287,8 @@ describe("executePlan", () => {
 
 		it("records conflict in failed array when resolveConflict throws a non-Auth error", async () => {
 			const ctx = makeCtx({ conflictStrategy: "duplicate" });
-			const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
-			const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+			const localFs = ctx.localFs as MockFileSystem;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
 			addFile(localFs, "err.md", "local version");
 			addFile(remoteFs, "err.md", "remote version");
 
@@ -316,7 +316,7 @@ describe("executePlan", () => {
 	describe("error isolation", () => {
 		it("records failed action and continues processing remaining actions", async () => {
 			const ctx = makeCtx();
-			const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
+			const localFs = ctx.localFs as MockFileSystem;
 			addFile(localFs, "good.md", "good content");
 
 			const plan = makePlan([
@@ -344,7 +344,7 @@ describe("executePlan", () => {
 			const ctx = makeCtx();
 			const authErr = new AuthError("Unauthorized", 401);
 
-			const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
+			const localFs = ctx.localFs as MockFileSystem;
 			// Use path-based logic so the correct file triggers AuthError regardless of concurrency order
 			vi.spyOn(localFs, "read").mockImplementation((path: string) => {
 				if (path === "auth-fail.md") return Promise.reject(authErr);
@@ -370,7 +370,7 @@ describe("executePlan", () => {
 		it("aborts the cycle on AuthError during a remote delete (structural phase)", async () => {
 			const ctx = makeCtx();
 			const authErr = new AuthError("Unauthorized", 401);
-			const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
 			addFile(remoteFs, "del1.md", "content");
 			addFile(remoteFs, "del2.md", "content");
 			// Path-based so the AuthError is deterministic regardless of pool order.
@@ -393,7 +393,7 @@ describe("executePlan", () => {
 		it("aborts the cycle on AuthError during a local delete (structural phase)", async () => {
 			const ctx = makeCtx();
 			const authErr = new AuthError("Unauthorized", 401);
-			const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
+			const localFs = ctx.localFs as MockFileSystem;
 			addFile(localFs, "del1.md", "content");
 			addFile(localFs, "del2.md", "content");
 			const origDelete = localFs.delete.bind(localFs);
@@ -413,8 +413,8 @@ describe("executePlan", () => {
 		it("aborts the cycle on AuthError during a conflict (conflict phase)", async () => {
 			const ctx = makeCtx();
 			const authErr = new AuthError("Unauthorized", 401);
-			const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
-			const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+			const localFs = ctx.localFs as MockFileSystem;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
 			addFile(localFs, "c1.md", "local");
 			addFile(remoteFs, "c1.md", "remote");
 			addFile(localFs, "c2.md", "local2");
@@ -467,8 +467,8 @@ describe("executePlan", () => {
 		it("runs transfers, then conflict, then structural (renames before deletes per lane)", async () => {
 			const order: string[] = [];
 			const ctx = makeCtx({ conflictStrategy: "duplicate" });
-			const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
-			const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+			const localFs = ctx.localFs as MockFileSystem;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
 			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
 
 			addFile(localFs, "push.md", "push");
@@ -554,8 +554,8 @@ describe("executePlan", () => {
 
 		it("does not start structural ops until transfers finish (Phase 1 barrier)", async () => {
 			const ctx = makeCtx();
-			const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
-			const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+			const localFs = ctx.localFs as MockFileSystem;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
 			addFile(localFs, "p.md", "x");
 			addFile(remoteFs, "d.md", "y");
 
@@ -585,15 +585,15 @@ describe("executePlan", () => {
 	describe("concurrency", () => {
 		it("runs the remote and local structural lanes concurrently", async () => {
 			const ctx = makeCtx();
-			const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
-			const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+			const localFs = ctx.localFs as MockFileSystem;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
 			addFile(remoteFs, "r.md", "x");
 			addFile(localFs, "l.md", "y");
 
 			let running = 0;
 			let maxRunning = 0;
 			const gate = deferred();
-			const gateDelete = (fs: ReturnType<typeof createMockFs>) => {
+			const gateDelete = (fs: MockFileSystem) => {
 				const orig = fs.delete.bind(fs);
 				vi.spyOn(fs, "delete").mockImplementation(async (path: string) => {
 					running++;
@@ -622,7 +622,7 @@ describe("executePlan", () => {
 		it("bounds concurrent deletes to the delete-pool size (per lane)", async () => {
 			const POOL = 5; // must match DELETE_CONCURRENCY in plan-executor.ts
 			const ctx = makeCtx();
-			const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
 			const paths = Array.from({ length: POOL + 1 }, (_, k) => `del${k}.md`);
 			for (const path of paths) addFile(remoteFs, path, "x");
 
@@ -652,7 +652,7 @@ describe("executePlan", () => {
 	describe("concurrent delete safety", () => {
 		it("handles an overlapping folder + child delete_remote without failures (idempotent)", async () => {
 			const ctx = makeCtx();
-			const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
 			addFile(remoteFs, "A/child.md", "x"); // seeds folder A + the child
 
 			// The folder and its descendant are both deleted in one plan (the decision
@@ -675,8 +675,8 @@ describe("executePlan", () => {
 	describe("conflict runs in its own phase (not pooled with transfers)", () => {
 		it("a pushed `.conflict` sidecar is not clobbered by a same-cycle conflict's duplicate", async () => {
 			const ctx = makeCtx({ conflictStrategy: "duplicate" });
-			const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
-			const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+			const localFs = ctx.localFs as MockFileSystem;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
 			// A genuine conflict on foo.md (both sides, different content).
 			addFile(localFs, "foo.md", "local-foo");
 			addFile(remoteFs, "foo.md", "remote-foo");
@@ -710,8 +710,8 @@ describe("executePlan", () => {
 				conflictStrategy: "duplicate",
 				onProgress: (completed, total) => calls.push([completed, total]),
 			});
-			const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
-			const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+			const localFs = ctx.localFs as MockFileSystem;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
 			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
 			addFile(localFs, "p.md", "p");
 			addFile(localFs, "cf.md", "l");
@@ -772,8 +772,8 @@ describe("withIoRetry (per-action in-cycle retry)", () => {
 
 	it("retries a rate-limited (429) transfer, then succeeds", async () => {
 		const ctx = makeCtx();
-		const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
-		const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+		const localFs = ctx.localFs as MockFileSystem;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
 		addFile(localFs, "x.md", "content");
 		const orig = remoteFs.write.bind(remoteFs);
 		let n = 0;
@@ -789,8 +789,8 @@ describe("withIoRetry (per-action in-cycle retry)", () => {
 
 	it("retries a transient (503) transfer, then succeeds", async () => {
 		const ctx = makeCtx();
-		const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
-		const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+		const localFs = ctx.localFs as MockFileSystem;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
 		addFile(localFs, "x.md", "content");
 		const orig = remoteFs.write.bind(remoteFs);
 		let n = 0;
@@ -805,8 +805,8 @@ describe("withIoRetry (per-action in-cycle retry)", () => {
 
 	it("does NOT retry a permission (403) error — records failed, does not abort the cycle", async () => {
 		const ctx = makeCtx();
-		const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
-		const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+		const localFs = ctx.localFs as MockFileSystem;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
 		addFile(localFs, "x.md", "content");
 		const writeSpy = vi.spyOn(remoteFs, "write").mockRejectedValue(httpErr(403));
 
@@ -819,8 +819,8 @@ describe("withIoRetry (per-action in-cycle retry)", () => {
 
 	it("does NOT retry a notFound (404) error", async () => {
 		const ctx = makeCtx();
-		const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
-		const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+		const localFs = ctx.localFs as MockFileSystem;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
 		addFile(localFs, "x.md", "content");
 		const writeSpy = vi.spyOn(remoteFs, "write").mockRejectedValue(httpErr(404));
 
@@ -832,8 +832,8 @@ describe("withIoRetry (per-action in-cycle retry)", () => {
 
 	it("aborts (no retry) on AuthError", async () => {
 		const ctx = makeCtx();
-		const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
-		const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+		const localFs = ctx.localFs as MockFileSystem;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
 		addFile(localFs, "x.md", "content");
 		const writeSpy = vi.spyOn(remoteFs, "write").mockRejectedValue(new AuthError("unauthorized", 401));
 
@@ -843,8 +843,8 @@ describe("withIoRetry (per-action in-cycle retry)", () => {
 
 	it("gives up after MAX_ACTION_RETRIES (3) → failed, without a cycle abort", async () => {
 		const ctx = makeCtx();
-		const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
-		const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+		const localFs = ctx.localFs as MockFileSystem;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
 		addFile(localFs, "x.md", "content");
 		const writeSpy = vi.spyOn(remoteFs, "write").mockRejectedValue(httpErr(429));
 
@@ -856,8 +856,8 @@ describe("withIoRetry (per-action in-cycle retry)", () => {
 
 	it("uses ctx.classifyError (Google 403 = rate-limit), so a 403 retries", async () => {
 		const ctx = makeCtx({ classifyError: () => ({ kind: "rateLimit", retryAfterMs: 1 }) });
-		const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
-		const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+		const localFs = ctx.localFs as MockFileSystem;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
 		addFile(localFs, "x.md", "content");
 		const orig = remoteFs.write.bind(remoteFs);
 		let n = 0;
@@ -874,8 +874,8 @@ describe("withIoRetry (per-action in-cycle retry)", () => {
 		const order: string[] = [];
 		const noteSpy = vi.spyOn(AdaptivePool.prototype, "noteRateLimit").mockImplementation(() => { order.push("noteRateLimit"); });
 		const ctx = makeCtx({ sleep: (ms) => { order.push(`sleep:${ms}`); return Promise.resolve(); } });
-		const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
-		const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+		const localFs = ctx.localFs as MockFileSystem;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
 		addFile(localFs, "x.md", "content");
 		const orig = remoteFs.write.bind(remoteFs);
 		let n = 0;
@@ -892,8 +892,8 @@ describe("withIoRetry (per-action in-cycle retry)", () => {
 	it("does NOT retry a rate-limited conflict (not idempotent) and never signals the transfer pool (D1)", async () => {
 		const noteSpy = vi.spyOn(AdaptivePool.prototype, "noteRateLimit");
 		const ctx = makeCtx({ conflictStrategy: "duplicate" });
-		const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
-		const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+		const localFs = ctx.localFs as MockFileSystem;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
 		addFile(localFs, "g.md", "local version");
 		addFile(remoteFs, "g.md", "remote version");
 		const readSpy = vi.spyOn(remoteFs, "read").mockRejectedValue(httpErr(429));
@@ -916,7 +916,7 @@ describe("withIoRetry (per-action in-cycle retry)", () => {
 
 	it("does NOT retry a rename (not idempotent on replay)", async () => {
 		const ctx = makeCtx();
-		const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
 		const renameSpy = vi.spyOn(remoteFs, "rename").mockRejectedValue(httpErr(429));
 
 		const result = await executePlan(makePlan([{
@@ -934,7 +934,7 @@ describe("withIoRetry (per-action in-cycle retry)", () => {
 });
 
 describe("adaptive transfer pool (Phase 1)", () => {
-	function gatedWrites(remoteFs: ReturnType<typeof createMockFs>) {
+	function gatedWrites(remoteFs: MockFileSystem) {
 		const gate = deferred();
 		let running = 0;
 		const counter = { max: 0 };
@@ -950,7 +950,7 @@ describe("adaptive transfer pool (Phase 1)", () => {
 	}
 
 	function manyPushes(n: number, ctx: ExecutionContext, size = 7): SyncPlan {
-		const localFs = ctx.localFs as ReturnType<typeof createMockFs>;
+		const localFs = ctx.localFs as MockFileSystem;
 		const actions: SyncAction[] = [];
 		for (let i = 0; i < n; i++) {
 			addFile(localFs, `f${i}.md`, "content");
@@ -961,7 +961,7 @@ describe("adaptive transfer pool (Phase 1)", () => {
 
 	it("starts transfers at the desktop pool's start concurrency (5)", async () => {
 		const ctx = makeCtx(); // DESKTOP_TRANSFER_POOL (start 5)
-		const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
 		const { gate, counter } = gatedWrites(remoteFs);
 
 		const p = executePlan(manyPushes(8, ctx), ctx);
@@ -973,7 +973,7 @@ describe("adaptive transfer pool (Phase 1)", () => {
 
 	it("caps mobile transfers at the mobile pool's start concurrency (3)", async () => {
 		const ctx = makeCtx({ transferPool: MOBILE_TRANSFER_POOL });
-		const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
 		const { gate, counter } = gatedWrites(remoteFs);
 
 		const p = executePlan(manyPushes(8, ctx), ctx);
@@ -988,7 +988,7 @@ describe("adaptive transfer pool (Phase 1)", () => {
 		const ctx = makeCtx({
 			transferPool: { min: 1, start: 10, max: 10, rampAfter: 100, byteBudget: 30 },
 		});
-		const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
 		const { gate, counter } = gatedWrites(remoteFs);
 
 		const p = executePlan(manyPushes(8, ctx, 10), ctx);
@@ -1002,7 +1002,7 @@ describe("adaptive transfer pool (Phase 1)", () => {
 		const ctx = makeCtx({
 			transferPool: { min: 1, start: 4, max: 4, rampAfter: 100, byteBudget: 48 * 1024 * 1024 },
 		});
-		const remoteFs = ctx.remoteFs as ReturnType<typeof createMockFs>;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
 		const { gate, counter } = gatedWrites(remoteFs);
 
 		const p = executePlan(manyPushes(8, ctx, 7), ctx);

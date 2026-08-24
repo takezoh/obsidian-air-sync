@@ -46,6 +46,12 @@ describe("empty cache queries", () => {
 		expect(cache.size).toBe(0);
 		expect([...cache.entries()]).toEqual([]);
 	});
+
+	it("does not treat an absent cache path as producer-resolved", () => {
+		const cache = makeCache();
+
+		expect(cache.getPathAuthority("missing.md")).toBe("requested_echo");
+	});
 });
 
 // ── setFile ──
@@ -546,6 +552,12 @@ describe("applyFileChange", () => {
 		cache.applyFileChange(child);
 
 		expect(cache.toEntity("Docs/a.md", child).pathAuthority).toBe("requested_echo");
+		expect(cache.exportRecords().find((record) => record.path === "Docs/a.md")?.pathAuthority)
+			.toBe("actual_resolved");
+
+		cache.setFile("Docs", requestedParent, "actual_resolved");
+
+		expect(cache.toEntity("Docs/a.md", child).pathAuthority).toBe("actual_resolved");
 	});
 
 	it("adds new file", () => {

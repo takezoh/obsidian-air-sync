@@ -6,7 +6,7 @@ import { executePlan } from "./plan-executor";
 import type { ExecutionResult } from "./plan-executor";
 import { LocalChangeTracker } from "./local-tracker";
 import {
-	createMockFs,
+	createMockLocalFs, createMockRemoteFs, type MockFileSystem,
 	createMockStateStore,
 	addFile,
 	readText,
@@ -25,16 +25,16 @@ import type { SyncPlan } from "./types";
  */
 
 interface Env {
-	localFs: ReturnType<typeof createMockFs>;
-	remoteFs: ReturnType<typeof createMockFs>;
+	localFs: MockFileSystem;
+	remoteFs: MockFileSystem;
 	stateStore: ReturnType<typeof createMockStateStore>;
 	localTracker: LocalChangeTracker;
 }
 
 function makeEnv(): Env {
 	return {
-		localFs: createMockFs("local"),
-		remoteFs: createMockFs("remote"),
+		localFs: createMockLocalFs(),
+		remoteFs: createMockRemoteFs(),
 		stateStore: createMockStateStore(),
 		localTracker: new LocalChangeTracker(),
 	};

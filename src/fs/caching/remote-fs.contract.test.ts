@@ -1,4 +1,5 @@
 import "fake-indexeddb/auto";
+import { describe, expect, it } from "vitest";
 import type { FileEntity } from "../types";
 import type { RenamePair } from "../types";
 import { MetadataStore } from "../../store/metadata-store";
@@ -31,8 +32,9 @@ class MockCache extends AbstractMetadataCache<MockFile> {
 	protected extractName(f: MockFile): string { return f.name; }
 	protected isFolderEntry(f: MockFile): boolean { return !!f.isFolder; }
 	toEntity(path: string, f: MockFile): FileEntity {
-		if (f.isFolder) return { path, isDirectory: true, size: 0, mtime: 0, hash: "" };
-		return { path, isDirectory: false, size: 0, mtime: 0, hash: "", remoteChecksum: { algo: "opaque", value: f.checksum } };
+		const pathAuthority = this.getPathAuthority(path);
+		if (f.isFolder) return { path, pathAuthority, isDirectory: true, size: 0, mtime: 0, hash: "" };
+		return { path, pathAuthority, isDirectory: false, size: 0, mtime: 0, hash: "", remoteChecksum: { algo: "opaque", value: f.checksum } };
 	}
 }
 
@@ -146,3 +148,33 @@ function makeMockHarness(): CachingRemoteFsHarness<MockFile> {
 }
 
 runCachingRemoteFsContract("MockRemoteFs", makeMockHarness);
+
+describe("MockRemoteFs incremental authority persistence", () => {
+	it("restores a child's own authority after its unresolved parent is confirmed", async () => {
+		const remote = new FakeRemote();
+		remote.seedFolderWithChild("Docs", "a.md");
+		const [folder, child] = remote.list();
+		const store = new MetadataStore<MockFile>("authority-restart", {
+			dbNamePrefix: "air-sync-mock", version: 1,
+		});
+		await store.open();
+		await store.saveAll([
+			{ path: "Docs", file: folder!, isFolder: true, pathAuthority: "requested_echo" },
+			{ path: "Docs/a.md", file: child!, isFolder: false, pathAuthority: "actual_resolved" },
+		], new Map([["changesStartPageToken", "c0"]]));
+
+		remote.stageRename("a.md", "a.md");
+		const first = new MockRemoteFs(remote, store);
+		await first.getChangedPaths();
+		expect((await first.stat("Docs/a.md"))?.pathAuthority).toBe("requested_echo");
+		await first.commitCheckpoint();
+		await first.close();
+
+		remote.stageRename("Docs", "Docs", { isFolder: true });
+		const restarted = new MockRemoteFs(remote, store);
+		await restarted.getChangedPaths();
+
+		expect((await restarted.stat("Docs/a.md"))?.pathAuthority).toBe("actual_resolved");
+		await restarted.close();
+	});
+});

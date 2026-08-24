@@ -2,19 +2,19 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { resolveConflict } from "./conflict-resolver";
 import type { SyncRecord } from "./types";
 import {
-	createMockFs,
+	createMockLocalFs, createMockRemoteFs, type MockFileSystem,
 	createMockStateStore,
 	addFile,
 	readText,
 } from "../__mocks__/sync-test-helpers";
 
 describe("resolveConflict", () => {
-	let localFs: ReturnType<typeof createMockFs>;
-	let remoteFs: ReturnType<typeof createMockFs>;
+	let localFs: MockFileSystem;
+	let remoteFs: MockFileSystem;
 
 	beforeEach(() => {
-		localFs = createMockFs("local");
-		remoteFs = createMockFs("remote");
+		localFs = createMockLocalFs();
+		remoteFs = createMockRemoteFs();
 	});
 
 	describe("duplicate strategy", () => {

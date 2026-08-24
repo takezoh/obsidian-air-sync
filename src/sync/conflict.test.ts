@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { resolveWithStrategy, generateConflictPath } from "./conflict";
 import {
-	createMockFs,
+	createMockLocalFs, createMockRemoteFs, type MockFileSystem,
 	createMockStateStore,
 	addFile,
 	readText,
@@ -13,12 +13,12 @@ function encode(s: string): ArrayBuffer {
 }
 
 describe("resolveWithStrategy", () => {
-	let localFs: ReturnType<typeof createMockFs>;
-	let remoteFs: ReturnType<typeof createMockFs>;
+	let localFs: MockFileSystem;
+	let remoteFs: MockFileSystem;
 
 	beforeEach(() => {
-		localFs = createMockFs("local");
-		remoteFs = createMockFs("remote");
+		localFs = createMockLocalFs();
+		remoteFs = createMockRemoteFs();
 	});
 
 	describe("keep_newer", () => {
@@ -189,16 +189,16 @@ describe("resolveWithStrategy", () => {
 
 describe("generateConflictPath", () => {
 	it("returns the .conflict path when it is free", async () => {
-		const localFs = createMockFs("local");
-		const remoteFs = createMockFs("remote");
+		const localFs = createMockLocalFs();
+		const remoteFs = createMockRemoteFs();
 		expect(
 			await generateConflictPath("notes/file.md", localFs, remoteFs),
 		).toBe("notes/file.conflict.md");
 	});
 
 	it("numbers sequentially when the conflict path is occupied on any side", async () => {
-		const localFs = createMockFs("local");
-		const remoteFs = createMockFs("remote");
+		const localFs = createMockLocalFs();
+		const remoteFs = createMockRemoteFs();
 		addFile(remoteFs, "notes/file.conflict.md", "already here");
 		expect(
 			await generateConflictPath("notes/file.md", localFs, remoteFs),

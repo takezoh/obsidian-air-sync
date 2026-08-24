@@ -66,9 +66,8 @@ export abstract class AbstractMetadataCache<TFile> {
 	getPathById(id: string): string | undefined { return this.idToPath.get(id); }
 	hasId(id: string): boolean { return this.idToPath.has(id); }
 	getChildren(path: string): ReadonlySet<string> | undefined { return this.children.get(path); }
-	getPathAuthority(path: string): PathAuthority {
-		return resolveCachedPathAuthority(path, this.pathToFile, this.pathAuthorities);
-	}
+	getPathAuthority(path: string): PathAuthority { return resolveCachedPathAuthority(path, this.pathToFile, this.pathAuthorities); }
+	getStoredPathAuthority(path: string): PathAuthority { return resolveStoredPathAuthority(path, this.pathAuthorities); }
 	get size(): number { return this.pathToFile.size; }
 	entries(): IterableIterator<[string, TFile]> { return this.pathToFile.entries(); }
 
@@ -173,7 +172,7 @@ export abstract class AbstractMetadataCache<TFile> {
 			path,
 			file,
 			isFolder: this.folders.has(path),
-			pathAuthority: resolveStoredPathAuthority(path, this.pathAuthorities),
+			pathAuthority: this.getStoredPathAuthority(path),
 		}));
 	}
 
@@ -268,28 +267,16 @@ export abstract class AbstractMetadataCache<TFile> {
 
 	/** Resolve a file's relative path using the existing cache */
 	resolvePathFromCache(file: TFile): string | null {
-		return this.resolvePathObservationFromCache(file)?.path ?? null;
-	}
-
-	private resolvePathObservationFromCache(
-		file: TFile,
-	): { path: string; pathAuthority: PathAuthority } | null {
 		const parents = this.extractParentIds(file);
 		if (parents.length === 0) return null;
 
 		const parentId = this.findRelevantParentId(parents, this.idToPath);
 		if (!parentId) return null;
-		if (parentId === this.rootFolderId) {
-			return { path: this.extractName(file), pathAuthority: "actual_resolved" };
-		}
+		if (parentId === this.rootFolderId) return this.extractName(file);
 
 		const parentPath = this.idToPath.get(parentId);
 		if (!parentPath) return null;
-
-		return {
-			path: `${parentPath}/${this.extractName(file)}`,
-			pathAuthority: this.getPathAuthority(parentPath),
-		};
+		return `${parentPath}/${this.extractName(file)}`;
 	}
 
 	/**
@@ -396,8 +383,7 @@ export abstract class AbstractMetadataCache<TFile> {
 	/** Apply a single file change to the metadata cache */
 	applyFileChange(file: TFile): void {
 		const id = this.extractId(file);
-		const observation = this.resolvePathObservationFromCache(file);
-		const path = observation?.path ?? null;
+		const path = this.resolvePathFromCache(file);
 		const oldPath = this.idToPath.get(id);
 
 		if (!path) {
@@ -416,6 +402,9 @@ export abstract class AbstractMetadataCache<TFile> {
 			return;
 		}
 
-		this.setFile(path, file, observation?.pathAuthority ?? "requested_echo");
+		// The delta names this entry and its parent id directly, so the entry's own
+		// spelling is provider-resolved. getPathAuthority() still projects any
+		// unresolved ancestor over it until that ancestor is confirmed.
+		this.setFile(path, file, "actual_resolved");
 	}
 }

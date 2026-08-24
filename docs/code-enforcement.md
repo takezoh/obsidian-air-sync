@@ -100,6 +100,19 @@ functions — no I/O, no clock, no randomness — so every intermediate state is
 | **How** | `no-restricted-imports` + `no-restricted-syntax` (error), scoped to those files |
 | **Exception** | Pass timestamps/variation in as data. To add a new pure transform, list its file in `PURE_TRANSFORMS` |
 
+### Producer-qualified mock path evidence
+
+Sync tests must not choose path authority independently from the filesystem role.
+The canonical role factories keep mutation-backed local observations resolved and
+remote observations as request echoes until a test explicitly models provider confirmation.
+
+| | |
+|---|---|
+| **Prevents** | `src/sync/**/*.test.ts` importing the raw authority-parameterized `createMockFs`, which could give remote mutations invented `actual_resolved` evidence |
+| **Where** | `RAW_SYNC_MOCK_FS_IMPORT` in `eslint.config.mts` |
+| **How** | `no-restricted-imports` (error), scoped to sync tests |
+| **Exception** | Raw construction is reserved for dedicated mock contract tests under `src/__mocks__/`; sync tests use `createMockLocalFs()` or `createMockRemoteFs()` |
+
 ## 6. Single responsibility per module (Principle #7)
 
 Each file owns one concept. The `max-lines` cap is a **prompt to consider a

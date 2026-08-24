@@ -14,7 +14,7 @@ import type { TAbstractFile } from "obsidian";
 import { TFolder } from "../platform/obsidian";
 import { LocalChangeTracker } from "./local-tracker";
 import {
-	createMockFs,
+	createMockLocalFs, createMockRemoteFs,
 	createMockStateStore,
 } from "../__mocks__/sync-test-helpers";
 import { sha256 } from "../utils/hash";
@@ -72,8 +72,8 @@ function createDeps(
 				return {};
 			}),
 		} as unknown as SyncSchedulerDeps["vault"],
-		localFs: () => createMockFs("local"),
-		remoteFs: () => createMockFs("remote"),
+		localFs: () => createMockLocalFs(),
+		remoteFs: () => createMockRemoteFs(),
 		stateStore: createMockStateStore(),
 		localTracker: new LocalChangeTracker(),
 		orchestrator: { runSync, pullSingle, isSyncing: () => false },
@@ -351,8 +351,8 @@ describe("SyncScheduler", () => {
 			};
 			await deps.stateStore.put(record);
 
-			const localFs = createMockFs("local");
-			const remoteFs = createMockFs("remote");
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
 			localFs.files.set("note.md", {
 				content: localContent,
 				entity: {

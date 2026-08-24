@@ -106,14 +106,24 @@ export function coalesceLocalFolderRenames(
 		const oldPrefix = oldFolder + "/";
 		const newPrefix = newFolder + "/";
 
-		const descendants: RenamePair[] = [];
-		let skipReason: SkippedRename["reason"] | null = null;
-
+		const descendantPairs = new Map<string, string>();
+		for (const action of actions) {
+			if (action.action !== "delete_remote" || !action.path.startsWith(oldPrefix)) continue;
+			const suffix = action.path.substring(oldPrefix.length);
+			descendantPairs.set(newPrefix + suffix, action.path);
+		}
+		// File events are optional corroboration. Obsidian reports a TFolder rename
+		// as one root edge, so the cycle action inventory is the descendant SSOT.
 		for (const [newFile, oldFile] of fileRenamePairs) {
 			if (!oldFile.startsWith(oldPrefix) || !newFile.startsWith(newPrefix)) continue;
 			const suffix = oldFile.substring(oldPrefix.length);
-			if (newFile !== newPrefix + suffix) continue;
+			if (newFile === newPrefix + suffix) descendantPairs.set(newFile, oldFile);
+		}
 
+		const descendants: RenamePair[] = [];
+		let skipReason: SkippedRename["reason"] | null = null;
+
+		for (const [newFile, oldFile] of descendantPairs) {
 			const del = byPath.get(oldFile);
 			const push = byPath.get(newFile);
 			if (!del || !push || !isValidLocalRename(del, push)) {
@@ -132,7 +142,7 @@ export function coalesceLocalFolderRenames(
 			continue;
 		}
 
-		if (descendants.length === 0) {
+		if (descendantPairs.size === 0) {
 			skipped.push({ pair: { oldPath: oldFolder, newPath: newFolder }, reason: "no_descendants" });
 			logger?.debug("Folder rename coalescing skipped", { oldFolder, newFolder, reason: "no_descendants" });
 			continue;
