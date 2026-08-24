@@ -17,7 +17,7 @@ export type RenameScopeConsequence =
 	| "none"
 	| "defer";
 
-export interface RenameScopeRule {
+interface RenameScopeRule {
 	consequence: RenameScopeConsequence;
 	oldDisposition: ScopeDisposition;
 	newDisposition: ScopeDisposition;

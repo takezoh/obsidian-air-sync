@@ -108,7 +108,7 @@ export function startLoopback(port: number): Promise<LoopbackCapture> {
  * or an agent, and hand-copying an `authorize` URL silently corrupts the opaque
  * `state`/`code_challenge` — which the loopback then rejects as a mismatch.
  */
-export const AUTHORIZE_URL_FILE = ".env.e2e.authorize-url";
+const AUTHORIZE_URL_FILE = ".env.e2e.authorize-url";
 
 /**
  * Print the authorize URL AND write it to {@link AUTHORIZE_URL_FILE}, then try to

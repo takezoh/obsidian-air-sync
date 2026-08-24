@@ -65,7 +65,6 @@ export function collectLocalRenameDebts(
 			isFolder: item.isFolder,
 			oldDisposition: rule.oldDisposition,
 			newDisposition: rule.newDisposition,
-			identityKey: item.identityKey,
 		}];
 	});
 }
@@ -133,7 +132,6 @@ export function renameDebtEvidence(debt: RenameDebt): RenameEvidence {
 		newPath: debt.newPath,
 		isFolder: debt.isFolder,
 		authority: "reported",
-		identityKey: debt.identityKey,
 	};
 }
 

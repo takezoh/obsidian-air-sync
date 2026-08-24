@@ -21,7 +21,7 @@ import type { Logger } from "../logging/logger";
  * `status` is optional because some call sites (a rejected request whose status the
  * caller already put in the message, an OAuth helper) only hold the body.
  */
-export interface BackendErrorResponse {
+interface BackendErrorResponse {
 	status?: number;
 	json?: unknown;
 	text?: string;

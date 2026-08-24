@@ -9,7 +9,7 @@ import type {
 	SyncPlan,
 } from "./types";
 
-export type AdmissionDeferralReason =
+type AdmissionDeferralReason =
 	| "alias_target_mutation"
 	| "conflicting_identity"
 	| "identity_postcondition_unproven"

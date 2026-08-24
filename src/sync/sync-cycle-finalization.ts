@@ -7,7 +7,7 @@ import {
 import type { RenameDebt, SyncStateStore } from "./state";
 import type { IdentityEvidence, PathObservation, ScopeProjection } from "./types";
 
-export interface SyncCycleFinalizationInput {
+interface SyncCycleFinalizationInput {
 	result: ExecutionResult;
 	pendingEvidence: readonly IdentityEvidence[];
 	persistedDebts: readonly RenameDebt[];

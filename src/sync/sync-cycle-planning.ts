@@ -13,13 +13,6 @@ import { projectScope, type ScopeProjectionPolicy } from "./scope-projection";
 import type { RenameDebt } from "./state";
 import type { ScopeProjection } from "./types";
 
-export interface SyncCyclePlanningResult {
-	admission: AdmissionResult;
-	localRenameDebts: RenameDebt[];
-	plannedCount: number;
-	scopeProjection: ScopeProjection;
-}
-
 export function logChangeDetection(
 	changeSet: ChangeSet,
 	renamePairs: ReadonlyMap<string, string>,
@@ -58,7 +51,7 @@ export function prepareSyncCyclePlan(
 	namespace: string,
 	policy: ScopeProjectionPolicy,
 	logger?: Logger,
-): SyncCyclePlanningResult {
+) {
 	const completeChangeSet: ChangeSet = {
 		...changeSet,
 		identityEvidence: mergeRenameDebtEvidence(changeSet.identityEvidence, persistedDebts),
@@ -90,7 +83,7 @@ export function prepareSyncCyclePlan(
 		scopeProjection,
 	);
 	logPlan(logger, plan.actions.map((action) => action.action), admission, scopeProjection);
-	return { admission, localRenameDebts, plannedCount: plan.actions.length, scopeProjection };
+	return { admission, localRenameDebts, scopeProjection };
 }
 
 function logPlan(

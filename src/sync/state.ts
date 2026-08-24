@@ -14,8 +14,8 @@ const RENAME_DEBT_STORE_NAME = "rename-debt";
 // is created. Cold-start prevents old baselines from being treated as identity-aware.
 const DB_VERSION = 6;
 
-export type RenameDebtSide = "local" | "remote";
-export type RenameDebtDisposition = ScopeDisposition;
+type RenameDebtSide = "local";
+type RenameDebtDisposition = ScopeDisposition;
 
 /** One unresolved reported rename, scoped to a configured backend/root. */
 export interface RenameDebt {
@@ -26,7 +26,6 @@ export interface RenameDebt {
 	isFolder: boolean;
 	oldDisposition: RenameDebtDisposition;
 	newDisposition: RenameDebtDisposition;
-	identityKey?: string;
 }
 
 interface StoredRenameDebt extends RenameDebt {
