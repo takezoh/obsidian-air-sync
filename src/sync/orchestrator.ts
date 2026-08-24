@@ -429,9 +429,7 @@ export class SyncOrchestrator {
 		}
 		const plan = refinePlan(
 			planSync(filtered),
-			renamePairs,
-			folderRenamePairs,
-			changeSet.remoteRenamePairs,
+			changeSet.identityEvidence,
 			this.deps.logger,
 		);
 

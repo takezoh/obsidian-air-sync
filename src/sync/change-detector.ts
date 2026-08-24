@@ -1,15 +1,24 @@
 import type { IFileSystem } from "../fs/interface";
-import type { MixedEntity, RenamePair, SyncRecord } from "./types";
+import type { IdentityEvidence, MixedEntity, PathObservation, RenameEvidence, SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
 import type { TrackerSnapshot } from "./local-tracker";
 import { hasChanged, hasRemoteChanged } from "./change-compare";
 import { sha256, digest, isLocallyComputable } from "../utils/hash";
 import { AsyncPool } from "../queue/async-queue";
+import { collectLocalRenameEvidence, collectRemoteRenameEvidence, completeIdentityEvidence } from "./identity-evidence";
+import {
+	confirmBaselineAbsences,
+	ensureRenameEndpointObservations,
+	exactEntity,
+	observePath,
+	replaceObservation,
+} from "./path-observation";
 
 export interface ChangeSet {
 	entries: MixedEntity[];
+	observations: PathObservation[];
+	identityEvidence: IdentityEvidence[];
 	temperature: "hot" | "warm" | "cold";
-	remoteRenamePairs: RenamePair[];
 }
 
 export interface ChangeDetectorDeps {
@@ -55,19 +64,24 @@ export async function collectChanges(
 			? await collectCold(deps, allRecords)
 			: await collectWarm(deps, allRecords);
 	}
+	changeSet.identityEvidence.unshift(...collectLocalRenameEvidence(changes));
+	ensureRenameEndpointObservations(changeSet.observations, changeSet.identityEvidence);
 
-	// Enrich empty hashes for entries without baseline (all temperature modes)
-	await enrichHashesForInitialMatch(changeSet.entries, deps.localFs);
-
-	// Ensure rename-related local entries have hashes (WARM/COLD use list() → hash:"")
-	await enrichHashesForRenames(changeSet.entries, deps.localFs, changes.renamePairs);
-
-	// Warm mode infers local deletions from absence in list() (the in-memory vault
-	// index), which can under-report. Confirm each candidate against the authoritative
-	// filesystem so an unindexed-but-on-disk file is never deleted.
-	if (changeSet.temperature === "warm") {
-		await confirmLocalDeletions(changeSet.entries, deps.localFs);
+	// WARM/COLD listings can under-report. Confirm every baseline path whose current
+	// side is missing before planning; a thrown stat aborts rather than becoming absence.
+	if (changeSet.temperature !== "hot") {
+		await confirmBaselineAbsences(changeSet, deps.localFs, deps.remoteFs);
 	}
+	// Hash enrichment operates only on exact entries and cannot upgrade observations.
+	await enrichHashesForInitialMatch(changeSet.entries, deps.localFs);
+	await enrichHashesForRenames(
+		changeSet.entries, changeSet.observations, deps.localFs, changes.renamePairs,
+	);
+	changeSet.identityEvidence = completeIdentityEvidence(
+		changeSet.identityEvidence,
+		changeSet.observations,
+		changeSet.entries,
+	);
 
 	return changeSet;
 }
@@ -94,15 +108,20 @@ async function collectHot(deps: ChangeDetectorDeps): Promise<ChangeSet> {
 		Promise.all(pathArray.map((p) => remoteFs.stat(p))),
 		stateStore.getMany(pathArray),
 	]);
+	const observations: PathObservation[] = [];
 
 	const entries: MixedEntity[] = pathArray.map((path, i) => {
-		const local = localStats[i] ?? undefined;
-		const remote = remoteStats[i] ?? undefined;
+		const localObservation = observePath("local", path, localStats[i]);
+		const remoteObservation = observePath(
+			"remote", path, remoteStats[i],
+			remoteChanges.deletedPaths.has(path) ? "checkpoint_deleted" : "stat",
+		);
+		observations.push(localObservation, remoteObservation);
 		const prevSync = syncRecords.get(path);
 		return {
 			path,
-			local: local?.isDirectory ? undefined : local,
-			remote: remote?.isDirectory ? undefined : remote,
+			local: exactEntity(localObservation),
+			remote: exactEntity(remoteObservation),
 			prevSync,
 		};
 	});
@@ -131,7 +150,7 @@ async function collectHot(deps: ChangeDetectorDeps): Promise<ChangeSet> {
 		return false;
 	});
 
-	return { entries: changed, temperature: "hot", remoteRenamePairs: remoteChanges.renamed };
+	return { entries: changed, observations, identityEvidence: remoteChanges.renameEvidence, temperature: "hot" };
 }
 
 async function collectWarm(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): Promise<ChangeSet> {
@@ -177,19 +196,32 @@ async function collectWarm(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): 
 	const pathArray = Array.from(changedPaths);
 	const remoteStats = await Promise.all(pathArray.map((p) => remoteFs.stat(p)));
 
-	const localFileMap = new Map(localFiles.filter((f) => !f.isDirectory).map((f) => [f.path, f]));
+	const observations: PathObservation[] = localFiles.map((file) =>
+		observePath("local", file.path, file, "stat", "list"));
+	const localFileMap = new Map(observations.flatMap((observation) => {
+		const entity = exactEntity(observation);
+		return entity ? [[entity.path, entity] as const] : [];
+	}));
 
 	const entries: MixedEntity[] = pathArray.map((path, i) => {
-		const remote = remoteStats[i] ?? undefined;
+		const remoteObservation = observePath(
+			"remote", path, remoteStats[i],
+			remoteChanges.deletedPaths.has(path) ? "checkpoint_deleted" : "stat",
+		);
+		observations.push(remoteObservation);
+		if (!observations.some((observation) =>
+			observation.side === "local" && observation.requestedPath === path)) {
+			observations.push({ kind: "unknown", side: "local", requestedPath: path, reason: "not_observed" });
+		}
 		return {
 			path,
 			local: localFileMap.get(path),
-			remote: remote?.isDirectory ? undefined : remote,
+			remote: exactEntity(remoteObservation),
 			prevSync: recordMap.get(path),
 		};
 	});
 
-	return { entries, temperature: "warm", remoteRenamePairs: remoteChanges.renamed };
+	return { entries, observations, identityEvidence: remoteChanges.renameEvidence, temperature: "warm" };
 }
 
 async function collectCold(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): Promise<ChangeSet> {
@@ -202,6 +234,7 @@ async function collectCold(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): 
 	const syncRecords = allRecords;
 
 	const pathMap = new Map<string, MixedEntity>();
+	const observations: PathObservation[] = [];
 
 	const getOrCreate = (path: string): MixedEntity => {
 		let entity = pathMap.get(path);
@@ -213,20 +246,24 @@ async function collectCold(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): 
 	};
 
 	for (const file of localFiles) {
-		if (file.isDirectory) continue;
-		getOrCreate(file.path).local = file;
+		const observation = observePath("local", file.path, file, "stat", "list");
+		observations.push(observation);
+		const entity = exactEntity(observation);
+		if (entity) getOrCreate(entity.path).local = entity;
 	}
 
 	for (const file of remoteFiles) {
-		if (file.isDirectory) continue;
-		getOrCreate(file.path).remote = file;
+		const observation = observePath("remote", file.path, file, "stat", "list");
+		observations.push(observation);
+		const entity = exactEntity(observation);
+		if (entity) getOrCreate(entity.path).remote = entity;
 	}
 
 	for (const record of syncRecords) {
 		getOrCreate(record.path).prevSync = record;
 	}
 
-	return { entries: Array.from(pathMap.values()), temperature: "cold", remoteRenamePairs: [] };
+	return { entries: Array.from(pathMap.values()), observations, identityEvidence: [], temperature: "cold" };
 }
 
 /**
@@ -281,6 +318,7 @@ async function enrichHashesForInitialMatch(
  */
 export async function enrichHashesForRenames(
 	entries: MixedEntity[],
+	observations: PathObservation[],
 	localFs: IFileSystem,
 	renamePairs: ReadonlyMap<string, string>,
 ): Promise<void> {
@@ -294,63 +332,34 @@ export async function enrichHashesForRenames(
 
 	await Promise.all(
 		candidates.map(async (entry) => {
-			try {
-				const stat = await localFs.stat(entry.path);
-				if (stat && !stat.isDirectory && stat.hash) {
-					entry.local = { ...entry.local!, hash: stat.hash };
-				}
-			} catch {
-				// Skip — rename optimizer falls back to push+delete
-			}
+			const observation = observePath("local", entry.path, await localFs.stat(entry.path));
+			replaceObservation(observations, observation);
+			const statEntity = exactEntity(observation);
+			entry.local = statEntity
+				? { ...entry.local!, hash: statEntity.hash }
+				: undefined;
 		})
-	);
-}
-
-/**
- * Confirm warm-mode local deletions against the authoritative filesystem.
- * A baseline path absent from localFs.list() (the in-memory vault index) but
- * present on disk was simply not indexed — it was NOT deleted. Re-stat each such
- * candidate; if it exists, set entry.local so an incomplete listing cannot drive
- * an erroneous delete_remote. (When the remote is also gone, the file is then
- * compared as a genuine remote deletion rather than a no-op cleanup.)
- */
-async function confirmLocalDeletions(
-	entries: MixedEntity[],
-	localFs: IFileSystem,
-): Promise<void> {
-	const candidates = entries.filter((e) => !e.local && e.prevSync);
-	if (candidates.length === 0) return;
-
-	const pool = new AsyncPool(10);
-	await Promise.all(
-		candidates.map((entry) =>
-			pool.run(async () => {
-				try {
-					const stat = await localFs.stat(entry.path);
-					if (stat && !stat.isDirectory) {
-						entry.local = stat;
-					}
-				} catch {
-					// Skip — a genuinely missing file returns null/throws → stays a deletion
-				}
-			})
-		)
 	);
 }
 
 interface RemoteChanges {
 	paths: string[];
 	deletedPaths: ReadonlySet<string>;
-	renamed: RenamePair[];
+	renameEvidence: RenameEvidence[];
 }
 
 async function getRemoteChanges(remoteFs: IFileSystem): Promise<RemoteChanges> {
-	if (!remoteFs.checkpoint) return { paths: [], deletedPaths: new Set(), renamed: [] };
+	if (!remoteFs.checkpoint) return { paths: [], deletedPaths: new Set(), renameEvidence: [] };
 	const result = await remoteFs.checkpoint.getChangedPaths();
-	if (!result) return { paths: [], deletedPaths: new Set(), renamed: [] };
+	if (!result) return { paths: [], deletedPaths: new Set(), renameEvidence: [] };
+	const renameEvidence = collectRemoteRenameEvidence(result.renamed ?? []);
 	return {
-		paths: [...result.modified, ...result.deleted],
+		paths: [
+			...result.modified,
+			...result.deleted,
+			...renameEvidence.flatMap(({ oldPath, newPath }) => [oldPath, newPath]),
+		],
 		deletedPaths: new Set(result.deleted),
-		renamed: result.renamed ?? [],
+		renameEvidence,
 	};
 }

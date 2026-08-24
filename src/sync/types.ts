@@ -32,6 +32,44 @@ export interface MixedEntity {
 	prevSync?: SyncRecord;
 }
 
+export type SyncSide = "local" | "remote";
+
+export type PathObservation =
+	| { kind: "exact"; side: SyncSide; requestedPath: string; entity: FileEntity }
+	| { kind: "alias"; side: SyncSide; requestedPath: string; resolvedPath: string; entity: FileEntity }
+	| {
+		kind: "present_unresolved";
+		side: SyncSide;
+		requestedPath: string;
+		returnedPath: string;
+		entity: FileEntity;
+		source: "list" | "stat";
+	}
+	| { kind: "absent"; side: SyncSide; requestedPath: string; authority: "stat" | "checkpoint_deleted" }
+	| { kind: "unknown"; side: SyncSide; requestedPath: string; reason: "not_observed" | "outside_tracked_root" };
+
+export interface EntityOccurrence {
+	side: SyncSide;
+	phase: "baseline" | "current";
+	path: string;
+	identityKey?: string;
+}
+
+export interface RenameEvidence {
+	kind: "rename";
+	side: SyncSide;
+	oldPath: string;
+	newPath: string;
+	isFolder: boolean;
+	authority: "reported";
+	identityKey?: string;
+}
+
+export type IdentityEvidence =
+	| RenameEvidence
+	| { kind: "alias"; side: SyncSide; requestedPath: string; resolvedPath: string }
+	| { kind: "stable_identity"; side: "remote"; identityKey: string; occurrences: EntityOccurrence[] };
+
 /** User-facing strategy for resolving conflicts */
 export type ConflictStrategy = "auto_merge" | "duplicate";
 

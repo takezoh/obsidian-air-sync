@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { refinePlan } from "./rename-optimizer";
-import type { SyncAction, SyncRecord, SyncPlan } from "./types";
-import type { FileEntity } from "../fs/types";
+import type { IdentityEvidence, SyncAction, SyncRecord, SyncPlan } from "./types";
+import type { FileEntity, RenamePair } from "../fs/types";
 
 function entity(path: string, hash: string): FileEntity {
 	return { path, isDirectory: false, size: 100, mtime: 1000, hash };
@@ -23,13 +23,49 @@ function plan(actions: SyncAction[]): SyncPlan {
 	return { actions };
 }
 
+function refine(
+	input: SyncPlan,
+	localFiles: ReadonlyMap<string, string>,
+	localFolders: ReadonlyMap<string, string>,
+	remote: RenamePair[],
+) {
+	const identityEvidence: IdentityEvidence[] = [
+		...[...localFiles].map(([newPath, oldPath]) => ({
+			kind: "rename" as const, side: "local" as const, oldPath, newPath,
+			isFolder: false, authority: "reported" as const,
+		})),
+		...[...localFolders].map(([newPath, oldPath]) => ({
+			kind: "rename" as const, side: "local" as const, oldPath, newPath,
+			isFolder: true, authority: "reported" as const,
+		})),
+		...remote.map(({ oldPath, newPath, isFolder }) => ({
+			kind: "rename" as const, side: "remote" as const, oldPath, newPath,
+			isFolder: isFolder === true, authority: "reported" as const,
+		})),
+	];
+	return refinePlan(input, identityEvidence);
+}
+
 describe("refinePlan", () => {
+	it("preserves the exact identity-evidence collection beside the refined plan", () => {
+		const p = plan([{ path: "a.md", action: "push", local: entity("a.md", "h1") }]);
+		const identityEvidence: IdentityEvidence[] = [{
+			kind: "rename", side: "local", oldPath: "old.md", newPath: "new.md",
+			isFolder: false, authority: "reported",
+		}];
+
+		const result = refinePlan(p, identityEvidence);
+
+		expect(result.identityEvidence).toBe(identityEvidence);
+	});
+
 	it("returns plan unchanged when no rename pairs exist", () => {
 		const p = plan([
 			{ path: "a.md", action: "push", local: entity("a.md", "h1") },
 		]);
-		const result = refinePlan(p, new Map(), new Map(), []);
-		expect(result).toBe(p);
+		const result = refine(p, new Map(), new Map(), []);
+		expect(result.actions).toBe(p.actions);
+		expect(result.identityEvidence).toEqual([]);
 	});
 
 	it("optimizes local file rename into rename_remote", () => {
@@ -43,7 +79,7 @@ describe("refinePlan", () => {
 			{ path: "new.md", action: "push", local: entity("new.md", "h1") },
 		]);
 		const renamePairs = new Map([["new.md", "old.md"]]);
-		const result = refinePlan(p, renamePairs, new Map(), []);
+		const result = refine(p, renamePairs, new Map(), []);
 
 		expect(result.actions).toHaveLength(1);
 		expect(result.actions[0]).toMatchObject({
@@ -63,7 +99,7 @@ describe("refinePlan", () => {
 			{ path: "new.md", action: "pull", remote: entity("new.md", "h1") },
 		]);
 		const remotePairs = [{ oldPath: "old.md", newPath: "new.md" }];
-		const result = refinePlan(p, new Map(), new Map(), remotePairs);
+		const result = refine(p, new Map(), new Map(), remotePairs);
 
 		expect(result.actions).toHaveLength(1);
 		expect(result.actions[0]).toMatchObject({
@@ -101,7 +137,7 @@ describe("refinePlan", () => {
 		const remotePairs = [
 			{ oldPath: "remote-old.md", newPath: "remote-new.md" },
 		];
-		const result = refinePlan(p, localPairs, new Map(), remotePairs);
+		const result = refine(p, localPairs, new Map(), remotePairs);
 
 		expect(result.actions).toHaveLength(2);
 		const types = result.actions.map((a) => a.action).sort();
@@ -140,7 +176,7 @@ describe("refinePlan", () => {
 		]);
 		const localPairs = new Map([["x-new.md", "x-old.md"]]);
 		const remotePairs = [{ oldPath: "y-old.md", newPath: "y-new.md" }];
-		const result = refinePlan(p, localPairs, new Map(), remotePairs);
+		const result = refine(p, localPairs, new Map(), remotePairs);
 
 		expect(result.actions).toHaveLength(3);
 		expect(result.actions.map((a) => a.action).sort()).toEqual([
@@ -176,7 +212,7 @@ describe("refinePlan", () => {
 			["B/f1.md", "A/f1.md"],
 			["other-new.md", "other-old.md"],
 		]);
-		const result = refinePlan(p, filePairs, folderPairs, []);
+		const result = refine(p, filePairs, folderPairs, []);
 
 		expect(result.actions).toHaveLength(2);
 		const types = result.actions.map((a) => a.action).sort();
@@ -202,7 +238,7 @@ describe("refinePlan", () => {
 			{ path: "new.md", action: "push", local: entity("new.md", "h1") },
 		]);
 		const localPairs = new Map([["new.md", "old.md"]]);
-		const result = refinePlan(p, localPairs, new Map(), []);
+		const result = refine(p, localPairs, new Map(), []);
 
 		expect(result).not.toBe(p);
 		// refinePlan is a pure stage — the input plan must not be mutated.
@@ -233,7 +269,7 @@ describe("refinePlan", () => {
 			{ path: "img.png", action: "pull", remote: entity("img.png", "h5") },
 		]);
 		const remotePairs = [{ oldPath: "A", newPath: "B", isFolder: true }];
-		const result = refinePlan(p, new Map(), new Map(), remotePairs);
+		const result = refine(p, new Map(), new Map(), remotePairs);
 
 		const groupA = result.actions.filter((a) =>
 			["push", "pull", "match", "cleanup"].includes(a.action),
@@ -274,7 +310,7 @@ describe("refinePlan", () => {
 			},
 		]);
 		const remotePairs = [{ oldPath: "A", newPath: "B", isFolder: true }];
-		const result = refinePlan(p, new Map(), new Map(), remotePairs);
+		const result = refine(p, new Map(), new Map(), remotePairs);
 
 		expect(result.actions).toHaveLength(1);
 		expect(result.actions[0]).toMatchObject({
