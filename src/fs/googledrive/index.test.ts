@@ -151,6 +151,8 @@ describe("GoogleDriveFs.write remoteChecksum", () => {
 		const content = new TextEncoder().encode("hello").buffer.slice(0);
 		const result = await fs.write("test.md", content, Date.now());
 
+		expect(result.pathAuthority).toBe("requested_echo");
+		expect(result.identityKey).toBe("file1");
 		expect(result.remoteChecksum).toEqual({ algo: "md5", value: "abc123hash" });
 		expect(result.backendMeta?.googleDriveId).toBe("file1");
 
@@ -186,6 +188,31 @@ describe("GoogleDriveFs.write remoteChecksum", () => {
 		expect(result.backendMeta?.googleDriveId).toBe("doc1");
 
 		mockRequestUrl.mockRestore();
+	});
+});
+
+describe("GoogleDriveFs mutation provenance", () => {
+	it("returns the native folder identity without claiming requested casing was resolved", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const mockClient = {
+			findChildByName: vi.fn().mockResolvedValue(null),
+			createFolder: vi.fn().mockResolvedValue({
+				id: "folder1",
+				name: "Docs",
+				mimeType: "application/vnd.google-apps.folder",
+				parents: ["root"],
+			}),
+		} as never;
+		const fs = new GoogleDriveFs(mockClient, "root");
+		(fs as unknown as GoogleDriveFsInternal).initialized = true;
+
+		const entity = await fs.mkdir("Docs");
+
+		expect(entity).toMatchObject({
+			path: "Docs",
+			pathAuthority: "requested_echo",
+			identityKey: "folder1",
+		});
 	});
 });
 
@@ -699,6 +726,7 @@ describe("GoogleDriveFs cache persistence", () => {
 
 		expect(files2).toHaveLength(2);
 		expect(files2.map((f) => f.path).sort()).toEqual(["docs", "docs/note.md"]);
+		expect(files2.every((file) => file.pathAuthority === "actual_resolved")).toBe(true);
 		// listAllFiles should NOT have been called (loaded from cache)
 		expect(listAllFilesSpy).not.toHaveBeenCalled();
 		// The #3 cursor is the single source of truth — never clobbered by #2.

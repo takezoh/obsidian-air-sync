@@ -165,5 +165,5 @@ function makeFakeGoogleDriveClient(): GoogleDriveClient {
 runIFileSystemContract(
 	"GoogleDriveFs",
 	() => new GoogleDriveFs(makeFakeGoogleDriveClient(), "root"),
-	{ computesHashOnStat: false },
+	{ computesHashOnStat: false, stableIdentity: true },
 );

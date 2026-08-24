@@ -2,18 +2,20 @@
 
 ## Pipeline overview
 
-Each sync cycle runs a 4-phase pipeline:
+Each sync cycle runs a fail-closed planning and execution pipeline:
 
-1. **Collect** -- `collectChanges()` gathers `MixedEntity[]` using the appropriate temperature mode
-2. **Decide** -- `planSync()` maps each `MixedEntity` to a `SyncAction`
-3. **Execute** -- `executePlan()` runs I/O in lane/tier phases (transfers → conflicts → structural; see [Execution phases](#execution-phases-lanetier-scheduling))
-4. **Commit** -- `commitAction()` persists each successful action's `SyncRecord` to IndexedDB
+1. **Collect evidence** -- `collectChanges()` returns exact `entries`, path `observations`, and normative `identityEvidence`
+2. **Project scope** -- `projectScope()` classifies every evidence endpoint before entry filtering
+3. **Decide** -- `planSync()` maps exact in-scope entries to actions
+4. **Refine** -- `refinePlan()` derives native rename actions without replacing the normative evidence
+5. **Admit** -- `admitDestructivePlan()` removes every action in an unsafe evidence-connected component
+6. **Execute/commit** -- `executePlan()` receives admitted actions only; successful actions commit per-path state, then `finalizeSyncCycle()` advances the checkpoint and retires debt only at a safe cycle boundary
 
-The orchestrator (`SyncOrchestrator.executeSyncOnce()`) drives this pipeline, applying scope filtering and mobile size limits between Collect and Decide.
+The orchestrator (`SyncOrchestrator.executeSyncOnce()`) drives the I/O boundaries. Scope projection, planning, and admission are composed by `prepareSyncCyclePlan()` without filesystem or state writes.
 
 **Scope filter (`SyncOrchestrator.isExcluded()`)** — a path is synced only if it passes **both** gates:
 
-1. **Dot-path scope** (`isDotPathOutOfScope`): a dot-prefixed/hidden path (`.airsync`, `.obsidian`, `.git`, …) is in scope only when it sits under a configured `syncDotPaths` root — `settings.syncDotPaths` augmented with the vault's config directory when `enableConfigSync` is on (`getEffectiveSyncDotPaths`, `config-sync.ts`). Normal paths always pass. This is applied symmetrically to local and remote entries, so an out-of-scope hidden path on the remote (e.g. another device's `.airsync/logs/`) is never pulled, and never produces a `delete_remote` (the gate runs before `planSync`).
+1. **Dot-path scope** (`isDotPathOutOfScope`): a dot-prefixed/hidden path (`.airsync`, `.obsidian`, `.git`, …) is in scope only when it sits under a configured `syncDotPaths` root — `settings.syncDotPaths` augmented with the vault's config directory when `enableConfigSync` is on (`getEffectiveSyncDotPaths`, `config-sync.ts`). Normal paths always pass. This is applied symmetrically to local and remote evidence. Both rename endpoints are classified before exact entries are filtered, so filtering cannot erase a constraint and leave its destructive half executable.
 2. **Ignore patterns** (`isIgnored`): gitignore-style `ignorePatterns` — likewise augmented with a built-in pattern set (`getEffectiveIgnorePatterns`) prepended when `enableConfigSync` is on while excluding device-specific workspace state. The `syncConfigJsonFiles`, `syncConfigPlugins`, `syncConfigSnippets`, `syncConfigThemes`, and `syncConfigIcons` settings independently add root `*.json`, `plugins/`, `snippets/`, `themes/`, and `icons/`. `community-plugins.json` is classified with `plugins/`, not with generic root JSON, because it is the active community plugin list; it therefore follows `syncConfigPlugins` even when `syncConfigJsonFiles` differs. Root JSON and plugins stay on by default solely for backward compatibility with the pre-toggle Config Sync behavior; all newly introduced subtree scopes default to off and require explicit opt-in. These settings are part of the scope fingerprint, so changing one forces a single cold reconcile and surfaces remote-only files that predate the delta cursor.
 
 `isExcluded()` also reserves two paths unconditionally, ahead of both gates, so neither `syncDotPaths` nor `ignorePatterns` can ever pull them back into scope:
@@ -26,15 +28,17 @@ The same `isExcluded()` gates the vault-event dirty tracking (scheduler), so pus
 
 ## Crash recovery
 
-The remote delta cursor (Google Drive's `changesStartPageToken`) is the engine's "synced up to here" checkpoint. It lives in the backend's IndexedDB store (`META_STORE`), **co-located with the file-map cache and committed in the same transaction** (see [ADR 0001](adr/0001-metadata-cache-is-subordinate-to-commit-last.md)). The orchestrator calls `provider.commitCheckpoint(fs)` **only after a fully-successful cycle** (`result.failed.length === 0`); a partial or interrupted cycle never calls it, so the cursor and cache both stay at the prior committed value.
+The remote delta cursor is the engine's "synced up to here" checkpoint. It lives in the backend's IndexedDB store (`META_STORE`), **co-located with the file-map cache and committed in the same transaction** (see [ADR 0001](adr/0001-metadata-cache-is-subordinate-to-commit-last.md)). `finalizeSyncCycle()` calls `remoteFs.checkpoint.commitCheckpoint()` only when there is no failed/deferred work and no unresolved remote rename evidence. A partial or interrupted cycle leaves cursor and cache at the prior committed value.
 
-At the start of each cycle the orchestrator asks `remoteFs.hasCheckpoint()` (async — it reads the store). When it is false — first sync, an interrupted/partial sync that never committed a checkpoint, or after a manual rescan — `executeSyncOnce` passes `forceFullScan: true` to `collectChanges`, forcing a **cold** reconcile (full remote `list()` × baselines). Cold is the only mode that rediscovers remote files an interrupted sync pulled-but-never-baselined or never reached: the delta-based hot/warm path is blind to them because the cursor has already moved past them (or they predate any cursor, as in an interrupted first sync). When a checkpoint *is* committed, the next sync replays the delta from it, re-detecting any un-synced change.
+At the start of each cycle the orchestrator asks `remoteFs.checkpoint.hasCheckpoint()` (async — it reads the store). `false` means first sync, cleared state, or manual rescan and forces COLD. COLD is also forced after a same-session failed/deferred cycle (`recoverViaColdScan`), after a scope-fingerprint change, and while local rename debt exists. A non-clean cycle after an established checkpoint does **not** erase that checkpoint: same-session recovery ignores the advanced live cursor and lists both sides, while a restart rebuilds the FS from the older committed cursor and replays the delta. This distinction is the two-path recovery contract in ADR 0001.
 
 A **same-session failure** also forces at least one subsequent cold cycle. This is load-bearing (ADR 0001 convergence path 2) — `result.failed` does not capture the full recovery gap (folder-rename descendants, remote-only orphans, detect-vs-execute races), so only a full cold scan re-derives it. After that cold recovery has been paid, the orchestrator may temporarily block only the same repeated **local-origin** poison action (`push`, `delete_remote`, `rename_remote`) whose error classification is `permanent` and carries a stable `permanentCode`. The key is `(backendType, action, path, "permanent", permanentCode)`, the same action signature must fail in two consecutive cycles, and the block lasts 5 minutes or until the action/content changes, succeeds, or fails with a non-eligible classification. The two-cycle threshold means the first failure still buys one mandatory cold recovery pass; the 5 minute TTL is a short mobile-friendly cooldown that prevents repeated poison I/O without persisting across plugin reloads. Blocked actions are reported as `result.blocked` and surface as `partial_error`; they are not treated as "Everything up to date".
 
+A **deferred identity component** is different from a failed action: it never reaches the executor. The cycle ends `partial_error`, reports a deferred count, withholds the checkpoint/scope fingerprint, and marks the next normal trigger for COLD without setting `syncPending` (no tight loop). A local reported rename is first stored as namespace-scoped `RenameDebt`; a remote edge is captured immediately when `getChangedPaths()` yields it, before later `stat`/hash/planning work can throw. Local debt survives restart directly; remote evidence survives restart because its delta checkpoint remains uncommitted. See [ADR 0008](adr/0008-logical-identity-admission-fails-closed.md).
+
 Remote-origin or ambiguous actions (`pull`, `delete_local`, `rename_local`, `conflict`) are never blocked, because advancing past them could hide remote changes. Transient and rate-limit failures are also never blocked; after the connection or provider recovers, the next sync must execute I/O again. Re-seeding failed paths for a "hot" recovery, skipping the first cold scan for "small" failure sets, or advancing the cursor while blindly ignoring remote-origin failures are **ADR 0001 prohibited patterns** (they re-open silent in-session data loss). The cost is **bounded and intentionally retained**: per-action `withIoRetry` keeps most transient/429 failures from ever reaching `result.failed`, and repeated cold scans are avoided only after the recovery debt has been paid and the remaining failure is a permanent local-origin poison action.
 
-The **Rescan vault** action (settings → Advanced) discards the committed checkpoint via the live FS (`remoteFs.resetCheckpoint()` — clears the cursor and cache) and triggers a sync, forcing one cold reconcile against the remote — a manual recovery for a vault that looks stuck or incomplete. It diffs against baselines (it does not re-download) and keeps sync history.
+The **Rescan vault** action (settings → Advanced) discards the committed checkpoint via the live FS (`remoteFs.checkpoint.resetCheckpoint()` — clears the cursor and cache) and triggers a sync, forcing one cold reconcile against the remote — a manual recovery for a vault that looks stuck or incomplete. It diffs against baselines (it does not re-download) and keeps sync history.
 
 A backend may keep a **non-authoritative cache** (the Google Drive `path↔id` map in IndexedDB) to avoid a network re-list. That cache is a performance optimization, not a third source of truth. Its only invariant — **never committed ahead of (nor behind) the committed cursor** — is now structural: the cursor lives *in* the cache's store and commits in the same transaction, so they cannot diverge (a failed flush lands neither and propagates, holding the cycle back). Before "optimizing" any of this, read [ADR 0001](adr/0001-metadata-cache-is-subordinate-to-commit-last.md): the recurring bugs here all came from treating the cache as authoritative.
 
@@ -59,13 +63,13 @@ Selected when the hot condition fails (tracker uninitialized, or initialized but
 - Calls `localFs.list()` for a full local listing
 - Calls `getChangedPaths()` for the remote delta
 - Compares the full local listing against all stored `SyncRecord`s to find local changes and deletions
-- Confirms every would-be local deletion against the authoritative filesystem (`confirmLocalDeletions`) so an under-reporting `list()` cannot delete an on-disk file — see [Deletion safety](#deletion-safety)
-- Unions both endpoints (newPath and oldPath) of every local rename pair from `getRenamePairs()` into the changed set, so warm mode produces the delete_remote+push actions the rename optimizer consumes
+- Confirms every baseline absence against the authoritative filesystem (`confirmBaselineAbsences`) so an under-reporting list cannot authorize deletion on either side — see [Deletion safety](#deletion-safety)
+- Adds both endpoints of every local reported rename from the cycle snapshot to the observations/change surface; the normative record is then `ChangeSet.identityEvidence`
 - Calls `remoteFs.stat()` only for paths identified as changed
 
 ### Cold -- O(n)
 
-Selected when `stateStore.getAll()` returns an empty array (first sync or after state clear), or forced via `forceFullScan` during [crash recovery](#crash-recovery) (no committed remote checkpoint).
+Selected when `stateStore.getAll()` returns an empty array (first sync or after state clear), or forced via `forceFullScan` for a missing checkpoint, same-session recovery, scope change, or persisted local rename debt.
 
 - Calls both `localFs.list()` and `remoteFs.list()`
 - Full outer join on path to build `MixedEntity[]` for every file on either side
@@ -85,21 +89,21 @@ After any temperature mode collects entries, `collectChanges()` runs `enrichHash
 
 Uses `AsyncPool(10)` for parallel local reads. Per-file errors are caught and skipped (file stays unenriched → treated as conflict, safe side).
 
-After initial-match enrichment, `enrichHashesForRenames()` runs for entries that are rename destinations (from `localTracker.getRenamePairs()`). In warm/cold mode, `list()` returns `hash: ""`, but the rename optimizer needs SHA-256 to verify content equivalence. This step calls `stat()` on rename destination entries to compute their hash. Only the `hash` field is updated; `mtime` and `size` from `list()` are preserved.
+After initial-match enrichment, `enrichHashesForRenames()` runs for destinations in the optimizer view derived from `ChangeSet.identityEvidence`. In warm/cold mode, `list()` returns `hash: ""`, but local-origin rename validation needs SHA-256 content equivalence. This step calls `stat()` on exact local destination entries. Only the `hash` field is updated; `mtime` and `size` from `list()` are preserved.
 
-`collectChanges()` runs three post-collection steps in order: `enrichHashesForInitialMatch` (all modes, `AsyncPool(10)`), `enrichHashesForRenames` (all modes, unthrottled `Promise.all`), and — warm mode only — `confirmLocalDeletions` (`AsyncPool(10)`; see [Deletion safety](#deletion-safety)).
+Before hash enrichment, `collectChanges()` creates observations for every rename endpoint, confirms unknown endpoints, confirms the opposite side of carried debt/evidence, and in WARM/COLD confirms every baseline absence. A thrown `stat()` aborts the attempt; it is never converted to absence. Hash enrichment then touches exact entries only, and `completeIdentityEvidence()` adds same-root stable-ID occurrences.
 
 ## Change detection
 
 ### Local changes
 
-`LocalChangeTracker` (`local-tracker.ts`) tracks dirty paths in memory via a `Set<string>`. Vault events (`create`, `modify`, `delete`) call `markDirty(path)`. The `rename` event calls `markRenamed(newPath, oldPath)`, which records the pair in a `renamePairs` map (used by the rename optimizer) and marks both paths dirty. Rename chains are collapsed (A→B→C becomes A→C). Each sync cycle captures a `snapshot()` of the tracker at the start (a frozen copy of `dirtyPaths` / `renamePairs` / `folderRenamePairs` / `initialized`) and acknowledges exactly that snapshot at the end: `acknowledge(snapshot)` deletes the snapshot's paths from the dirty set and clears each captured rename / folder-rename pair only when the live entry still matches the snapshot's value (so a mid-cycle rename reusing a key survives), then sets `initialized = true`. Acknowledging the start-of-cycle snapshot rather than the live set keeps a `markDirty` arriving mid-cycle for the next cycle instead of sweeping it (see [Acknowledge pattern](error-handling.md#acknowledge-pattern)).
+`LocalChangeTracker` (`local-tracker.ts`) tracks dirty paths in memory via a `Set<string>`. Vault events (`create`, `modify`, `delete`) call `markDirty(path)`. The `rename` event calls `markRenamed(newPath, oldPath)`, which records the producer pair and marks both paths dirty. Rename chains are collapsed (A→B→C becomes A→C). At collection, `collectLocalRenameEvidence()` converts the captured pair exactly once into the normative `RenameEvidence`; optimizer views are derived from that evidence rather than maintained as a second source of truth. Each sync cycle captures a `snapshot()` of the tracker at the start (a frozen copy of `dirtyPaths` / `renamePairs` / `folderRenamePairs` / `initialized`) and acknowledges exactly that snapshot at the end: `acknowledge(snapshot)` deletes the snapshot's paths from the dirty set and clears each captured rename / folder-rename pair only when the live entry still matches the snapshot's value (so a mid-cycle rename reusing a key survives), then sets `initialized = true`. Acknowledging the start-of-cycle snapshot rather than the live set keeps a `markDirty` arriving mid-cycle for the next cycle instead of sweeping it (see [Acknowledge pattern](error-handling.md#acknowledge-pattern)).
 
-Folder renames are tracked separately: a `rename` event whose target is a `TFolder` routes to `markFolderRenamed(newPath, oldPath)`, recording the pair in a distinct `folderRenamePairs` map (also chain-collapsing A→B→C to A→C), while files go to `markRenamed`. Unlike `markRenamed`, this does not mark any path dirty. The orchestrator reads the cycle snapshot's `folderRenamePairs` and passes it into `refinePlan()` as a separate argument, where `coalesceLocalFolderRenames` consumes it.
+Folder renames are captured separately at the event boundary: a `TFolder` routes to `markFolderRenamed(newPath, oldPath)`, recording a chain-collapsed producer pair while files use `markRenamed`. Unlike file rename capture, this does not mark every descendant dirty. Collection converts both maps into the same normative `RenameEvidence` shape (`isFolder` distinguishes them); `refinePlan(plan, identityEvidence)` receives that single evidence collection and derives its folder optimizer view.
 
 ### Remote changes
 
-`IFileSystem.getChangedPaths()` returns `{ modified, deleted, renamed? }` or `null`. `null` means no incremental data is available — fall back to warm/cold detection. The `renamed` array carries `{ oldPath, newPath, isFolder? }` pairs for native rename optimization. For the Google Drive implementation of this contract (changes.list, the 410 full-scan delta, fullScanWithDelta), see [Incremental sync](google-drive-backend.md#incremental-sync) and [Cache invalidation](google-drive-backend.md#cache-invalidation).
+`IFileSystem.checkpoint.getChangedPaths()` returns `{ modified, deleted, renamed? }` or `null`. `null` means no incremental data is available — fall back to warm/cold detection. The `renamed` array carries `{ oldPath, newPath, isFolder? }` as authoritative reported evidence. The acquisition owner captures that evidence before later detection work, so a retry cannot consume the live cursor and lose the constraint.
 
 ### Comparison functions
 
@@ -141,11 +145,12 @@ For no-baseline rows the localChanged/remoteChanged columns do not apply — `ha
 
 ## Deletion safety
 
-There is no volume-based abort gate. Deletion safety rests on three independent layers:
+There is no volume-based abort gate. Deletion safety rests on four independent layers:
 
 1. **Decision rules** -- an ambiguous case (a file gone on one side while the surviving side changed since baseline) is routed to `conflict` (keep both), never to a deletion; a missing baseline never yields a deletion.
 2. **layoutReady gate** -- sync does not run before the Obsidian vault index is loaded. `SyncScheduler` defers its event wiring, and `runSync()` is gated on `app.workspace.layoutReady`, so a `list()` that under-reports during startup cannot be mistaken for mass local deletions.
-3. **Authoritative absence** -- a would-be local deletion (a baseline path missing from the in-memory `list()`) is re-`stat()`'d against the filesystem before it is acted on. `LocalFs.stat()` falls back to the vault adapter on an index miss. Only warm change detection runs `confirmLocalDeletions()` (hot and cold do not), re-`stat()`-ing each candidate (an entry with a prior baseline but no `local`: `!e.local && e.prevSync`) via `AsyncPool(10)`; a non-directory file found on disk has its `entry.local` restored, moving it out of the deletion branches. Only a genuine absence (gone on disk too, or `stat()` returns null/throws) propagates. Deletions are additionally soft -- to trash on both sides -- so even a correct deletion stays recoverable.
+3. **Authoritative observation** -- listing absence is re-`stat()`'d before it can authorize deletion. `LocalFs.stat()` falls back to the vault adapter on an index miss. `actual_resolved` proves an exact/alias path; `requested_echo` proves presence only; `null` proves absence; a thrown stat aborts the cycle. HOT checkpoint tombstones remain authoritative remote absence (Issue #44).
+4. **Whole-component admission** -- rename, alias, unresolved-presence, and stable-ID edges connect related paths. If the refined plan cannot prove that every known resource survives under the direction-aware scope matrix, `admitDestructivePlan()` removes the entire component before execution. Deletions are additionally soft (trash), but recoverability is not used as authorization.
 
 ## Rename optimization
 
@@ -153,22 +158,43 @@ There is no volume-based abort gate. Deletion safety rests on three independent 
 
 ### Local renames — hash-verified (`optimize-local-renames.ts`)
 
-When `LocalChangeTracker` records a rename pair (from Obsidian's `rename` event), the optimizer matches `delete_remote(oldPath) + push(newPath)` → `rename_remote`. Hash verification is mandatory: `push.local.hash === del.baseline.hash` must hold, confirming content is unchanged. The centralised `isValidLocalRename()` function enforces this rule for both file and folder renames.
+For a local reported rename in `ChangeSet.identityEvidence`, the optimizer matches `delete_remote(oldPath) + push(newPath)` → `rename_remote`. Hash verification is mandatory: `push.local.hash === del.baseline.hash` must hold, confirming content is unchanged. The centralized `isValidLocalRename()` function enforces this rule for both file and folder renames.
 
-- **File renames** (`optimizeLocalFileRenames`): Matches individual rename pairs from `localTracker.getRenamePairs()`.
-- **Folder renames** (`coalesceLocalFolderRenames`): When a folder rename is detected, coalesces all descendant file rename actions into a single `rename_remote` with `isFolder: true`. Only coalesces when ALL descendants pass hash verification. Uncoalesced file renames fall through to individual file rename optimization.
+- **File renames** (`optimizeLocalFileRenames`): Consumes the derived file view of local `RenameEvidence`.
+- **Folder renames** (`coalesceLocalFolderRenames`): Consumes the derived folder view and coalesces all mapped descendant actions into one `rename_remote` with `isFolder: true`. Every descendant must pass hash verification; incomplete mappings are later deferred by admission.
 
 ### Remote renames — trusted (`optimize-remote-renames.ts`)
 
-When `getChangedPaths()` reports a rename pair, the optimizer matches `delete_local(oldPath) + pull(newPath)` → `rename_local`. The rename pair from the backend is authoritative, so no hash verification is needed. Surfacing that pair is the backend's job and is **order-independent** across all backends ([ADR 0006](adr/0006-remote-rename-detection-is-order-independent.md)): id-addressed backends (Google Drive, OneDrive) get it for free, while Dropbox's path-addressed delta (a `deleted(old)`+`add(new)` pair whose ordering Dropbox does not guarantee) reorders upserts-before-deletes so a folder rename never degrades to a file-by-file re-pull.
+When `getChangedPaths()` reports a rename pair, the optimizer attempts `delete_local(oldPath) + pull(newPath)` → `rename_local`. The report is authoritative rename evidence, so this optimization needs no content-hash inference. Surfacing that pair is the backend's job and is order-independent across all backends ([ADR 0006](adr/0006-remote-rename-detection-is-order-independent.md)). Optimization is not the safety boundary: whether the refined result may execute is decided afterward by admission.
 
-- **File renames** (`optimizeRemoteFileRenames`): Matches individual rename pairs from the backend. The match requires the old path to be a pure `delete_local` and the new path a `pull`; if a same-name file was created at the old path in the same sync, that path becomes a `pull`/`conflict` (not `delete_local`), so the rename correctly does NOT coalesce — the move and the new file resolve as two independent transfers (right end state, no move optimization). The local optimizer (`optimize-local-renames.ts`) is symmetric: it needs `delete_remote(old)` + `push(new)`.
+- **File renames** (`optimizeRemoteFileRenames`): Matches individual rename pairs from the backend. The match requires the old path to be a pure `delete_local` and the new path a `pull`. If a new object was created at the old path, native rename does not coalesce; admission permits the source-recreation fallback only when stable-ID evidence proves the moved and recreated objects are distinct and the actions preserve both. The local optimizer (`optimize-local-renames.ts`) is symmetric: it needs `delete_remote(old)` + `push(new)`.
 - **Folder renames** (`coalesceRemoteFolderRenames`): When a folder-level rename pair has `isFolder: true`, coalesce every `delete_local` child under the old prefix into one `rename_local` (`isFolder: true`). Rules: (1) Absorb a descendant whose matching `pull` is missing into the rename — rewrite its baseline to the new path; a genuine remote delete then propagates as `delete_local` next cycle (bias toward safe deletion). (2) Skip the whole folder (reason `destination_occupied`) if any action under the new prefix has a non-null local entity (`a.local != null`), falling back to the per-file actions. Detection is best-effort; a per-action `localFs.rename` failure is caught and recovers next cycle. See `optimize-remote-renames.ts` for rationale. Remaining file-level pairs fall through to individual file rename optimization.
-  - **Optimization opportunity (not implemented):** the `destination_occupied` skip re-downloads *every* child via `delete_local`+`pull`, even children whose own destination `B/x` is free. A finer fallback could expand the folder pair into per-child pairs and route them through `optimizeRemoteFileRenames`, turning each free-destination child into a `rename_local(A/x→B/x)` (no re-download) and leaving only the genuinely-colliding child as `conflict`/`match`. Purely an efficiency win in a rare case — convergence already guarantees correctness — left unimplemented to keep the coalescer all-or-nothing. See [ADR 0006](adr/0006-remote-rename-detection-is-order-independent.md).
+  - **Optimization opportunity (not implemented):** a destination-occupied folder rename may be decomposable into per-child mappings, but only a complete mapping whose postconditions pass admission may execute. Incomplete mappings defer; see [ADR 0006](adr/0006-remote-rename-detection-is-order-independent.md) and [ADR 0008](adr/0008-logical-identity-admission-fails-closed.md).
+
+## Destructive admission
+
+`prepareSyncCyclePlan()` projects scope before filtering, creates/refines the ordinary
+plan, then calls the pure `admitDestructivePlan()`. Admission builds connected
+components from actions plus rename/alias/stable-identity evidence and path
+observations. It admits an exact native rename, a proven direction-specific scope
+transition, or the recognized source-recreation postcondition. Otherwise it defers the
+whole component, including state-only actions; disconnected components remain
+executable in their original order.
+
+Endpoint dispositions are `included`, `policy_out`, `mobile_deferred`, or `unknown`.
+Any unknown/mobile endpoint and any incomplete folder descendant mapping defers. The
+full local/remote direction matrix and rejected identity inferences are recorded in
+[ADR 0008](adr/0008-logical-identity-admission-fails-closed.md).
+
+Before admitted I/O, local reported edges are upserted into the SyncState v6 rename-debt
+store under the active backend/root namespace. `finalizeSyncCycle()` owns the opposite
+boundary: safe checkpoint commit first, then resolved debt deletion and session-evidence
+release. Disconnect/root switch waits on the orchestrator mutex before clearing state,
+so an old-target in-flight cycle cannot recreate debt after teardown.
 
 ### Observability
 
-Each optimization step returns `RenameOptResult` with `applied` (successful renames) and `skipped` (with structured `reason`: `action_type_mismatch`, `hash_mismatch`, `hash_missing`, `no_descendants`, `destination_occupied`). `refinePlan()` logs these via the debug logger.
+Each optimization step returns `RenameOptResult` with `applied` (successful renames) and `skipped` (with structured `reason`: `action_type_mismatch`, `hash_mismatch`, `hash_missing`, `no_descendants`, `destination_occupied`). `refinePlan()` logs these via the debug logger. Admission logs each deferred component's reason, evidence kind/origin, endpoint dispositions, and paths (never content or credentials); status and the coalesced user notification include the deferred count.
 
 ## Execution phases (lane/tier scheduling)
 

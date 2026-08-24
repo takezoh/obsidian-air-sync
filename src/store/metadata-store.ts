@@ -1,4 +1,5 @@
 import { IDBHelper, sanitizeDbName } from "./idb-helper";
+import type { PathAuthority } from "../fs/types";
 
 const FILES_STORE = "files";
 const META_STORE = "meta";
@@ -7,6 +8,7 @@ export interface FileRecord<T> {
 	path: string;
 	file: T;
 	isFolder: boolean;
+	pathAuthority?: PathAuthority;
 }
 
 export interface MetadataStoreConfig {

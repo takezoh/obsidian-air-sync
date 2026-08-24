@@ -133,6 +133,15 @@ export interface IncrementalCheckpoint {
 	} | null>;
 
 	/**
+	 * Return the cache state produced by the most recent `getChangedPaths()` call
+	 * without fetching or applying another delta page. Folder-rename recovery uses
+	 * this to inspect the whole moved subtree while keeping one cursor/evidence
+	 * boundary. Optional for non-caching/test implementations; callers that require
+	 * it must fail closed rather than fall back to `IFileSystem.list()`.
+	 */
+	listCurrentSnapshot?(): Promise<FileEntity[]>;
+
+	/**
 	 * Whether a committed incremental checkpoint (delta cursor) exists. When false,
 	 * the sync engine cannot trust delta-based remote detection — the last sync never
 	 * completed, or was reset — so it forces a full cold reconcile. The cursor is

@@ -1,4 +1,4 @@
-import type { FileEntity } from "../types";
+import type { FileEntity, PathAuthority } from "../types";
 import type { DropboxEntry } from "./types";
 import { dropboxEntryToEntity } from "./types";
 import type { Logger } from "../../logging/logger";
@@ -67,7 +67,7 @@ export class DropboxMetadataCache extends AbstractMetadataCache<DropboxEntry> {
 	}
 
 	toEntity(path: string, entry: DropboxEntry): FileEntity {
-		return dropboxEntryToEntity(path, entry);
+		return { ...dropboxEntryToEntity(path, entry), pathAuthority: this.getPathAuthority(path) };
 	}
 
 	// ── Dropbox-specific path resolution ──
@@ -109,13 +109,13 @@ export class DropboxMetadataCache extends AbstractMetadataCache<DropboxEntry> {
 	 * folder, and its stale id mapping either way, so phantom descendants don't linger
 	 * and the displaced id stops reverse-resolving to this live path.
 	 */
-	setEntry(path: string, entry: DropboxEntry): void {
+	setEntry(path: string, entry: DropboxEntry, pathAuthority: PathAuthority = "requested_echo"): void {
 		const prev = this.getFile(path);
 		if (prev && this.extractId(prev) !== this.extractId(entry)) {
 			if (this.isFolder(path)) this.removeTree(path);
 			else this.removeEntry(path);
 		}
-		this.setFile(path, entry);
+		this.setFile(path, entry, pathAuthority);
 	}
 
 	/**
@@ -131,7 +131,7 @@ export class DropboxMetadataCache extends AbstractMetadataCache<DropboxEntry> {
 			if (entry[".tag"] === "deleted") continue;
 			const path = this.relativize(entry);
 			if (path === null || path === "") continue;
-			this.setEntry(path, entry);
+			this.setEntry(path, entry, "actual_resolved");
 		}
 	}
 }

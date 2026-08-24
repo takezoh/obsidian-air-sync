@@ -132,6 +132,8 @@ describe("dropboxEntryToEntity", () => {
 		const entity = dropboxEntryToEntity("notes/a.md", dbxFile("1", "/root/notes/a.md", { content_hash: "abc", size: 7, server_modified: "2024-02-02T00:00:00Z" }));
 		expect(entity).toMatchObject({
 			path: "notes/a.md",
+			pathAuthority: "requested_echo",
+			identityKey: "id:1",
 			isDirectory: false,
 			size: 7,
 			hash: "",
@@ -143,7 +145,29 @@ describe("dropboxEntryToEntity", () => {
 
 	it("maps a folder to a directory entity with no checksum", () => {
 		const entity = dropboxEntryToEntity("notes", dbxFolder("9", "/root/notes"));
-		expect(entity).toMatchObject({ path: "notes", isDirectory: true, size: 0, mtime: 0, hash: "" });
+		expect(entity).toMatchObject({
+			path: "notes",
+			pathAuthority: "requested_echo",
+			identityKey: "id:9",
+			isDirectory: true,
+			size: 0,
+			mtime: 0,
+			hash: "",
+		});
 		expect(entity.remoteChecksum).toBeUndefined();
+	});
+
+	it("keeps identity absent when Dropbox omits the stable id", () => {
+		const file = dropboxEntryToEntity(
+			"notes/a.md",
+			{ ...dbxFile("1", "/root/notes/a.md"), id: undefined },
+		);
+		const folder = dropboxEntryToEntity(
+			"notes",
+			{ ...dbxFolder("9", "/root/notes"), id: undefined },
+		);
+
+		expect(file.identityKey).toBeUndefined();
+		expect(folder.identityKey).toBeUndefined();
 	});
 });

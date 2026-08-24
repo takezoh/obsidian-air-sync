@@ -17,7 +17,7 @@ describe("MetadataStore", () => {
 		await store.open();
 
 		const files = [
-			{ path: "notes/a.md", file: { id: "1", name: "a.md", mimeType: "text/plain" }, isFolder: false },
+			{ path: "notes/a.md", file: { id: "1", name: "a.md", mimeType: "text/plain" }, isFolder: false, pathAuthority: "actual_resolved" as const },
 			{ path: "notes", file: { id: "2", name: "notes", mimeType: "application/vnd.google-apps.folder" }, isFolder: true },
 		];
 		const meta = new Map([
@@ -30,6 +30,7 @@ describe("MetadataStore", () => {
 
 		expect(loaded.files).toHaveLength(2);
 		expect(loaded.files.map((f) => f.path).sort()).toEqual(["notes", "notes/a.md"]);
+		expect(loaded.files.find((f) => f.path === "notes/a.md")?.pathAuthority).toBe("actual_resolved");
 		expect(loaded.meta.get("rootFolderId")).toBe("root123");
 		expect(loaded.meta.get("changesStartPageToken")).toBe("token456");
 

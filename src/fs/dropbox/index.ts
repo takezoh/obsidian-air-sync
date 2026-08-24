@@ -1,6 +1,6 @@
 import type { FileEntity } from "../types";
 import type { DropboxEntry } from "./types";
-import { parseDropboxTime } from "./types";
+import { DropboxApiError, parseDropboxTime } from "./types";
 import type { DropboxClient } from "./client";
 import type { MetadataStore } from "../../store/metadata-store";
 import type { Logger } from "../../logging/logger";
@@ -11,6 +11,22 @@ import { sha256 } from "../../utils/hash";
 import { normalizeSyncPath, validateRename } from "../../utils/path";
 import { CachingRemoteFs } from "../caching/remote-fs";
 import type { IncrementalChangesResult } from "../caching/remote-fs";
+
+function isCaseOnlyRename(oldPath: string, newPath: string): boolean {
+	return oldPath !== newPath && oldPath.toLowerCase() === newPath.toLowerCase();
+}
+
+/** Deterministic so a retry can resume a move interrupted after its first leg. */
+function caseRenameTempPath(path: string, identity: string): string {
+	let hash = 0x811c9dc5;
+	for (const char of identity) {
+		hash ^= char.charCodeAt(0);
+		hash = Math.imul(hash, 0x01000193);
+	}
+	const parent = DropboxMetadataCache.parentPath(path);
+	const name = `.airsync-case-rename-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+	return parent ? `${parent}/${name}` : name;
+}
 
 /**
  * IFileSystem implementation backed by Dropbox (App Folder scope).
@@ -127,6 +143,8 @@ export class DropboxFs extends CachingRemoteFs<DropboxEntry> {
 		const hash = await sha256(content);
 		return {
 			path,
+			pathAuthority: "requested_echo",
+			identityKey: entry.id,
 			isDirectory: false,
 			size: content.byteLength,
 			mtime: parseDropboxTime(entry.server_modified ?? entry.client_modified),
@@ -142,7 +160,16 @@ export class DropboxFs extends CachingRemoteFs<DropboxEntry> {
 			await this.ensureInitialized();
 			await this.ensureFolder(path);
 			const entry = this.cache.getFile(path);
-			return { path, isDirectory: true, size: 0, mtime: 0, hash: "", backendMeta: { dropboxId: entry?.id } };
+			return {
+				path,
+				pathAuthority: "requested_echo",
+				identityKey: entry?.id,
+				isDirectory: true,
+				size: 0,
+				mtime: 0,
+				hash: "",
+				backendMeta: { dropboxId: entry?.id },
+			};
 		});
 	}
 
@@ -157,9 +184,18 @@ export class DropboxFs extends CachingRemoteFs<DropboxEntry> {
 				if (!entry) throw new Error(`File not found: ${oldPath}`);
 				if (this.cache.hasFile(newPath)) throw new Error(`Destination already exists: ${newPath}`);
 				await this.ensureFolder(DropboxMetadataCache.parentPath(newPath));
-				return { expectedId: this.cache.idAt(oldPath), wasFolder: this.cache.isFolder(oldPath) };
+				const expectedId = this.cache.idAt(oldPath);
+				return {
+					expectedId,
+					wasFolder: this.cache.isFolder(oldPath),
+					caseOnlyTempPath: expectedId && isCaseOnlyRename(oldPath, newPath)
+						? caseRenameTempPath(oldPath, expectedId)
+						: undefined,
+				};
 			},
-			execute: () => this.client.move(this.addr(oldPath), this.addr(newPath)),
+			execute: (r) => r.caseOnlyTempPath
+				? this.moveCaseOnly(oldPath, newPath, r.caseOnlyTempPath, r.expectedId!)
+				: this.client.move(this.addr(oldPath), this.addr(newPath)),
 			staleGuard: (r) => ({ path: oldPath, expectedId: r.expectedId }),
 			update: (r, result) => {
 				// The shared staleGuard only validates the SOURCE (oldPath still resolves to
@@ -180,9 +216,55 @@ export class DropboxFs extends CachingRemoteFs<DropboxEntry> {
 				// from the known prior type so the cache keeps classifying a moved folder
 				// as a folder (else a later write into it fails with "is a file").
 				this.cache.setEntry(newPath, { ...result, ".tag": r.wasFolder ? "folder" : "file" });
-				if (r.wasFolder) this.cache.rewriteChildPaths(oldPath, newPath);
+				if (r.wasFolder) this.cache.rewriteChildPaths(oldPath, newPath, "requested_echo");
 			},
 		});
+	}
+
+	/**
+	 * Dropbox move_v2 explicitly does not support case-only renames. Use a
+	 * deterministic intermediate path so a retry can resume after a crash between
+	 * the two moves. A foreign occupant at that path fails before touching source.
+	 */
+	private async moveCaseOnly(
+		oldPath: string,
+		newPath: string,
+		tempPath: string,
+		expectedId: string,
+	): Promise<DropboxEntry> {
+		const oldAddress = this.addr(oldPath);
+		const newAddress = this.addr(newPath);
+		const tempAddress = this.addr(tempPath);
+		const existingTemp = await this.getOptionalMetadata(tempAddress);
+		if (existingTemp && existingTemp.id !== expectedId) {
+			throw new Error(`Dropbox case-only rename temporary path is occupied: ${tempPath}`);
+		}
+		if (!existingTemp) {
+			await this.client.move(oldAddress, tempAddress);
+		}
+		try {
+			return await this.client.move(tempAddress, newAddress);
+		} catch (err) {
+			try {
+				await this.client.move(tempAddress, oldAddress);
+			} catch (rollbackErr) {
+				throw new Error(
+					`Dropbox case-only rename failed and rollback failed; retry will resume from ${tempPath}: ` +
+					`${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`,
+					{ cause: err },
+				);
+			}
+			throw err;
+		}
+	}
+
+	private async getOptionalMetadata(path: string): Promise<DropboxEntry | null> {
+		try {
+			return await this.client.getMetadata(path);
+		} catch (err) {
+			if (err instanceof DropboxApiError && err.summary.includes("not_found")) return null;
+			throw err;
+		}
 	}
 
 	/** Ensure a folder exists by path, creating parents as needed (idempotent). */

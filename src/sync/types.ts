@@ -16,6 +16,8 @@ export interface SyncRecord {
 	remoteSize: number;
 	/** Remote-provided content checksum at last successful sync (for change detection) */
 	remoteChecksum?: RemoteChecksum;
+	/** Opaque remote identity observed at last sync; comparable only within one configured remote root */
+	remoteIdentityKey?: string;
 	/** Backend-specific metadata snapshot the sync engine does not interpret (e.g. Google Drive/pCloud file ID) */
 	backendMeta?: Record<string, unknown>;
 	/** Timestamp when this sync completed (Unix epoch ms) */
@@ -29,6 +31,50 @@ export interface MixedEntity {
 	remote?: FileEntity;
 	prevSync?: SyncRecord;
 }
+
+export type SyncSide = "local" | "remote";
+
+export type ScopeDisposition = "included" | "policy_out" | "mobile_deferred" | "unknown";
+
+export interface ScopeProjection {
+	byEndpoint: ReadonlyMap<string, ScopeDisposition>;
+}
+
+export type PathObservation =
+	| { kind: "exact"; side: SyncSide; requestedPath: string; entity: FileEntity }
+	| { kind: "alias"; side: SyncSide; requestedPath: string; resolvedPath: string; entity: FileEntity }
+	| {
+		kind: "present_unresolved";
+		side: SyncSide;
+		requestedPath: string;
+		returnedPath: string;
+		entity: FileEntity;
+		source: "list" | "stat";
+	}
+	| { kind: "absent"; side: SyncSide; requestedPath: string; authority: "stat" | "checkpoint_deleted" }
+	| { kind: "unknown"; side: SyncSide; requestedPath: string; reason: "not_observed" | "outside_tracked_root" };
+
+export interface EntityOccurrence {
+	side: SyncSide;
+	phase: "baseline" | "current";
+	path: string;
+	identityKey?: string;
+}
+
+export interface RenameEvidence {
+	kind: "rename";
+	side: SyncSide;
+	oldPath: string;
+	newPath: string;
+	isFolder: boolean;
+	authority: "reported";
+	identityKey?: string;
+}
+
+export type IdentityEvidence =
+	| RenameEvidence
+	| { kind: "alias"; side: SyncSide; requestedPath: string; resolvedPath: string }
+	| { kind: "stable_identity"; side: "remote"; identityKey: string; occurrences: EntityOccurrence[] };
 
 /** User-facing strategy for resolving conflicts */
 export type ConflictStrategy = "auto_merge" | "duplicate";

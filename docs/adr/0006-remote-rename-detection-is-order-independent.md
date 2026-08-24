@@ -2,7 +2,7 @@
 
 **Status:** Accepted · 2026-06-14
 **Context area:** `fs/` backends — incremental sync / delta application (`fs/dropbox/incremental-sync.ts`, `fs/caching/id-delta.ts`)
-**Related:** [ADR 0001](0001-metadata-cache-is-subordinate-to-commit-last.md) (convergence — a missed rename is an efficiency bug, not a correctness one), [ADR 0002](0002-backends-verified-by-shared-behaviour-contracts.md) (the shared crash-safety contract this extends), [ADR 0003](0003-opt-in-e2e-validates-fakes-against-real-backends.md) (the opt-in e2e that backstops the delta SHAPE against live Dropbox), [dropbox-backend.md](../dropbox-backend.md)
+**Related:** [ADR 0001](0001-metadata-cache-is-subordinate-to-commit-last.md) (commit-last recovery), [ADR 0002](0002-backends-verified-by-shared-behaviour-contracts.md) (the shared crash-safety contract this extends), [ADR 0003](0003-opt-in-e2e-validates-fakes-against-real-backends.md) (the opt-in e2e that backstops the delta SHAPE against live Dropbox), [ADR 0008](0008-logical-identity-admission-fails-closed.md) (ambiguous rename fallback is not automatically safe), [dropbox-backend.md](../dropbox-backend.md)
 
 ## Context
 
@@ -72,10 +72,14 @@ Concretely, `applyDropboxDelta` (`fs/dropbox/incremental-sync.ts`):
    eviction and add them to the changed set, so they surface as deletions instead of
    orphaning locally until the next full scan.
 
-Bounding (from ADR 0001): a *missed* rename is never data loss — it degrades to delete+add,
-which still converges (the file is re-downloaded). So this is an **efficiency/quality**
-fix, not a correctness patch; the guard above exists to avoid *introducing* a correctness
-bug while making the common case efficient.
+Bounding: order-independent delta coalescing is still an efficiency/quality property at
+this backend layer, but a *missed or ambiguous* rename is **not by itself proof** that an
+independent delete+add fallback is safe. ADR 0008 requires the sync engine to preserve any
+rename/alias/stable-identity evidence it has and fail closed before execution when the
+fallback cannot prove resource survival. If a backend/cache defect omits the identity edge
+entirely, admission cannot invent it from spelling; that separate causality defect is
+tracked by Issue #46. The guards above remain necessary both for faithful evidence and to
+avoid introducing cache-level data loss.
 
 ## Consequences
 
@@ -111,7 +115,7 @@ unless noted):
 | Delete-then-recreate a **file** at the same path, **different id** | Not a rename: new file kept, `deleted(old)` guarded out, surfaced as a content change (`modified`). |
 | Delete-then-recreate a **folder** at the same path, **different id** | New folder kept; the old folder's children surface as deletions (evicted-subtree recording). |
 | Folder **moved onto a path freed by a deleted folder** (`X` deleted, `A`→`X`) | One `rename_local(A→X)`; the displaced old `X/*` children surface as deletions. |
-| **Rename `A`→`B` *and* a new file created at `A`** in the same sync | Delta level: the cache detects `A`→`B` by id and the new `A` (different id) survives — `deleted(A)` is guarded out. Plan level: it does **not** coalesce into a rename. `A` is now `modified` (replaced), not `deleted`, so the rename optimizer's `delete_*`+`pull`/`push` pattern does not match; it resolves as two independent transfers (`pull(B)`+`pull(A)`, or `push`+`push` for a local rename). Correct end state (`B` = old content, `A` = new file), just without the move optimization. The folder variant (rename folder `A`→`B`, new file at `A`) still coalesces the folder move and pulls the new `A` separately; because `A` is locally a directory until the rename runs, the file lands at `A` over one or two cycles. |
+| **Rename `A`→`B` *and* a new file created at `A`** in the same sync | Delta level: the cache detects `A`→`B` by id and the new `A` (different id) survives — `deleted(A)` is guarded out. Plan level: ADR 0008 admits only a postcondition that preserves both identities; an unrecognized fallback defers the whole connected component instead of assuming two independent transfers are safe. |
 | Entry **moved outside the vault root** (`relativize` → null) | Old path + descendants surfaced as deletions; the out-of-root destination is not tracked. |
 | Move **onto the reserved metadata path or the root itself** | Destination ignored (never cached); the old location is surfaced as gone. |
 | `file`/`folder` entry with **no `id`** | Handled — the stale-tombstone guard keys on path, not id. |
@@ -129,14 +133,11 @@ and **not** recreated (a live child cannot exist under a deleted parent).
 When a remote **folder rename's destination is already occupied locally**
 (`coalesceRemoteFolderRenames`, reason `destination_occupied`), the whole-folder
 `localFs.rename(A→B)` would collide, so the optimizer skips coalescing entirely and the
-children fall back to per-file `delete_local`+`pull` — i.e. **every child is re-downloaded**,
-even those whose own destination `B/x` is free. A finer fallback is possible: expand the
-folder pair into per-child pairs and route them through `optimizeRemoteFileRenames`, so each
-child whose destination is free becomes a `rename_local(A/x→B/x)` (no re-download) and only
-the genuinely-colliding child stays a `conflict`/`match` (its behaviour is unchanged from
-today, so no new dangling-delete risk). This is purely an efficiency win in a rare case —
-convergence already guarantees correctness — and is deliberately left unimplemented to keep
-the coalescer all-or-nothing.
+optimizer cannot prove one whole-folder rename. A finer fallback may be possible: expand the
+folder pair into complete per-child mappings and route them through file-rename optimization.
+That is safe only if ADR 0008 admission can prove the full occurrence mapping and every
+postcondition; incomplete mappings now defer the connected component. Executor ordering or a
+later convergence pass is not a substitute for that proof, so this remains unimplemented.
 
 **Pinned by tests** (keep green; extend, don't weaken):
 - `fs/dropbox/incremental-sync.test.ts` — DELETE-FIRST file & folder rename, child-before-parent
@@ -147,4 +148,6 @@ the coalescer all-or-nothing.
   renamed pair" cases, run against the real Dropbox/Google Drive/OneDrive FS.
 - `sync/convergence.test.ts` — remote folder/file rename collapses to one `rename_local` and
   reaches a fixed point on re-sync.
+- `sync/plan-admission.test.ts` and `sync/orchestrator.test.ts` — an ambiguous or incomplete
+  rename component is deferred before I/O and cannot advance the checkpoint (ADR 0008).
 - `e2e/dropbox.e2e.ts` — out-of-band folder rename via `getChangedPaths` against live Dropbox.

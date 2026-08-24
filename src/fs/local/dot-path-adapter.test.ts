@@ -17,7 +17,39 @@ function createAdapter(dotRoots: string[] = [".airsync"]): {
 }
 
 describe("DotPathAdapter", () => {
+	describe("stat", () => {
+		it("marks the requested spelling as an echo because the raw adapter cannot resolve casing", async () => {
+			const { vault, adapter } = createAdapter();
+			await vault.adapter.writeBinary(".airsync/a.md", new Uint8Array([1]).buffer);
+
+			const entity = await adapter.stat(".airsync/a.md");
+
+			expect(entity).toMatchObject({
+				path: ".airsync/a.md",
+				pathAuthority: "requested_echo",
+			});
+		});
+	});
+
 	describe("listAll", () => {
+		it("marks raw adapter listings as requested echoes", async () => {
+			const { vault, adapter } = createAdapter();
+			const vaultInternal = vault as unknown as { files: Map<string, unknown> };
+			vaultInternal.files.set(".airsync", { type: "folder" });
+			vaultInternal.files.set(".airsync/sub", { type: "folder" });
+			vaultInternal.files.set(".airsync/a.md", {
+				type: "file",
+				content: new ArrayBuffer(1),
+				mtime: 100,
+			});
+
+			const entities: Array<{ pathAuthority?: string }> = [];
+			await adapter.listAll(entities as never);
+
+			expect(entities).not.toHaveLength(0);
+			expect(entities.every((entity) => entity.pathAuthority === "requested_echo")).toBe(true);
+		});
+
 		it("lists files from all dot roots", async () => {
 			const { vault, adapter } = createAdapter([".airsync", ".templates"]);
 			const vaultInternal = vault as unknown as { files: Map<string, unknown> };
@@ -51,6 +83,23 @@ describe("DotPathAdapter", () => {
 	});
 
 	describe("listDir", () => {
+		it("marks direct raw adapter listings as requested echoes", async () => {
+			const { vault, adapter } = createAdapter([".templates"]);
+			const vaultInternal = vault as unknown as { files: Map<string, unknown> };
+			vaultInternal.files.set(".templates", { type: "folder" });
+			vaultInternal.files.set(".templates/sub", { type: "folder" });
+			vaultInternal.files.set(".templates/daily.md", {
+				type: "file",
+				content: new ArrayBuffer(5),
+				mtime: 100,
+			});
+
+			const entities = await adapter.listDir(".templates");
+
+			expect(entities).not.toHaveLength(0);
+			expect(entities.every((entity) => entity.pathAuthority === "requested_echo")).toBe(true);
+		});
+
 		it("lists direct children of a dot path", async () => {
 			const { vault, adapter } = createAdapter([".templates"]);
 			const vaultInternal = vault as unknown as { files: Map<string, unknown> };

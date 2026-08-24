@@ -42,6 +42,7 @@ export function createMockFs(name: string): IFileSystem & {
 					content: new ArrayBuffer(0),
 					entity: {
 						path: current,
+						pathAuthority: "actual_resolved",
 						isDirectory: true,
 						size: 0,
 						mtime: 0,
@@ -50,7 +51,7 @@ export function createMockFs(name: string): IFileSystem & {
 				});
 			}
 		}
-		return { path, isDirectory: true, size: 0, mtime: 0, hash: "" };
+		return { path, pathAuthority: "requested_echo", isDirectory: true, size: 0, mtime: 0, hash: "" };
 	}
 
 	function ensureParents(path: string): void {
@@ -102,6 +103,7 @@ export function createMockFs(name: string): IFileSystem & {
 			ensureParents(path);
 			const entity: FileEntity = {
 				path,
+				pathAuthority: "actual_resolved",
 				isDirectory: false,
 				size: content.byteLength,
 				mtime,
@@ -111,8 +113,9 @@ export function createMockFs(name: string): IFileSystem & {
 			// mutation of the caller's buffer must not change stored content.
 			files.set(path, { content: content.slice(0), entity });
 			// list() reads the stored entity (hash ""); the return value carries the
-			// computed hash, mirroring a real backend's write().
-			return { ...entity, hash: await sha256(content) };
+			// computed hash, mirroring a real backend's write(). Mutation responses
+			// echo the requested path; a later list/stat resolves the stored path.
+			return { ...entity, pathAuthority: "requested_echo", hash: await sha256(content) };
 		},
 		async mkdir(path: string) {
 			// Stays async so mkdirInternal's type-collision throw rejects.
@@ -178,6 +181,9 @@ export function createMockFs(name: string): IFileSystem & {
 					modified: [] as string[],
 					deleted: [] as string[],
 				}),
+			listCurrentSnapshot: () => Promise.resolve(
+				Array.from(files.values()).map((entry) => ({ ...entry.entity })),
+			),
 			// Load-bearing default: true ⇒ orchestrator's `checkpoint ? !hasCheckpoint() : false`
 			// is false ⇒ no forced cold scan, so default tests stay WARM/COLD (mirroring the
 			// pre-capability mock, which had no hasCheckpoint and short-circuited to false).
@@ -301,6 +307,7 @@ export function addFile(
 			if (!fs.files.has(current)) {
 				const dirEntity: FileEntity = {
 					path: current,
+					pathAuthority: "actual_resolved",
 					isDirectory: true,
 					size: 0,
 					mtime: 0,
@@ -315,6 +322,7 @@ export function addFile(
 	}
 	const entity: FileEntity = {
 		path,
+		pathAuthority: "actual_resolved",
 		isDirectory: false,
 		size: buf.byteLength,
 		mtime,

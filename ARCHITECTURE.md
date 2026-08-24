@@ -4,9 +4,9 @@
 
 1. **3-state sync** -- Compare local, remote, and last-sync-record to detect changes. Text conflicts use 3-way merge.
 2. **Swappable backends** -- All remote I/O goes through `IFileSystem` + `IBackendProvider`. Adding a backend requires no changes outside `fs/`.
-3. **Delta-first** -- Only process files that changed. O(n) full scans are allowed only on cold start and crash recovery (when no committed remote checkpoint exists).
+3. **Delta-first** -- Only process files that changed. O(n) full scans are allowed on cold start, same-session recovery, scope change, manual rescan, and unresolved local rename debt.
 4. **Pipeline as data** -- Each sync phase is a pure transformation: `ChangeSet → SyncPlan → Result`. I/O is isolated at boundaries; all intermediate states are testable.
-5. **Crash-safe by construction** -- State is committed only *after* success: per-file baselines after each action, and the remote delta checkpoint only when the whole cycle succeeds (`failed === 0`). An interrupted sync converges by re-syncing — delta-replay from the last committed checkpoint, or a full cold reconcile when none is committed.
+5. **Crash-safe by construction** -- State is committed only *after* success: per-file baselines after each admitted action, and the remote delta checkpoint only when no failure/deferral or unresolved remote identity edge remains. An interrupted sync converges by checkpoint replay or COLD reconcile; unresolved local rename edges additionally survive as bounded namespace debt.
 6. **Duplicate over delete** -- When in doubt, keep the file. Deleting an unwanted copy is easy; recovering a lost file is impossible.
 7. **Single responsibility per module** -- Each file owns one concept. Target 200-300 lines; split when exceeded.
 
@@ -19,7 +19,7 @@ One row per directory; see the layer diagram and per-doc references for module d
 | `main.ts` | Plugin entry point — lifecycle only: load settings, register commands, wire components, handle the OAuth protocol callback. |
 | `settings.ts` | `AirSyncSettings` type and `DEFAULT_SETTINGS`; `settings-normalize.ts` lifts a legacy per-type `backendData` map into the active flat bag on load. |
 | `config-sync.ts` | Experimental config-directory sync: augments `syncDotPaths`/`ignorePatterns` with the vault's config directory and a built-in pattern set when `enableConfigSync` is on, and `isOwnPluginDataPath()` — the unconditional guard `SyncOrchestrator.isExcluded()` uses to keep this plugin's own settings file from ever syncing. |
-| `sync/` | The sync pipeline and its orchestration: change tracking and detection (hot/warm/cold), the decision engine, rename optimization, plan execution (3-phase lane/tier scheduling), per-action state commit, conflict resolution and 3-way merge, the orchestrator (mutex/retry/status), the scheduler (vault events + triggers), the IndexedDB `SyncStateStore`, error classification, and the conflict-history audit writer. |
+| `sync/` | The sync pipeline and its orchestration: change tracking and evidence-complete detection (hot/warm/cold), direction-aware scope projection, the decision engine, rename optimization, fail-closed whole-component admission, plan execution (3-phase lane/tier scheduling), per-action state commit, checkpoint/debt finalization, conflict resolution and 3-way merge, the orchestrator (mutex/retry/status), the scheduler (vault events + triggers), the IndexedDB `SyncStateStore`, error classification, and the conflict-history audit writer. |
 | `fs/` | Backend-agnostic contracts and lifecycle: `IFileSystem` + `IncrementalCheckpoint`, `IAuthProvider`, `IBackendProvider` + `WebFolderPicker`, `FileEntity`/`RemoteChecksum`, the provider registry, error classification (`errors.ts`), the OAuth PKCE helper (`oauth-pkce.ts`), the backend settings-renderer contract (`settings-renderer.ts`), `BackendManager`, and the `ISecretStore`/token-store wrappers over Obsidian SecretStorage. |
 | `fs/caching/` | Shared base for id-addressed remote backends: `CachingRemoteFs<T>` (path↔id resolution and the `IncrementalCheckpoint` checkpoint lifecycle, ADR 0001) and `AbstractMetadataCache<T>`. Google Drive, Dropbox, and OneDrive all build on it. The id-keyed delta apply (`id-delta.ts`) makes their remote-rename detection order-independent for free (ADR 0006). |
 | `fs/local/` | `LocalFs` (Obsidian Vault API wrapper) plus the raw adapter for dot-prefixed paths. |
@@ -63,12 +63,20 @@ One row per directory; see the layer diagram and per-doc references for module d
      │    enrichHashesForInitialMatch()   │    local digest vs remoteChecksum
      │        │                           │
      │        ▼                           │
+     │  projectScope()                    │  ScopeProjection
+     │    classify every evidence endpoint│    direction-aware matrix
+     │        │                           │
+     │        ▼                           │
      │  planSync()                        │  DecisionEngine
      │        │                           │    9 action types
      │        ▼                           │
      │  refinePlan()                      │  RenameOptimizer
      │    optimizeLocalFileRenames         │    → rename_remote (hash-verified)
      │    optimizeRemoteFileRenames        │    → rename_local  (trusted)
+     │        │                           │
+     │        ▼                           │
+     │  admitDestructivePlan()            │  PlanAdmission
+     │    defer unsafe identity components│    pure, whole-component, fail-closed
      │        │                           │
      │        ▼                           │
      │  executePlan()  (3 phases)         │  PlanExecutor
@@ -99,6 +107,8 @@ interface RemoteChecksum { algo: ChecksumAlgo; value: string; }
 
 interface FileEntity {
   path: string;          // relative path from sync root
+  pathAuthority?: "actual_resolved" | "requested_echo";
+  identityKey?: string;  // opaque native ID, comparable only within one FS/root
   isDirectory: boolean;
   size: number;          // bytes (0 for directories)
   mtime: number;         // Unix epoch ms (0 = unknown)
@@ -125,6 +135,7 @@ interface SyncRecord {
   localSize: number;
   remoteSize: number;
   remoteChecksum?: RemoteChecksum;  // remote checksum at last sync (for change detection)
+  remoteIdentityKey?: string;       // last observed same-root native identity
   backendMeta?: Record<string, unknown>;
   syncedAt: number;        // when this sync completed
 }
@@ -141,7 +152,25 @@ interface MixedEntity {
   remote?: FileEntity;
   prevSync?: SyncRecord;
 }
+
+type PathObservation =
+  | { kind: "exact"; side: "local" | "remote"; requestedPath: string; entity: FileEntity }
+  | { kind: "alias"; side: "local" | "remote"; requestedPath: string; resolvedPath: string; entity: FileEntity }
+  | { kind: "present_unresolved"; side: "local" | "remote"; requestedPath: string; returnedPath: string; entity: FileEntity; source: "list" | "stat" }
+  | { kind: "absent"; side: "local" | "remote"; requestedPath: string; authority: "stat" | "checkpoint_deleted" }
+  | { kind: "unknown"; side: "local" | "remote"; requestedPath: string; reason: "not_observed" | "outside_tracked_root" };
+
+interface ChangeSet {
+  entries: MixedEntity[];                 // exact observations only
+  observations: PathObservation[];
+  identityEvidence: IdentityEvidence[];   // reported rename is one normative record
+  temperature: "hot" | "warm" | "cold";
+}
 ```
+
+`pathAuthority` is producer-qualified. A requested echo or unspecified authority is
+presence without exact-slot proof; a thrown `stat()` aborts the cycle and is never
+converted to absence. See [ADR 0008](docs/adr/0008-logical-identity-admission-fails-closed.md).
 
 ### SyncAction / SyncPlan (sync/types.ts)
 
@@ -283,7 +312,7 @@ interface WebFolderPicker {
 }
 ```
 
-The remote delta cursor is crash-safe at the **filesystem** layer, not the provider (it moved there with ADR 0001): `IFileSystem.checkpoint` commits the cursor plus its derived cache to the backend's own IndexedDB store atomically, and only after a fully-successful cycle. When no checkpoint is committed (`checkpoint.hasCheckpoint() === false`: first sync, an interrupted/partial sync, or after a manual rescan) the orchestrator forces a full cold reconcile — delta detection alone can't surface remote files an interrupted sync left un-baselined. `readBackendState()` persists only non-secret provider/auth state (e.g. token expiry) to `settings.backendData`; it no longer carries the cursor, so it takes no FS argument.
+The remote delta cursor is crash-safe at the **filesystem** layer, not the provider (it moved there with ADR 0001): `IFileSystem.checkpoint` commits the cursor plus its derived cache to the backend's own IndexedDB store atomically, and only after a cycle has no failed/deferred work and no unresolved remote identity edge. A missing checkpoint (first sync, cleared state, manual rescan) forces COLD. After a non-clean cycle with an older checkpoint still committed, same-session recovery forces COLD despite the advanced live cursor; restart instead reloads that older cursor and replays its delta. Scope changes and persisted local rename debt also force COLD. Local reported renames persist as bounded, namespace-scoped `RenameDebt` before plan I/O; remote evidence replays from the withheld checkpoint. `readBackendState()` persists only non-secret provider/auth state (e.g. token expiry) to `settings.backendData`; it no longer carries the cursor, so it takes no FS argument.
 
 `settings.backendData` is a single flat bag holding **only the active backend's** parameters (tokens live in `SecretStorage`, keyed per backend — never in `backendData`). Switching backends hard-resets it: all params are wiped and every registered backend's plugin-owned secrets are swept (`clearPluginSecrets`), so the new backend starts disconnected and can't reuse another's token under the wrong OAuth client.
 

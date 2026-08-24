@@ -9,6 +9,15 @@ The **opt-in e2e** runs that *same* contract against the **live** APIs to catch 
 ([ADR 0003](adr/0003-opt-in-e2e-validates-fakes-against-real-backends.md)). It is
 **local/manual only** — never part of `npm test`, the lint gate, or CI.
 
+Every backend suite also runs the Issue #45 composed rename-safety scenario: establish a
+persisted metadata checkpoint, perform a local-origin case-only rename, perform a
+remote-origin case-only rename through the real delta API, reset the checkpoint for a
+later COLD cycle, then assert one correctly-cased copy, preserved content, and no opposing
+delete. The shared CRUD contracts additionally verify that native identity survives rename
+and changes on same-path replacement. Supplying the real `MetadataStore` in this scenario
+is load-bearing: without it the scope fingerprint cannot commit, every cycle is COLD, and
+the fixture bypasses the WARM delta-evidence path used by the plugin.
+
 > **Use a throwaway test account, not a real vault.** The suite creates and then
 > recursively deletes an `airsync-e2e-*` folder on each run.
 
@@ -23,7 +32,8 @@ npm run test:e2e                      # runs the contract against the live APIs
 ```
 
 With **no** credentials, `npm run test:e2e` warns and skips every backend and exits 0 — so
-it can never break anything if run by accident.
+it can never break anything if run by accident. A skipped run proves only that the harness
+is credential-gated; it is not live semantic evidence and must be reported as blocked.
 
 ## Prerequisites
 
@@ -221,6 +231,15 @@ skipped or green.
   timestamp." mtime is not Dropbox's change-detection signal (that is the content-hash
   `remoteChecksum`), so nothing load-bearing is dropped. This is the documented divergence
   from ADR 0002, surfaced by this e2e.
+- **Dropbox case-only rename.** Dropbox documents that `move_v2` does not support
+  case-only renaming, and casing-only changes are not returned by `list_folder/continue`.
+  `DropboxFs.rename()` therefore uses a deterministic intermediate sibling path, resumes
+  the second leg when that path already contains the same stable id, rejects a foreign
+  occupant before mutation, and rolls the first leg back when the final move fails. The
+  live composed scenario performs the remote-origin rename through two raw client moves,
+  modelling another Dropbox client without pre-updating Air Sync's cache. See
+  [Issue #47](https://github.com/takezoh/obsidian-air-sync/issues/47) and the
+  [official Dropbox SDK route contract](https://dropbox.github.io/dropbox-sdk-js/Dropbox.html#filesMoveV2__anchor).
 - **OneDrive mtime.** Unlike Dropbox, `OneDriveFs` PATCHes `fileSystemInfo.lastModifiedDateTime`
   right after the content PUT, so the written mtime *is* preserved (not a server clock) — but
   this e2e proved Microsoft Graph stores it at **whole-second** precision (`12345 → 12000`,

@@ -139,12 +139,15 @@ describe("bulkLoad", () => {
 describe("clear", () => {
 	it("empties all data structures", () => {
 		const cache = makeCache();
-		cache.setFile("a.txt", makeGoogleDriveFile({ id: "f1", name: "a.txt" }));
+		const file = makeGoogleDriveFile({ id: "f1", name: "a.txt" });
+		cache.setFile("a.txt", file, "actual_resolved");
 		cache.clear();
 
 		expect(cache.size).toBe(0);
 		expect(cache.hasFile("a.txt")).toBe(false);
 		expect(cache.getPathById("f1")).toBeUndefined();
+		cache.setFile("a.txt", file);
+		expect(cache.toEntity("a.txt", file).pathAuthority).toBe("requested_echo");
 	});
 });
 
@@ -162,6 +165,8 @@ describe("exportRecords", () => {
 		const file = records.find((r) => r.path === "a.txt");
 		expect(folder?.isFolder).toBe(true);
 		expect(file?.isFolder).toBe(false);
+		expect(folder?.pathAuthority).toBe("requested_echo");
+		expect(file?.pathAuthority).toBe("requested_echo");
 	});
 });
 
@@ -305,6 +310,19 @@ describe("buildFromFiles", () => {
 		expect(cache.isFolder("docs")).toBe(true);
 	});
 
+	it("does not promote missing-parent or cyclic fallback paths to resolved authority", () => {
+		const cache = makeCache();
+		const orphan = makeGoogleDriveFile({ id: "orphan", name: "orphan.md", parents: ["missing"] });
+		const a = makeFolder({ id: "a", name: "A", parents: ["b"] });
+		const b = makeFolder({ id: "b", name: "B", parents: ["a"] });
+
+		cache.buildFromFiles([orphan, a, b]);
+
+		expect(cache.toEntity("orphan.md", orphan).pathAuthority).toBe("requested_echo");
+		const cyclicPath = cache.getPathById("a")!;
+		expect(cache.toEntity(cyclicPath, a).pathAuthority).toBe("requested_echo");
+	});
+
 	it("handles circular references gracefully", () => {
 		const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
 		const cache = new GoogleDriveMetadataCache(ROOT, logger as never);
@@ -384,6 +402,21 @@ describe("removeTree", () => {
 // ── toEntity ──
 
 describe("toEntity", () => {
+	it("distinguishes backend-resolved paths from requested mutation paths", () => {
+		const scanned = makeGoogleDriveFile({ id: "f1", name: "Scanned.md", parents: [ROOT] });
+		const changed = makeGoogleDriveFile({ id: "f2", name: "Changed.md", parents: [ROOT] });
+		const requested = makeGoogleDriveFile({ id: "f3", name: "Written.md", parents: [ROOT] });
+		const cache = makeCache();
+
+		cache.buildFromFiles([scanned]);
+		cache.applyFileChange(changed);
+		cache.setFile("Written.md", requested);
+
+		expect(cache.toEntity("Scanned.md", scanned).pathAuthority).toBe("actual_resolved");
+		expect(cache.toEntity("Changed.md", changed).pathAuthority).toBe("actual_resolved");
+		expect(cache.toEntity("Written.md", requested).pathAuthority).toBe("requested_echo");
+	});
+
 	it("converts file to entity", () => {
 		const cache = makeCache();
 		const file = makeGoogleDriveFile({ id: "f1", name: "a.txt", modifiedTime: "2024-01-01T00:00:00.000Z", size: "100", md5Checksum: "abc" });
@@ -391,6 +424,8 @@ describe("toEntity", () => {
 
 		const entity = cache.toEntity("a.txt", file);
 		expect(entity.path).toBe("a.txt");
+		expect(entity.pathAuthority).toBe("requested_echo");
+		expect(entity.identityKey).toBe("f1");
 		expect(entity.isDirectory).toBe(false);
 		expect(entity.size).toBe(100);
 		expect(entity.mtime).toBe(new Date("2024-01-01T00:00:00.000Z").getTime());
@@ -405,6 +440,8 @@ describe("toEntity", () => {
 		cache.setFile("docs", folder);
 
 		const entity = cache.toEntity("docs", folder);
+		expect(entity.pathAuthority).toBe("requested_echo");
+		expect(entity.identityKey).toBe("d1");
 		expect(entity.isDirectory).toBe(true);
 		expect(entity.size).toBe(0);
 	});
@@ -423,6 +460,17 @@ describe("toEntity", () => {
 // ── applyFileChange ──
 
 describe("applyFileChange", () => {
+	it("inherits a cached parent's authority when resolving a child delta", () => {
+		const requestedParent = makeFolder({ id: "d1", name: "Docs", parents: [ROOT] });
+		const child = makeGoogleDriveFile({ id: "f1", name: "a.md", parents: ["d1"] });
+		const cache = makeCache();
+		cache.bulkLoad([["Docs", requestedParent]]);
+
+		cache.applyFileChange(child);
+
+		expect(cache.toEntity("Docs/a.md", child).pathAuthority).toBe("requested_echo");
+	});
+
 	it("adds new file", () => {
 		const cache = makeCache();
 		cache.setFile("docs", makeFolder({ id: "d1", name: "docs", parents: [ROOT] }));

@@ -23,13 +23,14 @@ export class DotPathAdapter {
 		if (!(await this.vault.adapter.exists(dir))) return;
 		const listed = await this.vault.adapter.list(dir);
 		for (const folder of listed.folders) {
-			entities.push({ path: folder, isDirectory: true, size: 0, mtime: 0, hash: "" });
+			entities.push({ path: folder, pathAuthority: "requested_echo", isDirectory: true, size: 0, mtime: 0, hash: "" });
 			await this.list(folder, entities);
 		}
 		for (const file of listed.files) {
 			const s = await this.vault.adapter.stat(file);
 			entities.push({
 				path: file,
+				pathAuthority: "requested_echo",
 				isDirectory: false,
 				size: s?.size ?? 0,
 				mtime: s?.mtime ?? 0,
@@ -42,11 +43,11 @@ export class DotPathAdapter {
 		const s = await this.vault.adapter.stat(path);
 		if (!s) return null;
 		if (s.type === "folder") {
-			return { path, isDirectory: true, size: 0, mtime: 0, hash: "" };
+			return { path, pathAuthority: "requested_echo", isDirectory: true, size: 0, mtime: 0, hash: "" };
 		}
 		const content = await this.vault.adapter.readBinary(path);
 		const hash = await sha256(content);
-		return { path, isDirectory: false, size: s.size, mtime: s.mtime, hash };
+		return { path, pathAuthority: "requested_echo", isDirectory: false, size: s.size, mtime: s.mtime, hash };
 	}
 
 	async read(path: string): Promise<ArrayBuffer> {
@@ -63,7 +64,7 @@ export class DotPathAdapter {
 		}
 		await this.vault.adapter.writeBinary(path, content, { mtime });
 		const hash = await sha256(content);
-		return { path, isDirectory: false, size: content.byteLength, mtime, hash };
+		return { path, pathAuthority: "requested_echo", isDirectory: false, size: content.byteLength, mtime, hash };
 	}
 
 	async delete(path: string): Promise<void> {
@@ -82,12 +83,13 @@ export class DotPathAdapter {
 		if (!(await this.vault.adapter.exists(dir))) return entities;
 		const listed = await this.vault.adapter.list(dir);
 		for (const folder of listed.folders) {
-			entities.push({ path: folder, isDirectory: true, size: 0, mtime: 0, hash: "" });
+			entities.push({ path: folder, pathAuthority: "requested_echo", isDirectory: true, size: 0, mtime: 0, hash: "" });
 		}
 		for (const file of listed.files) {
 			const s = await this.vault.adapter.stat(file);
 			entities.push({
 				path: file,
+				pathAuthority: "requested_echo",
 				isDirectory: false,
 				size: s?.size ?? 0,
 				mtime: s?.mtime ?? 0,

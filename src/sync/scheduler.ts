@@ -7,6 +7,24 @@ import { hasChanged, hasRemoteChanged } from "./change-compare";
 
 const DEBOUNCE_MS = 5000;
 
+function folderDescendantTouchesScope(
+	folder: TFolder,
+	oldRoot: string,
+	isExcluded: (path: string) => boolean,
+): boolean {
+	const newPrefix = `${folder.path}/`;
+	const pending = [...folder.children];
+	while (pending.length > 0) {
+		const child = pending.pop()!;
+		if (!child.path.startsWith(newPrefix)) return true;
+		const relative = child.path.substring(newPrefix.length);
+		const oldPath = relative ? `${oldRoot}/${relative}` : oldRoot;
+		if (!isExcluded(child.path) || !isExcluded(oldPath)) return true;
+		if (child instanceof TFolder) pending.push(...child.children);
+	}
+	return false;
+}
+
 export interface SyncOrchestrator {
 	runSync(): Promise<void>;
 	pullSingle(path: string): Promise<void>;
@@ -138,17 +156,18 @@ export class SyncScheduler {
 		};
 
 		const onRename = (file: TAbstractFile, oldPath: string) => {
-			if (!isExcluded(file.path) && !isExcluded(oldPath)) {
+			const newExcluded = isExcluded(file.path);
+			const oldExcluded = isExcluded(oldPath);
+			// Preserve one normative rename edge whenever either endpoint participates
+			// in sync. Scope projection owns the direction-specific consequence; losing
+			// the edge here would turn a cross-scope move into unrelated create/delete.
+			if (!newExcluded || !oldExcluded ||
+				(file instanceof TFolder && folderDescendantTouchesScope(file, oldPath, isExcluded))) {
 				if (file instanceof TFolder) {
 					localTracker.markFolderRenamed(file.path, oldPath);
 				} else {
 					localTracker.markRenamed(file.path, oldPath);
 				}
-			} else {
-				if (!isExcluded(file.path)) localTracker.markDirty(file.path);
-				if (!isExcluded(oldPath)) localTracker.markDirty(oldPath);
-			}
-			if (!isExcluded(file.path) || !isExcluded(oldPath)) {
 				this.debouncedSync();
 			}
 		};

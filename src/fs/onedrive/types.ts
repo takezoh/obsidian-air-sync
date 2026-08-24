@@ -212,10 +212,20 @@ export function itemMtime(item: OneDriveItem): number {
  */
 export function oneDriveItemToEntity(path: string, item: OneDriveItem): FileEntity {
 	if (isFolderEntry(item)) {
-		return { path, isDirectory: true, size: 0, mtime: 0, hash: "" };
+		return {
+			path,
+			pathAuthority: "requested_echo",
+			identityKey: item.id,
+			isDirectory: true,
+			size: 0,
+			mtime: 0,
+			hash: "",
+		};
 	}
 	return {
 		path,
+		pathAuthority: "requested_echo",
+		identityKey: item.id,
 		isDirectory: false,
 		size: item.size ?? 0,
 		mtime: itemMtime(item),

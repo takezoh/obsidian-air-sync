@@ -45,6 +45,7 @@ export class LocalFs implements IFileSystem {
 			if (file instanceof TFile) {
 				entities.push({
 					path: file.path,
+					pathAuthority: "actual_resolved",
 					isDirectory: false,
 					size: file.stat.size,
 					mtime: file.stat.mtime,
@@ -56,6 +57,7 @@ export class LocalFs implements IFileSystem {
 			} else if (file instanceof TFolder) {
 				entities.push({
 					path: file.path,
+					pathAuthority: "actual_resolved",
 					isDirectory: true,
 					size: 0,
 					mtime: 0,
@@ -93,6 +95,7 @@ export class LocalFs implements IFileSystem {
 			const hash = await sha256(content);
 			return {
 				path: file.path,
+				pathAuthority: "actual_resolved",
 				isDirectory: false,
 				size: file.stat.size,
 				mtime: file.stat.mtime,
@@ -101,6 +104,7 @@ export class LocalFs implements IFileSystem {
 		} else if (file instanceof TFolder) {
 			return {
 				path: file.path,
+				pathAuthority: "actual_resolved",
 				isDirectory: true,
 				size: 0,
 				mtime: 0,
@@ -149,6 +153,7 @@ export class LocalFs implements IFileSystem {
 		const hash = await sha256(content);
 		return {
 			path,
+			pathAuthority: "requested_echo",
 			isDirectory: false,
 			size: written.stat.size,
 			mtime: written.stat.mtime,
@@ -159,7 +164,7 @@ export class LocalFs implements IFileSystem {
 	async mkdir(path: string): Promise<FileEntity> {
 		path = normalizeSyncPath(path);
 		await this.mkdirRecursive(path);
-		return { path, isDirectory: true, size: 0, mtime: 0, hash: "" };
+		return { path, pathAuthority: "requested_echo", isDirectory: true, size: 0, mtime: 0, hash: "" };
 	}
 
 	async listDir(path: string): Promise<FileEntity[]> {
@@ -173,13 +178,14 @@ export class LocalFs implements IFileSystem {
 			if (child instanceof TFile) {
 				return {
 					path: child.path,
+					pathAuthority: "actual_resolved",
 					isDirectory: false,
 					size: child.stat.size,
 					mtime: child.stat.mtime,
 					hash: "",
 				};
 			}
-			return { path: child.path, isDirectory: true, size: 0, mtime: 0, hash: "" };
+			return { path: child.path, pathAuthority: "actual_resolved", isDirectory: true, size: 0, mtime: 0, hash: "" };
 		});
 	}
 

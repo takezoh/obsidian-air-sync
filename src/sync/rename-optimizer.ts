@@ -1,4 +1,4 @@
-import type { RenamePair, SyncAction, SyncPlan } from "./types";
+import type { IdentityEvidence, SyncAction, SyncPlan } from "./types";
 import type { Logger } from "../logging/logger";
 import {
 	optimizeLocalFileRenames,
@@ -8,6 +8,11 @@ import {
 	optimizeRemoteFileRenames,
 	coalesceRemoteFolderRenames,
 } from "./optimize-remote-renames";
+import { renameOptimizerView } from "./identity-evidence";
+
+export interface RefinedSyncPlan extends SyncPlan {
+	identityEvidence: readonly IdentityEvidence[];
+}
 
 /** Filter out consumed actions and append replacements. */
 export function replaceConsumed(
@@ -28,11 +33,11 @@ export function replaceConsumed(
  */
 export function refinePlan(
 	plan: SyncPlan,
-	localRenamePairs: ReadonlyMap<string, string>,
-	localFolderRenamePairs: ReadonlyMap<string, string>,
-	remoteRenamePairs: RenamePair[],
+	identityEvidence: readonly IdentityEvidence[],
 	logger?: Logger,
-): SyncPlan {
+): RefinedSyncPlan {
+	const { localFiles: localRenamePairs, localFolders: localFolderRenamePairs, remote: remoteRenamePairs } =
+		renameOptimizerView(identityEvidence);
 	let actions = plan.actions;
 
 	if (localFolderRenamePairs.size > 0) {
@@ -94,6 +99,5 @@ export function refinePlan(
 		}
 	}
 
-	if (actions === plan.actions) return plan;
-	return { actions };
+	return { actions, identityEvidence };
 }

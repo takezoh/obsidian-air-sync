@@ -1,4 +1,4 @@
-import { vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { OneDriveClient } from "./client";
 import type { OneDriveItem, OneDriveDeltaResponse } from "./types";
 import { OneDriveFs } from "./index";
@@ -131,4 +131,26 @@ function makeFakeOneDriveClient(): OneDriveClient {
 // cache work; the checkpoint machinery has its own contract.
 runIFileSystemContract("OneDriveFs", () => new OneDriveFs(makeFakeOneDriveClient(), ROOT_ID), {
 	computesHashOnStat: false,
+	stableIdentity: true,
+});
+
+describe("OneDriveFs mutation provenance", () => {
+	it("returns stable native identities without claiming requested casing was resolved", async () => {
+		const fs = new OneDriveFs(makeFakeOneDriveClient(), ROOT_ID);
+
+		const folder = await fs.mkdir("Docs");
+		const file = await fs.write("Docs/a.md", new Uint8Array([1]).buffer, 1000);
+
+		expect(folder).toMatchObject({
+			path: "Docs",
+			pathAuthority: "requested_echo",
+		});
+		expect(file).toMatchObject({
+			path: "Docs/a.md",
+			pathAuthority: "requested_echo",
+		});
+		expect(folder.identityKey).toMatch(/^id/);
+		expect(file.identityKey).toMatch(/^id/);
+		expect(file.identityKey).not.toBe(folder.identityKey);
+	});
 });

@@ -1,15 +1,33 @@
 import type { IFileSystem } from "../fs/interface";
-import type { MixedEntity, RenamePair, SyncRecord } from "./types";
+import type { FileEntity } from "../fs/types";
+import type { IdentityEvidence, MixedEntity, PathObservation, SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
 import type { TrackerSnapshot } from "./local-tracker";
 import { hasChanged, hasRemoteChanged } from "./change-compare";
 import { sha256, digest, isLocallyComputable } from "../utils/hash";
 import { AsyncPool } from "../queue/async-queue";
+import { collectLocalRenameEvidence, completeIdentityEvidence, renameOptimizerView } from "./identity-evidence";
+import {
+	getRemoteChanges,
+	hasFolderRename,
+	remoteSnapshotAfterDelta,
+	type RemoteChanges,
+} from "./remote-change-source";
+import {
+	confirmBaselineAbsences,
+	confirmCarriedRenameOppositeEndpoints,
+	confirmUnknownRenameEndpoints,
+	ensureRenameEndpointObservations,
+	exactEntity,
+	observePath,
+	replaceObservation,
+} from "./path-observation";
 
 export interface ChangeSet {
 	entries: MixedEntity[];
+	observations: PathObservation[];
+	identityEvidence: IdentityEvidence[];
 	temperature: "hot" | "warm" | "cold";
-	remoteRenamePairs: RenamePair[];
 }
 
 export interface ChangeDetectorDeps {
@@ -17,6 +35,7 @@ export interface ChangeDetectorDeps {
 	remoteFs: IFileSystem;
 	stateStore: SyncStateStore;
 	changes: TrackerSnapshot;
+	onRemoteIdentityEvidence?: (evidence: readonly IdentityEvidence[]) => void;
 }
 
 export interface CollectChangesOptions {
@@ -27,6 +46,8 @@ export interface CollectChangesOptions {
 	 * (the cursor has moved past them). A full remote list vs records can.
 	 */
 	forceFullScan?: boolean;
+	/** Durable local rename evidence replayed before endpoint confirmation/hash enrichment. */
+	carriedIdentityEvidence?: readonly IdentityEvidence[];
 }
 
 /**
@@ -47,38 +68,64 @@ export async function collectChanges(
 	let changeSet: ChangeSet;
 
 	// Determine temperature
-	if (!opts.forceFullScan && changes.initialized && changes.dirtyPaths.size > 0) {
-		changeSet = await collectHot(deps);
+	if (!opts.forceFullScan && changes.initialized && changes.dirtyPaths.size > 0 &&
+		changes.folderRenamePairs.size === 0) {
+		const remoteChanges = await getRemoteChanges(deps.remoteFs, deps.onRemoteIdentityEvidence);
+		if (hasFolderRename(remoteChanges)) {
+			changeSet = await collectCold(
+				deps,
+				await stateStore.getAll(),
+				remoteChanges,
+				undefined,
+				await remoteSnapshotAfterDelta(deps.remoteFs),
+			);
+		} else {
+			changeSet = await collectHot(deps, remoteChanges);
+		}
 	} else {
 		const allRecords = await stateStore.getAll();
 		changeSet = opts.forceFullScan || allRecords.length === 0
 			? await collectCold(deps, allRecords)
 			: await collectWarm(deps, allRecords);
 	}
+	changeSet.identityEvidence.unshift(...(opts.carriedIdentityEvidence ?? []),
+		...collectLocalRenameEvidence(changes));
+	ensureRenameEndpointObservations(changeSet.observations, changeSet.identityEvidence);
+	await confirmUnknownRenameEndpoints(changeSet, deps.localFs, deps.remoteFs);
+	await confirmCarriedRenameOppositeEndpoints(
+		changeSet.observations,
+		opts.carriedIdentityEvidence ?? [],
+		deps.localFs,
+		deps.remoteFs,
+	);
 
-	// Enrich empty hashes for entries without baseline (all temperature modes)
-	await enrichHashesForInitialMatch(changeSet.entries, deps.localFs);
-
-	// Ensure rename-related local entries have hashes (WARM/COLD use list() → hash:"")
-	await enrichHashesForRenames(changeSet.entries, deps.localFs, changes.renamePairs);
-
-	// Warm mode infers local deletions from absence in list() (the in-memory vault
-	// index), which can under-report. Confirm each candidate against the authoritative
-	// filesystem so an unindexed-but-on-disk file is never deleted.
-	if (changeSet.temperature === "warm") {
-		await confirmLocalDeletions(changeSet.entries, deps.localFs);
+	// WARM/COLD listings can under-report. Confirm every baseline path whose current
+	// side is missing before planning; a thrown stat aborts rather than becoming absence.
+	if (changeSet.temperature !== "hot") {
+		await confirmBaselineAbsences(changeSet, deps.localFs, deps.remoteFs);
 	}
+	// Hash enrichment operates only on exact entries and cannot upgrade observations.
+	await enrichHashesForInitialMatch(changeSet.entries, deps.localFs);
+	await enrichHashesForRenames(
+		changeSet.entries, changeSet.observations, deps.localFs,
+		renameOptimizerView(changeSet.identityEvidence).localFiles,
+	);
+	changeSet.identityEvidence = completeIdentityEvidence(
+		changeSet.identityEvidence,
+		changeSet.observations,
+		changeSet.entries,
+	);
 
 	return changeSet;
 }
 
-async function collectHot(deps: ChangeDetectorDeps): Promise<ChangeSet> {
+async function collectHot(
+	deps: ChangeDetectorDeps,
+	remoteChanges: RemoteChanges,
+): Promise<ChangeSet> {
 	const { localFs, remoteFs, stateStore, changes } = deps;
 
 	const dirtyPaths = changes.dirtyPaths;
-
-	// Get remote changed paths if supported
-	const remoteChanges = await getRemoteChanges(remoteFs);
 
 	// Union of local dirty and remote changed paths
 	const changedPaths = new Set<string>(dirtyPaths);
@@ -95,6 +142,7 @@ async function collectHot(deps: ChangeDetectorDeps): Promise<ChangeSet> {
 		stateStore.getMany(pathArray),
 	]);
 	const renameSourcePaths = new Set(changes.renamePairs.values());
+	const observations: PathObservation[] = [];
 
 	const entries: MixedEntity[] = pathArray.map((path, i) => {
 		const localStat = localStats[i] ?? undefined;
@@ -105,13 +153,21 @@ async function collectHot(deps: ChangeDetectorDeps): Promise<ChangeSet> {
 		const isRenameSourceAlias =
 			renameSourcePaths.has(path) &&
 			localStat?.path !== path;
-		const local = isRenameSourceAlias ? undefined : localStat;
-		const remote = remoteStats[i] ?? undefined;
+		const localObservation = observePath(
+			"local",
+			path,
+			isRenameSourceAlias ? undefined : localStat,
+		);
+		const remoteObservation = observePath(
+			"remote", path, remoteStats[i],
+			remoteChanges.deletedPaths.has(path) ? "checkpoint_deleted" : "stat",
+		);
+		observations.push(localObservation, remoteObservation);
 		const prevSync = syncRecords.get(path);
 		return {
 			path,
-			local: local?.isDirectory ? undefined : local,
-			remote: remote?.isDirectory ? undefined : remote,
+			local: exactEntity(localObservation),
+			remote: exactEntity(remoteObservation),
 			prevSync,
 		};
 	});
@@ -128,6 +184,11 @@ async function collectHot(deps: ChangeDetectorDeps): Promise<ChangeSet> {
 		if (!prev) return true;
 		// Local deleted but remote still exists (e.g. rename source)
 		if (!e.local && e.remote) return true;
+		// A checkpoint tombstone is authoritative remote absence. Preserve it even
+		// when the surviving local file is unchanged so the decision engine can
+		// propagate the deletion. Do not infer this from remote stat() absence alone:
+		// locally dirty paths also pass through HOT without a remote change signal.
+		if (e.local && !e.remote && remoteChanges.deletedPaths.has(e.path)) return true;
 		// Local changed
 		if (e.local && hasChanged(e.local, prev)) return true;
 		// Remote changed
@@ -135,7 +196,7 @@ async function collectHot(deps: ChangeDetectorDeps): Promise<ChangeSet> {
 		return false;
 	});
 
-	return { entries: changed, temperature: "hot", remoteRenamePairs: remoteChanges.renamed };
+	return { entries: changed, observations, identityEvidence: remoteChanges.renameEvidence, temperature: "hot" };
 }
 
 async function collectWarm(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): Promise<ChangeSet> {
@@ -143,8 +204,17 @@ async function collectWarm(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): 
 
 	const [localFiles, remoteChanges] = await Promise.all([
 		localFs.list(),
-		getRemoteChanges(remoteFs),
+		getRemoteChanges(remoteFs, deps.onRemoteIdentityEvidence),
 	]);
+	if (hasFolderRename(remoteChanges)) {
+		return collectCold(
+			deps,
+			allRecords,
+			remoteChanges,
+			localFiles,
+			await remoteSnapshotAfterDelta(remoteFs),
+		);
+	}
 
 	const recordMap = new Map(allRecords.map((r) => [r.path, r]));
 	const changedPaths = new Set<string>();
@@ -181,31 +251,51 @@ async function collectWarm(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): 
 	const pathArray = Array.from(changedPaths);
 	const remoteStats = await Promise.all(pathArray.map((p) => remoteFs.stat(p)));
 
-	const localFileMap = new Map(localFiles.filter((f) => !f.isDirectory).map((f) => [f.path, f]));
+	const observations: PathObservation[] = localFiles.map((file) =>
+		observePath("local", file.path, file, "stat", "list"));
+	const localFileMap = new Map(observations.flatMap((observation) => {
+		const entity = exactEntity(observation);
+		return entity ? [[entity.path, entity] as const] : [];
+	}));
 
 	const entries: MixedEntity[] = pathArray.map((path, i) => {
-		const remote = remoteStats[i] ?? undefined;
+		const remoteObservation = observePath(
+			"remote", path, remoteStats[i],
+			remoteChanges.deletedPaths.has(path) ? "checkpoint_deleted" : "stat",
+		);
+		observations.push(remoteObservation);
+		if (!observations.some((observation) =>
+			observation.side === "local" && observation.requestedPath === path)) {
+			observations.push({ kind: "unknown", side: "local", requestedPath: path, reason: "not_observed" });
+		}
 		return {
 			path,
 			local: localFileMap.get(path),
-			remote: remote?.isDirectory ? undefined : remote,
+			remote: exactEntity(remoteObservation),
 			prevSync: recordMap.get(path),
 		};
 	});
 
-	return { entries, temperature: "warm", remoteRenamePairs: remoteChanges.renamed };
+	return { entries, observations, identityEvidence: remoteChanges.renameEvidence, temperature: "warm" };
 }
 
-async function collectCold(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): Promise<ChangeSet> {
+async function collectCold(
+	deps: ChangeDetectorDeps,
+	allRecords: SyncRecord[],
+	remoteChanges?: RemoteChanges,
+	prefetchedLocalFiles?: FileEntity[],
+	prefetchedRemoteFiles?: FileEntity[],
+): Promise<ChangeSet> {
 	const { localFs, remoteFs } = deps;
 
 	const [localFiles, remoteFiles] = await Promise.all([
-		localFs.list(),
-		remoteFs.list(),
+		prefetchedLocalFiles ?? localFs.list(),
+		prefetchedRemoteFiles ?? remoteFs.list(),
 	]);
 	const syncRecords = allRecords;
 
 	const pathMap = new Map<string, MixedEntity>();
+	const observations: PathObservation[] = [];
 
 	const getOrCreate = (path: string): MixedEntity => {
 		let entity = pathMap.get(path);
@@ -217,20 +307,29 @@ async function collectCold(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): 
 	};
 
 	for (const file of localFiles) {
-		if (file.isDirectory) continue;
-		getOrCreate(file.path).local = file;
+		const observation = observePath("local", file.path, file, "stat", "list");
+		observations.push(observation);
+		const entity = exactEntity(observation);
+		if (entity) getOrCreate(entity.path).local = entity;
 	}
 
 	for (const file of remoteFiles) {
-		if (file.isDirectory) continue;
-		getOrCreate(file.path).remote = file;
+		const observation = observePath("remote", file.path, file, "stat", "list");
+		observations.push(observation);
+		const entity = exactEntity(observation);
+		if (entity) getOrCreate(entity.path).remote = entity;
 	}
 
 	for (const record of syncRecords) {
 		getOrCreate(record.path).prevSync = record;
 	}
 
-	return { entries: Array.from(pathMap.values()), temperature: "cold", remoteRenamePairs: [] };
+	return {
+		entries: Array.from(pathMap.values()),
+		observations,
+		identityEvidence: remoteChanges?.renameEvidence ?? [],
+		temperature: "cold",
+	};
 }
 
 /**
@@ -285,6 +384,7 @@ async function enrichHashesForInitialMatch(
  */
 export async function enrichHashesForRenames(
 	entries: MixedEntity[],
+	observations: PathObservation[],
 	localFs: IFileSystem,
 	renamePairs: ReadonlyMap<string, string>,
 ): Promise<void> {
@@ -298,61 +398,12 @@ export async function enrichHashesForRenames(
 
 	await Promise.all(
 		candidates.map(async (entry) => {
-			try {
-				const stat = await localFs.stat(entry.path);
-				if (stat && !stat.isDirectory && stat.hash) {
-					entry.local = { ...entry.local!, hash: stat.hash };
-				}
-			} catch {
-				// Skip — rename optimizer falls back to push+delete
-			}
+			const observation = observePath("local", entry.path, await localFs.stat(entry.path));
+			replaceObservation(observations, observation);
+			const statEntity = exactEntity(observation);
+			entry.local = statEntity
+				? { ...entry.local!, hash: statEntity.hash }
+				: undefined;
 		})
 	);
-}
-
-/**
- * Confirm warm-mode local deletions against the authoritative filesystem.
- * A baseline path absent from localFs.list() (the in-memory vault index) but
- * present on disk was simply not indexed — it was NOT deleted. Re-stat each such
- * candidate; if it exists, set entry.local so an incomplete listing cannot drive
- * an erroneous delete_remote. (When the remote is also gone, the file is then
- * compared as a genuine remote deletion rather than a no-op cleanup.)
- */
-async function confirmLocalDeletions(
-	entries: MixedEntity[],
-	localFs: IFileSystem,
-): Promise<void> {
-	const candidates = entries.filter((e) => !e.local && e.prevSync);
-	if (candidates.length === 0) return;
-
-	const pool = new AsyncPool(10);
-	await Promise.all(
-		candidates.map((entry) =>
-			pool.run(async () => {
-				try {
-					const stat = await localFs.stat(entry.path);
-					if (stat && !stat.isDirectory) {
-						entry.local = stat;
-					}
-				} catch {
-					// Skip — a genuinely missing file returns null/throws → stays a deletion
-				}
-			})
-		)
-	);
-}
-
-interface RemoteChanges {
-	paths: string[];
-	renamed: RenamePair[];
-}
-
-async function getRemoteChanges(remoteFs: IFileSystem): Promise<RemoteChanges> {
-	if (!remoteFs.checkpoint) return { paths: [], renamed: [] };
-	const result = await remoteFs.checkpoint.getChangedPaths();
-	if (!result) return { paths: [], renamed: [] };
-	return {
-		paths: [...result.modified, ...result.deleted],
-		renamed: result.renamed ?? [],
-	};
 }

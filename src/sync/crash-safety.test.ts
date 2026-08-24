@@ -56,9 +56,7 @@ async function runCycle(
 	});
 	const plan = refinePlan(
 		planSync(changeSet.entries),
-		snapshot.renamePairs,
-		snapshot.folderRenamePairs,
-		changeSet.remoteRenamePairs,
+		changeSet.identityEvidence,
 	);
 	const result = await executePlan(plan, {
 		localFs,

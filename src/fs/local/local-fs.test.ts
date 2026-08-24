@@ -116,6 +116,7 @@ describe("LocalFs", () => {
 			expect(entity!.isDirectory).toBe(false);
 			expect(entity!.hash).not.toBe("");
 			expect(entity!.path).toBe(".airsync/logs/test.log");
+			expect(entity!.pathAuthority).toBe("requested_echo");
 		});
 
 		it("returns FileEntity for a .airsync directory", async () => {
@@ -150,6 +151,24 @@ describe("LocalFs", () => {
 			expect(entity!.isDirectory).toBe(false);
 			expect(entity!.size).toBe(2);
 			expect(entity!.hash).not.toBe("");
+			expect(entity!.pathAuthority).toBe("requested_echo");
+		});
+
+		it("marks an indexed stat as resolved and preserves the index's actual spelling", async () => {
+			const { vault, fs } = createLocalFs();
+			const resolved = new TFile();
+			resolved.path = "notes/a.md";
+			resolved.stat = { size: 1, mtime: 1, ctime: 1 };
+			vi.spyOn(vault, "getAbstractFileByPath").mockReturnValue(resolved);
+			vi.spyOn(vault, "readBinary").mockResolvedValue(new Uint8Array([1]).buffer);
+
+			const entity = await fs.stat("notes/A.md");
+
+			expect(entity).toMatchObject({
+				path: "notes/a.md",
+				pathAuthority: "actual_resolved",
+			});
+			expect(entity?.identityKey).toBeUndefined();
 		});
 
 		it("returns null for a path absent from both the index and disk", async () => {
