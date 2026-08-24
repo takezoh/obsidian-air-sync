@@ -1,6 +1,5 @@
 import type { IFileSystem, IncrementalCheckpoint } from "../interface";
-import type { FileEntity } from "../types";
-import type { RenamePair } from "../types";
+import type { FileEntity, PathAuthority, RenamePair } from "../types";
 import type { MetadataStore } from "../../store/metadata-store";
 import type { Logger } from "../../logging/logger";
 import { AsyncMutex } from "../../queue/async-queue";
@@ -227,7 +226,8 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 			if (!cursor) return false;
 
 			this.cache.clear();
-			this.cache.bulkLoad(files.map((r): [string, TFile] => [r.path, r.file]));
+			this.cache.bulkLoad(files.map((r): [string, TFile, PathAuthority?] =>
+				[r.path, r.file, r.pathAuthority]));
 			this._changesPageToken = cursor;
 			this._scopeFingerprint = meta.get(SCOPE_FINGERPRINT_META_KEY) ?? null;
 			this.initialized = true;
@@ -292,11 +292,12 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 			await store.saveAll(this.cache.exportRecords(), meta);
 			return;
 		}
-		const updated: { path: string; file: TFile; isFolder: boolean }[] = [];
+		const updated: { path: string; file: TFile; isFolder: boolean; pathAuthority: PathAuthority }[] = [];
 		const deleted: string[] = [];
 		for (const path of this.touchedPaths) {
 			const file = this.cache.getFile(path);
-			if (file) updated.push({ path, file, isFolder: this.cache.isFolder(path) });
+			if (file) updated.push({ path, file, isFolder: this.cache.isFolder(path),
+				pathAuthority: this.cache.getPathAuthority(path) });
 			else deleted.push(path);
 		}
 		await store.commitIncremental(updated, deleted, meta);

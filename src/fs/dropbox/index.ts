@@ -127,6 +127,8 @@ export class DropboxFs extends CachingRemoteFs<DropboxEntry> {
 		const hash = await sha256(content);
 		return {
 			path,
+			pathAuthority: "requested_echo",
+			identityKey: entry.id,
 			isDirectory: false,
 			size: content.byteLength,
 			mtime: parseDropboxTime(entry.server_modified ?? entry.client_modified),
@@ -142,7 +144,16 @@ export class DropboxFs extends CachingRemoteFs<DropboxEntry> {
 			await this.ensureInitialized();
 			await this.ensureFolder(path);
 			const entry = this.cache.getFile(path);
-			return { path, isDirectory: true, size: 0, mtime: 0, hash: "", backendMeta: { dropboxId: entry?.id } };
+			return {
+				path,
+				pathAuthority: "requested_echo",
+				identityKey: entry?.id,
+				isDirectory: true,
+				size: 0,
+				mtime: 0,
+				hash: "",
+				backendMeta: { dropboxId: entry?.id },
+			};
 		});
 	}
 
@@ -180,7 +191,7 @@ export class DropboxFs extends CachingRemoteFs<DropboxEntry> {
 				// from the known prior type so the cache keeps classifying a moved folder
 				// as a folder (else a later write into it fails with "is a file").
 				this.cache.setEntry(newPath, { ...result, ".tag": r.wasFolder ? "folder" : "file" });
-				if (r.wasFolder) this.cache.rewriteChildPaths(oldPath, newPath);
+				if (r.wasFolder) this.cache.rewriteChildPaths(oldPath, newPath, "requested_echo");
 			},
 		});
 	}

@@ -172,10 +172,20 @@ export function parseDropboxTime(value: string | undefined): number {
  */
 export function dropboxEntryToEntity(path: string, entry: DropboxEntry): FileEntity {
 	if (isFolderEntry(entry)) {
-		return { path, isDirectory: true, size: 0, mtime: 0, hash: "" };
+		return {
+			path,
+			pathAuthority: "requested_echo",
+			identityKey: entry.id,
+			isDirectory: true,
+			size: 0,
+			mtime: 0,
+			hash: "",
+		};
 	}
 	return {
 		path,
+		pathAuthority: "requested_echo",
+		identityKey: entry.id,
 		isDirectory: false,
 		size: entry.size ?? 0,
 		mtime: parseDropboxTime(entry.server_modified ?? entry.client_modified),

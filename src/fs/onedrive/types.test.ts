@@ -203,6 +203,8 @@ describe("oneDriveItemToEntity", () => {
 		}));
 		expect(entity).toMatchObject({
 			path: "notes/a.md",
+			pathAuthority: "requested_echo",
+			identityKey: "1",
 			isDirectory: false,
 			size: 7,
 			hash: "",
@@ -214,7 +216,15 @@ describe("oneDriveItemToEntity", () => {
 
 	it("maps a folder to a directory entity with no checksum", () => {
 		const entity = oneDriveItemToEntity("notes", odFolder("9", "notes", "p"));
-		expect(entity).toMatchObject({ path: "notes", isDirectory: true, size: 0, mtime: 0, hash: "" });
+		expect(entity).toMatchObject({
+			path: "notes",
+			pathAuthority: "requested_echo",
+			identityKey: "9",
+			isDirectory: true,
+			size: 0,
+			mtime: 0,
+			hash: "",
+		});
 		expect(entity.remoteChecksum).toBeUndefined();
 	});
 });

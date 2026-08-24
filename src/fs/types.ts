@@ -22,10 +22,17 @@ export interface RemoteChecksum {
 	value: string;
 }
 
+/** Whether an entity path was resolved by the producer or merely echoed from the request. */
+export type PathAuthority = "actual_resolved" | "requested_echo";
+
 /** Represents a file or folder entity from any filesystem */
 export interface FileEntity {
 	/** Relative path from the sync root (e.g. "notes/hello.md") */
 	path: string;
+	/** Producer-qualified authority for `path`; absence is not proof of resolved spelling. */
+	pathAuthority?: PathAuthority;
+	/** Opaque identity stable only within this configured filesystem/root. */
+	identityKey?: string;
 	/** True if this entity is a directory */
 	isDirectory: boolean;
 	/** File size in bytes (0 for directories) */

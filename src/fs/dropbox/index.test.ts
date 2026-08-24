@@ -102,6 +102,8 @@ describe("DropboxFs.write", () => {
 
 		const entity = await fs.write("sub/x.md", bytes("hi"), 1_700_000_000_000);
 		expect(entity.path).toBe("sub/x.md");
+		expect(entity.pathAuthority).toBe("requested_echo");
+		expect(entity.identityKey).toBe("id:x");
 		expect(entity.remoteChecksum).toEqual({ algo: "dropbox", value: "hashx" });
 		expect(entity.hash).not.toBe(""); // sha256 of content is computed on write
 
@@ -244,7 +246,12 @@ describe("DropboxFs.rename", () => {
 		const fs = await makeFs();
 		(fs as unknown as DropboxFsInternal).initialized = true;
 		// Seed a folder "docs" in the cache (as a full scan would).
-		await fs.mkdir("docs");
+		const folder = await fs.mkdir("docs");
+		expect(folder).toMatchObject({
+			path: "docs",
+			pathAuthority: "requested_echo",
+			identityKey: "id:d",
+		});
 
 		await fs.rename("docs", "papers");
 		expect((await fs.stat("papers"))?.isDirectory).toBe(true);

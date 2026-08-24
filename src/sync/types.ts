@@ -16,6 +16,8 @@ export interface SyncRecord {
 	remoteSize: number;
 	/** Remote-provided content checksum at last successful sync (for change detection) */
 	remoteChecksum?: RemoteChecksum;
+	/** Opaque remote identity observed at last sync; comparable only within one configured remote root */
+	remoteIdentityKey?: string;
 	/** Backend-specific metadata snapshot the sync engine does not interpret (e.g. Google Drive/pCloud file ID) */
 	backendMeta?: Record<string, unknown>;
 	/** Timestamp when this sync completed (Unix epoch ms) */

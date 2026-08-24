@@ -35,13 +35,23 @@ export class GoogleDriveMetadataCache extends AbstractMetadataCache<GoogleDriveF
 	 */
 	toEntity(path: string, googleDriveFile: GoogleDriveFile): FileEntity {
 		if (this.isFolder(path)) {
-			return { path, isDirectory: true, size: 0, mtime: 0, hash: "" };
+			return {
+				path,
+				pathAuthority: this.getPathAuthority(path),
+				identityKey: googleDriveFile.id,
+				isDirectory: true,
+				size: 0,
+				mtime: 0,
+				hash: "",
+			};
 		}
 		const parsedMtime = googleDriveFile.modifiedTime
 			? new Date(googleDriveFile.modifiedTime).getTime()
 			: 0;
 		return {
 			path,
+			pathAuthority: this.getPathAuthority(path),
+			identityKey: googleDriveFile.id,
 			isDirectory: false,
 			size: parseInt(googleDriveFile.size || "0", 10),
 			mtime: Number.isNaN(parsedMtime) ? 0 : parsedMtime,

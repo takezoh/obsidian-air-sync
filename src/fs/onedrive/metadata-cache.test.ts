@@ -32,7 +32,14 @@ describe("OneDriveMetadataCache.buildFromFiles (id-chain resolution)", () => {
 		expect(file.backendMeta).toMatchObject({ oneDriveId: "f1" });
 
 		cache.buildFromFiles([odFolder("d1", "dir", ROOT)]);
-		expect(cache.toEntity("dir", cache.getFile("dir")!)).toMatchObject({ isDirectory: true, size: 0, mtime: 0, hash: "" });
+		expect(cache.toEntity("dir", cache.getFile("dir")!)).toMatchObject({
+			pathAuthority: "actual_resolved",
+			identityKey: "d1",
+			isDirectory: true,
+			size: 0,
+			mtime: 0,
+			hash: "",
+		});
 	});
 });
 

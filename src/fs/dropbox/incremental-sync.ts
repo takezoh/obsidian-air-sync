@@ -169,7 +169,7 @@ function applyUpsertEntry(ctx: DropboxSyncContext, acc: DeltaAccumulator, entry:
 	if (oldPath === undefined) {
 		for (const d of cache.collectDescendants(path!)) acc.changedPaths.add(d);
 	}
-	cache.setEntry(path!, entry);
+	cache.setEntry(path!, entry, "actual_resolved");
 	acc.changedPaths.add(path!);
 }
 
@@ -216,7 +216,7 @@ function applyRename(
 	const displaced = cache.hasFile(newPath) ? cache.collectDescendants(newPath) : [];
 
 	cache.removeEntry(oldPath);
-	cache.setEntry(newPath, entry);
+	cache.setEntry(newPath, entry, "actual_resolved");
 	if (wasFolder) cache.rewriteChildPaths(oldPath, newPath);
 
 	acc.renamedPaths.push({ oldPath, newPath, isFolder: wasFolder || undefined });
