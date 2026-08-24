@@ -226,6 +226,46 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.close();
 		});
 
+		it("replays a deferred local rename from durable debt after orchestrator restart", async () => {
+			const localFs = createMockFs("local");
+			const remoteFs = createMockFs("remote");
+			addFile(localFs, "a.md", "changed", 2000);
+			addFile(remoteFs, "A.md", "old", 1000);
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`, lastSyncedIdentity: "test:root",
+			});
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
+			const firstTracker = new LocalChangeTracker();
+			firstTracker.markRenamed("a.md", "A.md");
+			const firstDeps = createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+				localTracker: firstTracker,
+			});
+			const first = new SyncOrchestrator(firstDeps);
+			await first.state.put({
+				path: "A.md", hash: "different-baseline", localMtime: 1000, remoteMtime: 1000,
+				localSize: 3, remoteSize: 3, syncedAt: 900,
+			});
+			await first.runSync();
+			expect(await first.state.getRenameDebts("test:root")).toHaveLength(1);
+			await first.close();
+
+			const remoteWrite = vi.spyOn(remoteFs, "write");
+			const remoteDelete = vi.spyOn(remoteFs, "delete");
+			const secondDeps = createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+				localTracker: new LocalChangeTracker(),
+			});
+			const restarted = new SyncOrchestrator(secondDeps);
+			await restarted.runSync();
+
+			expect(remoteWrite).not.toHaveBeenCalled();
+			expect(remoteDelete).not.toHaveBeenCalled();
+			expect(await restarted.state.getRenameDebts("test:root")).toHaveLength(1);
+			expect(secondDeps.onStatusChange).toHaveBeenLastCalledWith("partial_error");
+			await restarted.close();
+		});
+
 		it("retires debt after replay proves convergence when checkpoint commit failed after rename I/O", async () => {
 			const localFs = createMockFs("local");
 			const remoteFs = createMockFs("remote");

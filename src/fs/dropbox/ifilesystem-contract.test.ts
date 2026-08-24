@@ -152,4 +152,5 @@ function makeFakeDropboxClient(): DropboxClient {
 // cache work; the checkpoint machinery has its own contract.
 runIFileSystemContract("DropboxFs", () => new DropboxFs(makeFakeDropboxClient(), ROOT_ID), {
 	computesHashOnStat: false,
+	stableIdentity: true,
 });

@@ -20,11 +20,12 @@ import { registerWriteContract } from "./ifilesystem-contract-writes.test";
  * orchestrator-level in-session convergence (state C) is pinned in
  * `orchestrator.test.ts`. A new remote backend runs all three.
  *
- * `opts.computesHashOnStat` is the only backend-class difference here, and it is
- * intrinsic, not a weakness: local-storage backends (mock, LocalFs) compute a
+ * The opt-in capability flags are intrinsic backend-class differences, not
+ * weaknesses: local-storage backends (mock, LocalFs) compute a
  * content hash on `stat()`, while remote backends return `hash: ""` and carry a
- * `remoteChecksum` instead (see {@link IFileSystem.stat}). Everything else is a
- * universal invariant the engine depends on — including type-collision errors
+ * `remoteChecksum` instead (see {@link IFileSystem.stat}); native remote backends
+ * expose a same-root stable identity while local storage does not promise one.
+ * Everything else is a universal invariant the engine depends on — including type-collision errors
  * and exact messages, which a backend that omits them must FIX rather than
  * opt out of.
  *
@@ -34,6 +35,11 @@ import { registerWriteContract } from "./ifilesystem-contract-writes.test";
  * `describe` via the shared {@link IFileSystemContractCtx}.
  */
 export interface IFileSystemContractOpts {
+	/**
+	 * Whether the backend exposes an opaque native identity that survives rename
+	 * within this configured root and changes when a path is replaced.
+	 */
+	stableIdentity?: boolean;
 	/**
 	 * Whether `stat()` fills `FileEntity.hash` with a real content hash for files.
 	 * True for local-storage backends (mock, LocalFs); false for remote backends
@@ -148,7 +154,41 @@ export function runIFileSystemContract(
 		};
 
 		registerRenameAndReadContract(ctx);
+		if (opts.stableIdentity) registerStableIdentityContract(ctx);
 		registerWriteContract(ctx);
+	});
+}
+
+function registerStableIdentityContract(ctx: IFileSystemContractCtx): void {
+	describe("stable identity", () => {
+		it("survives rename and distinguishes replacement at the same path", async () => {
+			await ctx.seed("identity-old.txt", "first");
+			const echoed = await ctx.fs().stat("identity-old.txt");
+			// Mutation-backed cache paths echo the requested spelling. A backend must
+			// expose that limitation instead of upgrading it to resolved-path proof.
+			expect(echoed?.pathAuthority).toBe("requested_echo");
+			expect(echoed?.identityKey).toBeTruthy();
+
+			// A replay-free full observation is producer-resolved and must retain the
+			// same opaque identity. Missing checkpoint capability is not guessed.
+			expect(ctx.fs().checkpoint).toBeDefined();
+			await ctx.fs().checkpoint!.resetCheckpoint();
+			const before = (await ctx.fs().list()).find((item) => item.path === "identity-old.txt");
+			expect(before?.pathAuthority).toBe("actual_resolved");
+			expect(before?.identityKey).toBeTruthy();
+			expect(before?.identityKey).toBe(echoed?.identityKey);
+
+			await ctx.fs().rename("identity-old.txt", "identity-new.txt");
+			const moved = await ctx.fs().stat("identity-new.txt");
+			expect(moved?.pathAuthority).toBe("requested_echo");
+			expect(moved?.identityKey).toBe(before?.identityKey);
+
+			await ctx.fs().delete("identity-new.txt");
+			await ctx.seed("identity-new.txt", "replacement");
+			const replacement = await ctx.fs().stat("identity-new.txt");
+			expect(replacement?.identityKey).toBeTruthy();
+			expect(replacement?.identityKey).not.toBe(before?.identityKey);
+		});
 	});
 }
 

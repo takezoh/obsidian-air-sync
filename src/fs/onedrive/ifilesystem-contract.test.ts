@@ -131,6 +131,7 @@ function makeFakeOneDriveClient(): OneDriveClient {
 // cache work; the checkpoint machinery has its own contract.
 runIFileSystemContract("OneDriveFs", () => new OneDriveFs(makeFakeOneDriveClient(), ROOT_ID), {
 	computesHashOnStat: false,
+	stableIdentity: true,
 });
 
 describe("OneDriveFs mutation provenance", () => {

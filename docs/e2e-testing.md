@@ -9,6 +9,13 @@ The **opt-in e2e** runs that *same* contract against the **live** APIs to catch 
 ([ADR 0003](adr/0003-opt-in-e2e-validates-fakes-against-real-backends.md)). It is
 **local/manual only** — never part of `npm test`, the lint gate, or CI.
 
+The OneDrive suite also runs the Issue #45 composed rename-safety scenario: establish a
+baseline, perform a local-origin case-only rename, perform a remote-origin case-only
+rename through the real Graph delta, reset the checkpoint for a later COLD cycle, then
+assert one correctly-cased copy, preserved content, and no opposing delete. Its shared
+CRUD contract additionally verifies that native identity survives rename and changes on
+same-path replacement.
+
 > **Use a throwaway test account, not a real vault.** The suite creates and then
 > recursively deletes an `airsync-e2e-*` folder on each run.
 
@@ -23,7 +30,8 @@ npm run test:e2e                      # runs the contract against the live APIs
 ```
 
 With **no** credentials, `npm run test:e2e` warns and skips every backend and exits 0 — so
-it can never break anything if run by accident.
+it can never break anything if run by accident. A skipped run proves only that the harness
+is credential-gated; it is not live semantic evidence and must be reported as blocked.
 
 ## Prerequisites
 

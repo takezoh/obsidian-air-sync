@@ -1,8 +1,13 @@
-import { afterAll, beforeAll, describe } from "vitest";
+import "fake-indexeddb/auto";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { OneDriveAuth } from "../src/fs/onedrive/auth";
 import { OneDriveClient } from "../src/fs/onedrive/client";
 import { OneDriveFs } from "../src/fs/onedrive/index";
-import { runIFileSystemContract } from "../src/fs/ifilesystem-contract.test";
+import { bytes, runIFileSystemContract } from "../src/fs/ifilesystem-contract.test";
+import { createMockFs } from "../src/__mocks__/sync-test-helpers";
+import { LocalChangeTracker } from "../src/sync/local-tracker";
+import { SyncOrchestrator } from "../src/sync/orchestrator";
+import { DEFAULT_SETTINGS } from "../src/settings";
 import { readCreds } from "./helpers/env";
 import {
 	cleanupOneDriveParent,
@@ -73,6 +78,80 @@ if (!creds || !clientId) {
 		// precision (this e2e proved 12345 → 12000), so it round-trips only to the
 		// second: mtimePrecisionMs 1000. The OneDrive fake echoes full ms, hence the
 		// unit contract stays exact and only this live run carries the precision knob.
-		{ computesHashOnStat: false, mtimePrecisionMs: 1000 },
+		{ computesHashOnStat: false, mtimePrecisionMs: 1000, stableIdentity: true },
 	);
+
+	describe("OneDrive rename safety — composed multi-cycle sync (real)", () => {
+		it("preserves one correctly-cased copy across both rename origins and later COLD", async () => {
+			const childId = await makeOneDriveChild(client, parentId);
+			const remoteFs = new OneDriveFs(client, childId);
+			const localFs = createMockFs("local");
+			const tracker = new LocalChangeTracker();
+			const settings = {
+				...DEFAULT_SETTINGS,
+				vaultId: `onedrive-e2e-${crypto.randomUUID()}`,
+				backendType: "onedrive",
+				lastSyncedIdentity: `onedrive:${childId}`,
+			};
+			const statuses: string[] = [];
+			const orchestrator = new SyncOrchestrator({
+				getSettings: () => settings,
+				saveSettings: vi.fn().mockResolvedValue(undefined),
+				configDir: () => ".obsidian",
+				pluginId: () => "air-sync",
+				localFs: () => localFs,
+				remoteFs: () => remoteFs,
+				backendProvider: () => null,
+				onStatusChange: (status) => { statuses.push(status); },
+				onProgress: vi.fn(),
+				notify: vi.fn(),
+				isMobile: () => false,
+				localTracker: tracker,
+			});
+			const localDelete = vi.spyOn(localFs, "delete");
+			const remoteDelete = vi.spyOn(remoteFs, "delete");
+			const localRename = vi.spyOn(localFs, "rename");
+			const remoteRename = vi.spyOn(remoteFs, "rename");
+			const remoteList = vi.spyOn(remoteFs, "list");
+
+			try {
+				const content = bytes("case-preserved");
+				await localFs.write("Case.md", content, 1000);
+				await remoteFs.write("Case.md", content, 1000);
+				// Discard mutation-backed requested-echo cache state. The initial cycle
+				// must re-observe the live backend and establish a clean baseline.
+				await remoteFs.checkpoint.resetCheckpoint();
+				await orchestrator.runSync();
+
+				await localFs.rename("Case.md", "case.md");
+				tracker.markRenamed("case.md", "Case.md");
+				await orchestrator.runSync();
+				expect(remoteRename).toHaveBeenCalledWith("Case.md", "case.md");
+
+				const moved = await remoteFs.stat("case.md");
+				expect(moved?.identityKey).toBeTruthy();
+				await client.move(moved!.identityKey!, "CASE.md", undefined);
+				await orchestrator.runSync();
+				expect(localRename).toHaveBeenCalledWith("case.md", "CASE.md");
+
+				// A later COLD cycle must confirm convergence without an opposing delete.
+				const listsBeforeCold = remoteList.mock.calls.length;
+				await remoteFs.checkpoint.resetCheckpoint();
+				await orchestrator.runSync();
+				expect(remoteList).toHaveBeenCalledTimes(listsBeforeCold + 1);
+				expect((await localFs.list()).filter((item) => !item.isDirectory).map((item) => item.path))
+					.toEqual(["CASE.md"]);
+				expect((await remoteFs.list()).filter((item) => !item.isDirectory).map((item) => item.path))
+					.toEqual(["CASE.md"]);
+				expect(new TextDecoder().decode(await localFs.read("CASE.md"))).toBe("case-preserved");
+				expect(new TextDecoder().decode(await remoteFs.read("CASE.md"))).toBe("case-preserved");
+				expect(localDelete).not.toHaveBeenCalled();
+				expect(remoteDelete).not.toHaveBeenCalled();
+				expect(statuses.at(-1)).toBe("idle");
+			} finally {
+				await orchestrator.close();
+				await remoteFs.close();
+			}
+		});
+	});
 }
