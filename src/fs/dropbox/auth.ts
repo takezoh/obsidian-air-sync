@@ -2,6 +2,7 @@ import { requestUrl } from "../../platform/obsidian";
 import type { ISecretStore } from "../secret-store";
 import type { Logger } from "../../logging/logger";
 import { AuthError } from "../errors";
+import { logBackendErrorResponse } from "../backend-error-log";
 import { BaseOAuthTokenManager, extractTokenErrorDetail } from "../oauth-pkce";
 import { PkceAuthProvider } from "../pkce-auth-provider";
 import { DROPBOX_AUTH } from "../auth-config";
@@ -82,6 +83,7 @@ export class DropboxAuth extends BaseOAuthTokenManager {
 			}).toString(),
 		});
 		if (res.status < 200 || res.status >= 300) {
+			logBackendErrorResponse(this.logger, "Dropbox token", "exchangeCode", res);
 			throw new Error(`Token exchange failed: ${res.status} ${extractTokenErrorDetail(res)}`);
 		}
 		assertDropboxTokenResponse(res.json);
@@ -108,10 +110,12 @@ export class DropboxAuth extends BaseOAuthTokenManager {
 			throw err;
 		}
 		if (res.status === 400 || res.status === 401) {
+			logBackendErrorResponse(this.logger, "Dropbox token", "performRefresh", res);
 			this.authFailedAt = Date.now();
 			throw new AuthError(`Token refresh failed: ${res.status} ${extractTokenErrorDetail(res)}`, res.status);
 		}
 		if (res.status < 200 || res.status >= 300) {
+			logBackendErrorResponse(this.logger, "Dropbox token", "performRefresh", res);
 			throw new Error(`Token refresh failed: ${res.status} ${extractTokenErrorDetail(res)}`);
 		}
 		assertDropboxTokenResponse(res.json);

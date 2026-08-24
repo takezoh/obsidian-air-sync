@@ -5,6 +5,7 @@ import {
 	computeS256Challenge,
 	buildOAuthState,
 	BaseOAuthTokenManager,
+	extractTokenErrorDetail,
 	type OAuthTokenResponse,
 } from "./oauth-pkce";
 import { AuthError } from "./errors";
@@ -164,5 +165,36 @@ describe("BaseOAuthTokenManager", () => {
 		await m.getAccessToken(true);
 		expect(rotated).toEqual(["RT2"]);
 		expect(m.getTokenState().refreshToken).toBe("RT2");
+	});
+});
+
+describe("extractTokenErrorDetail", () => {
+	// Microsoft's RFC 6749 error body carries the fields its support actually needs
+	// (`error_codes`, `trace_id`, `correlation_id`, `suberror`). Picking
+	// `error_description` used to drop every one of them.
+	it("returns the whole body, not a picked field", () => {
+		const detail = extractTokenErrorDetail({
+			json: {
+				error: "invalid_grant",
+				error_description: "AADSTS7000012: The grant was obtained for a different tenant.",
+				error_codes: [7000012],
+				trace_id: "f34ffa47-bccd-443f-8180-358bbe594b01",
+				correlation_id: "27981afe-82ba-4811-9a2c-f6771159458a",
+				suberror: "consent_required",
+			},
+		});
+		expect(detail).toContain("invalid_grant");
+		expect(detail).toContain("AADSTS7000012");
+		expect(detail).toContain("7000012");
+		expect(detail).toContain("f34ffa47-bccd-443f-8180-358bbe594b01");
+		expect(detail).toContain("consent_required");
+	});
+
+	it("falls back to the raw text for a non-JSON body", () => {
+		expect(extractTokenErrorDetail({ text: "Bad Gateway" })).toBe("Bad Gateway");
+	});
+
+	it("reports an empty body rather than an empty string", () => {
+		expect(extractTokenErrorDetail({})).toBe("(empty body)");
 	});
 });

@@ -1,5 +1,6 @@
 import type { Logger } from "../logging/logger";
 import { AuthError } from "./errors";
+import { describeErrorBody, MAX_MESSAGE_BODY_CHARS } from "./backend-error-log";
 
 /**
  * Shared OAuth/PKCE primitives used by every cloud backend that speaks OAuth 2.0
@@ -105,20 +106,20 @@ export interface OAuthTokenResponse {
 }
 
 /**
- * Extract a readable error detail from an OAuth token-endpoint error response,
- * preferring `error_description`, then `error`, then the raw text. Shared by the
- * worker-less PKCE backends (Dropbox, OneDrive) whose token endpoints return the
+ * Render an OAuth token-endpoint ERROR response for a thrown message. Shared by the
+ * worker-less PKCE backends (Dropbox, OneDrive), whose token endpoints return the
  * same RFC 6749 error shape, so the message format can't drift between them.
+ *
+ * It used to pick `error_description`, else `error`, else the text — which dropped
+ * everything else the provider sent (`error_codes`, `trace_id`, `correlation_id`,
+ * `suberror`, `timestamp`). Those are precisely the fields a provider's support
+ * needs, so the body now goes through verbatim, like every other backend response.
+ *
+ * Safe for these responses specifically: a token endpoint only returns tokens on
+ * SUCCESS, and this is reached only for a non-2xx.
  */
 export function extractTokenErrorDetail(res: { json?: unknown; text?: string }): string {
-	try {
-		const json = res.json as { error_description?: string; error?: string } | undefined;
-		if (json?.error_description) return json.error_description;
-		if (json?.error) return json.error;
-	} catch {
-		// fall through to text
-	}
-	return typeof res.text === "string" ? res.text : "";
+	return describeErrorBody(res, MAX_MESSAGE_BODY_CHARS);
 }
 
 /**

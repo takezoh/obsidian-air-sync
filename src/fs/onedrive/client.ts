@@ -100,7 +100,7 @@ export class OneDriveClient {
 			await this.sleep(delay);
 			return this.request(op, opts, { ...state, rateLimitRetries: state.rateLimitRetries + 1 }, skipAuth);
 		}
-		assertOk(res, op);
+		assertOk(res, op, this.logger);
 		return res;
 	};
 

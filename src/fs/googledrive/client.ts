@@ -1,6 +1,7 @@
 import { requestUrl } from "../../platform/obsidian";
 import type { RequestUrlParam } from "../../platform/obsidian";
 import type { Logger } from "../../logging/logger";
+import { describeErrorBody, logBackendErrorResponse, MAX_MESSAGE_BODY_CHARS } from "../backend-error-log";
 import type { GoogleDriveFile, GoogleDriveFileList, GoogleDriveChangeList } from "./types";
 import {
 	FOLDER_MIME,
@@ -63,19 +64,31 @@ export class GoogleDriveClient {
 			}
 
 			const msg = err instanceof Error ? err.message : String(err);
-			const wrapped = new Error(`Google Drive API ${operation} failed: ${msg}`);
 			if (err && typeof err === "object") {
 				const src = err as Record<string, unknown>;
-				this.logger?.error("Google Drive API request failed", { operation, status: src.status, error: msg });
+				const res = {
+					status: typeof src.status === "number" ? src.status : 0,
+					json: src.json,
+					text: typeof src.text === "string" ? src.text : undefined,
+					headers: src.headers as Record<string, string> | undefined,
+				};
+				// Log the whole response, and carry it verbatim in the message. Drive puts
+				// the actionable reason in `error.errors[].reason` (rateLimitExceeded,
+				// storageQuotaExceeded, …), which `err.message` alone does not contain.
+				logBackendErrorResponse(this.logger, "Google Drive", operation, res);
+				const detail = src.json !== undefined || res.text !== undefined
+					? describeErrorBody(res, MAX_MESSAGE_BODY_CHARS)
+					: msg;
+				const wrapped = new Error(`Google Drive API ${operation} failed: ${detail}`);
 				for (const key of ["status", "headers", "json"] as const) {
 					if (key in src) {
 						(wrapped as unknown as Record<string, unknown>)[key] = src[key];
 					}
 				}
-			} else {
-				this.logger?.error("Google Drive API request failed", { operation, error: msg });
+				throw wrapped;
 			}
-			throw wrapped;
+			this.logger?.error("Google Drive API request failed", { operation, error: msg });
+			throw new Error(`Google Drive API ${operation} failed: ${msg}`);
 		}
 	}
 

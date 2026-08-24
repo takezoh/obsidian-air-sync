@@ -1,5 +1,7 @@
 import type { FileEntity } from "../types";
+import type { Logger } from "../../logging/logger";
 import { AuthError } from "../errors";
+import { describeErrorBody, logBackendErrorResponse, MAX_MESSAGE_BODY_CHARS } from "../backend-error-log";
 
 /**
  * A Dropbox file/folder metadata entry (the subset Air Sync uses).
@@ -116,20 +118,27 @@ const AUTH_ERROR_TAGS = new Set([
  * @throws {DropboxApiError} for any other non-2xx (409 endpoint errors, 429
  *   rate limits, 5xx), preserving the status and `error_summary`.
  */
-export function assertOk(res: { status: number; json?: unknown; text?: string }, op: string): void {
+export function assertOk(
+	res: { status: number; json?: unknown; text?: string; headers?: Record<string, string> },
+	op: string,
+	logger?: Logger,
+): void {
 	if (res.status >= 200 && res.status < 300) return;
+	// Log the whole response first — `error_summary` is a distillation, and a
+	// `user_message` or an unrecognised `.tag` shape would otherwise be lost.
+	logBackendErrorResponse(logger, "Dropbox", op, res);
 	let body: DropboxErrorBody | undefined;
 	try {
 		body = res.json as DropboxErrorBody | undefined;
 	} catch {
 		body = undefined;
 	}
+	// `summary`/`tag` are still read — but ONLY for branching (auth class, and the
+	// `summary` carried on DropboxApiError for `path/conflict` / `reset` callers).
+	// The message itself carries the body verbatim rather than a distillation.
 	const summary = body?.error_summary ?? (typeof res.text === "string" ? res.text : "");
 	const tag = body?.error?.[".tag"] ?? summary.split("/")[0] ?? "";
-	const detail = summary || tag;
-	const message = detail
-		? `Dropbox API ${op} failed: ${res.status} ${detail}`
-		: `Dropbox API ${op} failed: ${res.status}`;
+	const message = `Dropbox API ${op} failed: ${res.status} ${describeErrorBody(res, MAX_MESSAGE_BODY_CHARS)}`;
 	if (res.status === 401 || AUTH_ERROR_TAGS.has(tag)) {
 		throw new AuthError(message, 401);
 	}

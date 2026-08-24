@@ -50,8 +50,15 @@ export class AppFolderPickerModal extends Modal {
 		try {
 			const client = this.provider.createUiClient(this.settings);
 			folders = (await client.listAppRootFolders()).map((f) => f.name);
-		} catch {
-			contentEl.createEl("p", { text: "Could not list existing folders. You can still create a new one below." });
+		} catch (err) {
+			// Show WHY, not just that it failed: the backend's own message is what
+			// distinguishes "nothing there yet" from a service-side denial, and a bare
+			// "could not list" reads like the former even when it is the latter. The full
+			// response body is already in the log (see fs/backend-error-log.ts).
+			const reason = err instanceof Error ? err.message : String(err);
+			contentEl.createEl("p", {
+				text: `Could not list existing folders: ${reason}. You can still create a new one below.`,
+			});
 		}
 
 		if (folders.length > 0) {

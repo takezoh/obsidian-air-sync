@@ -1,4 +1,5 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import type { Logger } from "../../logging/logger";
 import {
 	assertOk,
 	assertMicrosoftTokenResponse,
@@ -38,6 +39,77 @@ describe("assertOk", () => {
 			expect((err as GraphApiError).status).toBe(409);
 			expect((err as GraphApiError).code).toBe("nameAlreadyExists");
 		}
+	});
+
+	// RED (issue #42): Graph's `error.message` is the only field that distinguishes a
+	// missing App Folder from an insufficient grant, and `suffix = code || detail`
+	// (types.ts:134) drops it whenever a code is present — which it always is for 403.
+	it("keeps the Graph error.message alongside the code for a 403 accessDenied", () => {
+		expect(() =>
+			assertOk(
+				{
+					status: 403,
+					json: {
+						error: {
+							code: "accessDenied",
+							message: "Access denied. You do not have permission to perform this action or access this resource.",
+						},
+					},
+				},
+				"getAppRoot",
+			),
+		).toThrow(/Access denied\. You do not have permission/);
+	});
+
+	// The live issue-#42 shape: Graph kept the actionable condition in `innerError.code`
+	// while the outer code stayed the generic `accessDenied`. Nothing the backend sent
+	// may be dropped — including fields this codebase does not model.
+	it("carries the whole Graph error body, innerError and unmodelled fields included", () => {
+		let thrown: unknown;
+		try {
+			assertOk(
+				{
+					status: 403,
+					json: {
+						error: {
+							code: "accessDenied",
+							message: "Access denied",
+							innerError: { code: "serviceReadOnly", "request-id": "33575d37", date: "2026-08-20T02:16:12" },
+							suberror: "a_field_this_codebase_does_not_model",
+						},
+					},
+				},
+				"getAppRoot",
+			);
+		} catch (err) {
+			thrown = err;
+		}
+		const message = (thrown as Error).message;
+		expect(message).toContain("403");
+		expect(message).toContain("accessDenied");
+		expect(message).toContain("serviceReadOnly");
+		expect(message).toContain("33575d37");
+		expect(message).toContain("a_field_this_codebase_does_not_model");
+		// `code` is still exposed for callers that branch on it.
+		expect((thrown as GraphApiError).code).toBe("accessDenied");
+	});
+
+	it("logs the whole error response before throwing", () => {
+		const error = vi.fn();
+		const logger = { error } as unknown as Logger;
+		expect(() =>
+			assertOk({ status: 500, json: { error: { code: "internalError" } } }, "fullList", logger),
+		).toThrow(GraphApiError);
+		expect(error).toHaveBeenCalledTimes(1);
+		const [, context] = error.mock.calls[0] as [string, Record<string, unknown>];
+		expect(context).toMatchObject({ operation: "fullList", status: 500 });
+		expect(context.body).toContain("internalError");
+	});
+
+	it("still reports a non-JSON error body verbatim", () => {
+		expect(() => assertOk({ status: 502, text: "<html>proxy blocked</html>" }, "download")).toThrow(
+			/<html>proxy blocked<\/html>/,
+		);
 	});
 
 	it("throws a GraphApiError for a 410 resync", () => {

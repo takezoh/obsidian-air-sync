@@ -3,6 +3,7 @@ import type { Logger } from "../../logging/logger";
 import { assertTokenResponse } from "./types";
 import { BaseOAuthTokenManager, buildOAuthState, computeS256Challenge, generateRandomString } from "../oauth-pkce";
 import { GOOGLE_DRIVE_AUTH, DEFAULT_CUSTOM_REDIRECT_URI } from "../auth-config";
+import { describeErrorBody, MAX_MESSAGE_BODY_CHARS } from "../backend-error-log";
 
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -323,15 +324,20 @@ export class GoogleAuthDirect extends GoogleAuthBase {
 	}
 }
 
-/** Extract error detail from a Google OAuth error response */
+/**
+ * Render a Google OAuth error response for a thrown message. The body goes through
+ * verbatim rather than being reduced to `error: error_description` — Google also
+ * returns fields that rule out whole causes (`error_uri`, `error_subtype`, and the
+ * nested `error.errors[].reason` shape), and a picked pair discards them.
+ * Falls back to the Error's own message when there is no response body at all.
+ */
 function extractGoogleErrorDetail(err: unknown): string {
-	const json = (err as { json?: unknown }).json;
-	if (json && typeof json === "object") {
-		const obj = json as Record<string, unknown>;
-		if (typeof obj.error === "string") {
-			const desc = typeof obj.error_description === "string" ? obj.error_description : "";
-			return desc ? `${obj.error}: ${desc}` : obj.error;
-		}
+	const src = (err ?? {}) as { json?: unknown; text?: unknown };
+	if (src.json !== undefined || typeof src.text === "string") {
+		return describeErrorBody(
+			{ status: 0, json: src.json, text: typeof src.text === "string" ? src.text : undefined },
+			MAX_MESSAGE_BODY_CHARS,
+		);
 	}
 	return err instanceof Error ? err.message : String(err);
 }

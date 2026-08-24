@@ -1,5 +1,7 @@
 import type { FileEntity, RemoteChecksum } from "../types";
+import type { Logger } from "../../logging/logger";
 import { AuthError } from "../errors";
+import { describeErrorBody, logBackendErrorResponse, MAX_MESSAGE_BODY_CHARS } from "../backend-error-log";
 
 /**
  * A Microsoft Graph `driveItem` (the subset Air Sync uses).
@@ -78,9 +80,14 @@ export function assertMicrosoftTokenResponse(json: unknown): asserts json is Mic
 	}
 }
 
-/** Shape of a Microsoft Graph JSON error body. */
+/**
+ * Shape of a Microsoft Graph JSON error body. `innerError.code` is the field that
+ * actually names a service-side condition (e.g. `serviceReadOnly` during an App
+ * Folder incident) while the outer `code` stays a generic `accessDenied`, so it is
+ * typed here rather than left as `unknown`.
+ */
 interface GraphErrorBody {
-	error?: { code?: string; message?: string; innerError?: unknown };
+	error?: { code?: string; message?: string; innerError?: { code?: string } & Record<string, unknown> };
 }
 
 /**
@@ -121,20 +128,30 @@ const AUTH_ERROR_CODES = new Set([
  * @throws {GraphApiError} for any other non-2xx (409 conflicts, 410 resync, 429
  *   rate limits, 5xx), preserving the status and error `code`.
  */
-export function assertOk(res: { status: number; json?: unknown; text?: string }, op: string): void {
+export function assertOk(
+	res: { status: number; json?: unknown; text?: string; headers?: Record<string, string> },
+	op: string,
+	logger?: Logger,
+): void {
 	if (res.status >= 200 && res.status < 300) return;
+	// Log the whole response first: whatever this function distils into the thrown
+	// message, the raw body (including `innerError`) stays recoverable from the log.
+	logBackendErrorResponse(logger, "OneDrive", op, res);
 	let body: GraphErrorBody | undefined;
 	try {
 		body = res.json as GraphErrorBody | undefined;
 	} catch {
 		body = undefined;
 	}
+	// `code` is still read — but ONLY for branching (auth class, and the code carried
+	// on GraphApiError for 409/410 callers). It is deliberately not used to build the
+	// message: hand-picking fields is what made the live `serviceReadOnly` incident
+	// invisible, and any field Graph adds later would be dropped the same way.
 	const code = body?.error?.code ?? "";
-	const detail = body?.error?.message ?? (typeof res.text === "string" ? res.text : "");
-	const suffix = code || detail;
-	const message = suffix
-		? `OneDrive API ${op} failed: ${res.status} ${suffix}`
-		: `OneDrive API ${op} failed: ${res.status}`;
+	// The message carries the response body verbatim. Whatever Graph chose to say —
+	// `message`, `innerError.code`, request ids, fields not modelled here — reaches
+	// the user's notice and their bug report intact.
+	const message = `OneDrive API ${op} failed: ${res.status} ${describeErrorBody(res, MAX_MESSAGE_BODY_CHARS)}`;
 	if (res.status === 401 || AUTH_ERROR_CODES.has(code)) {
 		throw new AuthError(message, 401);
 	}

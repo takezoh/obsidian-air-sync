@@ -497,11 +497,17 @@ describe("GoogleAuthDirect.handleAuthCallback", () => {
 		).rejects.toThrow("PKCE code verifier is missing");
 	});
 
-	it("includes Google error detail when token exchange fails", async () => {
+	it("carries the whole Google error body when token exchange fails", async () => {
 		const err = new Error("Request failed, status 400");
 		Object.assign(err, {
 			status: 400,
-			json: { error: "redirect_uri_mismatch", error_description: "Bad Request" },
+			// `error_uri` stands in for the fields a picked `error: error_description`
+			// pair used to drop: the body must reach the message intact.
+			json: {
+				error: "redirect_uri_mismatch",
+				error_description: "Bad Request",
+				error_uri: "https://developers.google.com/identity/protocols/oauth2",
+			},
 		});
 		const mockRequestUrl = (await spyRequestUrl()).mockRejectedValue(err);
 
@@ -510,9 +516,11 @@ describe("GoogleAuthDirect.handleAuthCallback", () => {
 		auth.setAuthState("state");
 		auth.setCodeVerifier("verifier");
 
-		await expect(
-			auth.handleAuthCallback({ code: "code", state: "state" })
-		).rejects.toThrow("Token exchange failed: redirect_uri_mismatch: Bad Request");
+		const thrown = auth.handleAuthCallback({ code: "code", state: "state" });
+		await expect(thrown).rejects.toThrow("Token exchange failed");
+		await expect(thrown).rejects.toThrow("redirect_uri_mismatch");
+		await expect(thrown).rejects.toThrow("Bad Request");
+		await expect(thrown).rejects.toThrow("developers.google.com");
 
 		mockRequestUrl.mockRestore();
 	});

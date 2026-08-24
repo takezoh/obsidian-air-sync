@@ -136,7 +136,7 @@ export class DropboxClient {
 			await this.sleep(delay);
 			return this.request(op, opts, { ...state, rateLimitRetries: state.rateLimitRetries + 1 });
 		}
-		assertOk(res, op);
+		assertOk(res, op, this.logger);
 		return res;
 	}
 

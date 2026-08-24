@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { spyRequestUrl, mockRes } from "./test-helpers.test";
+import type { Logger } from "../../logging/logger";
 
 vi.mock("obsidian");
 
@@ -39,6 +40,42 @@ describe("GoogleDriveClient error wrapping", () => {
 			expect(errObj.status).toBe(403);
 			expect(errObj.headers).toEqual({ "retry-after": "30" });
 		}
+
+		mockRequestUrl.mockRestore();
+	});
+
+	// Drive keeps the actionable reason in `error.errors[].reason`, which `err.message`
+	// alone never contains — the wrapped message must carry the response body verbatim.
+	it("carries the whole Drive error body in the message and logs it", async () => {
+		const error = vi.fn();
+		const logger = { error } as unknown as Logger;
+		const originalError = Object.assign(new Error("Request failed, status 403"), {
+			status: 403,
+			json: {
+				error: {
+					code: 403,
+					message: "Rate Limit Exceeded",
+					errors: [{ domain: "usageLimits", reason: "rateLimitExceeded", message: "Rate Limit Exceeded" }],
+				},
+			},
+		});
+		const mockRequestUrl = (await spyRequestUrl()).mockRejectedValue(originalError);
+
+		const { GoogleDriveClient } = await import("./client");
+		const client = new GoogleDriveClient(() => Promise.resolve("access"), logger);
+		try {
+			await client.listFiles("folder-id");
+			expect.fail("should have thrown");
+		} catch (err) {
+			const message = (err as Error).message;
+			expect(message).toContain("Google Drive API listFiles failed");
+			expect(message).toContain("rateLimitExceeded");
+			expect(message).toContain("usageLimits");
+		}
+		expect(error).toHaveBeenCalled();
+		const [, context] = error.mock.calls[0] as [string, Record<string, unknown>];
+		expect(context).toMatchObject({ operation: "listFiles", status: 403 });
+		expect(context.body).toContain("rateLimitExceeded");
 
 		mockRequestUrl.mockRestore();
 	});
