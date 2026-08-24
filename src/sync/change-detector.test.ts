@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { collectChanges, enrichHashesForRenames } from "./change-detector";
+import { planSync } from "./decision-engine";
 import type { ChangeDetectorDeps } from "./change-detector";
 import { LocalChangeTracker } from "./local-tracker";
 import { createMockFs, createMockStateStore, addFile } from "../__mocks__/sync-test-helpers";
@@ -313,11 +314,19 @@ describe("collectChanges — temperature selection", () => {
 			expect(paths).toContain("remote-only.md");
 		});
 
-		it("includes remote deleted paths from getChangedPaths in hot mode", async () => {
+		it("retains an authoritative remote deletion with an unchanged local file in hot mode", async () => {
 			await stateStore.put(makeRecord("local-dirty.md", { localMtime: 500 }));
-			await stateStore.put(makeRecord("remote-deleted.md"));
 			addFile(localFs, "local-dirty.md", "changed", 2000);
-			// remote-deleted.md is absent from remoteFs (deleted)
+			addFile(localFs, "remote-deleted.md", "unchanged", 1000);
+			const unchanged = await localFs.stat("remote-deleted.md");
+			expect(unchanged).not.toBeNull();
+			await stateStore.put(makeRecord("remote-deleted.md", {
+				hash: unchanged!.hash,
+				localMtime: unchanged!.mtime,
+				localSize: unchanged!.size,
+			}));
+			// The local copy survives unchanged; only the checkpoint authoritatively
+			// reports that the remote copy was deleted.
 
 			remoteFs.checkpoint!.getChangedPaths = () => Promise.resolve({ modified: [], deleted: ["remote-deleted.md"] });
 
@@ -330,7 +339,35 @@ describe("collectChanges — temperature selection", () => {
 			const paths = result.entries.map((e) => e.path);
 			expect(paths).toContain("remote-deleted.md");
 			const deleted = result.entries.find((e) => e.path === "remote-deleted.md");
+			expect(deleted?.local).toBeDefined();
 			expect(deleted?.remote).toBeUndefined();
+			expect(planSync([deleted!]).actions).toMatchObject([
+				{ path: "remote-deleted.md", action: "delete_local" },
+			]);
+		});
+
+		it("keeps an authoritative remote deletion as conflict when the local file changed", async () => {
+			await stateStore.put(makeRecord("local-dirty.md", { localMtime: 500 }));
+			await stateStore.put(makeRecord("remote-deleted.md", {
+				hash: "baseline-hash",
+				localMtime: 1000,
+				localSize: 8,
+			}));
+			addFile(localFs, "local-dirty.md", "changed", 2000);
+			addFile(localFs, "remote-deleted.md", "locally changed", 2000);
+			remoteFs.checkpoint!.getChangedPaths = () => Promise.resolve({
+				modified: [],
+				deleted: ["remote-deleted.md"],
+			});
+			localTracker.acknowledge(localTracker.snapshot());
+			localTracker.markDirty("local-dirty.md");
+
+			const result = await collectChanges(makeDeps());
+			const deleted = result.entries.find((e) => e.path === "remote-deleted.md");
+
+			expect(planSync([deleted!]).actions).toMatchObject([
+				{ path: "remote-deleted.md", action: "conflict" },
+			]);
 		});
 
 		it("includes locally deleted file that still exists on remote", async () => {
