@@ -196,9 +196,10 @@ describe("LocalChangeTracker", () => {
 	});
 
 	describe("markFolderRenamed", () => {
-		it("records folder rename pair", () => {
+		it("records folder rename pair without pretending roots cover descendants", () => {
 			tracker.markFolderRenamed("B", "A");
 			expect(tracker.getFolderRenamePairs().get("B")).toBe("A");
+			expect(tracker.getDirtyPaths().size).toBe(0);
 		});
 
 		it("collapses folder rename chain A→B→C into A→C", () => {

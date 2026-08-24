@@ -11,6 +11,7 @@ vi.stubGlobal("document", { visibilityState: "visible" as string });
 import { SyncScheduler } from "./scheduler";
 import type { SyncSchedulerDeps } from "./scheduler";
 import type { TAbstractFile } from "obsidian";
+import { TFolder } from "../platform/obsidian";
 import { LocalChangeTracker } from "./local-tracker";
 import {
 	createMockFs,
@@ -22,6 +23,9 @@ import type { SyncRecord } from "./types";
 type VaultHandler = (file: TAbstractFile) => void;
 type RenameHandler = (file: TAbstractFile, oldPath: string) => void;
 type WorkspaceHandler = (...args: unknown[]) => Promise<void> | void;
+type TestFolder = TAbstractFile & { children: TAbstractFile[] };
+
+const TestFolderConstructor = TFolder as unknown as new (path: string) => TestFolder;
 
 function createDeps(
 	overrides: Partial<SyncSchedulerDeps> = {},
@@ -93,6 +97,12 @@ function createDeps(
 
 function makeFile(path: string): TAbstractFile {
 	return { path } as TAbstractFile;
+}
+
+function makeFolder(path: string, children: Array<string | TAbstractFile> = []): TAbstractFile {
+	const folder = new TestFolderConstructor(path);
+	folder.children = children.map((child) => typeof child === "string" ? makeFile(child) : child);
+	return folder;
 }
 
 describe("SyncScheduler", () => {
@@ -168,7 +178,7 @@ describe("SyncScheduler", () => {
 			);
 		});
 
-		it("falls back to markDirty when one side of rename is excluded", () => {
+		it("preserves rename evidence when the old endpoint is excluded", () => {
 			scheduler.destroy();
 			deps = createDeps({ isExcluded: (p: string) => p === "old.md" });
 			scheduler = new SyncScheduler(deps);
@@ -177,8 +187,94 @@ describe("SyncScheduler", () => {
 			const handler = deps.vaultHandlers.get("rename") as RenameHandler;
 			handler(makeFile("new.md"), "old.md");
 			expect(deps.localTracker.getDirtyPaths().has("new.md")).toBe(true);
-			expect(deps.localTracker.getDirtyPaths().has("old.md")).toBe(false);
+			expect(deps.localTracker.getDirtyPaths().has("old.md")).toBe(true);
+			expect(deps.localTracker.getRenamePairs().get("new.md")).toBe("old.md");
+		});
+
+		it("preserves rename evidence when the new endpoint is excluded", () => {
+			scheduler.destroy();
+			deps = createDeps({ isExcluded: (p: string) => p === "new.md" });
+			scheduler = new SyncScheduler(deps);
+			scheduler.start();
+
+			const handler = deps.vaultHandlers.get("rename") as RenameHandler;
+			handler(makeFile("new.md"), "old.md");
+			expect(deps.localTracker.getDirtyPaths()).toEqual(new Set(["old.md", "new.md"]));
+			expect(deps.localTracker.getRenamePairs().get("new.md")).toBe("old.md");
+		});
+
+		it("ignores a rename when both endpoints are excluded", () => {
+			scheduler.destroy();
+			deps = createDeps({ isExcluded: () => true });
+			scheduler = new SyncScheduler(deps);
+			scheduler.start();
+
+			const handler = deps.vaultHandlers.get("rename") as RenameHandler;
+			handler(makeFile("new.md"), "old.md");
+			vi.advanceTimersByTime(5000);
+
+			expect(deps.localTracker.getDirtyPaths().size).toBe(0);
 			expect(deps.localTracker.getRenamePairs().size).toBe(0);
+			expect(deps.runSync).not.toHaveBeenCalled();
+		});
+
+		it.each(["old", "new"] as const)(
+			"preserves a folder edge when only %s root is excluded",
+			(excluded) => {
+			scheduler.destroy();
+			deps = createDeps({ isExcluded: (path) => path === excluded });
+			scheduler = new SyncScheduler(deps);
+			scheduler.start();
+
+			const handler = deps.vaultHandlers.get("rename") as RenameHandler;
+			handler(makeFolder("new"), "old");
+
+			expect(deps.localTracker.getFolderRenamePairs().get("new")).toBe("old");
+			expect(deps.localTracker.getDirtyPaths().size).toBe(0);
+			},
+		);
+
+		it("preserves a folder edge when excluded roots contain an included descendant", () => {
+			scheduler.destroy();
+			deps = createDeps({
+				isExcluded: (path) => path === "old" || path === "new",
+			});
+			scheduler = new SyncScheduler(deps);
+			scheduler.start();
+
+			const handler = deps.vaultHandlers.get("rename") as RenameHandler;
+			handler(makeFolder("new", ["new/a.md"]), "old");
+
+			expect(deps.localTracker.getFolderRenamePairs().get("new")).toBe("old");
+			expect(deps.localTracker.getDirtyPaths().size).toBe(0);
+		});
+
+		it("finds an included descendant below an excluded nested folder", () => {
+			scheduler.destroy();
+			deps = createDeps({
+				isExcluded: (path) => !path.endsWith("a.md"),
+			});
+			scheduler = new SyncScheduler(deps);
+			scheduler.start();
+
+			const nested = makeFolder("new/nested", ["new/nested/a.md"]);
+			const handler = deps.vaultHandlers.get("rename") as RenameHandler;
+			handler(makeFolder("new", [nested]), "old");
+
+			expect(deps.localTracker.getFolderRenamePairs().get("new")).toBe("old");
+		});
+
+		it("ignores a folder edge only when roots and descendants are all excluded", () => {
+			scheduler.destroy();
+			deps = createDeps({ isExcluded: () => true });
+			scheduler = new SyncScheduler(deps);
+			scheduler.start();
+
+			const handler = deps.vaultHandlers.get("rename") as RenameHandler;
+			handler(makeFolder("new", ["new/a.md"]), "old");
+
+			expect(deps.localTracker.getFolderRenamePairs().size).toBe(0);
+			expect(deps.localTracker.getDirtyPaths().size).toBe(0);
 		});
 
 		it("skips excluded paths", () => {

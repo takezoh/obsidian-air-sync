@@ -23,6 +23,7 @@ import { buildSyncRecord } from "./state-committer";
 import { CycleSummary } from "./sync-notification";
 import type { SyncCycleResult } from "./sync-notification";
 import { FailedActionTracker } from "./failed-action-tracker";
+import { projectScope } from "./scope-projection";
 
 export type { SyncStatus };
 
@@ -404,13 +405,12 @@ export class SyncOrchestrator {
 
 		const isMobile = this.deps.isMobile();
 		const maxBytes = settings.mobileMaxFileSizeMB * 1024 * 1024;
+		const scopeProjection = projectScope(changeSet, {
+			classifyPath: (path) => this.isExcluded(path) ? "policy_out" : "included",
+			mobileMaxBytes: isMobile ? maxBytes : undefined,
+		});
 		const filtered = changeSet.entries.filter((e) => {
-			if (this.isExcluded(e.path)) return false;
-			if (isMobile) {
-				const size = Math.max(e.local?.size ?? 0, e.remote?.size ?? 0);
-				if (size > maxBytes) return false;
-			}
-			return true;
+			return scopeProjection.byEndpoint.get(e.path) === "included";
 		});
 
 		if (filtered.length !== changeSet.entries.length) {

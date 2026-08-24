@@ -34,6 +34,12 @@ export interface MixedEntity {
 
 export type SyncSide = "local" | "remote";
 
+export type ScopeDisposition = "included" | "policy_out" | "mobile_deferred" | "unknown";
+
+export interface ScopeProjection {
+	byEndpoint: ReadonlyMap<string, ScopeDisposition>;
+}
+
 export type PathObservation =
 	| { kind: "exact"; side: SyncSide; requestedPath: string; entity: FileEntity }
 	| { kind: "alias"; side: SyncSide; requestedPath: string; resolvedPath: string; entity: FileEntity }

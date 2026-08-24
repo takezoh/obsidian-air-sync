@@ -261,5 +261,31 @@ export function runCachingRemoteFsContract<TFile>(
 			expect(await fs.stat("dir/b.md")).toBeNull();
 			await store.close();
 		});
+
+		it("reads the post-delta snapshot without consuming the next delta", async () => {
+			const h = makeHarness();
+			h.seedFolderWithChild("dir", "b.md");
+			const store = h.makeStore("contract-snapshot-no-replay");
+			const fs = h.makeFs(store);
+			await fs.list();
+			await fs.commitCheckpoint();
+
+			h.stageRemoteRename("dir", "papers", { isFolder: true });
+			const first = await fs.getChangedPaths();
+			expect(first?.renamed).toContainEqual({
+				oldPath: "dir", newPath: "papers", isFolder: true,
+			});
+
+			h.stageRemoteRename("papers", "archive", { isFolder: true });
+			const snapshot = await fs.listCurrentSnapshot();
+			expect(snapshot.some((entry) => entry.path === "papers/b.md")).toBe(true);
+			expect(snapshot.some((entry) => entry.path === "archive/b.md")).toBe(false);
+
+			const second = await fs.getChangedPaths();
+			expect(second?.renamed).toContainEqual({
+				oldPath: "papers", newPath: "archive", isFolder: true,
+			});
+			await store.close();
+		});
 	});
 }

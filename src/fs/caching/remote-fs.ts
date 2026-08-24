@@ -461,6 +461,13 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 		});
 	}
 
+	async listCurrentSnapshot(): Promise<FileEntity[]> {
+		return this.cacheMutex.run(async () => {
+			await this.ensureInitialized();
+			return this.snapshotEntities();
+		});
+	}
+
 	// ── Read-only ops (walk the cache) ──
 
 	async list(): Promise<FileEntity[]> {
@@ -469,10 +476,14 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 			if (await this.ensureInitialized()) {
 				await this._applyIncrementalChanges();
 			}
-			return Array.from(this.cache.entries(), ([path, file]) =>
-				this.cache.toEntity(path, file),
-			);
+			return this.snapshotEntities();
 		});
+	}
+
+	private snapshotEntities(): FileEntity[] {
+		return Array.from(this.cache.entries(), ([path, file]) =>
+			this.cache.toEntity(path, file),
+		);
 	}
 
 	/**

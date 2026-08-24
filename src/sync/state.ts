@@ -1,4 +1,4 @@
-import type { RenamePair, SyncRecord } from "./types";
+import type { RenamePair, ScopeDisposition, SyncRecord } from "./types";
 import { IDBHelper, sanitizeDbName } from "../store/idb-helper";
 import { encodeContent, decodeContent } from "../store/content-codec";
 
@@ -15,7 +15,7 @@ const RENAME_DEBT_STORE_NAME = "rename-debt";
 const DB_VERSION = 6;
 
 export type RenameDebtSide = "local" | "remote";
-export type RenameDebtDisposition = "included" | "policy_out" | "mobile_deferred" | "unknown";
+export type RenameDebtDisposition = ScopeDisposition;
 
 /** One unresolved reported rename, scoped to a configured backend/root. */
 export interface RenameDebt {

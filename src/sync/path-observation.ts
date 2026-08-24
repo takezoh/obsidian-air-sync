@@ -81,6 +81,33 @@ export function ensureRenameEndpointObservations(
 	}
 }
 
+/** Resolve rename-origin endpoints that collection did not otherwise observe. */
+export async function confirmUnknownRenameEndpoints(
+	changeSet: { observations: PathObservation[]; identityEvidence: readonly IdentityEvidence[] },
+	localFs: IFileSystem,
+	remoteFs: IFileSystem,
+): Promise<void> {
+	const candidates = new Map<string, { side: SyncSide; path: string; fs: IFileSystem }>();
+	for (const evidence of changeSet.identityEvidence) {
+		if (evidence.kind !== "rename") continue;
+		for (const path of [evidence.oldPath, evidence.newPath]) {
+			const observation = changeSet.observations.find((candidate) =>
+				candidate.side === evidence.side && candidate.requestedPath === path);
+			if (observation?.kind === "unknown" && observation.reason === "not_observed") {
+				candidates.set(`${evidence.side}\0${path}`, {
+					side: evidence.side,
+					path,
+					fs: evidence.side === "local" ? localFs : remoteFs,
+				});
+			}
+		}
+	}
+	const pool = new AsyncPool(10);
+	await Promise.all([...candidates.values()].map(({ side, path, fs }) => pool.run(async () => {
+		replaceObservation(changeSet.observations, observePath(side, path, await fs.stat(path)));
+	})));
+}
+
 export function replaceObservation(observations: PathObservation[], replacement: PathObservation): void {
 	const index = observations.findIndex((observation) =>
 		observation.side === replacement.side && observation.requestedPath === replacement.requestedPath);

@@ -1,13 +1,21 @@
 import type { IFileSystem } from "../fs/interface";
-import type { IdentityEvidence, MixedEntity, PathObservation, RenameEvidence, SyncRecord } from "./types";
+import type { FileEntity } from "../fs/types";
+import type { IdentityEvidence, MixedEntity, PathObservation, SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
 import type { TrackerSnapshot } from "./local-tracker";
 import { hasChanged, hasRemoteChanged } from "./change-compare";
 import { sha256, digest, isLocallyComputable } from "../utils/hash";
 import { AsyncPool } from "../queue/async-queue";
-import { collectLocalRenameEvidence, collectRemoteRenameEvidence, completeIdentityEvidence } from "./identity-evidence";
+import { collectLocalRenameEvidence, completeIdentityEvidence } from "./identity-evidence";
+import {
+	getRemoteChanges,
+	hasFolderRename,
+	remoteSnapshotAfterDelta,
+	type RemoteChanges,
+} from "./remote-change-source";
 import {
 	confirmBaselineAbsences,
+	confirmUnknownRenameEndpoints,
 	ensureRenameEndpointObservations,
 	exactEntity,
 	observePath,
@@ -56,8 +64,20 @@ export async function collectChanges(
 	let changeSet: ChangeSet;
 
 	// Determine temperature
-	if (!opts.forceFullScan && changes.initialized && changes.dirtyPaths.size > 0) {
-		changeSet = await collectHot(deps);
+	if (!opts.forceFullScan && changes.initialized && changes.dirtyPaths.size > 0 &&
+		changes.folderRenamePairs.size === 0) {
+		const remoteChanges = await getRemoteChanges(deps.remoteFs);
+		if (hasFolderRename(remoteChanges)) {
+			changeSet = await collectCold(
+				deps,
+				await stateStore.getAll(),
+				remoteChanges,
+				undefined,
+				await remoteSnapshotAfterDelta(deps.remoteFs),
+			);
+		} else {
+			changeSet = await collectHot(deps, remoteChanges);
+		}
 	} else {
 		const allRecords = await stateStore.getAll();
 		changeSet = opts.forceFullScan || allRecords.length === 0
@@ -66,6 +86,7 @@ export async function collectChanges(
 	}
 	changeSet.identityEvidence.unshift(...collectLocalRenameEvidence(changes));
 	ensureRenameEndpointObservations(changeSet.observations, changeSet.identityEvidence);
+	await confirmUnknownRenameEndpoints(changeSet, deps.localFs, deps.remoteFs);
 
 	// WARM/COLD listings can under-report. Confirm every baseline path whose current
 	// side is missing before planning; a thrown stat aborts rather than becoming absence.
@@ -86,13 +107,13 @@ export async function collectChanges(
 	return changeSet;
 }
 
-async function collectHot(deps: ChangeDetectorDeps): Promise<ChangeSet> {
+async function collectHot(
+	deps: ChangeDetectorDeps,
+	remoteChanges: RemoteChanges,
+): Promise<ChangeSet> {
 	const { localFs, remoteFs, stateStore, changes } = deps;
 
 	const dirtyPaths = changes.dirtyPaths;
-
-	// Get remote changed paths if supported
-	const remoteChanges = await getRemoteChanges(remoteFs);
 
 	// Union of local dirty and remote changed paths
 	const changedPaths = new Set<string>(dirtyPaths);
@@ -160,6 +181,15 @@ async function collectWarm(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): 
 		localFs.list(),
 		getRemoteChanges(remoteFs),
 	]);
+	if (hasFolderRename(remoteChanges)) {
+		return collectCold(
+			deps,
+			allRecords,
+			remoteChanges,
+			localFiles,
+			await remoteSnapshotAfterDelta(remoteFs),
+		);
+	}
 
 	const recordMap = new Map(allRecords.map((r) => [r.path, r]));
 	const changedPaths = new Set<string>();
@@ -224,12 +254,18 @@ async function collectWarm(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): 
 	return { entries, observations, identityEvidence: remoteChanges.renameEvidence, temperature: "warm" };
 }
 
-async function collectCold(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): Promise<ChangeSet> {
+async function collectCold(
+	deps: ChangeDetectorDeps,
+	allRecords: SyncRecord[],
+	remoteChanges?: RemoteChanges,
+	prefetchedLocalFiles?: FileEntity[],
+	prefetchedRemoteFiles?: FileEntity[],
+): Promise<ChangeSet> {
 	const { localFs, remoteFs } = deps;
 
 	const [localFiles, remoteFiles] = await Promise.all([
-		localFs.list(),
-		remoteFs.list(),
+		prefetchedLocalFiles ?? localFs.list(),
+		prefetchedRemoteFiles ?? remoteFs.list(),
 	]);
 	const syncRecords = allRecords;
 
@@ -263,7 +299,12 @@ async function collectCold(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): 
 		getOrCreate(record.path).prevSync = record;
 	}
 
-	return { entries: Array.from(pathMap.values()), observations, identityEvidence: [], temperature: "cold" };
+	return {
+		entries: Array.from(pathMap.values()),
+		observations,
+		identityEvidence: remoteChanges?.renameEvidence ?? [],
+		temperature: "cold",
+	};
 }
 
 /**
@@ -340,26 +381,4 @@ export async function enrichHashesForRenames(
 				: undefined;
 		})
 	);
-}
-
-interface RemoteChanges {
-	paths: string[];
-	deletedPaths: ReadonlySet<string>;
-	renameEvidence: RenameEvidence[];
-}
-
-async function getRemoteChanges(remoteFs: IFileSystem): Promise<RemoteChanges> {
-	if (!remoteFs.checkpoint) return { paths: [], deletedPaths: new Set(), renameEvidence: [] };
-	const result = await remoteFs.checkpoint.getChangedPaths();
-	if (!result) return { paths: [], deletedPaths: new Set(), renameEvidence: [] };
-	const renameEvidence = collectRemoteRenameEvidence(result.renamed ?? []);
-	return {
-		paths: [
-			...result.modified,
-			...result.deleted,
-			...renameEvidence.flatMap(({ oldPath, newPath }) => [oldPath, newPath]),
-		],
-		deletedPaths: new Set(result.deleted),
-		renameEvidence,
-	};
 }

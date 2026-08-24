@@ -8,6 +8,7 @@ import type { FileEntity, RemoteChecksum } from "../fs/types";
 import type { MixedEntity, PathObservation, SyncRecord } from "./types";
 import { md5 } from "../utils/md5";
 import { sha256, sha1 } from "../utils/hash";
+import { projectRenameScope, projectScope } from "./scope-projection";
 
 function makeRecord(path: string, overrides: Partial<SyncRecord> = {}): SyncRecord {
 	return {
@@ -591,6 +592,121 @@ describe("collectChanges — temperature selection", () => {
 
 			expect(result.temperature).toBe("cold");
 			expect(result.identityEvidence).toEqual([]);
+		});
+
+		it("authoritatively observes otherwise-unseen folder rename roots", async () => {
+			await localFs.mkdir("new");
+			localTracker.markFolderRenamed("new", "old");
+
+			const result = await collectChanges(makeDeps(), { forceFullScan: true });
+
+			expect(result.identityEvidence).toContainEqual({
+				kind: "rename", side: "local", oldPath: "old", newPath: "new",
+				isFolder: true, authority: "reported",
+			});
+			expect(result.observations).toContainEqual({
+				kind: "absent", side: "local", requestedPath: "old", authority: "stat",
+			});
+			expect(result.observations).toContainEqual(expect.objectContaining({
+				kind: "exact", side: "local", requestedPath: "new",
+			}));
+		});
+
+		it("aborts when an unseen folder endpoint cannot be confirmed", async () => {
+			localTracker.markFolderRenamed("new", "old");
+			localFs.stat = () => { throw new Error("folder stat failed"); };
+
+			await expect(collectChanges(makeDeps(), { forceFullScan: true }))
+				.rejects.toThrow("folder stat failed");
+		});
+
+		it.each([false, true])(
+			"lists folder descendants when initialized with concurrent dirty=%s",
+			async (withConcurrentDirty) => {
+				await stateStore.put(makeRecord("old/a.md"));
+				addFile(remoteFs, "old/a.md", "content", 1000);
+				addFile(localFs, "new/a.md", "content", 1000);
+				if (withConcurrentDirty) {
+					await stateStore.put(makeRecord("other.md"));
+					addFile(localFs, "other.md", "changed", 2000);
+					addFile(remoteFs, "other.md", "original", 1000);
+				}
+				localTracker.acknowledge(localTracker.snapshot());
+				localTracker.markFolderRenamed("new", "old");
+				if (withConcurrentDirty) localTracker.markDirty("other.md");
+
+				const result = await collectChanges(makeDeps());
+
+				expect(result.temperature).toBe("warm");
+				expect(result.entries.map((entry) => entry.path)).toEqual(expect.arrayContaining([
+					"old/a.md", "new/a.md",
+				]));
+				const folderEvidence = result.identityEvidence.find((e) =>
+					e.kind === "rename" && e.isFolder);
+				expect(folderEvidence?.kind).toBe("rename");
+				if (!folderEvidence || folderEvidence.kind !== "rename") return;
+
+				const rootsOut = projectScope(result, {
+					classifyPath: (path) => path === "old" || path === "new"
+						? "policy_out"
+						: "included",
+				});
+				expect(projectRenameScope(folderEvidence, rootsOut).consequence).toBe("defer");
+
+				const mixedChild = projectScope(result, {
+					classifyPath: (path) => path === "new/a.md" ? "policy_out" : "included",
+				});
+				expect(projectRenameScope(folderEvidence, mixedChild).consequence).toBe("defer");
+			},
+		);
+
+		it.each([false, true])(
+			"promotes a remote folder rename to cold with concurrent dirty=%s",
+			async (withConcurrentDirty) => {
+			await stateStore.put(makeRecord("old/a.md"));
+			addFile(localFs, "old/a.md", "content", 1000);
+			addFile(remoteFs, "new/a.md", "content", 1000);
+			const getChangedPaths = vi.fn(() => Promise.resolve({
+				modified: ["new"],
+				deleted: ["old"],
+				renamed: [{ oldPath: "old", newPath: "new", isFolder: true }],
+			}));
+			remoteFs.checkpoint!.getChangedPaths = getChangedPaths;
+			localTracker.acknowledge(localTracker.snapshot());
+			if (withConcurrentDirty) localTracker.markDirty("unrelated.md");
+
+			const result = await collectChanges(makeDeps());
+
+			expect(getChangedPaths).toHaveBeenCalledTimes(1);
+			expect(result.temperature).toBe("cold");
+			expect(result.entries.map((entry) => entry.path)).toEqual(expect.arrayContaining([
+				"old/a.md", "new/a.md",
+			]));
+			const folderEvidence = result.identityEvidence.find((e) =>
+				e.kind === "rename" && e.side === "remote" && e.isFolder);
+			expect(folderEvidence?.kind).toBe("rename");
+			if (!folderEvidence || folderEvidence.kind !== "rename") return;
+
+			const mixedChild = projectScope(result, {
+				classifyPath: (path) => path === "new/a.md" ? "policy_out" : "included",
+			});
+			expect(projectRenameScope(folderEvidence, mixedChild).consequence).toBe("defer");
+			},
+		);
+
+		it("fails closed when a remote folder delta has no replay-free snapshot", async () => {
+			await stateStore.put(makeRecord("old/a.md"));
+			remoteFs.checkpoint!.getChangedPaths = () => Promise.resolve({
+				modified: ["new"], deleted: ["old"],
+				renamed: [{ oldPath: "old", newPath: "new", isFolder: true }],
+			});
+			delete remoteFs.checkpoint!.listCurrentSnapshot;
+			localTracker.acknowledge(localTracker.snapshot());
+			localTracker.markDirty("unrelated.md");
+
+			await expect(collectChanges(makeDeps())).rejects.toThrow(
+				"Remote folder rename requires a replay-free checkpoint snapshot",
+			);
 		});
 	});
 
