@@ -203,7 +203,57 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.close();
 		});
 
-		it("captures a remote rename before later stat failure so retry cannot commit past it", async () => {
+		it("reports an actionless unresolved rename and withholds the checkpoint", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			addFile(localFs, "a.md", "same", 1000);
+			addFile(remoteFs, "a.md", "same", 1000);
+			confirmMockPath(localFs, "a.md");
+			confirmMockPath(remoteFs, "a.md");
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`, showSyncNotifications: true,
+			});
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
+			remoteFs.checkpoint!.getChangedPaths = vi.fn().mockResolvedValue({
+				modified: ["a.md"], deleted: ["A.md"],
+				renamed: [{ oldPath: "A.md", newPath: "a.md" }],
+			});
+			const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+			remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
+			const originalRemoteStat = remoteFs.stat.bind(remoteFs);
+			vi.spyOn(remoteFs, "stat").mockImplementation(async (path) => {
+				const found = await originalRemoteStat(path === "A.md" ? "a.md" : path);
+				return path === "A.md" && found
+					? { ...found, pathAuthority: "requested_echo" }
+					: found;
+			});
+			const deps = createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			const content = new TextEncoder().encode("same").buffer;
+			await orchestrator.state.put({
+				path: "a.md", hash: await sha256(content), localMtime: 1000, remoteMtime: 1000,
+				localSize: 4, remoteSize: 4, syncedAt: 900,
+			});
+			const localWrite = vi.spyOn(localFs, "write");
+			const remoteWrite = vi.spyOn(remoteFs, "write");
+			const localDelete = vi.spyOn(localFs, "delete");
+			const remoteDelete = vi.spyOn(remoteFs, "delete");
+
+			await orchestrator.runSync();
+
+			expect(localWrite).not.toHaveBeenCalled();
+			expect(remoteWrite).not.toHaveBeenCalled();
+			expect(localDelete).not.toHaveBeenCalled();
+			expect(remoteDelete).not.toHaveBeenCalled();
+			expect(commitCheckpoint).not.toHaveBeenCalled();
+			expect(deps.onStatusChange).toHaveBeenLastCalledWith("partial_error");
+			expect(deps.notify).toHaveBeenCalledWith("Sync: 1 deferred");
+			await orchestrator.close();
+		});
+
+		it("retains pre-Admission evidence and defers recovery to a later COLD cycle", async () => {
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();
 			addFile(localFs, "A.md", "changed", 2000);
@@ -219,6 +269,7 @@ describe("SyncOrchestrator", () => {
 			remoteFs.checkpoint!.getChangedPaths = getChangedPaths;
 			const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
 			remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
+			const remoteList = vi.spyOn(remoteFs, "list");
 			const originalStat = remoteFs.stat.bind(remoteFs);
 			vi.spyOn(remoteFs, "stat")
 				.mockRejectedValueOnce(Object.assign(new Error("temporary stat failure"), { status: 500 }))
@@ -234,7 +285,14 @@ describe("SyncOrchestrator", () => {
 
 			await orchestrator.runSync();
 
-			expect(getChangedPaths).toHaveBeenCalledTimes(2);
+			expect(getChangedPaths).toHaveBeenCalledTimes(1);
+			expect(commitCheckpoint).not.toHaveBeenCalled();
+			expect(deps.onStatusChange).toHaveBeenLastCalledWith("error");
+
+			await orchestrator.runSync();
+
+			expect(getChangedPaths).toHaveBeenCalledTimes(1);
+			expect(remoteList).toHaveBeenCalledTimes(1);
 			expect(commitCheckpoint).not.toHaveBeenCalled();
 			expect(deps.onStatusChange).toHaveBeenLastCalledWith("partial_error");
 			await orchestrator.close();

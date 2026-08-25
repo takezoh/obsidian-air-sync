@@ -11,6 +11,7 @@ import {
 import type { MixedEntity, SyncRecord } from "./types";
 import type { FileEntity } from "../fs/types";
 import { sha256 } from "../utils/hash";
+import { admitDestructivePlan, captureCycleAdmissionSnapshot } from "./plan-admission";
 
 /**
  * Delete-safety contracts.
@@ -72,8 +73,15 @@ describe("§2-1 (fixed): a lone deletion is no longer silently aborted", () => {
 		addFile(remoteFs, "note.md", CONTENT, 1000);
 		await stateStore.put(baselineRecord("note.md"));
 
-		const result = await executePlan(
+		const admission = admitDestructivePlan(captureCycleAdmissionSnapshot(
 			{ actions: [{ path: "note.md", action: "delete_remote" }] },
+			[],
+			[{ kind: "absent", side: "local", requestedPath: "note.md", authority: "stat" }],
+			{ byEndpoint: new Map([["note.md", "included"]]) },
+			"delete-safety-test",
+		));
+		const result = await executePlan(
+			admission.executable,
 			{
 				localFs,
 				remoteFs,

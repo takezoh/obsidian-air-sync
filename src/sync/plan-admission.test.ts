@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { FileEntity } from "../fs/types";
-import { admitDestructivePlan } from "./plan-admission";
+import {
+	admitDestructivePlan,
+	captureCycleAdmissionSnapshot,
+	type AuthorizedSyncPlan,
+} from "./plan-admission";
 import type {
 	IdentityEvidence,
 	PathObservation,
@@ -23,7 +27,9 @@ function admit(
 	observations: PathObservation[] = [],
 	scope: ScopeProjection = projection({}),
 ) {
-	return admitDestructivePlan({ actions }, evidence, observations, scope);
+	return admitDestructivePlan(captureCycleAdmissionSnapshot(
+		{ actions }, evidence, observations, scope, "backend\0root",
+	));
 }
 
 function remoteRename(overrides: Partial<Extract<IdentityEvidence, { kind: "rename" }>> = {}): IdentityEvidence {
@@ -45,7 +51,7 @@ describe("admitDestructivePlan", () => {
 		expect(result.deferred).toEqual([]);
 	});
 
-	it("does not connect case-distinct paths without evidence", () => {
+	it("defers unobserved case-distinct deletions independently", () => {
 		const actions: SyncAction[] = [
 			{ path: "A.md", action: "delete_local", local: entity("A.md") },
 			{ path: "a.md", action: "delete_remote", remote: entity("a.md") },
@@ -53,8 +59,11 @@ describe("admitDestructivePlan", () => {
 
 		const result = admit(actions);
 
-		expect(result.executable.actions).toEqual(actions);
-		expect(result.deferred).toEqual([]);
+		expect(result.executable.actions).toEqual([]);
+		expect(result.deferred).toHaveLength(2);
+		expect(result.deferred.map((item) => item.reasons)).toEqual([
+			["unknown_observation"], ["unknown_observation"],
+		]);
 	});
 
 	it("defers both opposing deletes joined by stable identity", () => {
@@ -92,6 +101,20 @@ describe("admitDestructivePlan", () => {
 		expect(result.deferred[0]!.reasons).toEqual(["identity_postcondition_unproven"]);
 	});
 
+	it("does not let unrelated stable identity replace authoritative delete absence", () => {
+		const action: SyncAction = { path: "A.md", action: "delete_local", local: entity("A.md") };
+		const evidence: IdentityEvidence[] = [{
+			kind: "stable_identity", side: "remote", identityKey: "X", occurrences: [
+				{ side: "remote", phase: "baseline", path: "A.md", identityKey: "X" },
+			],
+		}];
+
+		const result = admit([action], evidence);
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.deferred[0]?.reasons).toEqual(["unknown_observation"]);
+	});
+
 	it("defers every action touching a requested-echo observation", () => {
 		const actions: SyncAction[] = [
 			{ path: "A.md", action: "delete_local", local: entity("A.md") },
@@ -109,6 +132,64 @@ describe("admitDestructivePlan", () => {
 		expect(result.deferred[0]).toMatchObject({
 			paths: ["A.md", "B.md"], reasons: ["present_unresolved"], actions: actions.slice(0, 2),
 		});
+	});
+
+	it("retains and defers an unresolved evidence component with no actions", () => {
+		const observations: PathObservation[] = [{
+			kind: "present_unresolved", side: "remote", requestedPath: "A.md", returnedPath: "B.md",
+			entity: { ...entity("B.md"), pathAuthority: "requested_echo" }, source: "stat",
+		}];
+
+		const result = admit([], [remoteRename()], observations);
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.deferred).toHaveLength(1);
+		expect(result.deferred[0]).toMatchObject({
+			paths: ["A.md", "B.md"], reasons: ["present_unresolved"], actions: [],
+		});
+	});
+
+	it("resolves an actionless rename after authoritative two-sided convergence", () => {
+		const observations: PathObservation[] = (["local", "remote"] as const).flatMap((side) => [
+			{ kind: "absent" as const, side, requestedPath: "A.md", authority: "stat" as const },
+			{ kind: "exact" as const, side, requestedPath: "B.md", entity: entity("B.md", "X") },
+		]);
+
+		const result = admit([], [remoteRename()], observations, projection({
+			"A.md": "included", "B.md": "included",
+		}));
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.deferred).toEqual([]);
+		expect(result.dispositions).toEqual([expect.objectContaining({
+			kind: "resolved_no_action", paths: ["A.md", "B.md"], actions: [],
+		})]);
+	});
+
+	it("keeps captured inputs stable when caller-owned containers change", () => {
+		const action: SyncAction = { path: "gone.md", action: "delete_local", local: entity("gone.md") };
+		const plan = { actions: [action] };
+		const evidence: IdentityEvidence[] = [];
+		const observations: PathObservation[] = [{
+			kind: "absent", side: "remote", requestedPath: "gone.md", authority: "checkpoint_deleted",
+		}];
+		const scope = projection({ "gone.md": "included" });
+		const snapshot = captureCycleAdmissionSnapshot(plan, evidence, observations, scope, "backend\0root");
+
+		plan.actions.length = 0;
+		observations.length = 0;
+		(scope.byEndpoint as Map<string, ScopeDisposition>).set("gone.md", "unknown");
+
+		const result = admitDestructivePlan(snapshot);
+		expect(result.executable.actions).toEqual([action]);
+		expect(result.snapshot.namespace).toBe("backend\0root");
+	});
+
+	it("keeps plain proposals outside the executor contract", () => {
+		const proposal = { actions: [] };
+		// @ts-expect-error A plain proposal is not an Admission-issued plan.
+		const unauthorized: AuthorizedSyncPlan = proposal;
+		expect(unauthorized.actions).toEqual([]);
 	});
 
 	it("defers match and delete together when an alias links them", () => {
@@ -392,7 +473,9 @@ describe("admitDestructivePlan", () => {
 		const scope = projection({ "gone.md": "included" });
 		const plan = { actions: [action] };
 
-		admitDestructivePlan(plan, evidence, observations, scope);
+		admitDestructivePlan(captureCycleAdmissionSnapshot(
+			plan, evidence, observations, scope, "backend\0root",
+		));
 
 		expect(plan).toEqual({ actions: [action] });
 		expect(evidence).toEqual([]);

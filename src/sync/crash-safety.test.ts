@@ -12,6 +12,8 @@ import {
 	readText,
 } from "../__mocks__/sync-test-helpers";
 import type { SyncPlan } from "./types";
+import { admitDestructivePlan, captureCycleAdmissionSnapshot } from "./plan-admission";
+import { projectScope } from "./scope-projection";
 
 /**
  * Crash-safety contract (ARCHITECTURE.md design principle #5,
@@ -58,7 +60,11 @@ async function runCycle(
 		planSync(changeSet.entries),
 		changeSet.identityEvidence,
 	);
-	const result = await executePlan(plan, {
+	const scope = projectScope(changeSet, { classifyPath: () => "included" });
+	const admission = admitDestructivePlan(captureCycleAdmissionSnapshot(
+		plan, changeSet.identityEvidence, changeSet.observations, scope, "crash-safety-test",
+	));
+	const result = await executePlan(admission.executable, {
 		localFs,
 		remoteFs,
 		committer: { stateStore },

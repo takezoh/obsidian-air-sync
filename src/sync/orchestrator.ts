@@ -9,7 +9,7 @@ import { getEffectiveIgnorePatterns, getEffectiveSyncDotPaths, isOwnPluginDataPa
 import { INTERNAL_METADATA_PATH } from "../fs/remote-vault-contract";
 import { SyncStateStore } from "./state";
 import { LocalChangeTracker, type TrackerSnapshot } from "./local-tracker";
-import { collectChanges } from "./change-detector";
+import { collectChanges, type ChangeSet } from "./change-detector";
 import { computeScopeFingerprint } from "./scope-fingerprint";
 import { executePlan, toConflictRecords, DESKTOP_TRANSFER_POOL, MOBILE_TRANSFER_POOL } from "./plan-executor";
 import type { ExecutionContext, ExecutionResult } from "./plan-executor";
@@ -22,8 +22,13 @@ import { CycleSummary } from "./sync-notification";
 import type { SyncCycleResult } from "./sync-notification";
 import { FailedActionTracker } from "./failed-action-tracker";
 import { mergeIdentityEvidence, renameDebtEvidence } from "./rename-debt";
-import { logChangeDetection, prepareSyncCyclePlan } from "./sync-cycle-planning";
+import {
+	logChangeDetection,
+	logSyncCyclePlan,
+	prepareSyncCycleSnapshot,
+} from "./sync-cycle-planning";
 import { finalizeSyncCycle } from "./sync-cycle-finalization";
+import { admitDestructivePlan } from "./plan-admission";
 
 export type { SyncStatus };
 
@@ -53,6 +58,13 @@ export interface SyncOrchestratorDeps {
 }
 
 const MAX_RETRIES = 3;
+
+class PreAdmissionRecoveryError extends Error {
+	constructor(cause: unknown) {
+		super(cause instanceof Error ? cause.message : String(cause));
+		this.name = "PreAdmissionRecoveryError";
+	}
+}
 
 export class SyncOrchestrator {
 	private syncMutex = new AsyncMutex();
@@ -297,6 +309,12 @@ export class SyncOrchestrator {
 				};
 			} catch (err) {
 				lastError = err;
+				if (err instanceof PreAdmissionRecoveryError) {
+					this.deps.logger?.error("Sync error before Admission; COLD recovery requested", {
+						message: err.message,
+					});
+					break;
+				}
 				// Classification is the backend's job (it knows its own error shapes,
 				// e.g. that Google 403 can mean rate-limit); the retry POLICY is the
 				// engine's and stays backend-neutral. Fall back to the generic HTTP
@@ -390,34 +408,54 @@ export class SyncOrchestrator {
 			persistedDebts.map(renameDebtEvidence),
 		);
 
-		const changeSet = await collectChanges({
-			localFs,
-			remoteFs,
-			stateStore: this.stateStore,
-			changes: snapshot,
-			onRemoteIdentityEvidence: (evidence) => {
-				this.pendingAdmissionEvidence = mergeIdentityEvidence(
-					this.pendingAdmissionEvidence,
-					evidence.filter((item) => item.kind === "rename"),
-				);
-			},
-		}, {
-			forceFullScan: forceFullScan || persistedDebts.length > 0,
-			carriedIdentityEvidence: carriedEvidence,
-		});
-		const { renamePairs, folderRenamePairs } = snapshot;
-		logChangeDetection(changeSet, renamePairs, this.deps.logger);
+		let changeSet: ChangeSet;
+		let planning: ReturnType<typeof prepareSyncCycleSnapshot>;
+		let capturedRemoteEvidence = false;
+		const hadPendingEvidence = this.pendingAdmissionEvidence.length > 0;
+		try {
+			changeSet = await collectChanges({
+				localFs,
+				remoteFs,
+				stateStore: this.stateStore,
+				changes: snapshot,
+				onRemoteIdentityEvidence: (evidence) => {
+					const remoteRenames = evidence.filter((item) => item.kind === "rename");
+					capturedRemoteEvidence ||= remoteRenames.length > 0;
+					this.pendingAdmissionEvidence = mergeIdentityEvidence(
+						this.pendingAdmissionEvidence,
+						remoteRenames,
+					);
+				},
+			}, {
+				forceFullScan: forceFullScan || persistedDebts.length > 0,
+				carriedIdentityEvidence: carriedEvidence,
+			});
+			const { renamePairs } = snapshot;
+			logChangeDetection(changeSet, renamePairs, this.deps.logger);
 
-		const isMobile = this.deps.isMobile();
-		const maxBytes = settings.mobileMaxFileSizeMB * 1024 * 1024;
-		const planning = prepareSyncCyclePlan(changeSet, persistedDebts, debtNamespace, {
-			classifyPath: (path) => this.isExcluded(path) ? "policy_out" : "included",
-			mobileMaxBytes: isMobile ? maxBytes : undefined,
-		}, this.deps.logger);
-		this.pendingAdmissionEvidence = mergeIdentityEvidence(
-			this.pendingAdmissionEvidence,
-			changeSet.identityEvidence.filter((item) => item.kind === "rename"),
-		);
+			const isMobile = this.deps.isMobile();
+			const maxBytes = settings.mobileMaxFileSizeMB * 1024 * 1024;
+			planning = prepareSyncCycleSnapshot(changeSet, persistedDebts, debtNamespace, {
+				classifyPath: (path) => this.isExcluded(path) ? "policy_out" : "included",
+				mobileMaxBytes: isMobile ? maxBytes : undefined,
+			}, this.deps.logger);
+			this.pendingAdmissionEvidence = mergeIdentityEvidence(
+				this.pendingAdmissionEvidence,
+				changeSet.identityEvidence.filter((item) => item.kind === "rename"),
+			);
+		} catch (err) {
+			if (capturedRemoteEvidence || hadPendingEvidence) {
+				this.recoverViaColdScan = true;
+				throw new PreAdmissionRecoveryError(err);
+			}
+			throw err;
+		}
+
+		// This call is the authorization cut point. Exceptions from this line onward
+		// are not reclassified as evidence-acquisition recovery.
+		const admission = admitDestructivePlan(planning.snapshot);
+		logSyncCyclePlan(this.deps.logger, admission);
+		const { folderRenamePairs } = snapshot;
 
 		if (folderRenamePairs.size > 0) {
 			this.deps.logger?.info("Folder rename pairs detected", {
@@ -428,7 +466,7 @@ export class SyncOrchestrator {
 		// This write is deliberately before executePlan: a crash after tracker capture
 		// must not erase the only authoritative local rename edge.
 		await this.stateStore.upsertRenameDebts(planning.localRenameDebts);
-		const total = planning.admission.executable.actions.length;
+		const total = admission.executable.actions.length;
 
 		const classifyError = (err: unknown) => provider?.classifyError?.(err) ?? classifyHttpError(err);
 		const ctx: ExecutionContext = {
@@ -450,16 +488,16 @@ export class SyncOrchestrator {
 			transferPool: this.deps.isMobile() ? MOBILE_TRANSFER_POOL : DESKTOP_TRANSFER_POOL,
 		};
 
-		const execution = await executePlan(planning.admission.executable, ctx);
-		const result: ExecutionResult = { ...execution, deferred: planning.admission.deferred };
+		const execution = await executePlan(admission.executable, ctx);
+		const result: ExecutionResult = { ...execution, deferred: admission.deferred };
 		this.updateFailedActionTracker(settings.backendType, result, classifyError);
 
 		// Persist backend state. commitCheckpoint advances the delta cursor (+ file map,
 		// atomically) only on a fully clean cycle; a partial sync keeps the prior cursor.
 		this.pendingAdmissionEvidence = await finalizeSyncCycle({
+			admission,
 			result, pendingEvidence: this.pendingAdmissionEvidence, persistedDebts,
 			localRenameDebts: planning.localRenameDebts,
-			scopeProjection: planning.scopeProjection, observations: changeSet.observations,
 			checkpoint: remoteFs.checkpoint, scopeFingerprint, stateStore: this.stateStore,
 		});
 		// readBackendState now persists only non-secret token state (the cursor lives

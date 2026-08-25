@@ -1,5 +1,3 @@
-import type { ExecutionResult } from "./execution-result";
-import type { DeferredComponent } from "./plan-admission";
 import { projectRenameScope } from "./scope-projection";
 import type { RenameDebt } from "./state";
 import type {
@@ -7,8 +5,6 @@ import type {
 	RenameEvidence,
 	ScopeDisposition,
 	ScopeProjection,
-	PathObservation,
-	SyncAction,
 } from "./types";
 
 export function mergeRenameDebtEvidence(
@@ -69,59 +65,29 @@ export function collectLocalRenameDebts(
 	});
 }
 
-/** Debts may be removed only after a clean checkpoint and proven resolution/projection. */
-export function resolvedRenameDebts(
+/** Select namespace-local debts whose exact evidence membership Admission released. */
+export function renameDebtsBoundToEvidence(
 	debts: readonly RenameDebt[],
-	result: ExecutionResult,
-	projection: ScopeProjection,
-	observations: readonly PathObservation[] = [],
+	releasedEvidence: readonly IdentityEvidence[],
+	namespace: string,
 ): RenameDebt[] {
-	return debts.filter((debt) => {
-		const edge = renameDebtEvidence(debt);
-		return renameEvidenceResolved(edge, result, projection, observations);
-	});
+	const released = new Set(releasedEvidence.flatMap((item) =>
+		item.kind === "rename" ? [renameEvidenceKey(item)] : []));
+	return debts.filter((debt) => debt.namespace === namespace &&
+		released.has(renameEvidenceKey(renameDebtEvidence(debt))));
 }
 
-/** Keep reported edges until connected work succeeds, converges, or is a scope no-op. */
-export function unresolvedRenameEvidence(
+/** Retain evidence not included in Admission's mechanically releasable membership. */
+export function unreleasedIdentityEvidence(
 	evidence: readonly IdentityEvidence[],
-	result: ExecutionResult,
-	projection: ScopeProjection,
-	observations: readonly PathObservation[] = [],
+	releasedEvidence: readonly IdentityEvidence[],
 ): IdentityEvidence[] {
-	return evidence.filter((item) => item.kind !== "rename" ||
-		!renameEvidenceResolved(item, result, projection, observations));
-}
-
-function renameEvidenceResolved(
-	edge: RenameEvidence,
-	result: ExecutionResult,
-	projection: ScopeProjection,
-	observations: readonly PathObservation[],
-): boolean {
-	if (result.deferred.some((component) => componentContainsRename(component, edge))) return false;
-	if (result.failed.some(({ action }) => actionTouchesRename(action, edge))) return false;
-	if (result.blocked.some(({ action }) => actionTouchesRename(action, edge))) return false;
-	if (result.succeeded.some(({ action }) => actionTouchesRename(action, edge))) return true;
-	if (resolvedAtBothSides(edge, observations)) return true;
-	return projectRenameScope(edge, projection).consequence === "none";
-}
-
-function resolvedAtBothSides(
-	edge: RenameEvidence,
-	observations: readonly PathObservation[],
-): boolean {
-	return (["local", "remote"] as const).every((side) => {
-		const oldObservation = observations.find((item) =>
-			item.side === side && item.requestedPath === edge.oldPath);
-		const newObservation = observations.find((item) =>
-			item.side === side && item.requestedPath === edge.newPath);
-		const oldResolved = oldObservation?.kind === "absent" ||
-			(oldObservation?.kind === "alias" && oldObservation.resolvedPath === edge.newPath);
-		const newResolved = newObservation?.kind === "exact" ||
-			(newObservation?.kind === "alias" && newObservation.resolvedPath === edge.newPath);
-		return oldResolved && newResolved;
-	});
+	const released = new Set(releasedEvidence);
+	const releasedRenames = new Set(releasedEvidence.flatMap((item) =>
+		item.kind === "rename" ? [renameEvidenceKey(item)] : []));
+	return evidence.filter((item) => item.kind === "rename"
+		? !releasedRenames.has(renameEvidenceKey(item))
+		: !released.has(item));
 }
 
 export function renameDebtEvidence(debt: RenameDebt): RenameEvidence {
@@ -135,21 +101,8 @@ export function renameDebtEvidence(debt: RenameDebt): RenameEvidence {
 	};
 }
 
-function componentContainsRename(component: DeferredComponent, edge: RenameEvidence): boolean {
-	return component.evidence.some((item) => item.kind === "rename" &&
-		item.side === edge.side && item.oldPath === edge.oldPath && item.newPath === edge.newPath &&
-		item.isFolder === edge.isFolder);
-}
-
-function actionTouchesRename(action: SyncAction, edge: RenameEvidence): boolean {
-	if (action.path === edge.oldPath || action.path === edge.newPath) return true;
-	if ((action.action === "rename_local" || action.action === "rename_remote") &&
-		(action.oldPath === edge.oldPath || action.oldPath === edge.newPath)) return true;
-	return action.action === "rename_local" || action.action === "rename_remote"
-		? action.descendants?.some((pair) =>
-			pair.oldPath === edge.oldPath || pair.oldPath === edge.newPath ||
-			pair.newPath === edge.oldPath || pair.newPath === edge.newPath) === true
-		: false;
+function renameEvidenceKey(evidence: RenameEvidence): string {
+	return `${evidence.side}\0${evidence.oldPath}\0${evidence.newPath}\0${evidence.isFolder}`;
 }
 
 function rememberDisposition(

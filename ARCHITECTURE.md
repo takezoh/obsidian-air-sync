@@ -75,8 +75,13 @@ One row per directory; see the layer diagram and per-doc references for module d
      │    optimizeRemoteFileRenames        │    → rename_local  (trusted)
      │        │                           │
      │        ▼                           │
+     │  captureCycleAdmissionSnapshot()   │  immutable cycle contract
+     │    proposal/evidence/observations  │    scope + backend/root namespace
+     │        │                           │
+     │        ▼                           │
      │  admitDestructivePlan()            │  PlanAdmission
-     │    defer unsafe identity components│    pure, whole-component, fail-closed
+     │    exhaustive dispositions         │    sole destructive authorization owner
+     │    → AuthorizedSyncPlan            │    nominal, proposal-ordered projection
      │        │                           │
      │        ▼                           │
      │  executePlan()  (3 phases)         │  PlanExecutor
@@ -87,6 +92,10 @@ One row per directory; see the layer diagram and per-doc references for module d
      │        │                           │
      │        ▼                           │
      │  commitAction()  (per action)      │  StateCommitter
+     │        │                           │
+     │        ▼                           │
+     │  finalizeSyncCycle()               │  mechanical disposition/completion fold
+     │    checkpoint, then retirement     │    no safety re-decision
      └───────────────┬────────────────────┘
                      │
          ┌─────────────────────────────────────┐

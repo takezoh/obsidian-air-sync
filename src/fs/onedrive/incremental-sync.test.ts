@@ -5,6 +5,12 @@ import type { OneDriveClient } from "./client";
 import type { OneDriveDeltaResponse } from "./types";
 import { GraphApiError } from "./types";
 import { odFile, odFolder, odDeleted, deltaPage } from "./test-helpers";
+import { collectRemoteRenameEvidence } from "../../sync/identity-evidence";
+import {
+	admitDestructivePlan,
+	captureCycleAdmissionSnapshot,
+} from "../../sync/plan-admission";
+import type { PathObservation, SyncAction } from "../../sync/types";
 
 vi.mock("obsidian");
 
@@ -84,6 +90,53 @@ describe("applyOneDriveDelta", () => {
 		expect(cache.hasFile("a.md")).toBe(false);
 		expect(cache.getPathById("f1")).toBe("renamed.md");
 		expect(result.renamedPaths).toEqual([{ oldPath: "a.md", newPath: "renamed.md", isFolder: undefined }]);
+	});
+
+	it("emits a rename edge for a same-id casing-only rename", async () => {
+		const cache = new OneDriveMetadataCache(ROOT);
+		cache.buildFromFiles([odFile("f1", "A.md", ROOT)]);
+		const client = fakeClient([deltaPage([odFile("f1", "a.md", ROOT)], "tok2")]);
+
+		const result = await applyOneDriveDelta(ctx(cache, client), "tok1");
+		if (result.needsFullScan) throw new Error("unexpected resync");
+
+		expect(result.renamedPaths).toEqual([
+			{ oldPath: "A.md", newPath: "a.md", isFolder: undefined },
+		]);
+		expect(cache.getPathById("f1")).toBe("a.md");
+	});
+
+	it("proves the casing edge, not Admission policy, changes destructive authorization", async () => {
+		const cache = new OneDriveMetadataCache(ROOT);
+		cache.buildFromFiles([odFile("f1", "A.md", ROOT)]);
+		const client = fakeClient([deltaPage([odFile("f1", "a.md", ROOT)], "tok2")]);
+		const delta = await applyOneDriveDelta(ctx(cache, client), "tok1");
+		if (delta.needsFullScan) throw new Error("unexpected resync");
+		const emittedEvidence = collectRemoteRenameEvidence(delta.renamedPaths);
+		const actions: SyncAction[] = [
+			{ path: "A.md", action: "delete_local" },
+			{ path: "a.md", action: "delete_remote" },
+		];
+		const observations: PathObservation[] = [
+			{ kind: "absent", side: "remote", requestedPath: "A.md", authority: "checkpoint_deleted" },
+			{ kind: "absent", side: "local", requestedPath: "a.md", authority: "stat" },
+		];
+		const scope = { byEndpoint: new Map([
+			["A.md", "included" as const], ["a.md", "included" as const],
+		]) };
+		const admit = (identityEvidence: typeof emittedEvidence) => admitDestructivePlan(
+			captureCycleAdmissionSnapshot(
+				{ actions }, identityEvidence, observations, scope, "onedrive:root",
+			),
+		);
+
+		const withProducerEdge = admit(emittedEvidence);
+		const withoutProducerEdge = admit([]);
+
+		expect(withProducerEdge.executable.actions).toEqual([]);
+		expect(withProducerEdge.deferred[0]?.reasons).toEqual(["opposing_deletes"]);
+		expect(withoutProducerEdge.executable.actions).toEqual(actions);
+		expect(withoutProducerEdge.deferred).toEqual([]);
 	});
 
 	it("rewrites child paths when a folder is renamed via the same id", async () => {

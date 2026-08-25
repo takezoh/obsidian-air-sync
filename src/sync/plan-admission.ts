@@ -9,6 +9,22 @@ import type {
 	SyncPlan,
 } from "./types";
 
+const authorizedSyncPlanBrand: unique symbol = Symbol("AuthorizedSyncPlan");
+
+export interface CycleAdmissionSnapshot {
+	readonly plan: { readonly actions: readonly SyncAction[] };
+	readonly identityEvidence: readonly IdentityEvidence[];
+	readonly observations: readonly PathObservation[];
+	readonly scope: ScopeProjection;
+	readonly namespace: string;
+}
+
+/** The executor input that only Admission can construct. */
+export interface AuthorizedSyncPlan {
+	readonly actions: readonly SyncAction[];
+	readonly [authorizedSyncPlanBrand]: CycleAdmissionSnapshot;
+}
+
 type AdmissionDeferralReason =
 	| "alias_target_mutation"
 	| "conflicting_identity"
@@ -20,16 +36,52 @@ type AdmissionDeferralReason =
 	| "unknown_observation"
 	| "unknown_scope";
 
-export interface DeferredComponent {
+interface AdmissionComponentDisposition {
 	paths: string[];
 	actions: SyncAction[];
 	evidence: IdentityEvidence[];
+}
+
+export interface AuthorizedComponent extends AdmissionComponentDisposition {
+	kind: "authorized";
+}
+
+export interface ResolvedNoActionComponent extends AdmissionComponentDisposition {
+	kind: "resolved_no_action";
+}
+
+export interface DeferredComponent extends AdmissionComponentDisposition {
+	kind: "deferred";
 	reasons: AdmissionDeferralReason[];
 }
 
+export type AdmissionDisposition =
+	| AuthorizedComponent
+	| ResolvedNoActionComponent
+	| DeferredComponent;
+
 export interface AdmissionResult {
-	executable: { actions: SyncAction[] };
+	snapshot: CycleAdmissionSnapshot;
+	executable: AuthorizedSyncPlan;
+	dispositions: AdmissionDisposition[];
 	deferred: DeferredComponent[];
+}
+
+export function captureCycleAdmissionSnapshot(
+	plan: SyncPlan,
+	identityEvidence: readonly IdentityEvidence[],
+	observations: readonly PathObservation[],
+	scope: ScopeProjection,
+	namespace: string,
+): CycleAdmissionSnapshot {
+	const capturedScope = Object.freeze({ byEndpoint: new Map(scope.byEndpoint) });
+	return Object.freeze({
+		plan: Object.freeze({ actions: Object.freeze([...plan.actions]) }),
+		identityEvidence: Object.freeze([...identityEvidence]),
+		observations: Object.freeze([...observations]),
+		scope: capturedScope,
+		namespace,
+	});
 }
 
 /**
@@ -38,29 +90,44 @@ export interface AdmissionResult {
  * whose cross-path identity cannot be reconciled safely.
  */
 export function admitDestructivePlan(
-	plan: SyncPlan,
-	identityEvidence: readonly IdentityEvidence[],
-	observations: readonly PathObservation[],
-	scope: ScopeProjection,
+	snapshot: CycleAdmissionSnapshot,
 ): AdmissionResult {
-	const components = buildAdmissionComponents(plan, identityEvidence, observations, scope);
-	const deferredActions = new Set<SyncAction>();
-	const deferred: DeferredComponent[] = [];
+	const components = buildAdmissionComponents(
+		snapshot.plan, snapshot.identityEvidence, snapshot.observations, snapshot.scope,
+	);
+	const authorizedActions = new Set<SyncAction>();
+	const dispositions: AdmissionDisposition[] = [];
 	for (const component of components) {
-		const reasons = evaluateComponent(component, scope);
-		if (reasons.length === 0) continue;
-		for (const action of component.actions) deferredActions.add(action);
-		deferred.push({
+		const shared = {
 			paths: [...component.paths].sort(),
 			actions: [...component.actions],
 			evidence: [...component.evidence].sort(compareEvidence),
-			reasons,
-		});
+		};
+		const reasons = evaluateComponent(component, snapshot.scope);
+		if (reasons.length > 0) {
+			dispositions.push({
+				kind: "deferred",
+				...shared,
+				reasons,
+			});
+		} else if (component.actions.length === 0) {
+			dispositions.push({ kind: "resolved_no_action", ...shared });
+		} else {
+			for (const action of component.actions) authorizedActions.add(action);
+			dispositions.push({ kind: "authorized", ...shared });
+		}
 	}
-	deferred.sort((left, right) => left.paths.join("\0").localeCompare(right.paths.join("\0")));
+	dispositions.sort((left, right) => left.paths.join("\0").localeCompare(right.paths.join("\0")));
+	const actions = snapshot.plan.actions.filter((action) => authorizedActions.has(action));
+	const executable = Object.freeze({
+		actions: Object.freeze(actions),
+		[authorizedSyncPlanBrand]: snapshot,
+	});
 	return {
-		executable: { actions: plan.actions.filter((action) => !deferredActions.has(action)) },
-		deferred,
+		snapshot,
+		executable,
+		dispositions,
+		deferred: dispositions.filter((item): item is DeferredComponent => item.kind === "deferred"),
 	};
 }
 
@@ -82,12 +149,21 @@ function evaluateComponent(
 	}
 
 	const renames = component.evidence.filter((item): item is RenameEvidence => item.kind === "rename");
+	const resolvedNoAction = component.actions.length === 0 && renames.length > 0 &&
+		renames.every((rename) => projectRenameScope(rename, scope).consequence === "none" ||
+			resolvedAtBothSides(rename, component.observations));
 	if (renames.length > 0 && reasons.size === 0) {
-		const renameReason = evaluateRenames(component, renames, scope);
+		const renameReason = evaluateRenames(component, renames, scope, resolvedNoAction);
 		if (renameReason) reasons.add(renameReason);
 	} else if (renames.length === 0 && reasons.size === 0 &&
-		component.evidence.some((item) => item.kind === "stable_identity" &&
-			new Set(item.occurrences.map((occurrence) => occurrence.path)).size > 1)) {
+			component.evidence.some((item) => item.kind === "stable_identity" &&
+				new Set(item.occurrences.map((occurrence) => occurrence.path)).size > 1)) {
+		reasons.add("identity_postcondition_unproven");
+	}
+	if (reasons.size === 0 && hasUnprovenStandaloneDelete(component)) {
+		reasons.add("unknown_observation");
+	}
+	if (component.actions.length === 0 && reasons.size === 0 && !resolvedNoAction) {
 		reasons.add("identity_postcondition_unproven");
 	}
 	return [...reasons].sort();
@@ -97,6 +173,7 @@ function evaluateRenames(
 	component: AdmissionComponent,
 	renames: RenameEvidence[],
 	scope: ScopeProjection,
+	resolvedNoAction: boolean,
 ): AdmissionDeferralReason | undefined {
 	const rules = renames.map((rename) => ({ rename, rule: projectRenameScope(rename, scope) }));
 	if (rules.some(({ rename, rule }) => rename.isFolder && rule.consequence === "defer")) {
@@ -106,6 +183,7 @@ function evaluateRenames(
 	if (hasIncompleteNativeFolderMapping(component, rules.map(({ rename, rule }) => ({
 		rename, consequence: rule.consequence,
 	})), scope)) return "incomplete_folder_mapping";
+	if (resolvedNoAction) return undefined;
 	if (matchesNativeRenames(component, rules.map(({ rename, rule }) => ({
 		rename, consequence: rule.consequence,
 	})), scope)) return undefined;
@@ -116,6 +194,37 @@ function evaluateRenames(
 		return undefined;
 	}
 	return "rename_mismatch";
+}
+
+function resolvedAtBothSides(
+	rename: RenameEvidence,
+	observations: readonly PathObservation[],
+): boolean {
+	return (["local", "remote"] as const).every((side) => {
+		const oldObservation = observations.find((item) =>
+			item.side === side && item.requestedPath === rename.oldPath);
+		const newObservation = observations.find((item) =>
+			item.side === side && item.requestedPath === rename.newPath);
+		const oldResolved = oldObservation?.kind === "absent" ||
+			(oldObservation?.kind === "alias" && oldObservation.resolvedPath === rename.newPath);
+		const newResolved = newObservation?.kind === "exact" ||
+			(newObservation?.kind === "alias" && newObservation.resolvedPath === rename.newPath);
+		return oldResolved && newResolved;
+	});
+}
+
+function hasUnprovenStandaloneDelete(component: AdmissionComponent): boolean {
+	if (component.evidence.some((item) => item.kind === "rename")) return false;
+	return component.actions.some((action) => {
+		if (action.action !== "delete_local" && action.action !== "delete_remote") return false;
+		const authoritySide = action.action === "delete_local" ? "remote" : "local";
+		return !component.observations.some((observation) =>
+			observation.kind === "absent" && observation.side === authoritySide &&
+			observation.requestedPath === action.path &&
+			(authoritySide === "remote"
+				? observation.authority === "checkpoint_deleted"
+				: observation.authority === "stat"));
+	});
 }
 
 function matchesNativeRenames(

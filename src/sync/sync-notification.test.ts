@@ -6,7 +6,8 @@ function result(deferred = 0): ExecutionResult {
 	return {
 		succeeded: [], failed: [], blocked: [], conflicts: [],
 		deferred: Array.from({ length: deferred }, (_, index) => ({
-			paths: [`path-${index}.md`], actions: [], evidence: [], reasons: ["rename_mismatch"],
+			kind: "deferred", paths: [`path-${index}.md`], actions: [], evidence: [],
+			reasons: ["rename_mismatch"],
 		})),
 	};
 }

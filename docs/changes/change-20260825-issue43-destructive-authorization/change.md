@@ -75,5 +75,8 @@ and simplify the Issue 43 branch around one immutable authorization contract.
 
 ## Closure Notes
 
-Pending implementation, independent review, branch-wide minimality audit, repository
-gate, and all-backend live E2E verification.
+Implemented the immutable Admission snapshot, exhaustive dispositions, nominal executor
+input, mechanical commit-last finalization, and strict pre-Admission COLD recovery.
+Main-session review and the branch-wide minimality audit found no remaining blocking
+issue; one redundant logging carrier was removed. Repository gates, dev-evidence scope
+checks, and live Google Drive, Dropbox, and OneDrive E2E all pass.

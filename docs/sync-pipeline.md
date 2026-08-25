@@ -8,10 +8,10 @@ Each sync cycle runs a fail-closed planning and execution pipeline:
 2. **Project scope** -- `projectScope()` classifies every evidence endpoint before entry filtering
 3. **Decide** -- `planSync()` maps exact in-scope entries to actions
 4. **Refine** -- `refinePlan()` derives native rename actions without replacing the normative evidence
-5. **Admit** -- `admitDestructivePlan()` removes every action in an unsafe evidence-connected component
-6. **Execute/commit** -- `executePlan()` receives admitted actions only; successful actions commit per-path state, then `finalizeSyncCycle()` advances the checkpoint and retires debt only at a safe cycle boundary
+5. **Admit** -- the orchestrator captures one `CycleAdmissionSnapshot`; `admitDestructivePlan()` assigns every relevant component one disposition and issues the only `AuthorizedSyncPlan`
+6. **Execute/commit** -- `executePlan()` accepts that nominal plan only; successful actions commit per-path state, then `finalizeSyncCycle()` mechanically folds the same dispositions with completion and retires debt only after a safe checkpoint
 
-The orchestrator (`SyncOrchestrator.executeSyncOnce()`) drives the I/O boundaries. Scope projection, planning, and admission are composed by `prepareSyncCyclePlan()` without filesystem or state writes.
+The orchestrator (`SyncOrchestrator.executeSyncOnce()`) drives the I/O boundaries. `prepareSyncCycleSnapshot()` performs pure scope projection, proposal, refinement, and snapshot capture. The orchestrator then invokes Admission once at an explicit cut point; proposal output is never executable permission.
 
 **Scope filter (`SyncOrchestrator.isExcluded()`)** — a path is synced only if it passes **both** gates:
 
@@ -24,7 +24,7 @@ The orchestrator (`SyncOrchestrator.executeSyncOnce()`) drives the I/O boundarie
 
 The same `isExcluded()` gates the vault-event dirty tracking (scheduler), so push and pull use one scope rule across hot and cold paths.
 
-`runSync()` is gated on a connected remote (`remoteFs` present), layout-ready, and not-connecting; it serializes via an `AsyncMutex`. A call arriving while a sync runs sets `syncPending` and returns; the lock holder re-runs in a `do/while (syncPending)` loop, acknowledging each cycle's start-of-cycle snapshot at the end of each non-fatal cycle (coalescing). Each cycle (`executeSyncOnce`) is wrapped by `executeWithRetry`, which retries up to `MAX_RETRIES = 3` with exponential backoff plus jitter (`2^(attempt-1) * 1000 * (0.5 + Math.random())` ms), honoring `Retry-After` (×1000) on 429/403. `AuthError`, a non-rate-limit 403, and 404 abort without retry; a fatal abort returns early and leaves the dirty set un-acknowledged so it is retried next run.
+`runSync()` is gated on a connected remote (`remoteFs` present), layout-ready, and not-connecting; it serializes via an `AsyncMutex`. A call arriving while a sync runs sets `syncPending` and returns; the lock holder re-runs in a `do/while (syncPending)` loop, acknowledging each cycle's start-of-cycle snapshot at the end of each non-fatal cycle (coalescing). Each cycle (`executeSyncOnce`) is wrapped by `executeWithRetry`, which normally retries up to `MAX_RETRIES = 3` with exponential backoff plus jitter (`2^(attempt-1) * 1000 * (0.5 + Math.random())` ms), honoring `Retry-After` (×1000) on 429/403. `AuthError`, a non-rate-limit 403, and 404 abort without retry. An exception after remote rename evidence was yielded but strictly before Admission also does not tight-retry: the evidence is retained, the run reports an error, and the next normal trigger is forced COLD. A fatal abort leaves the dirty set un-acknowledged so it is retried next run.
 
 ## Crash recovery
 
@@ -34,7 +34,7 @@ At the start of each cycle the orchestrator asks `remoteFs.checkpoint.hasCheckpo
 
 A **same-session failure** also forces at least one subsequent cold cycle. This is load-bearing (ADR 0001 convergence path 2) — `result.failed` does not capture the full recovery gap (folder-rename descendants, remote-only orphans, detect-vs-execute races), so only a full cold scan re-derives it. After that cold recovery has been paid, the orchestrator may temporarily block only the same repeated **local-origin** poison action (`push`, `delete_remote`, `rename_remote`) whose error classification is `permanent` and carries a stable `permanentCode`. The key is `(backendType, action, path, "permanent", permanentCode)`, the same action signature must fail in two consecutive cycles, and the block lasts 5 minutes or until the action/content changes, succeeds, or fails with a non-eligible classification. The two-cycle threshold means the first failure still buys one mandatory cold recovery pass; the 5 minute TTL is a short mobile-friendly cooldown that prevents repeated poison I/O without persisting across plugin reloads. Blocked actions are reported as `result.blocked` and surface as `partial_error`; they are not treated as "Everything up to date".
 
-A **deferred identity component** is different from a failed action: it never reaches the executor. The cycle ends `partial_error`, reports a deferred count, withholds the checkpoint/scope fingerprint, and marks the next normal trigger for COLD without setting `syncPending` (no tight loop). A local reported rename is first stored as namespace-scoped `RenameDebt`; a remote edge is captured immediately when `getChangedPaths()` yields it, before later `stat`/hash/planning work can throw. Local debt survives restart directly; remote evidence survives restart because its delta checkpoint remains uncommitted. See [ADR 0008](adr/0008-logical-identity-admission-fails-closed.md).
+A **deferred identity component** is different from a failed action: it never reaches the executor, even when it contains zero actions. The cycle ends `partial_error`, reports each deferred disposition exactly once, withholds the checkpoint/scope fingerprint, and marks the next normal trigger for COLD without setting `syncPending` (no tight loop). A local reported rename is first stored as namespace-scoped `RenameDebt`; a remote edge is captured immediately when `getChangedPaths()` yields it, before later `stat`/hash/planning work can throw. Local debt survives restart directly; remote evidence survives restart because its delta checkpoint remains uncommitted. See [ADR 0008](adr/0008-logical-identity-admission-fails-closed.md).
 
 Remote-origin or ambiguous actions (`pull`, `delete_local`, `rename_local`, `conflict`) are never blocked, because advancing past them could hide remote changes. Transient and rate-limit failures are also never blocked; after the connection or provider recovers, the next sync must execute I/O again. Re-seeding failed paths for a "hot" recovery, skipping the first cold scan for "small" failure sets, or advancing the cursor while blindly ignoring remote-origin failures are **ADR 0001 prohibited patterns** (they re-open silent in-session data loss). The cost is **bounded and intentionally retained**: per-action `withIoRetry` keeps most transient/429 failures from ever reaching `result.failed`, and repeated cold scans are avoided only after the recovery debt has been paid and the remaining failure is a permanent local-origin poison action.
 
@@ -173,13 +173,20 @@ When `getChangedPaths()` reports a rename pair, the optimizer attempts `delete_l
 
 ## Destructive admission
 
-`prepareSyncCyclePlan()` projects scope before filtering, creates/refines the ordinary
-plan, then calls the pure `admitDestructivePlan()`. Admission builds connected
-components from actions plus rename/alias/stable-identity evidence and path
-observations. It admits an exact native rename, a proven direction-specific scope
-transition, or the recognized source-recreation postcondition. Otherwise it defers the
-whole component, including state-only actions; disconnected components remain
-executable in their original order.
+`prepareSyncCycleSnapshot()` projects scope before filtering, creates/refines the plain
+`SyncPlan` proposal, and freezes the proposal, normative evidence, observations, scope,
+and backend/root namespace into one cycle snapshot. The orchestrator passes that value
+once to pure `admitDestructivePlan()`. Admission builds connected components from
+actions plus rename/alias/stable-identity evidence and path observations and emits
+exactly one `authorized`, `resolved_no_action`, or `deferred` disposition per relevant
+component, including evidence-connected components with zero actions.
+
+Admission alone proves exact deletion authority, native rename, a direction-specific
+scope transition, two-sided convergence, or the recognized source-recreation
+postcondition. Unknown, conflicting, incomplete, or otherwise unproved components
+defer as a whole, including state-only actions. Only actions from `authorized`
+dispositions are projected, in proposal order, into the nominal `AuthorizedSyncPlan`;
+`executePlan()` cannot accept a plain proposal through the supported typed API.
 
 Endpoint dispositions are `included`, `policy_out`, `mobile_deferred`, or `unknown`.
 Any unknown/mobile endpoint and any incomplete folder descendant mapping defers. The
@@ -187,10 +194,12 @@ full local/remote direction matrix and rejected identity inferences are recorded
 [ADR 0008](adr/0008-logical-identity-admission-fails-closed.md).
 
 Before admitted I/O, local reported edges are upserted into the SyncState v6 rename-debt
-store under the active backend/root namespace. `finalizeSyncCycle()` owns the opposite
-boundary: safe checkpoint commit first, then resolved debt deletion and session-evidence
-release. Disconnect/root switch waits on the orchestrator mutex before clearing state,
-so an old-target in-flight cycle cannot recreate debt after teardown.
+store under the snapshot's backend/root namespace. `finalizeSyncCycle()` does not
+re-evaluate scope, observations, identities, aliases, or action shapes: it folds the
+snapshot-bound dispositions with succeeded action membership. A safe checkpoint commits
+first; only then are mechanically releasable debt and session evidence retired.
+Disconnect/root switch waits on the orchestrator mutex before clearing state, so an
+old-target in-flight cycle cannot recreate debt after teardown.
 
 ### Observability
 

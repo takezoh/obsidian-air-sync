@@ -2,7 +2,7 @@ import type { Logger } from "../logging/logger";
 import type { ChangeSet } from "./change-detector";
 import { planSync } from "./decision-engine";
 import type { AdmissionResult } from "./plan-admission";
-import { admitDestructivePlan } from "./plan-admission";
+import { captureCycleAdmissionSnapshot } from "./plan-admission";
 import {
 	applyRenameDebtScope,
 	collectLocalRenameDebts,
@@ -11,7 +11,6 @@ import {
 import { refinePlan } from "./rename-optimizer";
 import { projectScope, type ScopeProjectionPolicy } from "./scope-projection";
 import type { RenameDebt } from "./state";
-import type { ScopeProjection } from "./types";
 
 export function logChangeDetection(
 	changeSet: ChangeSet,
@@ -45,7 +44,7 @@ export function logChangeDetection(
 }
 
 /** Pure cycle planning plus structured diagnostics; no state or filesystem writes. */
-export function prepareSyncCyclePlan(
+export function prepareSyncCycleSnapshot(
 	changeSet: ChangeSet,
 	persistedDebts: readonly RenameDebt[],
 	namespace: string,
@@ -71,30 +70,36 @@ export function prepareSyncCyclePlan(
 		completeChangeSet.identityEvidence,
 		logger,
 	);
-	const admission = admitDestructivePlan(
+	const snapshot = captureCycleAdmissionSnapshot(
 		plan,
 		completeChangeSet.identityEvidence,
 		completeChangeSet.observations,
 		scopeProjection,
+		namespace,
 	);
 	const localRenameDebts = collectLocalRenameDebts(
 		namespace,
 		completeChangeSet.identityEvidence,
 		scopeProjection,
 	);
-	logPlan(logger, plan.actions.map((action) => action.action), admission, scopeProjection);
-	return { admission, localRenameDebts, scopeProjection };
+	return {
+		snapshot,
+		localRenameDebts,
+	};
 }
 
-function logPlan(
+export function logSyncCyclePlan(
 	logger: Logger | undefined,
-	actionTypes: string[],
 	admission: AdmissionResult,
-	scopeProjection: ScopeProjection,
 ): void {
 	const actionBreakdown: Record<string, number> = {};
-	for (const action of actionTypes) actionBreakdown[action] = (actionBreakdown[action] ?? 0) + 1;
-	logger?.info("Sync plan created", { total: actionTypes.length, ...actionBreakdown });
+	for (const { action } of admission.snapshot.plan.actions) {
+		actionBreakdown[action] = (actionBreakdown[action] ?? 0) + 1;
+	}
+	logger?.info("Sync plan created", {
+		total: admission.snapshot.plan.actions.length,
+		...actionBreakdown,
+	});
 	for (const component of admission.deferred) {
 		logger?.warn("Sync plan component deferred", {
 			reasons: component.reasons,
@@ -106,7 +111,7 @@ function logPlan(
 			})),
 			scope: component.paths.map((path) => ({
 				path,
-				disposition: scopeProjection.byEndpoint.get(path) ?? "unknown",
+				disposition: admission.snapshot.scope.byEndpoint.get(path) ?? "unknown",
 			})),
 		});
 	}

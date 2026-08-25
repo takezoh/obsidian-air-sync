@@ -1,4 +1,4 @@
-import type { IdentityEvidence, PathObservation, ScopeProjection, SyncAction, SyncPlan } from "./types";
+import type { IdentityEvidence, PathObservation, ScopeProjection, SyncAction } from "./types";
 
 export interface AdmissionComponent {
 	paths: Set<string>;
@@ -8,7 +8,7 @@ export interface AdmissionComponent {
 }
 
 export function buildAdmissionComponents(
-	plan: SyncPlan,
+	plan: { readonly actions: readonly SyncAction[] },
 	identityEvidence: readonly IdentityEvidence[],
 	observations: readonly PathObservation[],
 	scope: ScopeProjection,
@@ -44,7 +44,10 @@ export function buildAdmissionComponents(
 	for (const observation of observations) {
 		componentFor(byRoot, graph, observationPaths(observation)).observations.push(observation);
 	}
-	return [...byRoot.values()].filter((component) => component.actions.length > 0);
+	return [...byRoot.values()].filter((component) =>
+		component.actions.length > 0 || component.evidence.length > 0 ||
+		component.observations.some((observation) =>
+			observation.kind === "present_unresolved" || observation.kind === "unknown"));
 }
 
 function folderDescendantPaths(

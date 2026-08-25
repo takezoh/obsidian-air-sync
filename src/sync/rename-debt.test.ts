@@ -1,14 +1,13 @@
 import { describe, expect, it } from "vitest";
-import type { ExecutionResult } from "./execution-result";
 import {
 	applyRenameDebtScope,
 	collectLocalRenameDebts,
 	mergeRenameDebtEvidence,
-	resolvedRenameDebts,
-	unresolvedRenameEvidence,
+	renameDebtsBoundToEvidence,
+	unreleasedIdentityEvidence,
 } from "./rename-debt";
 import type { RenameDebt } from "./state";
-import type { IdentityEvidence, ScopeProjection, SyncAction } from "./types";
+import type { RenameEvidence, ScopeProjection } from "./types";
 
 function debt(overrides: Partial<RenameDebt> = {}): RenameDebt {
 	return {
@@ -17,7 +16,7 @@ function debt(overrides: Partial<RenameDebt> = {}): RenameDebt {
 	};
 }
 
-function rename(): IdentityEvidence {
+function rename(): RenameEvidence {
 	return {
 		kind: "rename", side: "local", oldPath: "A.md", newPath: "a.md",
 		isFolder: false, authority: "reported",
@@ -26,10 +25,6 @@ function rename(): IdentityEvidence {
 
 function projection(entries: Record<string, "included" | "policy_out" | "mobile_deferred" | "unknown">): ScopeProjection {
 	return { byEndpoint: new Map(Object.entries(entries)) };
-}
-
-function result(overrides: Partial<ExecutionResult> = {}): ExecutionResult {
-	return { succeeded: [], failed: [], blocked: [], conflicts: [], deferred: [], ...overrides };
 }
 
 describe("rename debt orchestration helpers", () => {
@@ -68,41 +63,20 @@ describe("rename debt orchestration helpers", () => {
 		)).toEqual([]);
 	});
 
-	it("deletes debt only after its admitted action succeeds or it projects to no-op", () => {
-		const action: SyncAction = { path: "a.md", oldPath: "A.md", action: "rename_remote" };
-
-		expect(resolvedRenameDebts(
-			[debt()], result({ succeeded: [{ action }] }),
-			projection({ "A.md": "included", "a.md": "included" }),
+	it("selects only namespace-local debts bound to released evidence", () => {
+		expect(renameDebtsBoundToEvidence(
+			[debt(), debt({ namespace: "other:root" })], [rename()], "onedrive:root",
 		)).toEqual([debt()]);
-		expect(resolvedRenameDebts(
-			[debt()], result(), projection({ "A.md": "policy_out", "a.md": "policy_out" }),
-		)).toEqual([debt()]);
+		expect(renameDebtsBoundToEvidence([debt()], [], "onedrive:root")).toEqual([]);
 	});
 
-	it("retains debt for deferred, failed, or blocked actions", () => {
-		const action: SyncAction = { path: "a.md", oldPath: "A.md", action: "rename_remote" };
-		const scope = projection({ "A.md": "included", "a.md": "included" });
-		const deferred = {
-			paths: ["A.md", "a.md"], actions: [action], evidence: [rename()], reasons: ["rename_mismatch" as const],
-		};
-
-		expect(resolvedRenameDebts([debt()], result({ deferred: [deferred] }), scope)).toEqual([]);
-		expect(resolvedRenameDebts(
-			[debt()], result({ failed: [{ action, error: new Error("failed") }] }), scope,
-		)).toEqual([]);
-		expect(resolvedRenameDebts(
-			[debt()], result({ blocked: [{ action, reason: "blocked" }] }), scope,
-		)).toEqual([]);
-	});
-
-	it("retains session evidence when its connected action is blocked", () => {
+	it("retains session evidence outside released membership", () => {
 		const edge = { ...rename(), side: "remote" as const };
-		const action: SyncAction = { path: "a.md", oldPath: "A.md", action: "rename_local" };
 
-		expect(unresolvedRenameEvidence(
-			[edge], result({ blocked: [{ action, reason: "blocked" }] }),
-			projection({ "A.md": "included", "a.md": "included" }),
-		)).toEqual([edge]);
+		expect(unreleasedIdentityEvidence([edge], [])).toEqual([edge]);
+		expect(unreleasedIdentityEvidence([edge], [edge])).toEqual([]);
+		expect(unreleasedIdentityEvidence(
+			[edge], [{ ...edge, identityKey: "remote-id" }],
+		)).toEqual([]);
 	});
 });

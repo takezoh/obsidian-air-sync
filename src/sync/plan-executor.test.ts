@@ -1,10 +1,15 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { executePlan, toConflictRecords, DESKTOP_TRANSFER_POOL, MOBILE_TRANSFER_POOL } from "./plan-executor";
 import type { ExecutionContext, ResolvedConflict } from "./plan-executor";
-import type { SyncAction, SyncPlan } from "./types";
+import type { PathObservation, SyncAction } from "./types";
 import { createMockLocalFs, createMockRemoteFs, type MockFileSystem, createMockStateStore, addFile, readText, deferred, flush } from "../__mocks__/sync-test-helpers";
 import { AuthError, classifyHttpError } from "../fs/errors";
 import { AdaptivePool } from "../queue/async-queue";
+import {
+	admitDestructivePlan,
+	captureCycleAdmissionSnapshot,
+	type AuthorizedSyncPlan,
+} from "./plan-admission";
 
 function makeCtx(
 	overrides: Partial<ExecutionContext> = {},
@@ -28,8 +33,22 @@ function makeCtx(
 	};
 }
 
-function makePlan(actions: SyncAction[]): SyncPlan {
-	return { actions };
+function makePlan(actions: SyncAction[]): AuthorizedSyncPlan {
+	const observations: PathObservation[] = [];
+	for (const action of actions) {
+		if (action.action === "delete_local") {
+			observations.push({ kind: "absent", side: "remote",
+				requestedPath: action.path, authority: "checkpoint_deleted" });
+		}
+		if (action.action === "delete_remote") {
+			observations.push({ kind: "absent", side: "local",
+				requestedPath: action.path, authority: "stat" });
+		}
+	}
+	const scope = { byEndpoint: new Map(actions.map((action) => [action.path, "included" as const])) };
+	return admitDestructivePlan(captureCycleAdmissionSnapshot(
+		{ actions }, [], observations, scope, "executor-test",
+	)).executable;
 }
 
 // Some suites spy on AdaptivePool.prototype (a global) — restore after each test
@@ -767,7 +786,7 @@ describe("executePlan", () => {
 
 describe("withIoRetry (per-action in-cycle retry)", () => {
 	const httpErr = (status: number) => Object.assign(new Error(`HTTP ${status}`), { status });
-	const pushPlan = (path = "x.md"): SyncPlan =>
+	const pushPlan = (path = "x.md"): AuthorizedSyncPlan =>
 		makePlan([{ path, action: "push", local: { path, isDirectory: false, size: 7, mtime: 1000, hash: "" } }]);
 
 	it("retries a rate-limited (429) transfer, then succeeds", async () => {
@@ -949,7 +968,7 @@ describe("adaptive transfer pool (Phase 1)", () => {
 		return { gate, counter };
 	}
 
-	function manyPushes(n: number, ctx: ExecutionContext, size = 7): SyncPlan {
+	function manyPushes(n: number, ctx: ExecutionContext, size = 7): AuthorizedSyncPlan {
 		const localFs = ctx.localFs as MockFileSystem;
 		const actions: SyncAction[] = [];
 		for (let i = 0; i < n; i++) {

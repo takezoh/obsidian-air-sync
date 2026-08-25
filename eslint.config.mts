@@ -275,12 +275,18 @@ export default defineConfig(
 		rules: { "max-lines": ["error", { max: 337, skipBlankLines: true, skipComments: true }] },
 	},
 	{
-		// Re-pinned from 374 for the scope-fingerprint fix (compute + compare the
-		// current vs committed scope fingerprint in runSync, thread it through
-		// executeWithRetry/executeSyncOnce to commitCheckpoint) — cohesive addition
-		// to the existing cold-reconcile decision, not a natural split point.
+		// Re-pinned from 385: the explicit pre-Admission try/catch and the single
+		// admitDestructivePlan cut point must remain together in the composition root;
+		// extracting either would hide which exceptions own COLD evidence recovery.
 		files: ["src/sync/orchestrator.ts"],
-		rules: { "max-lines": ["error", { max: 385, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 406, skipBlankLines: true, skipComments: true }] },
+	},
+	{
+		// Admission is the one pure owner of final destructive authorization. Splitting
+		// its component policy from disposition issuance would add an internal policy
+		// boundary and make the safety decision span modules solely to satisfy a count.
+		files: ["src/sync/plan-admission.ts"],
+		rules: { "max-lines": ["error", { max: 398, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Re-pinned from 317: replay-free post-delta snapshots must stay under the

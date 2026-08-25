@@ -11,6 +11,8 @@ import {
 	readText,
 } from "../__mocks__/sync-test-helpers";
 import type { RenamePair, SyncPlan } from "./types";
+import { admitDestructivePlan, captureCycleAdmissionSnapshot } from "./plan-admission";
+import { projectScope } from "./scope-projection";
 
 /**
  * Convergence (fixed-point) contract — the emergent property the whole engine
@@ -68,7 +70,11 @@ async function runCycle(env: Env): Promise<SyncPlan> {
 		planSync(changeSet.entries),
 		changeSet.identityEvidence,
 	);
-	await executePlan(plan, {
+	const scope = projectScope(changeSet, { classifyPath: () => "included" });
+	const admission = admitDestructivePlan(captureCycleAdmissionSnapshot(
+		plan, changeSet.identityEvidence, changeSet.observations, scope, "convergence-test",
+	));
+	await executePlan(admission.executable, {
 		localFs,
 		remoteFs,
 		committer: { stateStore },

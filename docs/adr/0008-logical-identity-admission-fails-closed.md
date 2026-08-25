@@ -39,11 +39,12 @@ depend on that repair being complete.
    deletion, no-op, or deferral. `unknown`, `mobile_deferred`, and incomplete folder
    mappings defer the whole connected component.
 
-4. `admitDestructivePlan` is the sole final owner of cross-path destructive
-   admissibility. It is pure and cycle-local. When it cannot prove a permitted
-   postcondition, it removes every action in the evidence-connected component —
-   including state-only `match`/`cleanup` — before `executePlan`. Disconnected safe
-   components retain their original order and may execute.
+4. `admitDestructivePlan` is the sole final owner of destructive admissibility. It is
+   pure and cycle-local, consumes one immutable cycle snapshot, and emits exactly one
+   `authorized`, `resolved_no_action`, or `deferred` disposition for every relevant
+   component, including zero-action evidence components. Only Admission can issue the
+   nominal `AuthorizedSyncPlan` accepted by `executePlan`; disconnected authorized
+   actions retain proposal order.
 
 5. Deferral is visible and non-clean: status is `partial_error`, notifications count
    deferred components, structured logs identify reasons/evidence/scope/paths, the
@@ -54,9 +55,11 @@ depend on that repair being complete.
    dispositions are persisted as namespace-scoped `RenameDebt` before plan I/O and
    tracker acknowledgement. Remote edges are captured immediately when the delta
    cursor yields them and are reconstructed after restart by withholding that cursor's
-   checkpoint. Debt/evidence is released only after success, proven two-sided
-   convergence, or an explicit scope no-op reaches a safe checkpoint. Backend/root
-   teardown is serialized with sync execution and clears the old namespace.
+   checkpoint. Admission alone classifies success eligibility, two-sided convergence,
+   and explicit scope no-op. Finalization performs only action-completion/membership
+   folding; after a safe checkpoint commits it retires the evidence/debt made releasable
+   by those dispositions. Backend/root teardown is serialized with sync execution and
+   clears the old namespace.
 
 7. SyncState schema version 6 cold-starts the incompatible baseline shape. Old
    `SyncRecord` and merge-base stores are dropped rather than field-migrated; the first

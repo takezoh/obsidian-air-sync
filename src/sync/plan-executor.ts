@@ -1,6 +1,7 @@
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
-import type { ConflictStrategy, SyncAction, SyncActionType, SyncPlan } from "./types";
+import type { ConflictStrategy, SyncAction, SyncActionType } from "./types";
+import type { AuthorizedSyncPlan } from "./plan-admission";
 import type { StateCommitterContext } from "./state-committer";
 import type { ConflictResolverContext } from "./conflict-resolver";
 import type { Logger } from "../logging/logger";
@@ -140,7 +141,7 @@ function transferSize(action: SyncAction): number {
  * cycle); all other per-action errors are caught into `result.failed`.
  */
 export async function executePlan(
-	plan: SyncPlan,
+	plan: AuthorizedSyncPlan,
 	ctx: ExecutionContext,
 ): Promise<ExecutionResult> {
 	const result: ExecutionResult = {
