@@ -330,7 +330,7 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	 * is co-located with the cache, so its presence is the checkpoint.
 	 */
 	async hasCheckpoint(): Promise<boolean> {
-		return (await this.peekMeta(CURSOR_META_KEY, this._changesPageToken)) !== null;
+		return this.cacheMutex.run(() => this.initialized ? Promise.resolve(this._changesPageToken !== null) : this.loadFromCache());
 	}
 
 	/**

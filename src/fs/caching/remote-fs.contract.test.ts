@@ -150,6 +150,31 @@ function makeMockHarness(): CachingRemoteFsHarness<MockFile> {
 runCachingRemoteFsContract("MockRemoteFs", makeMockHarness);
 
 describe("MockRemoteFs incremental authority persistence", () => {
+	it("rejects a duplicate-identity checkpoint before sync chooses WARM", async () => {
+		const remote = new FakeRemote();
+		remote.seed("c.md");
+		const [file] = remote.list();
+		const store = new MetadataStore<MockFile>("duplicate-identity-checkpoint", {
+			dbNamePrefix: "air-sync-mock",
+			version: 1,
+		});
+		await store.open();
+		await store.saveAll([
+			{ path: "C.md", file: file!, isFolder: false },
+			{ path: "c.md", file: file!, isFolder: false },
+		], new Map([["changesStartPageToken", "c0"]]));
+
+		const fs = new MockRemoteFs(remote, store);
+
+		// A cursor cannot make a malformed file map a usable checkpoint. Returning
+		// true here makes the orchestrator choose WARM; the later recovery scan then
+		// looks like an empty delta and a pending case-only rename is silently skipped.
+		expect(await fs.hasCheckpoint()).toBe(false);
+		expect((await fs.list()).map((entry) => entry.path)).toEqual(["c.md"]);
+
+		await fs.close();
+	});
+
 	it("restores a child's own authority after its unresolved parent is confirmed", async () => {
 		const remote = new FakeRemote();
 		remote.seedFolderWithChild("Docs", "a.md");
