@@ -1,0 +1,438 @@
+artifact: design-plan-spine
+version: 2
+granularity_profile: boundary-complete
+
+scope_expansion_signals:
+  - id: scope-signal-admission-finalization-boundary
+    kind: shared_boundary
+    target_ref: contract-finalization-consumer
+    witness: Finalization currently evaluates scope, observations, and action shapes after Admission; the target makes it a mechanical consumer of snapshot-bound dispositions.
+    requirement_refs: [FR-43-05, FR-43-06, FR-43-07]
+    authority_refs: [adr-0008-logical-identity-admission, adr-0001-commit-last]
+  - id: scope-signal-nominal-snapshot-contract
+    kind: critic_induced_contract
+    target_ref: contract-proposal-boundary
+    witness: Pass-2 found proposal bypass and mutable check/use inputs; the accepted authority requires an immutable snapshot and Admission-only nominal AuthorizedSyncPlan.
+    requirement_refs: [FR-43-01, FR-43-04, NFR-43-01]
+    authority_refs: [adr-issue43-destructive-authorization, input-authorized-plan-marker]
+  - id: scope-signal-no-lifecycle-service
+    kind: smaller_structural_alternative
+    target_ref: component-finalization
+    witness: Enriching the cycle-local Admission result and reusing existing recovery carriers avoids a lifecycle manager, persistent graph, and duplicate evidence DTO.
+    requirement_refs: [NFR-43-02]
+    authority_refs: [input-disposition-carrier, adr-issue43-destructive-authorization]
+
+requirements:
+  - id: FR-43-01
+    type: ubiquitous
+    priority: must
+    statement: Decision Engine and rename refinement produce plain proposals; only Admission issues destructive permission from a complete immutable cycle snapshot.
+  - id: FR-43-02
+    type: event-driven
+    priority: must
+    statement: Admission emits exactly one disposition for every relevant action-bearing or actionless evidence-connected component.
+  - id: FR-43-03
+    type: event-driven
+    priority: must
+    statement: Actionless uncertainty is visibly deferred, retains evidence and debt, withholds checkpoint advancement, and requests later COLD reevaluation without a tight retry.
+  - id: FR-43-04
+    type: ubiquitous
+    priority: must
+    statement: Execution accepts only Admission-issued nominal AuthorizedSyncPlan and receives only actions projected from authorized dispositions.
+  - id: FR-43-05
+    type: ubiquitous
+    priority: must
+    statement: Admission alone classifies scope no-op, convergence, identity consistency, alias targeting, and permitted destructive postconditions; finalization does not recompute them.
+  - id: FR-43-06
+    type: state-driven
+    priority: must
+    statement: Authorized-component evidence and debt become releasable only after every bound action succeeds; failure or block retains them without changing authorization.
+  - id: FR-43-07
+    type: state-driven
+    priority: must
+    statement: Releasable evidence and local debt retire only after safe checkpoint commit and remain intact when checkpoint persistence fails.
+  - id: FR-43-08
+    type: event-driven
+    priority: must
+    statement: Remote evidence is captured before later fallible work; an exception strictly before Admission retains it and requests COLD recovery without fabricating a disposition.
+  - id: FR-43-09
+    type: event-driven
+    priority: must
+    statement: Disconnected authorized actions preserve proposal order and may commit per-file state while another component is deferred, without checkpoint advancement.
+  - id: FR-43-10
+    type: event-driven
+    priority: must
+    statement: Every deferred disposition contributes exactly once to partial status, notification count, diagnostics, checkpoint withholding, and later COLD recovery.
+  - id: FR-43-11
+    type: ubiquitous
+    priority: must
+    statement: Issue 46 remains owned by OneDrive backend and cache evidence production and is verified independently by its casing regression and an Admission-constant A/B pipeline test.
+  - id: NFR-43-01
+    type: quality
+    priority: must
+    statement: Equal immutable snapshots produce equal disposition membership, reason ordering, and authorized action order without I/O or mutation.
+  - id: NFR-43-02
+    type: quality
+    priority: must
+    statement: The design adds no lifecycle manager, persistent component graph, remote debt, or duplicate normative evidence DTO.
+
+components:
+  - id: component-action-proposal
+    kind: existing
+    contract_refs: [contract-proposal-boundary]
+    paths:
+      - src/sync/decision-engine.ts
+      - src/sync/rename-optimizer.ts
+      - src/sync/sync-cycle-planning.ts
+  - id: component-admission
+    kind: planned
+    contract_refs: [contract-proposal-boundary, contract-admission-disposition]
+    paths:
+      - src/sync/plan-admission.ts
+      - src/sync/plan-admission-graph.ts
+      - src/sync/types.ts
+      - src/sync/sync-cycle-planning.ts
+  - id: component-finalization
+    kind: planned
+    contract_refs: [contract-finalization-consumer]
+    paths:
+      - src/sync/sync-cycle-finalization.ts
+      - src/sync/rename-debt.ts
+      - src/sync/execution-result.ts
+  - id: component-orchestrator-recovery
+    kind: planned
+    contract_refs: [contract-proposal-boundary, contract-finalization-consumer, contract-preadmission-recovery]
+    paths:
+      - src/sync/orchestrator.ts
+      - src/sync/remote-change-source.ts
+      - src/sync/sync-cycle-planning.ts
+
+contracts:
+  - id: contract-proposal-boundary
+    dimension: Immutable cycle snapshot and Admission-only nominal authorization separate proposal generation from destructive execution.
+    owner: component-admission
+    requirement_refs: [FR-43-01, FR-43-04, FR-43-09, NFR-43-01]
+    unit_refs:
+      - Chunk 1 — immutable admission disposition
+      - Chunk 3 — orchestrator integration
+      - Chunk 4 — persistent alignment and gate
+    adr_refs: [adr-0008-logical-identity-admission, adr-issue43-destructive-authorization]
+    verification:
+      - id: verify-direct-proposal-rejected
+        tier: T1
+        command: npm run build
+      - id: verify-snapshot-stability
+        tier: T1
+        command: npm test -- src/sync/orchestrator.test.ts
+      - id: verify-production-admission-path
+        tier: T1
+        command: npm test -- src/sync/orchestrator.test.ts
+  - id: contract-admission-disposition
+    dimension: Pure exhaustive component authorization, no-action resolution, and fail-closed deferral partition.
+    owner: component-admission
+    requirement_refs: [FR-43-02, FR-43-03, FR-43-05, FR-43-10, NFR-43-01, NFR-43-02]
+    unit_refs:
+      - Chunk 1 — immutable admission disposition
+      - Chunk 3 — orchestrator integration
+      - Chunk 4 — persistent alignment and gate
+    adr_refs: [adr-0008-logical-identity-admission, adr-issue43-destructive-authorization]
+    verification:
+      - id: verify-admission-disposition-matrix
+        tier: T0
+        command: npm test -- src/sync/plan-admission.test.ts
+      - id: verify-planning-composition
+        tier: T1
+        command: npm test -- src/sync/plan-admission.test.ts src/sync/orchestrator.test.ts
+    partition:
+      outcomes: [determinate, unknown, inconclusive, conflicting]
+      default_policy: Unknown, inconclusive, conflicting, incomplete, or otherwise unproved relevant components are deferred; only determinate accepted postconditions authorize or resolve without action.
+    discretion:
+      - id: discretion-component-membership-carrier
+        unit_ref: Chunk 1 — immutable admission disposition
+        question: Represent private cycle-local component membership by existing object references or input array indices.
+        scope:
+          files:
+            - src/sync/plan-admission.ts
+            - src/sync/plan-admission-graph.ts
+          component: component-admission
+          visibility: private
+        escalate_when:
+          - The representation becomes persisted, user-visible, logged as stable identity, or stable across cycles.
+          - It duplicates normative identity evidence or requires a lifecycle consumer to reconstruct membership.
+          - It changes connectivity, authorization outcomes, disposition order, or action order.
+        constraints:
+          - One carrier is shared directly by Admission diagnostics and finalization.
+          - Equal snapshots produce deterministic membership and disposition order.
+        preserves:
+          contract_refs: [contract-admission-disposition, contract-finalization-consumer]
+          invariant_refs: [FR-43-02, FR-43-05, NFR-43-02]
+        verification_refs: [verify-admission-disposition-matrix, verify-disposition-finalization]
+        difficulty_inputs:
+          decision_reasoning: local_tradeoff
+          boundary_reach: private
+          context_scope: files
+          reversibility: trivial
+          verification_strength: discriminating
+          runtime_risk: data_loss
+          coupling: coupled_within_unit
+          grounding: evidenced
+  - id: contract-finalization-consumer
+    dimension: Snapshot-bound mechanical completion and commit-last evidence or debt retirement without a second safety evaluator.
+    owner: component-finalization
+    requirement_refs: [FR-43-03, FR-43-05, FR-43-06, FR-43-07, FR-43-09, FR-43-10]
+    unit_refs:
+      - Chunk 2 — disposition-driven finalization
+      - Chunk 3 — orchestrator integration
+      - Chunk 4 — persistent alignment and gate
+    adr_refs: [adr-0008-logical-identity-admission, adr-0001-commit-last, adr-issue43-destructive-authorization]
+    verification:
+      - id: verify-disposition-finalization
+        tier: T0
+        command: npm test -- src/sync/sync-cycle-finalization.test.ts src/sync/rename-debt.test.ts
+      - id: verify-cycle-status-and-recovery
+        tier: T1
+        command: npm test -- src/sync/orchestrator.test.ts
+    partition:
+      outcomes: [determinate, unknown, inconclusive]
+      default_policy: Deferred or incompletely executed bound work retains evidence and debt and prevents a safe checkpoint; finalization never upgrades safety by inspecting planning facts.
+  - id: contract-preadmission-recovery
+    dimension: Immediate remote evidence capture and later COLD recovery only for exceptions strictly before Admission.
+    owner: component-orchestrator-recovery
+    requirement_refs: [FR-43-08, NFR-43-02]
+    unit_refs:
+      - Chunk 3 — orchestrator integration
+      - Chunk 4 — persistent alignment and gate
+    adr_refs: [adr-0008-logical-identity-admission, adr-0001-commit-last, adr-0006-order-independent-rename, adr-issue43-destructive-authorization]
+    verification:
+      - id: verify-post-delta-exception-retention
+        tier: T1
+        command: npm test -- src/sync/orchestrator.test.ts
+      - id: verify-issue46-independent-causality
+        tier: T2
+        command: npm run test:e2e:onedrive
+
+adrs:
+  - id: adr-0008-logical-identity-admission
+    status: accepted
+    decision_input_refs:
+      - input-single-authorization-owner
+      - input-actionless-unresolved
+      - input-disposition-carrier
+      - input-preadmission-exception
+      - decision-input-unified-final-authorization
+      - decision-input-actionless-component-retention
+  - id: adr-0001-commit-last
+    status: accepted
+    decision_input_refs:
+      - input-finalization-commit-last
+      - input-same-session-cold-recovery
+      - decision-input-checkpoint-carrier-shape
+  - id: adr-0006-order-independent-rename
+    status: accepted
+    decision_input_refs:
+      - input-issue46-cache-causality
+      - decision-input-issue46-fold-in
+  - id: adr-issue43-destructive-authorization
+    status: accepted
+    decision_input_refs:
+      - input-authorized-plan-marker
+      - decision-input-api-rename
+      - decision-input-new-persistent-disposition
+      - decision-input-purity-lint
+
+units:
+  - title: Chunk 1 — immutable admission disposition
+    chunk: "1"
+    contract_refs: [contract-proposal-boundary, contract-admission-disposition]
+    files:
+      - src/sync/plan-admission.ts
+      - src/sync/plan-admission-graph.ts
+      - src/sync/plan-admission.test.ts
+      - src/sync/types.ts
+      - src/sync/sync-cycle-planning.ts
+      - src/sync/plan-executor.ts
+    depends_on: []
+    acceptance:
+      - acceptance-exact-delete
+      - acceptance-direct-proposal-rejected
+      - acceptance-snapshot-stable
+      - acceptance-actionless-unresolved
+      - acceptance-actionless-resolved
+      - acceptance-authorized-only
+    objective: Capture one immutable snapshot, emit exhaustive dispositions, and issue the sole nominal authorized action projection.
+    output_format: Pure TypeScript snapshot, disposition, nominal authorization, and adversarial unit matrix.
+    tool_guidance: Keep proposal outputs plain, reference existing normative evidence, and retain relevant zero-action components.
+    task_boundaries: No I/O, lifecycle manager, persistence, notification, executor scheduling, or Issue 46 cache changes.
+    decision_closure_reason: Only the private membership carrier is delegated by discretion-component-membership-carrier.
+  - title: Chunk 2 — disposition-driven finalization
+    chunk: "2"
+    contract_refs: [contract-finalization-consumer]
+    files:
+      - src/sync/sync-cycle-finalization.ts
+      - src/sync/sync-cycle-finalization.test.ts
+      - src/sync/rename-debt.ts
+      - src/sync/rename-debt.test.ts
+      - src/sync/execution-result.ts
+    depends_on:
+      - Chunk 1 — immutable admission disposition
+    acceptance:
+      - acceptance-actionless-resolved
+      - acceptance-authorized-failure-retains
+      - acceptance-checkpoint-before-retirement
+      - acceptance-no-finalization-redecision
+    objective: Fold snapshot-bound disposition with mechanical completion and retire evidence only after safe checkpoint commit.
+    output_format: Narrow finalization and debt helpers with commit-last tests.
+    tool_guidance: Remove scope, observation, identity, alias, and action-shape safety evaluation from finalization.
+    task_boundaries: No lifecycle service, persistent graph, state schema, or checkpoint backend change.
+    decision_closure_reason: FR-43-05 through FR-43-07 fix owner, ordering, and failure semantics.
+  - title: Chunk 3 — orchestrator integration
+    chunk: "3"
+    contract_refs: [contract-proposal-boundary, contract-admission-disposition, contract-finalization-consumer, contract-preadmission-recovery]
+    files:
+      - src/sync/orchestrator.ts
+      - src/sync/orchestrator.test.ts
+      - src/sync/sync-cycle-planning.ts
+      - src/sync/remote-change-source.ts
+      - src/sync/sync-notification.ts
+      - src/sync/sync-notification.test.ts
+    depends_on:
+      - Chunk 2 — disposition-driven finalization
+    acceptance:
+      - acceptance-snapshot-stable
+      - acceptance-authorized-only
+      - acceptance-actionless-unresolved
+      - acceptance-disconnected-progress
+      - acceptance-post-delta-exception
+    objective: Route one frozen snapshot through authorization, execution, observability, finalization, and the strict pre-Admission COLD boundary.
+    output_format: Orchestrator and notification integration with multi-cycle regression tests.
+    tool_guidance: Serialize namespace teardown, do not map deferral to FailedActionTracker, and do not trigger an immediate retry.
+    task_boundaries: No backend cache repair, executor phase redesign, persistence, or automatic duplicate action.
+    decision_closure_reason: Production ownership, stability, and observable behavior are fixed by the accepted contract.
+  - title: Chunk 4 — persistent alignment and gate
+    chunk: "4"
+    contract_refs: [contract-proposal-boundary, contract-admission-disposition, contract-finalization-consumer, contract-preadmission-recovery]
+    files:
+      - docs/adr/adr-issue43-destructive-authorization.md
+      - docs/adr/0008-logical-identity-admission-fails-closed.md
+      - ARCHITECTURE.md
+      - docs/sync-pipeline.md
+    depends_on:
+      - Chunk 3 — orchestrator integration
+    acceptance:
+      - acceptance-doc-authority
+      - acceptance-issue46-independent
+      - acceptance-full-gate
+    objective: Align durable authority documentation, preserve Issue 46 causal separation, and verify the complete bounded change.
+    output_format: Minimal documentation updates and recorded focused/full-gate evidence.
+    tool_guidance: Run OneDrive casing and Admission-constant A/B verification independently; do not change Issue 46 implementation.
+    task_boundaries: No lint-policy expansion, backend behavior change, persistent design object, or Issue 46 fix claim.
+    decision_closure_reason: Purity enforcement is fixed to tests/build for this change; no consequential choice remains.
+
+acceptance:
+  - id: acceptance-exact-delete
+    criteria: An authoritative exact remote deletion with no cross-path evidence remains authorized and executable in original order.
+    requirement_refs: [FR-43-01, FR-43-02, FR-43-04]
+  - id: acceptance-direct-proposal-rejected
+    criteria: A typed caller cannot pass a plain proposal SyncPlan to executePlan and supported construction of AuthorizedSyncPlan exists only in Admission.
+    requirement_refs: [FR-43-01, FR-43-04]
+  - id: acceptance-snapshot-stable
+    criteria: A policy, settings, backend, or root change after snapshot capture affects only a later cycle and cannot change the in-flight authorization projection or namespace.
+    requirement_refs: [FR-43-01, FR-43-04, NFR-43-01]
+  - id: acceptance-actionless-unresolved
+    criteria: A present-unresolved or unknown evidence-connected zero-action component emits one deferred disposition, reports partial error, retains evidence/debt, withholds checkpoint, and requests later COLD recovery.
+    requirement_refs: [FR-43-02, FR-43-03, FR-43-10]
+  - id: acceptance-actionless-resolved
+    criteria: Admission alone classifies authoritative two-sided convergence or explicit scope no-op as resolved-no-action, after which checkpoint success precedes retirement.
+    requirement_refs: [FR-43-02, FR-43-05, FR-43-07]
+  - id: acceptance-authorized-only
+    criteria: Execution receives exactly ordered actions from authorized dispositions and none from deferred or resolved-no-action dispositions.
+    requirement_refs: [FR-43-01, FR-43-04, FR-43-09]
+  - id: acceptance-authorized-failure-retains
+    criteria: Failure or block of a bound authorized action retains evidence/debt and prevents checkpoint advancement without changing admission disposition.
+    requirement_refs: [FR-43-06, FR-43-07]
+  - id: acceptance-checkpoint-before-retirement
+    criteria: Checkpoint persistence failure propagates and leaves releasable evidence/debt intact because retirement has not begun.
+    requirement_refs: [FR-43-07]
+  - id: acceptance-no-finalization-redecision
+    criteria: Finalization cannot release a component from scope, observation, identity, alias, or action-shape evaluation without the corresponding Admission disposition.
+    requirement_refs: [FR-43-05, FR-43-06]
+  - id: acceptance-disconnected-progress
+    criteria: Disconnected authorized actions preserve order and may commit per-file state while another component defers, but the cycle checkpoint remains held.
+    requirement_refs: [FR-43-03, FR-43-09, FR-43-10]
+  - id: acceptance-post-delta-exception
+    criteria: A remote rename captured before a later pre-Admission exception survives an empty-delta retry and reaches Admission during later COLD observation.
+    requirement_refs: [FR-43-08]
+  - id: acceptance-issue46-independent
+    criteria: OneDrive casing regression and an Admission-constant A/B pipeline test distinguish backend edge emission from omission without relying on Issue 43 exception-retention behavior.
+    requirement_refs: [FR-43-11]
+  - id: acceptance-doc-authority
+    criteria: ADR and pipeline documentation identify immutable Admission disposition as sole safety resolution and finalization as a mechanical consumer while preserving Issue 46 separation.
+    requirement_refs: [FR-43-01, FR-43-05, FR-43-11]
+  - id: acceptance-full-gate
+    criteria: Repository lint, bot reproduction lint, build, and unit test gate all pass after the bounded change.
+    requirement_refs: [NFR-43-01, NFR-43-02]
+
+dispositions:
+  - decision_input_ref: input-single-authorization-owner
+    disposition: adopted — Admission alone classifies final destructive permission and no-action safety.
+    adr_refs: [adr-0008-logical-identity-admission, adr-issue43-destructive-authorization]
+    contract_refs: [contract-proposal-boundary, contract-admission-disposition, contract-finalization-consumer]
+  - decision_input_ref: input-actionless-unresolved
+    disposition: adopted — retain and visibly defer unresolved relevant components even with zero actions.
+    adr_refs: [adr-0008-logical-identity-admission]
+    contract_refs: [contract-admission-disposition, contract-finalization-consumer]
+  - decision_input_ref: input-disposition-carrier
+    disposition: adopted — enrich cycle-local AdmissionResult and reject a lifecycle service or persistent graph.
+    adr_refs: [adr-issue43-destructive-authorization]
+    contract_refs: [contract-admission-disposition, contract-finalization-consumer]
+  - decision_input_ref: input-membership-encoding
+    disposition: implementation_detail — private cycle-local encoding is delegated only by discretion-component-membership-carrier.
+    contract_refs: [contract-admission-disposition]
+  - decision_input_ref: input-preadmission-exception
+    disposition: adopted — immediate session capture and later COLD apply only before Admission.
+    adr_refs: [adr-0008-logical-identity-admission, adr-0001-commit-last, adr-issue43-destructive-authorization]
+    contract_refs: [contract-preadmission-recovery]
+  - decision_input_ref: input-admission-purity-enforcement
+    disposition: implementation_detail — deterministic tests and build enforce purity for this change; no lint-policy expansion is introduced.
+    contract_refs: [contract-admission-disposition]
+  - decision_input_ref: input-issue46-cache-causality
+    disposition: adopted — keep OneDrive/backend cache evidence causality separate and independently verified.
+    adr_refs: [adr-0006-order-independent-rename, adr-issue43-destructive-authorization]
+  - decision_input_ref: input-authorized-plan-marker
+    disposition: adopted — executePlan accepts only opaque or nominal AuthorizedSyncPlan issued by Admission.
+    adr_refs: [adr-issue43-destructive-authorization]
+    contract_refs: [contract-proposal-boundary]
+  - decision_input_ref: input-finalization-commit-last
+    disposition: adopted — checkpoint commit precedes evidence and debt retirement.
+    adr_refs: [adr-0001-commit-last]
+    contract_refs: [contract-finalization-consumer]
+  - decision_input_ref: input-same-session-cold-recovery
+    disposition: adopted — retained pre-Admission evidence is retried by a later COLD observation without a tight loop.
+    adr_refs: [adr-0001-commit-last, adr-issue43-destructive-authorization]
+    contract_refs: [contract-preadmission-recovery]
+  - decision_input_ref: decision-input-unified-final-authorization
+    disposition: subsumed — input-single-authorization-owner fixes the same Admission-only authority boundary.
+    adr_refs: [adr-0008-logical-identity-admission]
+    contract_refs: [contract-proposal-boundary, contract-admission-disposition]
+  - decision_input_ref: decision-input-checkpoint-carrier-shape
+    disposition: subsumed — input-disposition-carrier retains cycle-local dispositions and existing bounded debt or session carriers.
+    adr_refs: [adr-0001-commit-last, adr-issue43-destructive-authorization]
+    contract_refs: [contract-finalization-consumer]
+  - decision_input_ref: decision-input-actionless-component-retention
+    disposition: subsumed — input-actionless-unresolved fixes exhaustive relevant-component retention.
+    adr_refs: [adr-0008-logical-identity-admission]
+    contract_refs: [contract-admission-disposition]
+  - decision_input_ref: decision-input-new-persistent-disposition
+    disposition: rejected — persistent disposition state and lifecycle graphs add ownership without improving existing bounded recovery.
+    adr_refs: [adr-issue43-destructive-authorization]
+    contract_refs: [contract-admission-disposition, contract-finalization-consumer]
+  - decision_input_ref: decision-input-issue46-fold-in
+    disposition: rejected — Issue 46 evidence-production causality remains independent from authorization and exception retention.
+    adr_refs: [adr-0006-order-independent-rename, adr-issue43-destructive-authorization]
+  - decision_input_ref: decision-input-api-rename
+    disposition: adopted — API change is limited to nominal executor input and snapshot-bound Admission output; proposal APIs remain plain SyncPlan.
+    adr_refs: [adr-issue43-destructive-authorization]
+    contract_refs: [contract-proposal-boundary]
+  - decision_input_ref: decision-input-purity-lint
+    disposition: rejected — do not expand lint policy without repository authority; deterministic contract tests and build are required.
+    contract_refs: [contract-admission-disposition]
