@@ -356,13 +356,17 @@ function isMatchingAliasRename(
 	action: SyncAction,
 	alias: Extract<IdentityEvidence, { kind: "alias" }>,
 ): boolean {
-	const expected = alias.side === "local" ? "rename_remote" : "rename_local";
-	if (action.action !== expected || action.oldPath !== alias.requestedPath || action.path !== alias.resolvedPath) {
-		return false;
-	}
+	if (action.action !== "rename_local" && action.action !== "rename_remote") return false;
+	// A case-insensitive stat can expose either endpoint as the resolved spelling:
+	// stat(new) → old while the rename is still pending, or stat(old) → new after
+	// the provider has applied it. The alias is compatible only when it connects
+	// exactly the reported movement's endpoints; the reporting side, not the alias
+	// observation side, determines which filesystem the action must mutate.
+	if (!((alias.requestedPath === action.oldPath && alias.resolvedPath === action.path) ||
+		(alias.requestedPath === action.path && alias.resolvedPath === action.oldPath))) return false;
 	return component.evidence.some((evidence) => evidence.kind === "rename" &&
-		evidence.side === alias.side && evidence.oldPath === alias.requestedPath &&
-		evidence.newPath === alias.resolvedPath);
+		evidence.oldPath === action.oldPath && evidence.newPath === action.path &&
+		action.action === (evidence.side === "local" ? "rename_remote" : "rename_local"));
 }
 
 function hasConflictingIdentity(component: AdmissionComponent): boolean {

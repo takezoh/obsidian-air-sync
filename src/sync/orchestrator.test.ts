@@ -203,6 +203,48 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.close();
 		});
 
+		it("executes a remote case-only rename when local destination stat aliases the source", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			addFile(localFs, "C.md", "same", 1000);
+			addFile(remoteFs, "c.md", "same", 1000);
+			confirmMockPath(remoteFs, "c.md");
+			const settings = baseMockSettings({ backendType: "test", vaultId: `test-${Math.random()}` });
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
+			remoteFs.checkpoint!.getChangedPaths = vi.fn().mockResolvedValue({
+				modified: ["c.md"], deleted: ["C.md"],
+				renamed: [{ oldPath: "C.md", newPath: "c.md" }],
+			});
+			const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+			remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
+			const exactLocalStat = localFs.stat.bind(localFs);
+			vi.spyOn(localFs, "stat").mockImplementation(async (path) => {
+				const exact = await exactLocalStat(path);
+				if (exact || path !== "c.md") return exact;
+				return exactLocalStat("C.md");
+			});
+			const deps = createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			await orchestrator.state.put({
+				path: "C.md", hash: "baseline", localMtime: 1000, remoteMtime: 1000,
+				localSize: 4, remoteSize: 4, syncedAt: 900,
+			});
+			const localRename = vi.spyOn(localFs, "rename");
+			const localDelete = vi.spyOn(localFs, "delete");
+			const remoteDelete = vi.spyOn(remoteFs, "delete");
+
+			await orchestrator.runSync();
+
+			expect(localRename).toHaveBeenCalledWith("C.md", "c.md");
+			expect(localDelete).not.toHaveBeenCalled();
+			expect(remoteDelete).not.toHaveBeenCalled();
+			expect(commitCheckpoint).toHaveBeenCalledTimes(1);
+			expect(deps.onStatusChange).toHaveBeenLastCalledWith("idle");
+			await orchestrator.close();
+		});
+
 		it("reports an actionless unresolved rename and withholds the checkpoint", async () => {
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();

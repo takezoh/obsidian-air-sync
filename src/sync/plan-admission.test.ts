@@ -232,6 +232,45 @@ describe("admitDestructivePlan", () => {
 		expect(result.deferred).toEqual([]);
 	});
 
+	it("admits a remote case-only rename when the local destination aliases its source", () => {
+		const action: SyncAction = {
+			path: "a.md", oldPath: "A.md", action: "rename_local",
+			local: entity("A.md"), remote: entity("a.md", "X"),
+		};
+		const evidence: IdentityEvidence[] = [
+			remoteRename({ oldPath: "A.md", newPath: "a.md" }),
+			{ kind: "alias", side: "local", requestedPath: "a.md", resolvedPath: "A.md" },
+		];
+
+		const result = admit([action], evidence, [], projection({
+			"A.md": "included", "a.md": "included",
+		}));
+
+		expect(result.executable.actions).toEqual([action]);
+		expect(result.deferred).toEqual([]);
+	});
+
+	it("admits a local case-only rename when the remote destination aliases its source", () => {
+		const action: SyncAction = {
+			path: "a.md", oldPath: "A.md", action: "rename_remote",
+			local: entity("a.md"), remote: entity("A.md", "X"),
+		};
+		const evidence: IdentityEvidence[] = [
+			{
+				kind: "rename", side: "local", oldPath: "A.md", newPath: "a.md",
+				isFolder: false, authority: "reported",
+			},
+			{ kind: "alias", side: "remote", requestedPath: "a.md", resolvedPath: "A.md" },
+		];
+
+		const result = admit([action], evidence, [], projection({
+			"A.md": "included", "a.md": "included",
+		}));
+
+		expect(result.executable.actions).toEqual([action]);
+		expect(result.deferred).toEqual([]);
+	});
+
 	it("defers a native rename whose current destination identity contradicts the report", () => {
 		const action: SyncAction = {
 			path: "B.md", oldPath: "A.md", action: "rename_local",
