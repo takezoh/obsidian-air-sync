@@ -2,16 +2,27 @@
 
 ## Pipeline overview
 
-Each sync cycle runs a fail-closed planning and execution pipeline:
+Each sync cycle has five top-level responsibility stages:
 
-1. **Collect evidence** -- `collectChanges()` returns exact `entries`, path `observations`, and normative `identityEvidence`
-2. **Project scope** -- `projectScope()` classifies every evidence endpoint before entry filtering
-3. **Decide** -- `planSync()` maps exact in-scope entries to actions
-4. **Refine** -- `refinePlan()` derives native rename actions without replacing the normative evidence
-5. **Admit** -- the orchestrator captures one `CycleAdmissionSnapshot`; `admitDestructivePlan()` assigns every relevant component one disposition and issues the only `AuthorizedSyncPlan`
-6. **Execute/commit** -- `executePlan()` accepts that nominal plan only; successful actions commit per-path state, then `finalizeSyncCycle()` mechanically folds the same dispositions with completion and retires debt only after a safe checkpoint
+1. **Observe** -- `collectChanges()` returns exact `entries`, path `observations`, and normative `identityEvidence`.
+2. **Propose** -- scope is projected before filtering, then `planSync()` and `refinePlan()` produce a plain action proposal.
+3. **Admit** -- the proposal and its evidence are captured in one `CycleAdmissionSnapshot`; `admitDestructivePlan()` assigns every relevant component one disposition and issues the only `AuthorizedSyncPlan`.
+4. **Execute** -- `executePlan()` accepts that nominal plan only and successful actions commit their per-path state.
+5. **Finalize** -- `finalizeSyncCycle()` mechanically folds the same dispositions with execution completion, commits a safe checkpoint, and only then retires released evidence and debt.
 
-The orchestrator (`SyncOrchestrator.executeSyncOnce()`) drives the I/O boundaries. `prepareSyncCycleSnapshot()` performs pure scope projection, proposal, refinement, and snapshot capture. The orchestrator then invokes Admission once at an explicit cut point; proposal output is never executable permission.
+These stages describe responsibility boundaries, not one separately scheduled pass per helper function. Evidence completion is part of **Observe**; scope projection and rename refinement are internal to **Propose**; snapshot capture and component-graph construction are internal to **Admit**. They add no extra network scan merely by being named.
+
+The lower-level cycle sequence within those boundaries is:
+
+1. `collectChanges()` selects HOT/WARM/COLD collection, records authoritative path observations and identity evidence, confirms uncertain absences, and completes required hashes/identity facts.
+2. `projectScope()` classifies every evidence endpoint before exact entries are filtered.
+3. `planSync()` produces per-path actions; `refinePlan()` may replace compatible action pairs with native rename proposals.
+4. `captureCycleAdmissionSnapshot()` fixes the proposal, evidence, observations, scope, and namespace for this cycle.
+5. `admitDestructivePlan()` builds evidence-connected components, assigns dispositions, and projects the proposal-ordered `AuthorizedSyncPlan`.
+6. `executePlan()` runs only that authorized projection; each successful action calls `commitAction()` for per-path state.
+7. `finalizeSyncCycle()` folds disposition membership with execution completion, commits the checkpoint when safe, then retires released evidence and debt.
+
+The orchestrator (`SyncOrchestrator.executeSyncOnce()`) drives the I/O boundaries. `prepareSyncCycleSnapshot()` composes the pure **Propose** transformations and captures the input at the **Admit** boundary. The orchestrator then invokes Admission once at an explicit cut point; proposal output is never executable permission.
 
 **Scope filter (`SyncOrchestrator.isExcluded()`)** — a path is synced only if it passes **both** gates:
 

@@ -58,43 +58,35 @@ One row per directory; see the layer diagram and per-doc references for module d
      ┌───────────────▼────────────────────┐
      │            Pipeline                │
      │                                    │
-     │  collectChanges()                  │  ChangeDetector
-     │    collect (hot / warm / cold)     │    temperature modes
-     │    enrichHashesForInitialMatch()   │    local digest vs remoteChecksum
+     │  1 Observe                         │  ChangeDetector
+     │    collectChanges()                │    hot / warm / cold
+     │    observations + identity         │    evidence completion
      │        │                           │
      │        ▼                           │
-     │  projectScope()                    │  ScopeProjection
-     │    classify every evidence endpoint│    direction-aware matrix
+     │  2 Propose                         │  ScopeProjection / DecisionEngine
+     │    projectScope()                  │    classify evidence endpoints
+     │      → planSync()                  │    plain action proposal
+     │      → refinePlan()                │  RenameOptimizer
+     │                                    │    native rename optimization
      │        │                           │
      │        ▼                           │
-     │  planSync()                        │  DecisionEngine
-     │        │                           │    9 action types
-     │        ▼                           │
-     │  refinePlan()                      │  RenameOptimizer
-     │    optimizeLocalFileRenames         │    → rename_remote (hash-verified)
-     │    optimizeRemoteFileRenames        │    → rename_local  (trusted)
+     │  3 Admit                           │  PlanAdmission
+     │    captureCycleAdmissionSnapshot() │    immutable cycle contract
+     │      → admitDestructivePlan()      │    sole destructive authorization owner
+     │      → AuthorizedSyncPlan          │    exhaustive dispositions
      │        │                           │
      │        ▼                           │
-     │  captureCycleAdmissionSnapshot()   │  immutable cycle contract
-     │    proposal/evidence/observations  │    scope + backend/root namespace
-     │        │                           │
-     │        ▼                           │
-     │  admitDestructivePlan()            │  PlanAdmission
-     │    exhaustive dispositions         │    sole destructive authorization owner
-     │    → AuthorizedSyncPlan            │    nominal, proposal-ordered projection
-     │        │                           │
-     │        ▼                           │
-     │  executePlan()  (3 phases)         │  PlanExecutor
+     │  4 Execute                         │  PlanExecutor / StateCommitter
+     │    executePlan()  (3 phases)       │
      │    1 transfers: push/pull          │    AdaptivePool (AIMD); match/cleanup inline
      │    2 conflict (serial)             │    own phase (sibling-path safe)
      │    3 structural: 2 lanes ||        │    remote & local, concurrent
      │      per lane: rename then del     │    rename serial; delete pooled
+     │    commitAction() per success      │    per-path state
      │        │                           │
      │        ▼                           │
-     │  commitAction()  (per action)      │  StateCommitter
-     │        │                           │
-     │        ▼                           │
-     │  finalizeSyncCycle()               │  mechanical disposition/completion fold
+     │  5 Finalize                        │  cycle-level commit boundary
+     │    finalizeSyncCycle()             │    mechanical completion fold
      │    checkpoint, then retirement     │    no safety re-decision
      └───────────────┬────────────────────┘
                      │
