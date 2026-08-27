@@ -136,9 +136,10 @@ the new size, with a comment saying why the split was deferred. The pin is a
 ratchet: it stops *silent* growth and flags the file as split-when-convenient — it
 is not a mandate to shrink the file by force.
 
-Five modules currently carry such overrides as known debt: `fs/googledrive/auth.ts`
-(337), `sync/orchestrator.ts` (406), `sync/plan-admission.ts` (398),
-`fs/caching/remote-fs.ts` (326), and `fs/backend-manager.ts` (341). Ratchet them down
+Seven modules currently carry such overrides as known debt: `fs/googledrive/auth.ts`
+(337), `sync/orchestrator.ts` (580), `sync/plan-admission.ts` (398),
+`fs/caching/remote-fs.ts` (368), `fs/dropbox/index.ts` (318),
+`sync/plan-executor.ts` (320), and `fs/backend-manager.ts` (341). Ratchet them down
 when a natural responsibility split presents itself.
 (`fs/googledrive/index.ts` was here at 397; ADR 0001 lifted its cache/checkpoint
 machinery into `fs/caching/`, dropping it back under 300, so it is no longer

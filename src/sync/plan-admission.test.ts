@@ -192,6 +192,23 @@ describe("admitDestructivePlan", () => {
 		expect(unauthorized.actions).toEqual([]);
 	});
 
+	it("issues direction-free component/member authority separately from proposals", () => {
+		const action: SyncAction = { path: "note.md", action: "pull", remote: entity("note.md", "R") };
+		const result = admit([action]);
+
+		expect(result.executable.components).toHaveLength(1);
+		expect(result.executable.components[0]).toMatchObject({
+			admissionEpoch: 1,
+			paths: ["note.md"],
+			memberObligations: [expect.objectContaining({ path: "note.md", paths: ["note.md"] })],
+		});
+		expect(result.executable.components[0]!.memberObligations[0]).not.toHaveProperty("action");
+		expect(result.dispositions[0]).toMatchObject({
+			componentId: result.executable.components[0]!.id,
+			memberObligationIds: [result.executable.components[0]!.memberObligations[0]!.id],
+		});
+	});
+
 	it("defers match and delete together when an alias links them", () => {
 		const actions: SyncAction[] = [
 			{ path: "A.md", action: "delete_local", local: entity("A.md") },

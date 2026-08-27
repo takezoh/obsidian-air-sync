@@ -1,5 +1,6 @@
 import type { AirSyncSettings } from "../settings";
 import type { IFileSystem } from "../fs/interface";
+import type { FileEntity } from "../fs/types";
 import type { IBackendProvider } from "../fs/backend";
 import type { Logger } from "../logging/logger";
 import { AsyncMutex } from "../queue/async-queue";
@@ -16,7 +17,7 @@ import type { ExecutionContext, ExecutionResult } from "./plan-executor";
 import { classifyHttpError } from "../fs/errors";
 import type { ErrorClassification } from "../fs/errors";
 import { decideRetry, sleep } from "./error";
-import type { ConflictRecord, IdentityEvidence, SyncStatus } from "./types";
+import type { ConflictRecord, IdentityEvidence, SyncAction, SyncRecord, SyncStatus } from "./types";
 import { buildSyncRecord } from "./state-committer";
 import { CycleSummary } from "./sync-notification";
 import type { SyncCycleResult } from "./sync-notification";
@@ -29,8 +30,27 @@ import {
 } from "./sync-cycle-planning";
 import { finalizeSyncCycle } from "./sync-cycle-finalization";
 import { admitDestructivePlan } from "./plan-admission";
+import { PriorityCoordinator } from "./priority-coordinator";
+import { LocalMutationBarrier } from "./local-mutation-barrier";
+import { hasChanged, hasRemoteChanged } from "./change-compare";
+import { planSync } from "./decision-engine";
 
 export type { SyncStatus };
+
+export type PrioritySyncResult =
+	| "applied"
+	| "not_eligible"
+	| "local_changed"
+	| "unchanged"
+	| "structural"
+	| "superseded"
+	| "auth"
+	| "rate_limited"
+	| "provider_failure"
+	| "read_failure"
+	| "write_failure"
+	| "applied_unbaselined"
+	| "target_changed";
 
 export interface SyncOrchestratorDeps {
 	getSettings: () => AirSyncSettings;
@@ -59,6 +79,18 @@ export interface SyncOrchestratorDeps {
 
 const MAX_RETRIES = 3;
 
+function recordFingerprint(record: SyncRecord | undefined): string {
+	return JSON.stringify(record);
+}
+
+function entityStampMatches(current: FileEntity | null, expected: FileEntity | undefined): boolean {
+	if (!current || !expected) return current === null && expected === undefined;
+	if (current.identityKey && expected.identityKey && current.identityKey !== expected.identityKey) return false;
+	if (current.hash && expected.hash) return current.hash === expected.hash && current.size === expected.size;
+	return current.mtime === expected.mtime && current.size === expected.size &&
+		current.isDirectory === expected.isDirectory;
+}
+
 class PreAdmissionRecoveryError extends Error {
 	constructor(cause: unknown) {
 		super(cause instanceof Error ? cause.message : String(cause));
@@ -70,16 +102,11 @@ export class SyncOrchestrator {
 	private syncMutex = new AsyncMutex();
 	private stateStore: SyncStateStore;
 	private syncPending = false;
-	/**
-	 * A cycle that ended with failures may have advanced the backend's in-memory
-	 * delta cursor past work it never committed (the committed checkpoint is held
-	 * back, but the live FS cursor is not re-seeded same-process). Force the next
-	 * cycle cold — a full list × baseline join recovers it regardless of cursor.
-	 */
-	private recoverViaColdScan = false;
 	/** Reported edges retained until a clean checkpoint; remote edges are not durable debt. */
 	private pendingAdmissionEvidence: IdentityEvidence[] = [];
 	private failedActionTracker = new FailedActionTracker();
+	private readonly priorityCoordinator = new PriorityCoordinator();
+	private readonly localMutationBarrier = new LocalMutationBarrier();
 	/** Stable id grouping this plugin session's conflict-history records. */
 	private readonly sessionId = crypto.randomUUID();
 	private deps: SyncOrchestratorDeps;
@@ -109,13 +136,12 @@ export class SyncOrchestrator {
 	async clearSyncState(): Promise<void> {
 		// Serialize target teardown with execution. Otherwise an old-target cycle can
 		// recreate debt after disconnect/switch has cleared its namespace.
-		await this.syncMutex.run(async () => {
+		await this.syncMutex.run(() => this.priorityCoordinator.finalize(async () => {
 			this.deps.logger?.info("Clearing sync state");
 			await this.stateStore.clear();
 			this.pendingAdmissionEvidence = [];
-			this.recoverViaColdScan = false;
 			this.syncPending = false;
-		});
+		}));
 	}
 
 	shouldSync(): boolean {
@@ -162,7 +188,9 @@ export class SyncOrchestrator {
 	 * subsequent runSync then sees no checkpoint and goes cold.
 	 */
 	async rescan(): Promise<void> {
-		await this.syncMutex.run(() => this.deps.remoteFs()?.checkpoint?.resetCheckpoint());
+		await this.syncMutex.run(() => this.priorityCoordinator.finalize(
+			() => this.deps.remoteFs()?.checkpoint?.resetCheckpoint() ?? Promise.resolve(),
+		));
 		await this.runSync();
 	}
 
@@ -211,11 +239,10 @@ export class SyncOrchestrator {
 
 				// Force a full cold reconcile when delta-based detection can't be
 				// trusted: no committed remote checkpoint (last sync never completed
-				// or was reset), the previous cycle failed (its in-memory cursor
-				// may have advanced past un-committed work), or the sync SCOPE
+				// or was reset), or the sync SCOPE
 				// changed since the last clean cycle (a settings change widened
 				// scope to include remote paths the delta cursor already passed —
-				// see scope-fingerprint.ts). Cold recovers all three via a full
+				// see scope-fingerprint.ts). Cold recovers those cases via a full
 				// list × baseline join. The checkpoint (delta cursor + fingerprint)
 				// lives in the backend's own store now, so this is an async FS query.
 				const noCheckpoint = remoteFs.checkpoint
@@ -235,17 +262,13 @@ export class SyncOrchestrator {
 				const scopeChanged = remoteFs.checkpoint?.getScopeFingerprint
 					? (await remoteFs.checkpoint.getScopeFingerprint()) !== scopeFingerprint
 					: false;
-				const forceFullScan = noCheckpoint || this.recoverViaColdScan || scopeChanged;
+				const forceFullScan = noCheckpoint || scopeChanged;
 				this.deps.logger?.info("Sync started", { forceFullScan, scopeChanged });
 
 				const result = await this.executeWithRetry(forceFullScan, snapshot, scopeFingerprint);
 				if (!result) return; // Fatal error already handled
 
 				const { succeeded, failed, blocked, conflicts, deferred } = result;
-				// failed cycle では cursor が committed state より先に進んでいる可能性がある。
-				// ただし cold recovery を一度支払い済みの local-origin action だけが
-				// quarantine 対象なら、次 cycle の cold scan は不要。
-				this.recoverViaColdScan = this.needsColdRecovery(result.result);
 				if (failed > 0 || blocked > 0 || deferred > 0) {
 					this.deps.onStatusChange("partial_error");
 					this.deps.logger?.warn("Sync completed with errors", {
@@ -310,7 +333,7 @@ export class SyncOrchestrator {
 			} catch (err) {
 				lastError = err;
 				if (err instanceof PreAdmissionRecoveryError) {
-					this.deps.logger?.error("Sync error before Admission; COLD recovery requested", {
+					this.deps.logger?.error("Sync error before Admission; uncommitted delta retained", {
 						message: err.message,
 					});
 					break;
@@ -349,43 +372,188 @@ export class SyncOrchestrator {
 		return null;
 	}
 
-	async pullSingle(path: string): Promise<void> {
+	async syncOpenedFile(path: string): Promise<PrioritySyncResult> {
 		if (this.isExcluded(path)) {
-			this.deps.logger?.debug("pullSingle: skipped — out of sync scope", { path });
-			return;
+			return "not_eligible";
 		}
-		await this.syncMutex.run(async () => {
+		return this.priorityCoordinator.enqueue(path, async () => {
 			const localFs = this.deps.localFs();
 			const remoteFs = this.deps.remoteFs();
-			if (!localFs || !remoteFs) {
-				this.deps.logger?.warn("pullSingle: skipped — no local or remote fs", { path });
-				return;
-			}
+			if (!localFs || !remoteFs?.priority) return "not_eligible";
+			const expectedRecord = await this.stateStore.get(path);
+			if (!expectedRecord?.remoteIdentityKey) return "not_eligible";
+			const expectedGeneration = this.deps.localTracker.generation(path);
 
 			try {
-				const remote = await remoteFs.stat(path);
-				if (!remote || remote.isDirectory) {
-					this.deps.logger?.warn("pullSingle: remote file not found or is a directory", { path });
-					return;
+				const [localBefore, observed] = await Promise.all([
+					localFs.stat(path),
+					remoteFs.priority.observe({ path, identityKey: expectedRecord.remoteIdentityKey }),
+				]);
+				if (!localBefore || localBefore.isDirectory || hasChanged(localBefore, expectedRecord)) {
+					this.requestNormalLifecycle();
+					return "local_changed";
+				}
+				if (observed.kind === "missing" || observed.kind === "structural") {
+					this.requestNormalLifecycle();
+					return "structural";
+				}
+				if (observed.kind !== "current" || observed.entity.isDirectory) {
+					this.requestNormalLifecycle();
+					return "structural";
+				}
+				if (!hasRemoteChanged(observed.entity, expectedRecord)) return "unchanged";
+
+				let read;
+				try {
+					read = await remoteFs.priority.read(observed);
+				} catch (err) {
+					this.requestNormalLifecycle();
+					const provider = this.deps.backendProvider();
+					const classification = provider?.classifyError?.(err) ?? classifyHttpError(err);
+					if (classification.kind === "auth") return "auth";
+					if (classification.kind === "rateLimit") return "rate_limited";
+					return "read_failure";
+				}
+				if (read.kind !== "content") {
+					this.requestNormalLifecycle();
+					return read.kind === "target_changed" ? "target_changed" : "read_failure";
 				}
 
-				const content = await remoteFs.read(path);
-				const localEntity = await localFs.write(path, content, remote.mtime);
-				const remoteEntity = remote;
+				return await this.localMutationBarrier.run([path], async () => {
+					const [currentRecord, localNow] = await Promise.all([
+						this.stateStore.get(path),
+						localFs.stat(path),
+					]);
+					if (JSON.stringify(currentRecord) !== JSON.stringify(expectedRecord)) return "superseded";
+					if (this.deps.localTracker.generation(path) !== expectedGeneration ||
+						!localNow || hasChanged(localNow, expectedRecord)) {
+						this.requestNormalLifecycle();
+						return "local_changed";
+					}
 
-				const record = buildSyncRecord(localEntity, remoteEntity, path);
-				await this.stateStore.put(record);
-
-				this.deps.logger?.info("pullSingle: completed", { path });
+					let localEntity;
+					try {
+						localEntity = await localFs.write(path, read.content, observed.entity.mtime);
+					} catch {
+						this.requestNormalLifecycle();
+						return "write_failure";
+					}
+					const nextRecord = buildSyncRecord(localEntity, observed.entity, path);
+					let baselined = false;
+					try {
+						baselined = await this.stateStore.compareAndPut(expectedRecord, nextRecord);
+					} catch {
+						// The local write is already visible. Preserve tracker evidence and let
+						// normal both-changed content equality converge without a marker state.
+					}
+					if (!baselined) {
+						this.deps.localTracker.markDirty(path);
+						this.requestNormalLifecycle();
+						return "applied_unbaselined";
+					}
+					const postGeneration = this.deps.localTracker.generation(path);
+					const localAfter = await localFs.stat(path);
+					if (localAfter && !hasChanged(localAfter, nextRecord)) {
+						this.deps.localTracker.acknowledgePath(path, postGeneration);
+					}
+					this.deps.logger?.info("file-open fast pass applied", { path });
+					return "applied";
+				});
 			} catch (err) {
-				this.deps.logger?.error("pullSingle: failed", {
-					path,
+				this.requestNormalLifecycle();
+				const provider = this.deps.backendProvider();
+				const classification = provider?.classifyError?.(err) ?? classifyHttpError(err);
+				this.deps.logger?.error("file-open fast pass failed", {
+					path, kind: classification.kind,
 					error: err instanceof Error ? err.message : String(err),
 				});
-			} finally {
-				this.deps.localTracker.acknowledgePath(path);
+				if (classification.kind === "auth") return "auth";
+				if (classification.kind === "rateLimit") return "rate_limited";
+				return "provider_failure";
 			}
 		});
+	}
+
+	private requestNormalLifecycle(): void {
+		if (this.syncMutex.isLocked) {
+			this.syncPending = true;
+			return;
+		}
+		void this.runSync();
+	}
+
+	private async admitNormalAction(action: SyncAction): Promise<
+		| { kind: "run"; action: SyncAction }
+		| { kind: "no_action" }
+		| { kind: "nonterminal"; reason: string }
+	> {
+		const remoteFs = this.deps.remoteFs();
+		const localFs = this.deps.localFs();
+		if (!remoteFs || !localFs) {
+			return { kind: "nonterminal", reason: "current_observation_unavailable" };
+		}
+		if (action.action === "rename_remote" || action.action === "rename_local") {
+			// Capability-less filesystem doubles cannot participate in file-open priority,
+			// so no priority work can invalidate the freshly admitted structural proposal.
+			if (!remoteFs.priority) return { kind: "run", action };
+			const baselinePath = action.baseline?.path ?? action.oldPath;
+			const expectedIdentity = action.remote?.identityKey ?? action.baseline?.remoteIdentityKey;
+			const [baselineNow, localSource, localDestination, remoteSource, remoteDestination] =
+				await Promise.all([
+					this.stateStore.get(baselinePath),
+					localFs.stat(action.oldPath),
+					localFs.stat(action.path),
+					remoteFs.priority.observe({
+						path: action.action === "rename_remote" ? action.oldPath : action.path,
+						identityKey: expectedIdentity,
+					}),
+					action.action === "rename_remote"
+						? remoteFs.priority.observe({ path: action.path })
+						: Promise.resolve(null),
+				]);
+			if (recordFingerprint(baselineNow) !== recordFingerprint(action.baseline) ||
+				remoteSource.kind !== "current" || remoteSource.identityKey !== expectedIdentity) {
+				return { kind: "nonterminal", reason: "structural_reobservation_required" };
+			}
+			if (action.action === "rename_remote") {
+				const destinationAbsent = remoteDestination?.kind === "missing" &&
+					remoteDestination.occupant.kind === "absent";
+				if (!destinationAbsent || !entityStampMatches(localDestination, action.local)) {
+					return { kind: "nonterminal", reason: "structural_reobservation_required" };
+				}
+				return { kind: "run", action };
+			}
+			const destinationIsSourceAlias = !!localDestination && !!localSource &&
+				localDestination.path.toLocaleLowerCase() === localSource.path.toLocaleLowerCase() &&
+				entityStampMatches(localDestination, localSource);
+			if (!entityStampMatches(localSource, action.local) ||
+				(localDestination !== null && !destinationIsSourceAlias)) {
+				return { kind: "nonterminal", reason: "structural_reobservation_required" };
+			}
+			return { kind: "run", action };
+		}
+		const [currentRecord, currentLocal] = await Promise.all([
+			this.stateStore.get(action.path),
+			localFs.stat(action.path),
+		]);
+		const observed = remoteFs.priority ? await remoteFs.priority.observe({
+			path: action.path,
+			identityKey: currentRecord?.remoteIdentityKey ?? action.remote?.identityKey,
+		}) : null;
+		if (observed?.kind === "unverifiable" || observed?.kind === "structural") {
+			return { kind: "nonterminal", reason: `current_observation_${observed.kind}` };
+		}
+		const currentRemote = observed
+			? (observed.kind === "current" ? observed.entity : undefined)
+			: await remoteFs.stat(action.path) ?? undefined;
+
+		const replanned = planSync([{
+			path: action.path,
+			local: currentLocal ?? undefined,
+			remote: currentRemote,
+			prevSync: currentRecord,
+		}]).actions[0];
+		return replanned ? { kind: "run", action: replanned } : { kind: "no_action" };
 	}
 
 	getStatus(): SyncStatus {
@@ -445,7 +613,6 @@ export class SyncOrchestrator {
 			);
 		} catch (err) {
 			if (capturedRemoteEvidence || hadPendingEvidence) {
-				this.recoverViaColdScan = true;
 				throw new PreAdmissionRecoveryError(err);
 			}
 			throw err;
@@ -486,6 +653,9 @@ export class SyncOrchestrator {
 			classifyError,
 			isActionBlocked: (action) => this.failedActionTracker.isBlocked(settings.backendType, action),
 			transferPool: this.deps.isMobile() ? MOBILE_TRANSFER_POOL : DESKTOP_TRANSFER_POOL,
+			acquireActionPermit: () => this.priorityCoordinator.acquireNormalPermit(),
+			mutationBarrier: this.localMutationBarrier,
+			admitAction: (action) => this.admitNormalAction(action),
 		};
 
 		const execution = await executePlan(admission.executable, ctx);
@@ -494,21 +664,24 @@ export class SyncOrchestrator {
 
 		// Persist backend state. commitCheckpoint advances the delta cursor (+ file map,
 		// atomically) only on a fully clean cycle; a partial sync keeps the prior cursor.
-		this.pendingAdmissionEvidence = await finalizeSyncCycle({
-			admission,
-			result, pendingEvidence: this.pendingAdmissionEvidence, persistedDebts,
-			localRenameDebts: planning.localRenameDebts,
-			checkpoint: remoteFs.checkpoint, scopeFingerprint, stateStore: this.stateStore,
+		this.pendingAdmissionEvidence = await this.priorityCoordinator.finalize(async () => {
+			const pending = await finalizeSyncCycle({
+				admission,
+				result, pendingEvidence: this.pendingAdmissionEvidence, persistedDebts,
+				localRenameDebts: planning.localRenameDebts,
+				checkpoint: remoteFs.checkpoint, scopeFingerprint, stateStore: this.stateStore,
+			});
+			// readBackendState persists only non-secret token state; finalization shares
+			// the priority safe point with checkpoint commit.
+			if (provider?.readBackendState) {
+				settings.backendData = {
+					...settings.backendData,
+					...provider.readBackendState(),
+				};
+			}
+			await this.deps.saveSettings();
+			return pending;
 		});
-		// readBackendState now persists only non-secret token state (the cursor lives
-		// in the backend store, committed above) — safe to run every cycle.
-		if (provider?.readBackendState) {
-			settings.backendData = {
-				...settings.backendData,
-				...provider.readBackendState(),
-			};
-		}
-		await this.deps.saveSettings();
 
 		return result;
 	}
@@ -530,16 +703,4 @@ export class SyncOrchestrator {
 		}
 	}
 
-	private needsColdRecovery(result: ExecutionResult): boolean {
-		const settings = this.deps.getSettings();
-		const provider = this.deps.backendProvider();
-		const classifyError = (err: unknown) => provider?.classifyError?.(err) ?? classifyHttpError(err);
-		return result.deferred.length > 0 || result.failed.some((failed) =>
-			!this.failedActionTracker.isBlockingFailure(
-				settings.backendType,
-				failed,
-				classifyError(failed.error),
-			)
-		);
-	}
 }

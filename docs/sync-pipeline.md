@@ -7,8 +7,8 @@ Each sync cycle has five top-level responsibility stages:
 1. **Observe** -- `collectChanges()` returns exact `entries`, path `observations`, and normative `identityEvidence`.
 2. **Propose** -- scope is projected before filtering, then `planSync()` and `refinePlan()` produce a plain action proposal.
 3. **Admit** -- the proposal and its evidence are captured in one `CycleAdmissionSnapshot`; `admitDestructivePlan()` assigns every relevant component one disposition and issues the only `AuthorizedSyncPlan`.
-4. **Execute** -- `executePlan()` accepts that nominal plan only and successful actions commit their per-path state.
-5. **Finalize** -- `finalizeSyncCycle()` mechanically folds the same dispositions with execution completion, commits a safe checkpoint, and only then retires released evidence and debt.
+4. **Execute** -- `executePlan()` consumes direction-free component/member authority, re-observes each member after its normal-action permit, and decides its current action from current local/remote/record evidence. Successful mutations commit their per-path state with the existing record CAS.
+5. **Finalize** -- `finalizeSyncCycle()` requires exactly one completion for every authorized component member at the admitted epoch, commits a safe checkpoint, and only then retires released evidence and debt.
 
 These stages describe responsibility boundaries, not one separately scheduled pass per helper function. Evidence completion is part of **Observe**; scope projection and rename refinement are internal to **Propose**; snapshot capture and component-graph construction are internal to **Admit**. They add no extra network scan merely by being named.
 
@@ -18,9 +18,9 @@ The lower-level cycle sequence within those boundaries is:
 2. `projectScope()` classifies every evidence endpoint before exact entries are filtered.
 3. `planSync()` produces per-path actions; `refinePlan()` may replace compatible action pairs with native rename proposals.
 4. `captureCycleAdmissionSnapshot()` fixes the proposal, evidence, observations, scope, and namespace for this cycle.
-5. `admitDestructivePlan()` builds evidence-connected components, assigns dispositions, and projects the proposal-ordered `AuthorizedSyncPlan`.
-6. `executePlan()` runs only that authorized projection; each successful action calls `commitAction()` for per-path state.
-7. `finalizeSyncCycle()` folds disposition membership with execution completion, commits the checkpoint when safe, then retires released evidence and debt.
+5. `admitDestructivePlan()` builds evidence-connected components, assigns dispositions, and issues direction-free component/member obligations; proposal actions remain scheduler hints, not completion authority.
+6. `executePlan()` late-plans each member from current evidence immediately before I/O. A direction change within the scheduled barrier runs directly; a change requiring another phase remains nonterminal and is re-routed by the next cycle.
+7. `finalizeSyncCycle()` checks exact component/member/epoch completion, commits the checkpoint when safe, then retires released evidence and debt.
 
 The orchestrator (`SyncOrchestrator.executeSyncOnce()`) drives the I/O boundaries. `prepareSyncCycleSnapshot()` composes the pure **Propose** transformations and captures the input at the **Admit** boundary. The orchestrator then invokes Admission once at an explicit cut point; proposal output is never executable permission.
 
@@ -35,19 +35,19 @@ The orchestrator (`SyncOrchestrator.executeSyncOnce()`) drives the I/O boundarie
 
 The same `isExcluded()` gates the vault-event dirty tracking (scheduler), so push and pull use one scope rule across hot and cold paths.
 
-`runSync()` is gated on a connected remote (`remoteFs` present), layout-ready, and not-connecting; it serializes via an `AsyncMutex`. A call arriving while a sync runs sets `syncPending` and returns; the lock holder re-runs in a `do/while (syncPending)` loop, acknowledging each cycle's start-of-cycle snapshot at the end of each non-fatal cycle (coalescing). Each cycle (`executeSyncOnce`) is wrapped by `executeWithRetry`, which normally retries up to `MAX_RETRIES = 3` with exponential backoff plus jitter (`2^(attempt-1) * 1000 * (0.5 + Math.random())` ms), honoring `Retry-After` (×1000) on 429/403. `AuthError`, a non-rate-limit 403, and 404 abort without retry. An exception after remote rename evidence was yielded but strictly before Admission also does not tight-retry: the evidence is retained, the run reports an error, and the next normal trigger is forced COLD. A fatal abort leaves the dirty set un-acknowledged so it is retried next run.
+`runSync()` is gated on a connected remote (`remoteFs` present), layout-ready, and not-connecting; it serializes via an `AsyncMutex`. A call arriving while a sync runs sets `syncPending` and returns; the lock holder re-runs in a `do/while (syncPending)` loop, acknowledging each cycle's start-of-cycle snapshot at the end of each non-fatal cycle (coalescing). Each cycle (`executeSyncOnce`) is wrapped by `executeWithRetry`, which normally retries up to `MAX_RETRIES = 3` with exponential backoff plus jitter (`2^(attempt-1) * 1000 * (0.5 + Math.random())` ms), honoring `Retry-After` (×1000) on 429/403. `AuthError`, a non-rate-limit 403, and 404 abort without retry. An exception after remote rename evidence was yielded but strictly before Admission also does not tight-retry: the evidence and uncommitted remote delta remain replayable, and the run reports an error. A fatal abort leaves the dirty set un-acknowledged so it is retried next run.
 
 ## Crash recovery
 
 The remote delta cursor is the engine's "synced up to here" checkpoint. It lives in the backend's IndexedDB store (`META_STORE`), **co-located with the file-map cache and committed in the same transaction** (see [ADR 0001](adr/0001-metadata-cache-is-subordinate-to-commit-last.md)). `finalizeSyncCycle()` calls `remoteFs.checkpoint.commitCheckpoint()` only when there is no failed/deferred work and no unresolved remote rename evidence. A partial or interrupted cycle leaves cursor and cache at the prior committed value.
 
-At the start of each cycle the orchestrator asks `remoteFs.checkpoint.hasCheckpoint()` (async — it reads the store). `false` means first sync, cleared state, or manual rescan and forces COLD. COLD is also forced after a same-session failed/deferred cycle (`recoverViaColdScan`), after a scope-fingerprint change, and while local rename debt exists. A non-clean cycle after an established checkpoint does **not** erase that checkpoint: same-session recovery ignores the advanced live cursor and lists both sides, while a restart rebuilds the FS from the older committed cursor and replays the delta. This distinction is the two-path recovery contract in ADR 0001.
+At the start of each cycle the orchestrator asks `remoteFs.checkpoint.hasCheckpoint()` (async — it reads the store). `false` means first sync, cleared state, or manual rescan and forces COLD. Scope-fingerprint changes and persisted local rename debt also force COLD. Ordinary same-session failure/defer does not. `CachingRemoteFs` retains the last uncommitted `RemoteDelta` in a private replay buffer and re-emits a clone on the next incremental collection without another provider delta call or full `list()`. A successful checkpoint commit alone clears it. After restart, the older committed cursor naturally replays the same provider delta.
 
-A **same-session failure** also forces at least one subsequent cold cycle. This is load-bearing (ADR 0001 convergence path 2) — `result.failed` does not capture the full recovery gap (folder-rename descendants, remote-only orphans, detect-vs-execute races), so only a full cold scan re-derives it. After that cold recovery has been paid, the orchestrator may temporarily block only the same repeated **local-origin** poison action (`push`, `delete_remote`, `rename_remote`) whose error classification is `permanent` and carries a stable `permanentCode`. The key is `(backendType, action, path, "permanent", permanentCode)`, the same action signature must fail in two consecutive cycles, and the block lasts 5 minutes or until the action/content changes, succeeds, or fails with a non-eligible classification. The two-cycle threshold means the first failure still buys one mandatory cold recovery pass; the 5 minute TTL is a short mobile-friendly cooldown that prevents repeated poison I/O without persisting across plugin reloads. Blocked actions are reported as `result.blocked` and surface as `partial_error`; they are not treated as "Everything up to date".
+A repeated **local-origin** poison action (`push`, `delete_remote`, `rename_remote`) whose error classification is `permanent` and carries a stable `permanentCode` may be temporarily blocked. The key is `(backendType, action, path, "permanent", permanentCode)`, the same action signature must fail in two consecutive cycles, and the block lasts 5 minutes or until the action/content changes, succeeds, or fails with a non-eligible classification. Blocked actions are reported as `result.blocked` and surface as `partial_error`; they are not treated as "Everything up to date".
 
-A **deferred identity component** is different from a failed action: it never reaches the executor, even when it contains zero actions. The cycle ends `partial_error`, reports each deferred disposition exactly once, withholds the checkpoint/scope fingerprint, and marks the next normal trigger for COLD without setting `syncPending` (no tight loop). A local reported rename is first stored as namespace-scoped `RenameDebt`; a remote edge is captured immediately when `getChangedPaths()` yields it, before later `stat`/hash/planning work can throw. Local debt survives restart directly; remote evidence survives restart because its delta checkpoint remains uncommitted. See [ADR 0008](adr/0008-logical-identity-admission-fails-closed.md).
+A **deferred identity component** is different from a failed action: it never reaches the executor, even when it contains zero actions. The cycle ends `partial_error`, reports each deferred disposition exactly once, and withholds the checkpoint/scope fingerprint. The next normal trigger replays the uncommitted delta incrementally; no special stale-plan state or tight loop is introduced. A local reported rename is first stored as namespace-scoped `RenameDebt`; a remote edge is captured immediately when `getChangedPaths()` yields it, before later `stat`/hash/planning work can throw. Local debt survives restart directly; remote evidence survives restart because its delta checkpoint remains uncommitted. See [ADR 0008](adr/0008-logical-identity-admission-fails-closed.md).
 
-Remote-origin or ambiguous actions (`pull`, `delete_local`, `rename_local`, `conflict`) are never blocked, because advancing past them could hide remote changes. Transient and rate-limit failures are also never blocked; after the connection or provider recovers, the next sync must execute I/O again. Re-seeding failed paths for a "hot" recovery, skipping the first cold scan for "small" failure sets, or advancing the cursor while blindly ignoring remote-origin failures are **ADR 0001 prohibited patterns** (they re-open silent in-session data loss). The cost is **bounded and intentionally retained**: per-action `withIoRetry` keeps most transient/429 failures from ever reaching `result.failed`, and repeated cold scans are avoided only after the recovery debt has been paid and the remaining failure is a permanent local-origin poison action.
+Remote-origin or ambiguous actions (`pull`, `delete_local`, `rename_local`, `conflict`) are never poison-blocked, because advancing past them could hide remote changes. Transient and rate-limit failures are also never blocked; after the connection or provider recovers, the next sync must execute I/O again. Advancing the cursor while ignoring remote-origin failures remains prohibited. Per-action `withIoRetry` keeps most transient/429 failures from reaching `result.failed`; any remaining incomplete work is retained by exact member completion plus incremental delta replay.
 
 The **Rescan vault** action (settings → Advanced) discards the committed checkpoint via the live FS (`remoteFs.checkpoint.resetCheckpoint()` — clears the cursor and cache) and triggers a sync, forcing one cold reconcile against the remote — a manual recovery for a vault that looks stuck or incomplete. It diffs against baselines (it does not re-download) and keeps sync history.
 
@@ -80,7 +80,7 @@ Selected when the hot condition fails (tracker uninitialized, or initialized but
 
 ### Cold -- O(n)
 
-Selected when `stateStore.getAll()` returns an empty array (first sync or after state clear), or forced via `forceFullScan` for a missing checkpoint, same-session recovery, scope change, or persisted local rename debt.
+Selected when `stateStore.getAll()` returns an empty array (first sync or after state clear), or forced via `forceFullScan` for a missing checkpoint, scope change, manual rescan, or persisted local rename debt.
 
 - Calls both `localFs.list()` and `remoteFs.list()`
 - Full outer join on path to build `MixedEntity[]` for every file on either side
@@ -192,12 +192,15 @@ actions plus rename/alias/stable-identity evidence and path observations and emi
 exactly one `authorized`, `resolved_no_action`, or `deferred` disposition per relevant
 component, including evidence-connected components with zero actions.
 
-Admission alone proves exact deletion authority, native rename, a direction-specific
-scope transition, two-sided convergence, or the recognized source-recreation
+Admission alone proves exact deletion authority, native rename, a direction-free
+component boundary, two-sided convergence, or the recognized source-recreation
 postcondition. Unknown, conflicting, incomplete, or otherwise unproved components
 defer as a whole, including state-only actions. Only actions from `authorized`
 dispositions are projected, in proposal order, into the nominal `AuthorizedSyncPlan`;
-`executePlan()` cannot accept a plain proposal through the supported typed API.
+`executePlan()` cannot accept a plain proposal through the supported typed API. Its
+direction-free component/member obligations remain the authority while action direction
+is re-decided from current local state, the paired remote identity/path observation, and
+the current `SyncRecord` after the normal-action permit is acquired.
 
 Endpoint dispositions are `included`, `policy_out`, `mobile_deferred`, or `unknown`.
 Any unknown/mobile endpoint and any incomplete folder descendant mapping defers. The
@@ -207,7 +210,8 @@ full local/remote direction matrix and rejected identity inferences are recorded
 Before admitted I/O, local reported edges are upserted into the SyncState v6 rename-debt
 store under the snapshot's backend/root namespace. `finalizeSyncCycle()` does not
 re-evaluate scope, observations, identities, aliases, or action shapes: it folds the
-snapshot-bound dispositions with succeeded action membership. A safe checkpoint commits
+snapshot-bound dispositions with exact component/member/epoch completion. Duplicate,
+missing, or unknown completion keeps the checkpoint withheld. A safe checkpoint commits
 first; only then are mechanically releasable debt and session evidence retired.
 Disconnect/root switch waits on the orchestrator mutex before clearing state, so an
 old-target in-flight cycle cannot recreate debt after teardown.
@@ -231,7 +235,7 @@ The phases run behind **sequential barriers** (Phase 1 fully drains before Phase
 
 Phases 1 and 3 use `executeAction()`, which runs `runActionIO()` followed by `commitAction()` and records success in `result.succeeded`. Phase 2 (conflict) uses `executeConflictAction()` instead: it runs `resolveConflict()` per the configured strategy (`auto_merge` / `duplicate`), re-stats both local and remote sides, commits, and records the action in both `result.conflicts` and `result.succeeded`. In both paths, `AuthError` is re-thrown to abort the entire cycle (it rejects the phase's pool/lane and propagates); all other errors are caught per-action and recorded in `result.failed`. Known repeated local-origin poison actions can be skipped before I/O and recorded in `result.blocked`; they are visible in notifications and status but do not commit per-file state.
 
-**Adaptive transfer concurrency + in-cycle retry.** Phase 1's `AdaptivePool` ramps its in-flight ceiling up on sustained success and halves it on a rate-limit signal, so a large initial/bulk sync discovers the provider's sustainable throughput instead of a fixed `5`. Admission has a **second dimension besides the count limit: a byte budget** (sum of in-flight transfer sizes ≤ desktop 1 GB / mobile 512 MB) — because each transfer holds the whole file as an `ArrayBuffer` (`requestUrl` is buffered, no streaming), the budget caps peak memory by *bytes* rather than letting it scale with file *count*, so small files run highly concurrent while large ones self-throttle. A single file larger than the budget still runs (it is admitted only when the pool is otherwise empty, so it transfers alone). Each action's network I/O is additionally wrapped in `withIoRetry`: a `rateLimit`/`transient` error is retried in-cycle (up to `MAX_ACTION_RETRIES = 3`, honoring `Retry-After`), and on a rate-limit the task signals the pool (`noteRateLimit`, before the backoff sleep) so the ceiling drops immediately while the rate-limited task holds its slot (a natural throttle). A rate-limited transfer therefore no longer defers to the next (forced-cold) cycle, so the cycle completes clean more often. See [error-handling.md → Two retry layers](error-handling.md#two-retry-layers). Conflict and deletes also get `withIoRetry`, but only transfers feed the `AdaptivePool` (conflict is serial; deletes use a fixed pool).
+**Adaptive transfer concurrency + in-cycle retry.** Phase 1's `AdaptivePool` ramps its in-flight ceiling up on sustained success and halves it on a rate-limit signal, so a large initial/bulk sync discovers the provider's sustainable throughput instead of a fixed `5`. Admission has a **second dimension besides the count limit: a byte budget** (sum of in-flight transfer sizes ≤ desktop 1 GB / mobile 512 MB) — because each transfer holds the whole file as an `ArrayBuffer` (`requestUrl` is buffered, no streaming), the budget caps peak memory by *bytes* rather than letting it scale with file *count*, so small files run highly concurrent while large ones self-throttle. A single file larger than the budget still runs (it is admitted only when the pool is otherwise empty, so it transfers alone). Each action's network I/O is additionally wrapped in `withIoRetry`: a `rateLimit`/`transient` error is retried in-cycle (up to `MAX_ACTION_RETRIES = 3`, honoring `Retry-After`), and on a rate-limit the task signals the pool (`noteRateLimit`, before the backoff sleep) so the ceiling drops immediately while the rate-limited task holds its slot (a natural throttle). A rate-limited transfer therefore usually completes in the current cycle; otherwise the next incremental cycle replays the uncommitted delta. See [error-handling.md → Two retry layers](error-handling.md#two-retry-layers). Conflict and deletes also get `withIoRetry`, but only transfers feed the `AdaptivePool` (conflict is serial; deletes use a fixed pool).
 
 ## State commit
 
@@ -267,9 +271,26 @@ These triggers are **classified** ([ADR 0004](adr/0004-sync-reruns-are-classifie
 `SyncScheduler.wireFileOpenEvent()` hooks the `file-open` workspace event. When a user opens a file:
 
 1. Ignore null file (e.g. closing the active pane)
-2. Look up the file's `SyncRecord`
-3. Call `stat()` on both local and remote
-4. If remote has changed (`hasRemoteChanged`) but local has NOT changed (`hasChanged`), call `orchestrator.pullSingle(path)` to immediately pull the latest version
-5. This gives the user the freshest content immediately on file open
+2. Delegate the path to `SyncOrchestrator.syncOpenedFile()`; the scheduler performs no
+   record/cache freshness decision of its own
+3. Enqueue one coalesced priority node for the path. Its arrival blocks admission of normal
+   actions that have not started; already-permitted indivisible actions finish
+4. Independently observe the `SyncRecord` identity and every current occupant of its path
+   without touching shared cache or delta state. Zero, one, and multiple occupants are
+   distinguished; replacement and duplicate occupancy fail closed rather than masquerading
+   as absence
+5. Under the path-local Air Sync mutation lease, revalidate record/local/tracker stamps,
+   merge the current remote content, compare-and-put its `SyncRecord`, and acknowledge only
+   the exact write
+6. Resume the batch. Each not-yet-started normal member acquires its permit, observes the
+   current remote identity/path pair, reads current local state and `SyncRecord`, and plans
+   then. There is no provider-version ordering or stale-plan deferral state; current state either
+   produces work, a no-op, or a fail-closed nonterminal result
 
-Unlike the focus/visibility/online triggers, the file-open handler does not check `isSyncing()` and does not skip when a sync is already running. `pullSingle()` acquires the same `syncMutex` that `runSync()` uses, so the priority pull queues behind any in-flight sync (the `AsyncMutex` enqueues the waiter rather than dropping it) instead of being skipped. The record lookup and `stat()` checks (steps 2-4) run before `pullSingle`, so they execute concurrently with an in-flight sync; only the actual pull is serialized.
+The provider capability never calls `getChangedPaths()` or `list()`, never reads or mutates
+the live metadata cache, and never changes the Dropbox shared root anchor. Google Drive,
+Dropbox, and OneDrive each return the current identity observation plus an independent
+current-path occupant classification. Missing, duplicate, or malformed evidence fails closed;
+provider revision tokens are not ordered across snapshots.
+Final checkpoint work passes through the same safe point, so priority work queued before
+seal completes first. Continuous file-open arrivals intentionally retain strict priority.

@@ -42,7 +42,7 @@ function createDeps(
 	};
 
 	const runSync = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
-	const pullSingle = vi
+	const syncOpenedFile = vi
 		.fn<(path: string) => Promise<void>>()
 		.mockResolvedValue(undefined);
 
@@ -50,7 +50,7 @@ function createDeps(
 		vaultHandlers: Map<string, WorkspaceHandler>;
 		workspaceHandlers: Map<string, WorkspaceHandler>;
 		runSync: typeof runSync;
-		pullSingle: typeof pullSingle;
+		syncOpenedFile: typeof syncOpenedFile;
 		fireLayoutReady: () => void;
 	} = {
 		workspace: {
@@ -76,7 +76,7 @@ function createDeps(
 		remoteFs: () => createMockRemoteFs(),
 		stateStore: createMockStateStore(),
 		localTracker: new LocalChangeTracker(),
-		orchestrator: { runSync, pullSingle, isSyncing: () => false },
+		orchestrator: { runSync, syncOpenedFile, isSyncing: () => false },
 		isExcluded: () => false,
 		registerEvent: vi.fn(),
 		registerWindowEvent: (type: keyof WindowEventMap, cb: () => void) => {
@@ -88,7 +88,7 @@ function createDeps(
 		vaultHandlers,
 		workspaceHandlers,
 		runSync,
-		pullSingle,
+		syncOpenedFile,
 		fireLayoutReady,
 		...overrides,
 	};
@@ -386,19 +386,111 @@ describe("SyncScheduler", () => {
 			const handler = deps.workspaceHandlers.get("file-open")!;
 			await handler({ path: "note.md" });
 
-			expect(deps.pullSingle).toHaveBeenCalledWith("note.md");
+			expect(deps.syncOpenedFile).toHaveBeenCalledWith("note.md");
 		});
 
-		it("skips pull when no sync record", async () => {
+		it("delegates without consuming global list or delta state in the scheduler", async () => {
+			const localContent = new ArrayBuffer(10);
+			const record: SyncRecord = {
+				path: "note.md",
+				hash: await sha256(localContent),
+				localMtime: 1000,
+				remoteMtime: 1000,
+				localSize: 10,
+				remoteSize: 10,
+				syncedAt: 900,
+			};
+			await deps.stateStore.put(record);
+
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			localFs.files.set("note.md", {
+				content: localContent,
+				entity: {
+					path: "note.md",
+					isDirectory: false,
+					size: 10,
+					mtime: 1000,
+					hash: "",
+				},
+			});
+			remoteFs.files.set("note.md", {
+				content: localContent,
+				entity: {
+					path: "note.md",
+					isDirectory: false,
+					size: 10,
+					mtime: 1000,
+					hash: "",
+				},
+			});
+
+			const getChangedPaths = vi.spyOn(remoteFs.checkpoint!, "getChangedPaths");
+			const list = vi.spyOn(remoteFs, "list");
+
+			scheduler.destroy();
+			deps = createDeps({
+				stateStore: deps.stateStore,
+				localFs: () => localFs,
+				remoteFs: () => remoteFs,
+			});
+			scheduler = new SyncScheduler(deps);
+			scheduler.start();
+
+			const handler = deps.workspaceHandlers.get("file-open")!;
+			await handler({ path: "note.md" });
+
+			expect(getChangedPaths).not.toHaveBeenCalled();
+			expect(list).not.toHaveBeenCalled();
+			expect(deps.syncOpenedFile).toHaveBeenCalledWith("note.md");
+		});
+
+		it("delegates record eligibility to the orchestrator", async () => {
 			const handler = deps.workspaceHandlers.get("file-open")!;
 			await handler({ path: "unknown.md" });
-			expect(deps.pullSingle).not.toHaveBeenCalled();
+			expect(deps.syncOpenedFile).toHaveBeenCalledWith("unknown.md");
+		});
+
+		it("delegates local-change CAS eligibility to the orchestrator", async () => {
+			const baselineContent = new ArrayBuffer(10);
+			await deps.stateStore.put({
+				path: "note.md",
+				hash: await sha256(baselineContent),
+				localMtime: 1000,
+				remoteMtime: 1000,
+				localSize: 10,
+				remoteSize: 10,
+				syncedAt: 900,
+			});
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			localFs.files.set("note.md", {
+				content: new ArrayBuffer(11),
+				entity: { path: "note.md", isDirectory: false, size: 11, mtime: 1500, hash: "" },
+			});
+			remoteFs.files.set("note.md", {
+				content: new ArrayBuffer(12),
+				entity: { path: "note.md", isDirectory: false, size: 12, mtime: 2000, hash: "" },
+			});
+
+			scheduler.destroy();
+			deps = createDeps({
+				stateStore: deps.stateStore,
+				localFs: () => localFs,
+				remoteFs: () => remoteFs,
+			});
+			scheduler = new SyncScheduler(deps);
+			scheduler.start();
+
+			await deps.workspaceHandlers.get("file-open")!({ path: "note.md" });
+
+			expect(deps.syncOpenedFile).toHaveBeenCalledWith("note.md");
 		});
 
 		it("skips pull when file is null", async () => {
 			const handler = deps.workspaceHandlers.get("file-open")!;
 			await handler(null);
-			expect(deps.pullSingle).not.toHaveBeenCalled();
+			expect(deps.syncOpenedFile).not.toHaveBeenCalled();
 		});
 	});
 

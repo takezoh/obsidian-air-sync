@@ -134,6 +134,25 @@ describe("SyncStateStore", () => {
 		expect(all).toHaveLength(1);
 	});
 
+	it("compareAndPut rejects a stale expected record without overwriting the winner", async () => {
+		const baseline = makeRecord("a.md", { syncedAt: 1 });
+		const winner = makeRecord("a.md", { syncedAt: 2, remoteSize: 200 });
+		await store.put(baseline);
+		await store.put(winner);
+
+		expect(await store.compareAndPut(baseline, makeRecord("a.md", { syncedAt: 3 }))).toBe(false);
+		expect(await store.get("a.md")).toEqual(winner);
+	});
+
+	it("compareAndPut atomically replaces the exact expected record", async () => {
+		const baseline = makeRecord("a.md", { syncedAt: 1 });
+		const next = makeRecord("a.md", { syncedAt: 2, remoteSize: 200 });
+		await store.put(baseline);
+
+		expect(await store.compareAndPut(baseline, next)).toBe(true);
+		expect(await store.get("a.md")).toEqual(next);
+	});
+
 	it("delete: removes a record and its content", async () => {
 		const content = new TextEncoder().encode("hello").buffer.slice(0);
 		await store.put(makeRecord("a.md"));

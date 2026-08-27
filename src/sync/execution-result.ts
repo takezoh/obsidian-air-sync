@@ -4,7 +4,13 @@ import type { ConflictResolutionResult } from "./conflict-resolver";
 import type { DeferredComponent } from "./plan-admission";
 
 export interface CompletedAction {
+	/** Admission member whose exact completion authorizes cycle finalization. */
 	action: SyncAction;
+	componentId: string;
+	memberObligationId: string;
+	admissionEpoch: number;
+	/** Current-state action actually selected at execution time, when it differs. */
+	executedAction?: SyncAction;
 	localEntity?: FileEntity;
 	remoteEntity?: FileEntity;
 }

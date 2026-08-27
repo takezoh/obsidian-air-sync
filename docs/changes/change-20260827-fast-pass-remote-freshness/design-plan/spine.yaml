@@ -1,0 +1,457 @@
+artifact: design-plan-spine
+version: 2
+granularity_profile: algorithm-bound
+
+scope_expansion_signals:
+  - id: scope-signal-detached-provider-observation
+    kind: post_consultation_decision
+    target_ref: contract-detached-targeted-observation
+    witness: User authority requires the opened file to run ahead without consuming the global batch, which requires a detached identity/ancestry observation on every provider.
+    requirement_refs: [FR-FAST-PASS-01, FR-FAST-PASS-03, FR-FAST-PASS-10]
+    authority_refs:
+      - /home/take/.dev-skills/design/fast-pass-remote-freshness/artifacts/authority-consultation.json
+      - /tmp/review-verdict-obsidian-air-sync.json
+  - id: scope-signal-priority-safe-point
+    kind: post_consultation_decision
+    target_ref: contract-cooperative-priority-safe-point
+    witness: A whole-batch mutex contradicts priority; normal action admission needs a lifecycle lease and cooperative quiescent safe point.
+    requirement_refs: [FR-FAST-PASS-01, FR-FAST-PASS-04, FR-FAST-PASS-09]
+    authority_refs:
+      - /home/take/.dev-skills/design/fast-pass-remote-freshness/artifacts/authority-consultation.json
+      - /tmp/review-verdict-obsidian-air-sync.json
+  - id: scope-signal-action-cas-replan
+    kind: critic_induced_contract
+    target_ref: contract-path-mutation-cas
+    witness: Priority and a frozen normal plan can overlap, so both mutation paths require expected record/local/remote stamps and stale-action replan.
+    requirement_refs: [FR-FAST-PASS-05, FR-FAST-PASS-07, FR-FAST-PASS-08, FR-FAST-PASS-11]
+    authority_refs:
+      - /tmp/review-verdict-obsidian-air-sync.json
+      - docs/adr/0001-metadata-cache-is-subordinate-to-commit-last.md
+
+requirements:
+  - id: FR-FAST-PASS-01
+    type: event-driven
+    priority: must
+    statement: When an eligible synced file is opened, complete its proved non-structural remote update before every normal action not started when the request was enqueued.
+  - id: FR-FAST-PASS-02
+    type: conditional
+    priority: must
+    statement: Reject no-record, excluded, unavailable, or locally changed opens before provider I/O and return typed no-op outcomes for unchanged or unsafe remote states.
+  - id: FR-FAST-PASS-03
+    type: ubiquitous
+    priority: must
+    statement: Targeted file-open observation and read must not mutate or consume global cache, cursor, checkpoint generation, or shared provider anchors.
+  - id: FR-FAST-PASS-04
+    type: state-driven
+    priority: must
+    statement: After priority enqueue, admit no new normal action; let already-started indivisible actions finish, drain priority at quiescence, and check again before finalization.
+  - id: FR-FAST-PASS-05
+    type: conditional
+    priority: must
+    statement: Hold one path-local Air Sync mutation lease across final record/local/tracker revalidation, LocalFs.write, record CAS, post-write tracker/content observation, and generation-specific acknowledgement; abort edits observed before mutation and leave edits observed during or after dirty and unacknowledged, without claiming atomic exclusion of simultaneous external adapter writes.
+  - id: FR-FAST-PASS-06
+    type: conditional
+    priority: must
+    statement: Require request-local authoritative complete ancestry from expected remote identity to the current configured root identity at the opened relative path; Dropbox consumes src/fs/caching/remote-fs.ts::CachingRemoteFs.rootFolderId inherited by src/fs/dropbox/index.ts::DropboxFs, populated from src/fs/dropbox/provider-base.ts::DropboxBackendData.remoteVaultFolderId (typed settings.backendData.remoteVaultFolderId) through src/fs/pkce-app-folder-provider.ts::PkceAppFolderProvider.createFs, without reading/writing the shared root-path anchor or adding durable authority; same-id root rename preserves the relative path, while missing/malformed identity, mismatch, or ambiguity performs no priority write.
+  - id: FR-FAST-PASS-07
+    type: state-driven
+    priority: must
+    statement: Validate every not-yet-started normal action; classify frozen V1 older than applied V2 as superseded/no-op, and defer incomparable ordering while blocking clean checkpoint.
+  - id: FR-FAST-PASS-08
+    type: state-driven
+    priority: must
+    statement: Return exhaustive typed priority failures and hand authoritative unresolved work to the normal lifecycle without acknowledging it as success.
+  - id: FR-FAST-PASS-09
+    type: ubiquitous
+    priority: must
+    statement: Keep checkpoint commit exclusive to clean normal finalization after priority invalidations and replanned normal dispositions are resolved.
+  - id: FR-FAST-PASS-10
+    type: ubiquitous
+    priority: must
+    statement: Apply fixed provider-response token/ancestry semantics and one no-global-mutation partition to all providers through mandatory shared fake/contract tests; missing/malformed evidence fails closed per request, while optional credential-gated live E2E never controls release/runtime capability or creates provider state.
+  - id: FR-FAST-PASS-11
+    type: state-driven
+    priority: must
+    statement: On local-write success and record-save failure, retain tracker evidence and let a later normal cycle, including restart, read/hash same-size incomparable local/remote bytes on demand to converge equality as match without a marker.
+  - id: NFR-FAST-PASS-01
+    type: quality
+    priority: must
+    statement: Make zero provider calls for ineligible opens and only targeted identity/ancestor calls plus a changed-file bound read for eligible opens; never enumerate the vault or drain delta.
+  - id: NFR-FAST-PASS-02
+    type: constraint
+    priority: must
+    statement: Add no durable queue, handoff, recovery marker, checkpoint field, or settings migration.
+
+components:
+  - id: component-file-open-scheduler
+    kind: existing
+    contract_refs: [contract-path-mutation-cas]
+    paths:
+      - src/sync/scheduler.ts
+      - src/sync/scheduler.test.ts
+  - id: component-priority-coordinator
+    kind: planned
+    contract_refs: [contract-cooperative-priority-safe-point]
+    paths:
+      - src/sync/priority-coordinator.ts
+      - src/sync/priority-coordinator.test.ts
+  - id: component-freshness-orchestrator
+    kind: existing
+    contract_refs: [contract-cooperative-priority-safe-point, contract-path-mutation-cas]
+    paths:
+      - src/sync/orchestrator.ts
+      - src/sync/orchestrator.test.ts
+      - src/sync/sync-cycle-finalization.ts
+      - src/sync/sync-cycle-finalization.test.ts
+  - id: component-detached-observer
+    kind: planned
+    contract_refs: [contract-detached-targeted-observation]
+    paths:
+      - src/fs/interface.ts
+      - src/fs/priority-observation.ts
+      - src/fs/caching/remote-fs.ts
+      - src/fs/caching/remote-fs.contract.test.ts
+  - id: component-provider-observers
+    kind: planned
+    contract_refs: [contract-detached-targeted-observation]
+    paths:
+      - src/fs/googledrive/index.ts
+      - src/fs/googledrive/client.ts
+      - src/fs/googledrive/client.test.ts
+      - src/fs/googledrive/types.ts
+      - src/fs/googledrive/types.test.ts
+      - src/fs/googledrive/targeted-observation.test.ts
+      - src/fs/dropbox/index.ts
+      - src/fs/dropbox/targeted-observation.test.ts
+      - src/fs/onedrive/index.ts
+      - src/fs/onedrive/types.ts
+      - src/fs/onedrive/types.test.ts
+      - src/fs/onedrive/targeted-observation.test.ts
+  - id: component-action-cas
+    kind: planned
+    contract_refs: [contract-path-mutation-cas, contract-cooperative-priority-safe-point]
+    paths:
+      - src/sync/plan-executor.ts
+      - src/sync/plan-executor.test.ts
+      - src/sync/state.ts
+      - src/sync/state.test.ts
+      - src/sync/local-tracker.ts
+      - src/sync/local-tracker.test.ts
+      - src/sync/local-mutation-barrier.ts
+      - src/sync/local-mutation-barrier.test.ts
+      - src/fs/local/index.ts
+      - src/fs/local/local-fs.test.ts
+      - src/main.ts
+      - src/sync/change-detector.ts
+      - src/sync/change-detector.test.ts
+      - src/sync/change-hash-enrichment.ts
+      - src/sync/decision-engine.ts
+      - src/sync/decision-engine.test.ts
+
+contracts:
+  - id: contract-detached-targeted-observation
+    dimension: Identity-addressed authoritative observation and token-bound read with zero global cache/cursor/root mutation
+    owner: component-detached-observer
+    requirement_refs: [FR-FAST-PASS-02, FR-FAST-PASS-03, FR-FAST-PASS-06, FR-FAST-PASS-10, NFR-FAST-PASS-01, NFR-FAST-PASS-02]
+    unit_refs:
+      - Unit 1 — detached observation capability and shared invariant
+      - Unit 2 — authoritative provider observations
+    adr_refs:
+      - adr-0002-shared-backend-contracts
+      - adr-0006-order-independent-rename
+      - adr-0008-logical-identity-admission
+      - adr-20260827-file-open-fast-pass-preserves-remote-change-batches
+    verification:
+      - id: verify-detached-no-mutation
+        tier: T0
+        command: npm test -- src/fs/caching/remote-fs.contract.test.ts
+      - id: verify-authoritative-ancestry
+        tier: T0
+        command: npm test -- src/fs/googledrive/targeted-observation.test.ts src/fs/dropbox/targeted-observation.test.ts src/fs/onedrive/targeted-observation.test.ts
+      - id: verify-provider-observation-parity
+        tier: T1
+        command: npm test -- src/fs/googledrive/targeted-observation.test.ts src/fs/dropbox/targeted-observation.test.ts src/fs/onedrive/targeted-observation.test.ts
+      - id: verify-live-provider-fidelity
+        tier: T2
+        command: npm run test:e2e
+    partition:
+      outcomes: [determinate, inconclusive, conflicting]
+      default_policy: Authorize a read/write only from expected identity, exact authoritative path, complete root ancestry, and an equal well-formed final observation token; missing/malformed request evidence and all other outcomes hand off without mutation, and optional live-E2E evidence is not an enablement input.
+  - id: contract-cooperative-priority-safe-point
+    dimension: Batch lifecycle lease, strict priority over unstarted normal actions, quiescent drain, and finalization seal
+    owner: component-priority-coordinator
+    requirement_refs: [FR-FAST-PASS-01, FR-FAST-PASS-04, FR-FAST-PASS-07, FR-FAST-PASS-09]
+    unit_refs:
+      - Unit 3 — priority lease and executor safe points
+      - Unit 4 — CAS integration, typed handoff, docs, and gate
+    adr_refs:
+      - adr-0001-commit-last
+      - adr-20260827-file-open-fast-pass-preserves-remote-change-batches
+    verification:
+      - id: verify-priority-linearization
+        tier: T0
+        command: npm test -- src/sync/priority-coordinator.test.ts
+      - id: verify-current-action-only
+        tier: T1
+        command: npm test -- src/sync/plan-executor.test.ts src/sync/orchestrator.test.ts
+      - id: verify-finalization-safe-point
+        tier: T0
+        command: npm test -- src/sync/sync-cycle-finalization.test.ts src/sync/priority-coordinator.test.ts
+      - id: verify-coordinator-liveness
+        tier: T0
+        command: npm test -- src/sync/priority-coordinator.test.ts src/sync/orchestrator.test.ts
+    partition:
+      outcomes: [determinate, inconclusive]
+      default_policy: Once enqueue linearizes, admit no normal action until prior permits settle and coalesced priority drains; after the final enqueue finish within active-permit plus distinct-path attempts and one transition, while continuous arrivals remain observable strict priority and cannot strand counters.
+    discretion:
+      - id: discretion-priority-waiter-container
+        unit_ref: Unit 3 — priority lease and executor safe points
+        question: Choose the private waiter/promise container while retaining one ordered pending node per normalized path and the specified linearization points.
+        scope:
+          files:
+            - src/sync/priority-coordinator.ts
+            - src/sync/priority-coordinator.test.ts
+          component: component-priority-coordinator
+          visibility: private
+        escalate_when:
+          - A new normal action can start after an earlier priority enqueue.
+          - Finalization can seal with a pending waiter or unresolved invalidation.
+          - Cancellation can execute work against a replaced backend target.
+        constraints:
+          - Every acquired normal-action permit is released on success and failure.
+          - Duplicate same-path opens share one attempt.
+          - No global remote batch or payload is retained.
+        preserves:
+          contract_refs: [contract-cooperative-priority-safe-point, contract-path-mutation-cas]
+          invariant_refs: [FR-FAST-PASS-01, FR-FAST-PASS-04, FR-FAST-PASS-09]
+        verification_refs: [verify-priority-linearization, verify-current-action-only, verify-finalization-safe-point, verify-coordinator-liveness]
+        difficulty_inputs:
+          decision_reasoning: local_tradeoff
+          boundary_reach: private
+          context_scope: component
+          reversibility: bounded
+          verification_strength: discriminating
+          runtime_risk: concurrency
+          coupling: shared_across_units
+          grounding: evidenced
+  - id: contract-path-mutation-cas
+    dimension: Priority and normal action record/local/remote stamps, Air Sync mutation and acknowledgement ordering, admission-time replan, typed failure handoff, and content-equal recovery
+    owner: component-action-cas
+    requirement_refs: [FR-FAST-PASS-05, FR-FAST-PASS-07, FR-FAST-PASS-08, FR-FAST-PASS-09, FR-FAST-PASS-11]
+    unit_refs:
+      - Unit 3 — priority lease and executor safe points
+      - Unit 4 — CAS integration, typed handoff, docs, and gate
+    adr_refs:
+      - adr-0001-commit-last
+      - adr-0008-logical-identity-admission
+      - adr-20260827-file-open-fast-pass-preserves-remote-change-batches
+    verification:
+      - id: verify-priority-cas
+        tier: T0
+        command: npm test -- src/sync/local-mutation-barrier.test.ts src/fs/local/local-fs.test.ts src/sync/orchestrator.test.ts src/sync/state.test.ts src/sync/local-tracker.test.ts
+      - id: verify-normal-action-replan
+        tier: T1
+        command: npm test -- src/sync/plan-executor.test.ts src/sync/orchestrator.test.ts
+      - id: verify-typed-handoff
+        tier: T0
+        command: npm test -- src/sync/scheduler.test.ts src/sync/orchestrator.test.ts
+      - id: verify-content-equal-convergence
+        tier: T0
+        command: npm test -- src/sync/decision-engine.test.ts src/sync/orchestrator.test.ts
+    partition:
+      outcomes: [determinate, inconclusive, conflicting]
+      default_policy: Priority mutates only after lease-held final stamp validation, keeps the Air Sync lease through write, record CAS, post-write observation, and exact acknowledgement, and leaves later/different edit evidence dirty; frozen older evidence is superseded/no-op, incomparable ordering defers, and restart equality requires an on-demand normal byte proof before clean retirement.
+
+adrs:
+  - id: adr-0001-commit-last
+    status: accepted
+    decision_input_refs: [decision-input-detached-observation, decision-input-priority-safe-point, decision-input-action-cas]
+  - id: adr-0002-shared-backend-contracts
+    status: accepted
+    decision_input_refs: [decision-input-detached-observation, decision-input-live-provider-evidence]
+  - id: adr-0006-order-independent-rename
+    status: accepted
+    decision_input_refs: [decision-input-detached-observation]
+  - id: adr-0008-logical-identity-admission
+    status: accepted
+    decision_input_refs: [decision-input-detached-observation, decision-input-action-cas]
+  - id: adr-20260827-file-open-fast-pass-preserves-remote-change-batches
+    status: accepted
+    decision_input_refs:
+      - decision-input-global-batch-handoff
+      - decision-input-detached-observation
+      - decision-input-whole-batch-mutex
+      - decision-input-priority-safe-point
+      - decision-input-action-cas
+      - decision-input-live-provider-evidence
+    status_provenance:
+      source: user_consultation
+      confidence: confirmed
+      evidence_refs:
+        - /home/take/.dev-skills/design/fast-pass-remote-freshness/artifacts/authority-consultation.json
+      rationale: The user requires the opened file to complete ahead of the overlapping normal batch while preserving correctness of the following batch.
+      consultation_id: consultation-fast-pass-parallel-batch-handoff
+
+units:
+  - title: Unit 1 — detached observation capability and shared invariant
+    chunk: chunk-1
+    contract_refs: [contract-detached-targeted-observation]
+    files:
+      - src/fs/interface.ts
+      - src/fs/priority-observation.ts
+      - src/fs/caching/remote-fs.ts
+      - src/fs/caching/remote-fs.contract.test.ts
+    acceptance:
+      - The priority capability accepts baseline identity and path and returns the typed observation/read partition with opaque tokens.
+      - Delayed observation concurrent with global delta leaves live cursor, committed cursor, cache generation/content, and root anchor unchanged.
+      - The old statFresh cache-write path is removed rather than guarded by another cache writer CAS.
+    objective: Establish a provider-neutral detached boundary that cannot consume or rewrite global checkpoint state.
+    output_format: TypeScript capability/types, shared-base implementation, and discriminating Vitest contract cases.
+    tool_guidance: Do not call ensureInitialized, loadFromCache, getChangedPaths, cache setters, or checkpoint methods from the priority capability.
+    task_boundaries: Do not add reset delta reporting, cursor fields, global handoff state, or persistence migration.
+    decision_closure_reason: Inputs, outcome partition, no-mutation invariant, and token-bound read are fixed by Contract 1.
+  - title: Unit 2 — authoritative provider observations
+    chunk: chunk-2
+    contract_refs: [contract-detached-targeted-observation]
+    files:
+      - src/fs/googledrive/index.ts
+      - src/fs/googledrive/client.ts
+      - src/fs/googledrive/client.test.ts
+      - src/fs/googledrive/types.ts
+      - src/fs/googledrive/types.test.ts
+      - src/fs/googledrive/targeted-observation.test.ts
+      - src/fs/dropbox/index.ts
+      - src/fs/dropbox/targeted-observation.test.ts
+      - src/fs/onedrive/index.ts
+      - src/fs/onedrive/types.ts
+      - src/fs/onedrive/types.test.ts
+      - src/fs/onedrive/targeted-observation.test.ts
+    depends_on: [Unit 1 — detached observation capability and shared invariant]
+    acceptance:
+      - Each provider uses the fixed Contract 1 token fields, proves expected identity's complete current path to the configured root, and rejects missing fields, deletion, replacement, ambiguous ancestry, and ancestor movement.
+      - Dropbox point-reads root metadata with src/fs/caching/remote-fs.ts::CachingRemoteFs.rootFolderId inherited by src/fs/dropbox/index.ts::DropboxFs, populated from src/fs/dropbox/provider-base.ts::DropboxBackendData.remoteVaultFolderId (typed settings.backendData.remoteVaultFolderId) through src/fs/pkce-app-folder-provider.ts::PkceAppFolderProvider.createFs; same-id root rename preserves the child relative path, while missing/malformed identity or mismatch fails closed, no call reads/writes the shared root-path anchor, and no durable authority is added.
+      - Mandatory shared fake/contract tests prove each provider response shape, point-read ancestry, token equality/order, read/reobserve behavior, malformed-field fail-closed partition, and no-global-mutation behavior; optional credential-gated live E2E is supplemental and never enables release/runtime capability or creates a receipt/backend-state lifecycle.
+    objective: Supply authoritative detached evidence on all three providers without an engine-side branch.
+    output_format: TypeScript provider seams and parallel provider Vitest cases.
+    tool_guidance: Fetch ancestors/provider root as needed; cached parent paths are never path authority.
+    task_boundaries: Do not mutate cache, cursor, root anchor, or provider checkpoint; do not infer identity from spelling.
+    decision_closure_reason: Provider response fields, equality/order semantics, authority proof, mandatory shared contracts, per-request malformed-evidence failure, and optional non-gating live evidence are fixed by Contract 1.
+  - title: Unit 3 — priority lease and executor safe points
+    chunk: chunk-3
+    contract_refs: [contract-cooperative-priority-safe-point, contract-path-mutation-cas]
+    files:
+      - src/sync/priority-coordinator.ts
+      - src/sync/priority-coordinator.test.ts
+      - src/sync/plan-executor.ts
+      - src/sync/plan-executor.test.ts
+      - src/sync/orchestrator.ts
+      - src/sync/orchestrator.test.ts
+      - src/sync/local-mutation-barrier.ts
+      - src/sync/local-mutation-barrier.test.ts
+      - src/fs/local/index.ts
+      - src/fs/local/local-fs.test.ts
+      - src/main.ts
+    depends_on: [Unit 2 — authoritative provider observations]
+    acceptance:
+      - After enqueue no unstarted normal action is admitted; already-started actions finish, then priority completes before the next start.
+      - Enqueue during planning, pooled transfer execution, phase boundaries, and pre-finalization obeys the same linearization rule without deadlock.
+      - Every normal action receives a pre-start revalidation hook; frozen V1 proved older than applied V2 is terminal superseded/no-op, while incomparable ordering defers and blocks clean commit.
+      - Every permit/counter releases on throws; after the final enqueue, active permits plus distinct pending attempts and one transition bound resumption, and continuous arrivals expose coalesced queue diagnostics.
+      - All Air Sync LocalFs writes and tracker transitions use the same path lease through final validation, write, record CAS, post-write observation, and exact acknowledgement; an edit observed before mutation aborts, and later/different edit evidence remains dirty and unacknowledged.
+    objective: Replace whole-batch file-open serialization with one batch lease and cooperative quiescent priority drain.
+    output_format: TypeScript coordinator/executor integration and deterministic concurrency Vitest cases.
+    tool_guidance: Preserve existing action phase safety and transfer limits; centralize admission rather than launching all pool work past the safe point.
+    task_boundaries: Do not preempt an already-started action, weaken structural phase barriers, or add numeric fairness thresholds.
+    decision_closure_reason: State transitions, ordering, seal, cancellation, and stale-action admission are fixed by Contracts 2 and 3.
+  - title: Unit 4 — CAS integration, typed handoff, docs, and gate
+    chunk: chunk-4
+    contract_refs: [contract-detached-targeted-observation, contract-cooperative-priority-safe-point, contract-path-mutation-cas]
+    files:
+      - src/sync/scheduler.ts
+      - src/sync/scheduler.test.ts
+      - src/sync/orchestrator.ts
+      - src/sync/orchestrator.test.ts
+      - src/sync/state.ts
+      - src/sync/state.test.ts
+      - src/sync/local-tracker.ts
+      - src/sync/local-tracker.test.ts
+      - src/sync/local-mutation-barrier.ts
+      - src/sync/local-mutation-barrier.test.ts
+      - src/fs/local/index.ts
+      - src/fs/local/local-fs.test.ts
+      - src/main.ts
+      - src/sync/change-detector.ts
+      - src/sync/change-detector.test.ts
+      - src/sync/change-hash-enrichment.ts
+      - src/sync/decision-engine.ts
+      - src/sync/decision-engine.test.ts
+      - src/sync/sync-cycle-finalization.ts
+      - src/sync/sync-cycle-finalization.test.ts
+      - docs/sync-pipeline.md
+      - docs/adr/adr-20260827-file-open-fast-pass-preserves-remote-change-batches.md
+    depends_on: [Unit 3 — priority lease and executor safe points]
+    acceptance:
+      - Priority holds the shared path-local Air Sync mutation lease across final record/local/tracker validation, LocalFs write, record CAS, post-write tracker/content observation, and exact self-write acknowledgement; it does not claim atomic exclusion of simultaneous external adapter writes.
+      - Same-path frozen V1 becomes superseded/no-op after proved applied V2, never pull; incomparable ordering defers and blocks checkpoint.
+      - All failure kinds are observable and route unresolved authoritative work to normal sync; after restart, same-size both-changed incomparable content may use one normal local/remote byte read and SHA-256 equality proof without a marker.
+      - Exact repository gate passes and docs describe detached observation, safe points, and CAS.
+    objective: Close end-to-end mutation safety, failure handoff, commit-last integration, documentation, and mechanical verification.
+    output_format: TypeScript integration, Vitest proofs, persistent Markdown, and gate evidence.
+    tool_guidance: Reuse existing error classification, decision engine, Admission, and finalizer; mandatory shared fake/contract tests gate the implementation, while creds-gated E2E may be run as optional non-gating fidelity evidence and missing/malformed request evidence fails closed as unverifiable.
+    task_boundaries: Do not swallow priority failures, acknowledge in finally, add durable schema, or bypass normal conflict/rename Admission.
+    decision_closure_reason: CAS inputs, typed outcomes, convergence, checkpoint blocking, and user-visible failure mapping are fixed by Contract 3.
+
+acceptance:
+  - id: AC-FAST-PASS-01
+    criteria: In an overlapping batch, only already-started indivisible actions may finish before the opened-file attempt; the opened file completes before every later normal action.
+    requirement_refs: [FR-FAST-PASS-01, FR-FAST-PASS-04]
+  - id: AC-FAST-PASS-02
+    criteria: File-open leaves global cursor/cache/checkpoint/root state unchanged and the following normal batch receives the same sibling and structural deltas.
+    requirement_refs: [FR-FAST-PASS-03, FR-FAST-PASS-09, FR-FAST-PASS-10]
+  - id: AC-FAST-PASS-03
+    criteria: An edit observed during queue wait, provider I/O, or final lease-held revalidation aborts before priority mutation; any edit evidence observed during or after the write is not acknowledged and remains dirty for normal Admission. The lease orders all Air Sync writes/tracker transitions but makes no stronger atomic-exclusion guarantee for simultaneous external adapter writes after its mutation linearization point.
+    requirement_refs: [FR-FAST-PASS-02, FR-FAST-PASS-05, NFR-FAST-PASS-01]
+  - id: AC-FAST-PASS-04
+    criteria: A same-identity Dropbox root rename preserves the vault-relative path using request-local proof from src/fs/caching/remote-fs.ts::CachingRemoteFs.rootFolderId inherited by src/fs/dropbox/index.ts::DropboxFs and populated from src/fs/dropbox/provider-base.ts::DropboxBackendData.remoteVaultFolderId; the shared root-path anchor is not read/written, no durable authority is added, and missing/malformed root identity, mismatch, outside-root/ambiguous ancestry, or Google Drive/OneDrive ancestor movement produces no priority write.
+    requirement_refs: [FR-FAST-PASS-06, FR-FAST-PASS-10]
+  - id: AC-FAST-PASS-05
+    criteria: After priority applies V2, frozen V1 is terminal superseded/no-op and never pull; incomparable ordering defers, blocks clean checkpoint, and never writes its stale snapshot.
+    requirement_refs: [FR-FAST-PASS-07, FR-FAST-PASS-09]
+  - id: AC-FAST-PASS-06
+    criteria: Auth, rate, provider, read, write, superseded, and baseline-save failures return distinct typed results and cannot be logged-only success.
+    requirement_refs: [FR-FAST-PASS-08]
+  - id: AC-FAST-PASS-07
+    criteria: A baseline-save failure leaves tracker evidence; after restart, a bounded normal on-demand local/remote byte SHA-256 proof converges equality as match while failure/divergence uses conflict Admission.
+    requirement_refs: [FR-FAST-PASS-09, FR-FAST-PASS-11]
+  - id: AC-FAST-PASS-08
+    criteria: Each provider passes mandatory shared fake/contract tests for fixed response-token equality/order, authoritative ancestry, read/reobserve, malformed-evidence fail-closed behavior, and no-global-mutation; credential-gated live fidelity is optional and does not gate release/runtime capability or create provider state.
+    requirement_refs: [FR-FAST-PASS-10]
+  - id: AC-FAST-PASS-09
+    criteria: After the final enqueue, normal admission/finalization resumes after existing active permits, one attempt per distinct pending path, and one transition; continuous arrivals remain strict priority but are coalesced, observable, and settle counters exactly once.
+    requirement_refs: [FR-FAST-PASS-04, FR-FAST-PASS-09]
+
+dispositions:
+  - decision_input_ref: decision-input-global-batch-handoff
+    disposition: rejected — file-open must not consume the global cursor; deleting the handoff also removes accumulator, COLD, reset-reporting, and capacity policy.
+    adr_refs: [adr-0001-commit-last, adr-20260827-file-open-fast-pass-preserves-remote-change-batches]
+    contract_refs: [contract-detached-targeted-observation]
+  - decision_input_ref: decision-input-detached-observation
+    disposition: adopted — identity-addressed authoritative provider observation and token-bound read preserve the later global batch by construction.
+    adr_refs: [adr-0002-shared-backend-contracts, adr-0008-logical-identity-admission, adr-20260827-file-open-fast-pass-preserves-remote-change-batches]
+    contract_refs: [contract-detached-targeted-observation]
+  - decision_input_ref: decision-input-whole-batch-mutex
+    disposition: rejected for priority ordering — it serializes safely but places file-open behind the full in-flight batch.
+    adr_refs: [adr-20260827-file-open-fast-pass-preserves-remote-change-batches]
+    contract_refs: [contract-cooperative-priority-safe-point]
+  - decision_input_ref: decision-input-priority-safe-point
+    disposition: adopted — a batch lease stops new action starts, waits only for already-started indivisible actions, drains priority, and rechecks before finalization.
+    adr_refs: [adr-0001-commit-last, adr-20260827-file-open-fast-pass-preserves-remote-change-batches]
+    contract_refs: [contract-cooperative-priority-safe-point]
+  - decision_input_ref: decision-input-action-cas
+    disposition: adopted — expected SyncRecord/local/tracker/remote stamps, the Air Sync mutation lease, exact acknowledgement, and admission-time replan close the reviewed wait/provider-I/O edit race and prevent stale batch overwrite without claiming external-write atomicity.
+    adr_refs: [adr-0001-commit-last, adr-0008-logical-identity-admission, adr-20260827-file-open-fast-pass-preserves-remote-change-batches]
+    contract_refs: [contract-path-mutation-cas]
+  - decision_input_ref: decision-input-live-provider-evidence
+    disposition: supplemental evidence — token fields and per-request fail-closed semantics are fixed by mandatory shared fake/contract tests; credential-gated live point-read/ancestry/token/read-reobserve runs are optional, non-gating observations with no receipt or provider-state lifecycle.
+    adr_refs: [adr-0002-shared-backend-contracts]
+    contract_refs: [contract-detached-targeted-observation]

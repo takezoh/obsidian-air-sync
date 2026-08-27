@@ -1,0 +1,473 @@
+artifact: design-plan-spine
+version: 2
+granularity_profile: boundary-complete
+
+scope_expansion_signals:
+  - id: scope-signal-component-authority-carrier
+    kind: shared_boundary
+    target_ref: contract-component-authority
+    witness: Direction-free component and member-obligation IDs plus in-memory authorization epochs replace directional action objects across Admission, execution, and finalization.
+    requirement_refs: [FR-LATE-01, FR-LATE-05, FR-LATE-09]
+    authority_refs: [decision-input-execution-time-direction, decision-input-admission-authority]
+  - id: scope-signal-shared-current-observation
+    kind: shared_boundary
+    target_ref: contract-current-observation
+    witness: The detached file-open observation seam is generalized into paired admitted-identity and independent current path-occupant/absence observations for normal endpoints across all providers while remaining request-local and delta/cache/checkpoint neutral.
+    requirement_refs: [FR-LATE-01, FR-LATE-05, FR-LATE-08]
+    authority_refs: [decision-input-execution-time-direction, decision-input-detached-observation]
+
+requirements:
+  - id: FR-LATE-01
+    type: ubiquitous
+    priority: must
+    statement: After component ownership, the system shall choose and execute each direction-free member obligation only from current Local, paired admitted-identity and independent current path-occupant Remote observations, and current SyncRecord.
+  - id: FR-LATE-02
+    type: event_driven
+    priority: must
+    statement: When file-open priority is pending, the system shall run it before every normal component not already started.
+  - id: FR-LATE-03
+    type: event_driven
+    priority: must
+    statement: When evidence changes before I/O, the system shall re-observe the same component without stale disposition, provider ordering, priority supersession receipt, or drift-driven COLD.
+  - id: FR-LATE-04
+    type: state_driven
+    priority: must
+    statement: While execution-time direction differs from provisional phase, the system shall preserve existing phase/barrier ordering and prevent the specified effect-by-scheduler-state forbidden overlaps without mandating one private locking mechanism.
+  - id: FR-LATE-05
+    type: ubiquitous
+    priority: must
+    statement: Structural I/O shall remain inside the complete endpoint and identity component proved by frozen authoritative batch or delta evidence.
+  - id: FR-LATE-06
+    type: event_driven
+    priority: must
+    statement: Single-record content baseline replacement shall use existing two-argument whole-record compareAndPut(expectedRecord, nextRecord), whose records carry the path; rename, delete, and multi-record effects shall use current component-owned ordered writes, emit no success or checkpoint commit on partial failure, and converge by incremental replay without new API or schema growth.
+  - id: FR-LATE-07
+    type: state_driven
+    priority: must
+    statement: Repeated invalidation shall consume bounded work per scheduling quantum and yield nonterminal same-cycle work; continuous churn shall block checkpoint without a new terminal churn failure.
+  - id: FR-LATE-08
+    type: event_driven
+    priority: must
+    statement: A no-action member completion shall require current local, whole-record, admitted-identity, independent path-occupant token or authoritative path-absence, frozen-delta, component/member-ID, and latest-epoch witnesses; identity missing alone is not path absence.
+  - id: FR-LATE-09
+    type: ubiquitous
+    priority: must
+    statement: Finalization shall require one latest-epoch component receipt whose exact admitted direction-free member-obligation ID set has one terminal applied or no-action completion per member, for every authorized component.
+  - id: FR-LATE-10
+    type: unwanted
+    priority: must
+    statement: If a cycle is ordinarily incomplete and its last committed cursor remains usable, next incremental work shall replay target plus sibling from that checkpoint without list or COLD; provider cursor rejection or expiry shall use the existing typed cursor-expiry COLD policy, and ordinary drift/failure alone shall not.
+
+components:
+  - id: component-work-admission
+    kind: existing
+    contract_refs: [contract-component-authority]
+    paths: [src/sync/sync-cycle-planning.ts, src/sync/plan-admission.ts, src/sync/plan-admission-graph.ts, src/sync/types.ts]
+  - id: component-current-observation
+    kind: existing
+    contract_refs: [contract-current-observation, contract-checkpoint-replay]
+    paths: [src/fs/interface.ts, src/fs/priority-observation.ts, src/fs/caching/remote-fs.ts, src/fs/googledrive/client.ts, src/fs/googledrive/index.ts, src/fs/dropbox/index.ts, src/fs/onedrive/index.ts]
+  - id: component-runtime-decision
+    kind: existing
+    contract_refs: [contract-late-bound-decision]
+    paths: [src/sync/decision-engine.ts, src/sync/plan-executor.ts]
+  - id: component-dynamic-executor
+    kind: existing
+    contract_refs: [contract-route-isolation, contract-churn-progress]
+    paths: [src/sync/plan-executor.ts, src/sync/local-mutation-barrier.ts, src/sync/priority-coordinator.ts]
+  - id: component-baseline-commit
+    kind: existing
+    contract_refs: [contract-baseline-commit, contract-no-action-freshness]
+    paths: [src/sync/state.ts, src/sync/state-committer.ts, src/sync/local-tracker.ts, src/sync/execution-result.ts]
+  - id: component-cycle-finalization
+    kind: existing
+    contract_refs: [contract-component-finalization, contract-checkpoint-replay]
+    paths: [src/sync/sync-cycle-finalization.ts, src/sync/orchestrator.ts, src/sync/priority-coordinator.ts]
+
+contracts:
+  - id: contract-component-authority
+    dimension: integration_contract
+    owner: component-work-admission
+    requirement_refs: [FR-LATE-01, FR-LATE-05, FR-LATE-09]
+    unit_refs: [unit-work-admission, unit-late-bound-executor]
+    adr_refs: [adr-late-bound-component-execution, adr-20260825-issue43-destructive-authorization]
+    verification:
+      - {id: verify-component-authority, tier: T0, command: "npm test -- src/sync/plan-admission.test.ts"}
+    partition:
+      outcomes: [determinate, unknown, conflicting]
+      default_policy: Unknown, incomplete, or conflicting component/member-obligation authority permits no I/O and no successful component receipt.
+  - id: contract-current-observation
+    dimension: integration_contract
+    owner: component-current-observation
+    requirement_refs: [FR-LATE-01, FR-LATE-03, FR-LATE-05, FR-LATE-08]
+    unit_refs: [unit-current-observation, unit-late-bound-executor]
+    adr_refs: [adr-late-bound-component-execution, adr-20260827-file-open-fast-pass-preserves-remote-change-batches]
+    verification:
+      - {id: verify-detached-current-observation, tier: T1, command: "npm test -- src/fs/caching/remote-fs.contract.test.ts"}
+      - {id: verify-provider-identity-path-pair, tier: T1, command: "npm test -- src/fs/googledrive/targeted-observation.test.ts src/fs/dropbox/targeted-observation.test.ts src/fs/onedrive/targeted-observation.test.ts"}
+      - {id: verify-google-occupant-pagination, tier: T1, command: "npm test -- src/fs/googledrive/client.test.ts src/fs/googledrive/targeted-observation.test.ts"}
+    partition:
+      outcomes: [determinate, unknown, inconclusive, conflicting]
+      default_policy: Identity missing alone is not path absence. Google Drive must paginate all same-parent/name candidates and classify 0/1/>1 as absence/current/conflicting; Dropbox/OneDrive must expose the same absence/current/conflicting/unverifiable partition through their path-metadata seams. Replacement/structural/conflicting/unverifiable pairs authorize neither I/O nor no-action completion and leave replay pending; point evidence never proves topology completeness.
+  - id: contract-late-bound-decision
+    dimension: control_flow
+    owner: component-runtime-decision
+    requirement_refs: [FR-LATE-01, FR-LATE-03, FR-LATE-05, FR-LATE-09]
+    unit_refs: [unit-late-bound-executor]
+    adr_refs: [adr-late-bound-component-execution]
+    verification:
+      - {id: verify-current-decision, tier: T0, command: "npm test -- src/sync/decision-engine.test.ts src/sync/plan-executor.test.ts"}
+      - {id: verify-all-member-obligations, tier: T0, command: "npm test -- src/sync/plan-executor.test.ts src/sync/sync-cycle-finalization.test.ts"}
+    partition:
+      outcomes: [determinate, unknown, conflicting]
+      default_policy: Each exact admitted member obligation must receive a determinate current effect inside the latest Admission envelope; otherwise the component remains failed/nonterminal and emits no successful component receipt.
+  - id: contract-route-isolation
+    dimension: concurrency
+    owner: component-dynamic-executor
+    requirement_refs: [FR-LATE-02, FR-LATE-04]
+    unit_refs: [unit-late-bound-executor]
+    adr_refs: [adr-late-bound-component-execution]
+    verification:
+      - {id: verify-effect-scheduler-isolation, tier: T0, command: "npm test -- src/sync/plan-executor.test.ts"}
+      - {id: verify-priority-safe-point, tier: T1, command: "npm test -- src/sync/priority-coordinator.test.ts src/sync/local-mutation-barrier.test.ts"}
+    partition:
+      outcomes: [determinate, unknown, inconclusive]
+      default_policy: An effect whose scheduler-state isolation cannot be shown to preserve all forbidden-overlap, ordering, and concurrency outcomes performs no I/O and remains unresolved.
+    discretion:
+      - id: discretion-private-route-isolation
+        unit_ref: unit-late-bound-executor
+        question: Choose the private scheduling or locking composition that enforces the observable effect-by-scheduler-state isolation contract.
+        scope:
+          files: [src/sync/plan-executor.ts, src/sync/local-mutation-barrier.ts, src/sync/priority-coordinator.ts]
+          component: component-dynamic-executor
+          visibility: private
+        escalate_when:
+          - The choice adds or changes a shared scheduler, lane, guard, or result API.
+          - The choice adds persisted coordination state or a provider call.
+          - The choice changes observable forbidden-overlap semantics, transfer/conflict/structural ordering, conflict sibling isolation, rename ordering, strict priority, starvation behavior, or disjoint-path concurrency.
+        constraints:
+          - Preserve every outcome and failure partition of contract-route-isolation.
+          - Keep implementation state cycle-local and private to the listed component/files.
+        preserves:
+          contract_refs: [contract-route-isolation]
+          invariant_refs: [FR-LATE-02, FR-LATE-04]
+        verification_refs: [verify-effect-scheduler-isolation, verify-priority-safe-point]
+        difficulty_inputs:
+          decision_reasoning: local_tradeoff
+          boundary_reach: private
+          context_scope: files
+          reversibility: bounded
+          verification_strength: discriminating
+          runtime_risk: concurrency
+          coupling: coupled_within_unit
+          grounding: evidenced
+  - id: contract-churn-progress
+    dimension: performance
+    owner: component-dynamic-executor
+    requirement_refs: [FR-LATE-03, FR-LATE-07]
+    unit_refs: [unit-late-bound-executor]
+    adr_refs: [adr-late-bound-component-execution]
+    verification:
+      - {id: verify-churn-quantum, tier: T0, command: "npm test -- src/sync/plan-executor.test.ts"}
+    partition:
+      outcomes: [determinate, inconclusive]
+      default_policy: Quantum exhaustion yields nonterminal work and blocks checkpoint; it is neither success nor a new terminal failure.
+  - id: contract-baseline-commit
+    dimension: state_lifecycle
+    owner: component-baseline-commit
+    requirement_refs: [FR-LATE-06]
+    unit_refs: [unit-commit-receipts]
+    adr_refs: [adr-late-bound-component-execution, adr-0001-metadata-cache-is-subordinate-to-commit-last]
+    verification:
+      - {id: verify-effect-shape-commit, tier: T0, command: "npm test -- src/sync/state.test.ts src/sync/plan-executor.test.ts"}
+      - {id: verify-no-schema-growth, tier: T0, command: "npm run build"}
+    partition:
+      outcomes: [determinate, conflicting]
+      default_policy: Expected-record mismatch preserves the current single-record baseline; any structural ordered-write/effect failure emits no success, withholds checkpoint commit, and relies on incremental replay to converge even if an earlier write remains.
+  - id: contract-no-action-freshness
+    dimension: state_lifecycle
+    owner: component-baseline-commit
+    requirement_refs: [FR-LATE-08, FR-LATE-09]
+    unit_refs: [unit-commit-receipts, unit-finalization]
+    adr_refs: [adr-late-bound-component-execution, adr-0001-metadata-cache-is-subordinate-to-commit-last]
+    verification:
+      - {id: verify-no-action-freshness, tier: T1, command: "npm test -- src/sync/orchestrator.test.ts src/sync/sync-cycle-finalization.test.ts"}
+    partition:
+      outcomes: [determinate, unknown, conflicting]
+      default_policy: Missing or stale local, record, admitted-identity, independent path-occupant/absence, delta, component/member ID, or epoch witness invalidates that member's no-action completion.
+  - id: contract-component-finalization
+    dimension: state_lifecycle
+    owner: component-cycle-finalization
+    requirement_refs: [FR-LATE-02, FR-LATE-09, FR-LATE-10]
+    unit_refs: [unit-finalization]
+    adr_refs: [adr-late-bound-component-execution, adr-0001-metadata-cache-is-subordinate-to-commit-last]
+    verification:
+      - {id: verify-exact-component-finalization, tier: T0, command: "npm test -- src/sync/sync-cycle-finalization.test.ts"}
+      - {id: verify-exact-member-finalization, tier: T1, command: "npm test -- src/sync/plan-executor.test.ts src/sync/sync-cycle-finalization.test.ts src/sync/orchestrator.test.ts"}
+    partition:
+      outcomes: [determinate, unknown, conflicting]
+      default_policy: Missing, duplicate, unknown, failed, blocked, nonterminal, obsolete-epoch, member-set-inexact, member-incomplete, or freshness-invalid component/member evidence emits no successful component receipt and withholds commit; partial member effects converge by replay.
+  - id: contract-checkpoint-replay
+    dimension: failure_recovery
+    owner: component-current-observation
+    requirement_refs: [FR-LATE-05, FR-LATE-10]
+    unit_refs: [unit-current-observation, unit-finalization]
+    adr_refs: [adr-late-bound-component-execution, adr-0001-metadata-cache-is-subordinate-to-commit-last]
+    verification:
+      - {id: verify-last-committed-replay, tier: T1, command: "npm test -- src/fs/caching/remote-fs.contract.test.ts"}
+      - {id: verify-incremental-replay, tier: T1, command: "npm test -- src/sync/orchestrator.test.ts src/fs/caching/remote-fs.contract.test.ts"}
+      - {id: verify-cursor-expiry-partition, tier: T1, command: "npm test -- src/sync/orchestrator.test.ts src/fs/caching/remote-fs.contract.test.ts"}
+    partition:
+      outcomes: [determinate, unknown, inconclusive, conflicting]
+      default_policy: Ordinary incomplete work with a usable committed cursor must replay target plus sibling without list/COLD; provider cursor rejection/expiry invokes the existing typed COLD policy, while ordinary drift/failure cannot be reclassified as cursor expiry.
+    discretion:
+      - id: discretion-private-checkpoint-replay
+        unit_ref: unit-current-observation
+        question: Choose the private reversible cache/cursor representation and procedure that establishes last-committed target-plus-sibling replay after an ordinary incomplete cycle while the cursor remains usable.
+        scope:
+          files: [src/fs/caching/remote-fs.ts]
+          component: component-current-observation
+          visibility: private
+        escalate_when:
+          - The choice adds or changes a shared filesystem, checkpoint, cache, cursor, or orchestration API.
+          - The choice adds persisted coordination state, a field/schema/migration, or a recovery-only provider call.
+          - The choice changes observable usable-cursor replay semantics, target-plus-sibling coverage, no-list/no-COLD behavior, cursor-rejection/expiry classification, quiescence ordering, or clean-finalization behavior.
+        constraints:
+          - Keep the mechanism reversible, provider-call-free for recovery, and private to CachingRemoteFs.
+          - Preserve successful filesystem effects and SyncRecords; convergence occurs through current-state incremental replay.
+        preserves:
+          contract_refs: [contract-checkpoint-replay, contract-component-finalization]
+          invariant_refs: [FR-LATE-10]
+        verification_refs: [verify-last-committed-replay, verify-incremental-replay, verify-cursor-expiry-partition]
+        difficulty_inputs:
+          decision_reasoning: local_tradeoff
+          boundary_reach: private
+          context_scope: files
+          reversibility: bounded
+          verification_strength: discriminating
+          runtime_risk: lifecycle
+          coupling: shared_across_units
+          grounding: evidenced
+
+adrs:
+  - id: adr-late-bound-component-execution
+    status: accepted
+    decision_input_refs:
+      - decision-input-execution-time-direction
+      - decision-input-dynamic-routing
+      - decision-input-no-version-ordering
+      - decision-input-no-cold-restart
+      - decision-input-cas-no-schema
+      - decision-input-tracker-authority
+      - decision-input-strict-priority
+      - decision-input-detached-observation
+      - decision-input-admission-authority
+      - decision-input-commit-last
+    status_provenance:
+      source: user_consultation
+      confidence: confirmed
+      evidence_refs:
+        - conversation://user/2026-08-28/accept
+      rationale: The user explicitly accepted the proposed late-bound component execution ADR after reviewing the materialized design.
+      consultation_id: consultation-late-bound-sync-execution-20260828
+  - id: adr-20260827-file-open-fast-pass-preserves-remote-change-batches
+    status: accepted
+    decision_input_refs: [decision-input-strict-priority, decision-input-detached-observation]
+  - id: adr-20260825-issue43-destructive-authorization
+    status: accepted
+    decision_input_refs: [decision-input-admission-authority]
+  - id: adr-0001-metadata-cache-is-subordinate-to-commit-last
+    status: accepted
+    decision_input_refs: [decision-input-commit-last]
+
+adr_impacts: []
+
+units:
+  - title: unit-work-admission
+    chunk: "1"
+    contract_refs: [contract-component-authority]
+    files: [src/sync/types.ts, src/sync/sync-cycle-planning.ts, src/sync/plan-admission.ts, src/sync/plan-admission-graph.ts, src/sync/plan-admission.test.ts]
+    acceptance:
+      - Direction-free Admission emits stable component and exact member-obligation IDs plus revocable in-memory epochs for complete evidence-connected path sets.
+    objective: Replace directional action authority with direction-free component/member-obligation authority.
+    output_format: TypeScript carrier and Admission changes with focused tests.
+    tool_guidance: Reuse the existing Admission graph, namespace, scope, identity, and fail-closed rules.
+    task_boundaries: Do not alter provider observation, executor I/O, or persisted schemas.
+    decision_closure_reason: Authority contents, stable identity, epoch replacement, and failure behavior are fixed.
+  - title: unit-current-observation
+    chunk: "2"
+    depends_on: [unit-work-admission]
+    contract_refs: [contract-current-observation, contract-checkpoint-replay]
+    files: [src/fs/interface.ts, src/fs/priority-observation.ts, src/fs/caching/remote-fs.ts, src/fs/googledrive/client.ts, src/fs/googledrive/client.test.ts, src/fs/googledrive/index.ts, src/fs/dropbox/index.ts, src/fs/onedrive/index.ts, src/fs/caching/remote-fs.contract.test.ts, src/fs/googledrive/targeted-observation.test.ts, src/fs/dropbox/targeted-observation.test.ts, src/fs/onedrive/targeted-observation.test.ts]
+    acceptance:
+      - Google Drive paginates all same-parent/name candidates and maps 0/1/>1 to absence/current/conflicting; Dropbox/OneDrive provide the same request-local partition, identity missing alone is not absence, conflicting/unverifiable results emit no I/O/no-action, and usable-cursor replay returns target plus sibling without list, COLD, or a recovery-only provider call.
+    objective: Provide paired current identity/path evidence and schema-neutral usable-cursor replay.
+    output_format: Provider-neutral capability extension, provider parity updates, and contract tests.
+    tool_guidance: Ground Google Drive path occupancy in root-relative name/parent-chain lookup and Dropbox/OneDrive in existing provider path metadata seams; keep point evidence endpoint-local, then choose a private reversible replay mechanism inside CachingRemoteFs.
+    task_boundaries: Add no provider enumeration, shared checkpoint API, persisted state, provider recovery call, migration, or backend-specific engine behavior; escalate if one becomes necessary.
+    decision_closure_reason: Evidence scope, replay outcome, owner, and escalation boundary are fixed; private representation and restoration procedure are implementation discretion.
+  - title: unit-late-bound-executor
+    chunk: "3"
+    depends_on: [unit-work-admission, unit-current-observation]
+    contract_refs: [contract-component-authority, contract-current-observation, contract-late-bound-decision, contract-route-isolation, contract-churn-progress]
+    files: [src/sync/decision-engine.ts, src/sync/plan-executor.ts, src/sync/local-mutation-barrier.ts, src/sync/priority-coordinator.ts, src/sync/plan-executor.test.ts]
+    acceptance:
+      - Current decisions complete every exact admitted member obligation or leave the component failed/nonterminal, show no forbidden effect-by-scheduler-state overlap, preserve conflict/rename ordering and disjoint-path concurrency, and yield bounded nonterminal work.
+    objective: Execute authorized components from current state with safe dynamic routing.
+    output_format: Executor and private decision seam changes with deterministic interleaving tests.
+    tool_guidance: Preserve existing transfer/conflict/structural barriers; a private scheduling or locking mechanism may vary within the observable isolation contract.
+    task_boundaries: No shared scheduler/guard boundary, durable queue, or terminal churn failure; point reads cannot widen topology; escalate a shared boundary change.
+    decision_closure_reason: Decision inputs, forbidden overlaps, structural boundary, progress outcome, and implementation-discretion boundary are fixed.
+  - title: unit-commit-receipts
+    chunk: "4"
+    depends_on: [unit-late-bound-executor]
+    contract_refs: [contract-baseline-commit, contract-no-action-freshness]
+    files: [src/sync/state.ts, src/sync/state-committer.ts, src/sync/local-tracker.ts, src/sync/execution-result.ts, src/sync/plan-executor.ts, src/sync/state.test.ts]
+    acceptance:
+      - Existing single-record CAS protects only content baseline replacement; structural effects use current component-owned ordered writes, and partial failure emits no success/checkpoint commit and converges through incremental replay; success/no-action receipts carry latest-epoch freshness evidence.
+    objective: Commit effects and create receipts without persistent coordination state.
+    output_format: Committer/receipt integration and adversarial tests.
+    tool_guidance: Use existing compareAndPut(expectedRecord, nextRecord) unchanged for single-record content baselines; path comes from the records and is not a third argument. Retain current structural write ordering and prove partial-failure convergence through commit-last replay without asserting transaction atomicity.
+    task_boundaries: No expected-absence or multi-path CAS, structural transaction/precommit API, SyncRecord field, shared state API, DB version, or migration.
+    decision_closure_reason: Content CAS authority, structural ordered-write failure behavior, replay convergence, and receipt freshness witnesses are fully specified.
+  - title: unit-finalization
+    chunk: "5"
+    depends_on: [unit-current-observation, unit-commit-receipts]
+    contract_refs: [contract-no-action-freshness, contract-component-finalization, contract-checkpoint-replay]
+    files: [src/sync/sync-cycle-finalization.ts, src/sync/orchestrator.ts, src/sync/priority-coordinator.ts, src/fs/caching/remote-fs.ts, src/sync/sync-cycle-finalization.test.ts, src/sync/orchestrator.test.ts]
+    acceptance:
+      - Exact latest-epoch component/member equality commits clean cycles; partial member success followed by failure emits no component receipt/checkpoint; usable-cursor incomplete work replays target plus sibling, while provider rejection/expiry follows the existing typed COLD policy.
+    objective: Replace action-object finalization with exact component/member completion evidence and replace stale-driven COLD with usable-cursor committed-checkpoint replay.
+    output_format: Orchestration/finalization changes and lifecycle tests.
+    tool_guidance: Keep PriorityCoordinator as safe-point owner and establish replay readiness only after provider operations quiesce, without prescribing a shared rollback call.
+    task_boundaries: Preserve explicit rescan, scope-widening, backend-reset, and cursor-expiry policies.
+    decision_closure_reason: Component/member membership, freshness, quiescence boundary, usable-versus-expired cursor partition, replay outcome, and failure semantics are fixed; private replay mechanics are delegated to CachingRemoteFs.
+  - title: unit-docs-gate
+    chunk: "6"
+    depends_on: [unit-finalization]
+    contract_refs: [contract-component-authority, contract-current-observation, contract-late-bound-decision, contract-route-isolation, contract-churn-progress, contract-baseline-commit, contract-no-action-freshness, contract-component-finalization, contract-checkpoint-replay]
+    files: [ARCHITECTURE.md, docs/sync-pipeline.md, docs/code-enforcement.md, docs/adr/adr-20260828-late-bound-component-execution.md, docs/changes/change-20260827-late-bound-sync-execution/change.md, docs/changes/change-20260827-late-bound-sync-execution/requirements.md, docs/changes/change-20260827-late-bound-sync-execution/implementation.md, docs/changes/change-20260827-late-bound-sync-execution/verification.md]
+    acceptance:
+      - Persistent docs match the implementation and npm run lint, lint:bot-repro, build, and test all pass.
+    objective: Materialize the durable boundary and prove the repository gate.
+    output_format: ADR/change/architecture documentation plus command evidence.
+    tool_guidance: Run focused tests first, then all four mandatory gate commands.
+    task_boundaries: Do not rewrite closed predecessor change history or make live E2E gating.
+    decision_closure_reason: Documentation targets and mandatory verification are fixed by repository policy.
+
+acceptance:
+  - id: AC-LATE-01
+    criteria: Fast pass precedes every unstarted normal component; later work uses paired identity/path-occupant evidence, and identity-missing/path-occupied, replacement, or unverifiable pairs cannot produce I/O or no-action success.
+    requirement_refs: [FR-LATE-01, FR-LATE-02, FR-LATE-03]
+  - id: AC-LATE-02
+    criteria: Every forward and backward-natural phase transition has no forbidden overlap or duplicate receipt, preserves conflict sibling and rename ordering, and retains disjoint-path concurrency.
+    requirement_refs: [FR-LATE-04]
+  - id: AC-LATE-03
+    criteria: Point evidence outside the frozen component performs no structural I/O, while complete cycle delta expansion re-admits the same ID at a new epoch under full-union ownership.
+    requirement_refs: [FR-LATE-05, FR-LATE-09, FR-LATE-10]
+  - id: AC-LATE-04
+    criteria: Content CAS mismatch preserves the record/tracker; structural ordered-write failure emits no success or checkpoint commit and replay converges despite any earlier write remaining; persisted schemas and shared state APIs remain unchanged.
+    requirement_refs: [FR-LATE-06]
+  - id: AC-LATE-05
+    criteria: Quantum exhaustion yields nonterminal work, quiescing churn completes, and continuous churn bounds calls and blocks checkpoint.
+    requirement_refs: [FR-LATE-07]
+  - id: AC-LATE-06
+    criteria: Local/record mutation or stale/unverifiable identity-plus-path evidence invalidates no-action, and remote-after-cut target plus sibling remains available to the next delta.
+    requirement_refs: [FR-LATE-08, FR-LATE-10]
+  - id: AC-LATE-07
+    criteria: With a usable cursor, incomplete work replays target plus sibling without list/COLD or a recovery-only provider call; provider rejection/expiry alone follows the existing typed COLD policy, and ordinary drift/failure does not.
+    requirement_refs: [FR-LATE-10]
+  - id: AC-LATE-08
+    criteria: Finalization accepts one latest-epoch component receipt only when its exact admitted member-ID set has one terminal completion per member; multi-member partial success/failure and every inexact component/member set withhold checkpoint.
+    requirement_refs: [FR-LATE-09]
+
+dispositions:
+  - decision_input_ref: decision-input-execution-time-direction
+    disposition: adopted; each member direction is selected from current Local, paired Remote identity/path-occupant evidence, and current SyncRecord only after component ownership.
+    adr_refs: [adr-late-bound-component-execution]
+    contract_refs: [contract-component-authority, contract-late-bound-decision]
+  - decision_input_ref: decision-input-dynamic-routing
+    disposition: adopted as observable effect-by-scheduler-state forbidden overlaps that preserve existing ordering and concurrency; a private mechanism is delegated and later-is-stricter claims are rejected.
+    adr_refs: [adr-late-bound-component-execution]
+    contract_refs: [contract-route-isolation, contract-churn-progress]
+  - decision_input_ref: decision-input-no-version-ordering
+    disposition: adopted; provider tokens are equality-only evidence.
+    adr_refs: [adr-late-bound-component-execution]
+    contract_refs: [contract-current-observation]
+  - decision_input_ref: decision-input-no-cold-restart
+    disposition: adopted for ordinary incomplete work while the committed cursor is usable; provider rejection/expiry retains the existing typed COLD policy, ordinary drift/failure is not a COLD reason, and private CachingRemoteFs realization is delegated.
+    adr_refs: [adr-late-bound-component-execution]
+    contract_refs: [contract-checkpoint-replay]
+  - decision_input_ref: decision-input-cas-no-schema
+    disposition: adopted as existing two-argument whole-record compareAndPut(expectedRecord, nextRecord) for single-record content only, with path carried by the records; structural effects retain current component-owned ordered writes plus commit-last replay, while new atomic/precommit, multi-path, and expected-absence APIs are rejected.
+    adr_refs: [adr-late-bound-component-execution]
+    contract_refs: [contract-baseline-commit]
+  - decision_input_ref: decision-input-tracker-authority
+    disposition: adopted clarification; external generation producers remain independent while Air Sync validation, effects, and exact acknowledgement are ownership-bound.
+    adr_refs: [adr-late-bound-component-execution]
+    contract_refs: [contract-baseline-commit, contract-no-action-freshness]
+  - decision_input_ref: decision-input-strict-priority
+    disposition: retained; PriorityCoordinator remains the safe-point owner.
+    adr_refs: [adr-20260827-file-open-fast-pass-preserves-remote-change-batches]
+    contract_refs: [contract-route-isolation, contract-component-finalization]
+  - decision_input_ref: decision-input-detached-observation
+    disposition: retained and generalized into paired admitted-identity plus independent provider-grounded current path-occupant/absence evidence; it remains request-local and does not prove structural completeness.
+    adr_refs: [adr-late-bound-component-execution, adr-20260827-file-open-fast-pass-preserves-remote-change-batches]
+    contract_refs: [contract-current-observation]
+  - decision_input_ref: decision-input-admission-authority
+    disposition: retained with direction-free stable component/member-obligation IDs, exact member sets, and latest in-memory authorization epochs.
+    adr_refs: [adr-late-bound-component-execution, adr-20260825-issue43-destructive-authorization]
+    contract_refs: [contract-component-authority]
+  - decision_input_ref: decision-input-commit-last
+    disposition: retained for cache/cursor atomic commit-last, crash replay, and clean component/member finalization; proposed ADR supersedes only ADR 0001 Decision 2's mandatory same-session recoverViaColdScan after ordinary incomplete work with a usable cursor, while cursor expiry/reset/scope-widening COLD remains.
+    adr_refs: [adr-0001-metadata-cache-is-subordinate-to-commit-last]
+    contract_refs: [contract-component-finalization, contract-checkpoint-replay]
+  - decision_input_ref: issue-phase-order-is-not-isolation-order
+    disposition: resolved by observable effect-by-scheduler-state forbidden overlaps, preservation of existing ordering/concurrency, and an escalation-bounded private mechanism.
+    contract_refs: [contract-route-isolation]
+  - decision_input_ref: issue-structural-topology-authority-gap
+    disposition: resolved by same stable ID, revocable in-memory epoch, full-union acquisition, and final owned re-observation.
+    contract_refs: [contract-component-authority, contract-current-observation]
+  - decision_input_ref: issue-current-observation-does-not-prove-component-completeness
+    disposition: resolved by freezing structural completeness at authoritative batch or delta evidence and rejecting point-read expansion.
+    contract_refs: [contract-current-observation]
+  - decision_input_ref: issue-checkpoint-replay-closure-missing
+    disposition: resolved for a usable committed cursor by observable target-plus-sibling replay under CachingRemoteFs ownership, with private reversible mechanics and escalation for shared API, persistence, or provider calls.
+    contract_refs: [contract-checkpoint-replay]
+  - decision_input_ref: issue-cas-coverage-diverges-by-effect-shape
+    disposition: resolved by existing two-argument whole-record compareAndPut(expectedRecord, nextRecord), whose records carry the path, for single-record content only and current component-owned ordered structural writes with no-success/commit-last/replay failure behavior; draft-2 multi-path expected-absence transaction is rejected.
+    contract_refs: [contract-baseline-commit]
+  - decision_input_ref: issue-bounded-churn-changes-mandatory-outcome
+    disposition: resolved by bounded nonterminal scheduling quanta and no current_state_churn terminal failure.
+    contract_refs: [contract-churn-progress]
+  - decision_input_ref: issue-finalization-identity-after-readmission
+    disposition: resolved by exact component/member-obligation membership plus latest in-memory epoch validation.
+    contract_refs: [contract-component-authority, contract-component-finalization]
+  - decision_input_ref: issue-no-action-receipt-can-mask-uncommitted-observation
+    disposition: resolved by paired identity/path-occupant freshness witnesses, Local and record revalidation, and remote-after-cut incremental preservation.
+    contract_refs: [contract-no-action-freshness, contract-checkpoint-replay]
+  - decision_input_ref: issue-private-discretion-is-not-typed
+    disposition: resolved by typed private discretion on contract-route-isolation and contract-checkpoint-replay with exact unit, file/component scope, preservation constraints, verification refs, and escalation triggers.
+    contract_refs: [contract-route-isolation, contract-checkpoint-replay]
+  - decision_input_ref: issue-structural-precommit-authority-is-ungrounded
+    disposition: resolved by withdrawing atomic transaction/precommit claims and specifying current component-owned ordered writes, no successful receipt/checkpoint on failure, and incremental replay convergence without new API or schema.
+    contract_refs: [contract-baseline-commit, contract-checkpoint-replay]
+  - decision_input_ref: issue-current-absence-authority-unproved
+    disposition: resolved by pairing admitted-identity observation with independent provider-grounded path-occupant/authoritative-absence observation; identity missing alone is not absence and replacement/structural/unverifiable pairs emit no I/O or no-action completion.
+    contract_refs: [contract-current-observation, contract-no-action-freshness]
+  - decision_input_ref: issue-component-receipt-does-not-prove-all-effects
+    disposition: resolved by stable direction-free member-obligation IDs, per-member late-bound terminal completion, one exact latest-epoch component receipt, and all-component/all-member equality at finalization; partial member success followed by failure emits no component receipt/checkpoint.
+    contract_refs: [contract-component-authority, contract-late-bound-decision, contract-component-finalization]
+  - decision_input_ref: issue-replay-cold-scope-conflict
+    disposition: resolved by limiting no-COLD target-plus-sibling replay to a usable last committed cursor, retaining the existing typed provider cursor rejection/expiry COLD policy, and forbidding ordinary drift/failure from selecting COLD.
+    contract_refs: [contract-checkpoint-replay]
+  - decision_input_ref: issue-google-path-occupant-is-not-authoritative
+    disposition: resolved by forbidding findChildByName(pageSize=1) as absence authority, paginating all Google Drive same-parent/name candidates into the 0/1/>1 absence/current/conflicting partition, and requiring the same request-local partition for Dropbox/OneDrive.
+    contract_refs: [contract-current-observation]
+  - decision_input_ref: issue-accepted-adr0001-recovery-conflict
+    disposition: resolved by the proposed ADR's explicit narrow supersession of accepted ADR 0001 Decision 2's mandatory same-session recoverViaColdScan rule for ordinary usable-cursor incomplete cycles; all other commit-last and cursor-expiry/reset/scope-widening COLD rules remain, and ADR rejection marks the no-COLD requirement/contracts rework_required.
+    adr_refs: [adr-late-bound-component-execution, adr-0001-metadata-cache-is-subordinate-to-commit-last]
+    contract_refs: [contract-checkpoint-replay]
+  - decision_input_ref: issue-cas-invocation-contradicts-existing-api
+    disposition: resolved by specifying the existing two-argument compareAndPut(expectedRecord, nextRecord) invocation exactly; path is derived from the records and no third argument or new API is allowed.
+    contract_refs: [contract-baseline-commit]

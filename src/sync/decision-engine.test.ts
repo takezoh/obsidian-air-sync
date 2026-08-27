@@ -471,6 +471,19 @@ describe("emitted SyncAction structure", () => {
 	});
 });
 
+describe("both-changed content equality recovery", () => {
+	it("converges to match when both current entities carry the same exact SHA-256", () => {
+		const action = planSync([{
+			path: "note.md",
+			local: local({ path: "note.md", hash: "new-hash", mtime: 2000, size: 10 }),
+			remote: remote({ path: "note.md", hash: "new-hash", mtime: 2000, size: 10 }),
+			prevSync: baseline({ hash: "old-hash", localMtime: 1000, remoteMtime: 1000,
+				localSize: 10, remoteSize: 10 }),
+		}]).actions[0];
+		expect(action?.action).toBe("match");
+	});
+});
+
 describe("one plan action per path (ADR 0001 T7 invariant)", () => {
 	// The `withCacheMutex` stale-guard is dormant only because no two CONCURRENT
 	// (Group-A: push/pull/match/cleanup) actions ever target the same path — a parallel

@@ -56,6 +56,131 @@ function makePlan(actions: SyncAction[]): AuthorizedSyncPlan {
 afterEach(() => vi.restoreAllMocks());
 
 describe("executePlan", () => {
+	it("treats a current-state no-action admission as a successful no-op", async () => {
+		const ctx = makeCtx({ admitAction: vi.fn().mockResolvedValue({ kind: "no_action" }) });
+		const localFs = ctx.localFs as MockFileSystem;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
+		addFile(localFs, "a.md", "content");
+		const write = vi.spyOn(remoteFs, "write");
+
+		const result = await executePlan(makePlan([{
+			path: "a.md", action: "push",
+			local: { path: "a.md", isDirectory: false, size: 7, mtime: 1000, hash: "" },
+		}]), ctx);
+
+		expect(result.succeeded).toHaveLength(1);
+		expect(write).not.toHaveBeenCalled();
+	});
+
+	it("keeps the component nonterminal when current evidence is incomparable", async () => {
+		const ctx = makeCtx({ admitAction: vi.fn().mockResolvedValue({
+			kind: "nonterminal", reason: "current_observation_unverifiable",
+		}) });
+		const localFs = ctx.localFs as MockFileSystem;
+		addFile(localFs, "a.md", "content");
+
+		const result = await executePlan(makePlan([{
+			path: "a.md", action: "push",
+			local: { path: "a.md", isDirectory: false, size: 7, mtime: 1000, hash: "" },
+		}]), ctx);
+
+		expect(result.blocked).toEqual([
+			expect.objectContaining({ reason: "current_observation_unverifiable" }),
+		]);
+	});
+
+	it("keeps the component nonterminal when late planning crosses a phase boundary", async () => {
+		const currentConflict: SyncAction = {
+			path: "a.md",
+			action: "conflict",
+			local: { path: "a.md", isDirectory: false, size: 5, mtime: 2000, hash: "local" },
+			remote: { path: "a.md", isDirectory: false, size: 6, mtime: 3000, hash: "remote" },
+		};
+		const ctx = makeCtx({ admitAction: vi.fn().mockResolvedValue({
+			kind: "run", action: currentConflict,
+		}) });
+		const localFs = ctx.localFs as MockFileSystem;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
+		addFile(localFs, "a.md", "local");
+		const write = vi.spyOn(remoteFs, "write");
+
+		const result = await executePlan(makePlan([{
+			path: "a.md", action: "push",
+			local: { path: "a.md", isDirectory: false, size: 5, mtime: 1000, hash: "" },
+		}]), ctx);
+
+		expect(result.blocked).toEqual([
+			expect.objectContaining({ reason: "current_action_requires_reroute" }),
+		]);
+		expect(result.succeeded).toHaveLength(0);
+		expect(write).not.toHaveBeenCalled();
+	});
+
+	it("executes a late push-to-pull change within the transfer phase", async () => {
+		const currentPull: SyncAction = {
+			path: "a.md",
+			action: "pull",
+			remote: { path: "a.md", isDirectory: false, size: 6, mtime: 3000, hash: "remote" },
+		};
+		const ctx = makeCtx({ admitAction: vi.fn().mockResolvedValue({
+			kind: "run", action: currentPull,
+		}) });
+		const remoteFs = ctx.remoteFs as MockFileSystem;
+		addFile(remoteFs, "a.md", "remote");
+
+		const result = await executePlan(makePlan([{
+			path: "a.md", action: "push",
+			local: { path: "a.md", isDirectory: false, size: 5, mtime: 1000, hash: "" },
+		}]), ctx);
+
+		expect(result.blocked).toHaveLength(0);
+		expect(result.succeeded[0]?.executedAction?.action).toBe("pull");
+		expect(readText(ctx.localFs as MockFileSystem, "a.md")).toBe("remote");
+	});
+
+	it("does not use a later conflict slot as authority for a late transfer", async () => {
+		const currentPull: SyncAction = {
+			path: "a.md", action: "pull",
+			remote: { path: "a.md", isDirectory: false, size: 6, mtime: 3000, hash: "remote" },
+		};
+		const ctx = makeCtx({ admitAction: vi.fn().mockResolvedValue({ kind: "run", action: currentPull }) });
+		const remoteFs = ctx.remoteFs as MockFileSystem;
+		addFile(remoteFs, "a.md", "remote");
+
+		const result = await executePlan(makePlan([{
+			path: "a.md", action: "conflict",
+			local: { path: "a.md", isDirectory: false, size: 5, mtime: 1000, hash: "local" },
+			remote: { path: "a.md", isDirectory: false, size: 6, mtime: 2000, hash: "old" },
+		}]), ctx);
+
+		expect(result.blocked).toEqual([
+			expect.objectContaining({ reason: "current_action_requires_reroute" }),
+		]);
+		expect(result.succeeded).toHaveLength(0);
+		expect((ctx.localFs as MockFileSystem).files.has("a.md")).toBe(false);
+	});
+
+	it("does not run a late transfer from a structural scheduler state", async () => {
+		const currentPull: SyncAction = {
+			path: "a.md", action: "pull",
+			remote: { path: "a.md", isDirectory: false, size: 6, mtime: 3000, hash: "remote" },
+		};
+		const ctx = makeCtx({ admitAction: vi.fn().mockResolvedValue({ kind: "run", action: currentPull }) });
+		const remoteFs = ctx.remoteFs as MockFileSystem;
+		addFile(remoteFs, "a.md", "remote");
+
+		const result = await executePlan(makePlan([{
+			path: "a.md", action: "delete_local",
+			baseline: { path: "a.md", hash: "old", localMtime: 1, remoteMtime: 1,
+				localSize: 1, remoteSize: 1, syncedAt: 1 },
+		}]), ctx);
+
+		expect(result.blocked).toEqual([
+			expect.objectContaining({ reason: "current_action_requires_reroute" }),
+		]);
+		expect(result.succeeded).toHaveLength(0);
+	});
+
 	describe("push", () => {
 		it("uploads local file to remote and commits state", async () => {
 			const ctx = makeCtx();

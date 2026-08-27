@@ -57,7 +57,7 @@ export class GoogleDriveMetadataCache extends AbstractMetadataCache<GoogleDriveF
 			mtime: Number.isNaN(parsedMtime) ? 0 : parsedMtime,
 			hash: "",
 			remoteChecksum: toRemoteChecksum(googleDriveFile),
-			backendMeta: { googleDriveId: googleDriveFile.id },
+			backendMeta: { googleDriveId: googleDriveFile.id, version: googleDriveFile.version },
 		};
 	}
 }

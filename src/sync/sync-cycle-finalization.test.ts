@@ -7,6 +7,7 @@ import type { IdentityEvidence, PathObservation, ScopeProjection, SyncAction } f
 import {
 	admitDestructivePlan,
 	captureCycleAdmissionSnapshot,
+	memberObligationFor,
 	type AdmissionResult,
 } from "./plan-admission";
 
@@ -83,6 +84,32 @@ describe("finalizeSyncCycle", () => {
 		expect(retained).toEqual([pending]);
 		expect(commitCheckpoint).not.toHaveBeenCalled();
 		expect(deleteRenameDebts).not.toHaveBeenCalled();
+	});
+
+	it("requires exact latest-epoch member completion with no duplicates", async () => {
+		const action: SyncAction = { action: "rename_local", oldPath: "A.md", path: "a.md" };
+		const admitted = admission([action], [edge()], { byEndpoint: new Map([
+			["A.md", "included"], ["a.md", "included"],
+		]) });
+		const member = memberObligationFor(admitted.executable, action);
+		const completion = {
+			action,
+			componentId: member.componentId,
+			memberObligationId: member.id,
+			admissionEpoch: member.admissionEpoch,
+		};
+		const commitCheckpoint = vi.fn<IncrementalCheckpoint["commitCheckpoint"]>()
+			.mockResolvedValue(undefined);
+
+		await finalizeSyncCycle({
+			admission: admitted,
+			result: { succeeded: [completion, completion], failed: [], blocked: [], conflicts: [], deferred: [] },
+			pendingEvidence: [edge()], persistedDebts: [], localRenameDebts: [],
+			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
+			stateStore: { deleteRenameDebts: vi.fn() } as unknown as SyncStateStore,
+		});
+
+		expect(commitCheckpoint).not.toHaveBeenCalled();
 	});
 
 	it("commits the checkpoint before retiring resolved-no-action evidence", async () => {

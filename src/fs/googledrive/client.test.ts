@@ -81,6 +81,29 @@ describe("GoogleDriveClient error wrapping", () => {
 	});
 });
 
+describe("GoogleDriveClient authoritative same-name lookup", () => {
+	it("drains every page instead of accepting the first matching child", async () => {
+		const mockRequestUrl = (await spyRequestUrl())
+			.mockResolvedValueOnce(mockRes({
+				files: [{ id: "first", name: "note.md", mimeType: "text/plain", parents: ["root"] }],
+				nextPageToken: "page-2",
+			}))
+			.mockResolvedValueOnce(mockRes({
+				files: [{ id: "second", name: "note.md", mimeType: "text/plain", parents: ["root"] }],
+			}));
+		const { GoogleDriveClient } = await import("./client");
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
+
+		const result = await client.listChildrenByName("root", "note.md");
+
+		expect(result.map(({ id }) => id)).toEqual(["first", "second"]);
+		expect(mockRequestUrl).toHaveBeenCalledTimes(2);
+		const secondUrl = (mockRequestUrl.mock.calls[1]![0] as { url: string }).url;
+		expect(new URL(secondUrl).searchParams.get("pageToken")).toBe("page-2");
+		mockRequestUrl.mockRestore();
+	});
+});
+
 describe("GoogleDriveClient.uploadFile modifiedTime default", () => {
 	it("does not send epoch (1970) when modifiedTime is omitted", async () => {
 		const mockRequestUrl = (await spyRequestUrl()).mockImplementation(

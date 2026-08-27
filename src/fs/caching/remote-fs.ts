@@ -3,20 +3,16 @@ import type { FileEntity, PathAuthority, RenamePair } from "../types";
 import type { MetadataStore } from "../../store/metadata-store";
 import type { Logger } from "../../logging/logger";
 import { AsyncMutex } from "../../queue/async-queue";
+import type {
+	PriorityObservation,
+	PriorityObservationCapability,
+	PriorityObservationRequest,
+	PriorityReadResult,
+} from "../priority-observation";
 import { normalizeSyncPath } from "../../utils/path";
 import type { AbstractMetadataCache } from "./metadata-cache";
-
-/** A remote delta: paths added/modified, deleted, and renamed since the last cursor. */
-export interface RemoteDelta {
-	modified: string[];
-	deleted: string[];
-	renamed: RenamePair[];
-}
-
-/** Result of fetching one batch of incremental changes from a backend's delta API. */
-export type IncrementalChangesResult =
-	| { needsFullScan: false; newToken: string; changedPaths: Set<string>; renamedPaths: RenamePair[] }
-	| { needsFullScan: true; changedPaths: Set<string> };
+import { observeDetachedPriority, readDetachedPriority } from "./detached-priority";
+import { cloneDelta, type IncrementalChangesResult, type RemoteDelta } from "./remote-delta";
 
 /**
  * IndexedDB meta key under which the delta cursor is persisted, ALONGSIDE the
@@ -61,6 +57,10 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	protected logger?: Logger;
 	protected metadataStore?: MetadataStore<TFile>;
 	protected cacheMutex = new AsyncMutex();
+	readonly priority: PriorityObservationCapability = {
+		observe: (request) => this.observePriority(request),
+		read: (observation) => this.readPriority(observation),
+	};
 
 	private initialized = false;
 	/** Latest changes start page token (for incremental sync) */
@@ -81,6 +81,13 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	 */
 	private touchedPaths = new Set<string>();
 	private pendingFullPersist = false;
+	/**
+	 * The delta already consumed from the live provider cursor but not yet covered by
+	 * a committed checkpoint.  An incomplete cycle must see this exact work again in
+	 * the same process; otherwise the live cursor can strand the target and its
+	 * siblings even though the durable cursor was correctly left behind.
+	 */
+	private pendingReplayDelta: RemoteDelta | null = null;
 
 	protected constructor(
 		rootFolderId: string,
@@ -119,6 +126,20 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	protected abstract assertRootAlive(): Promise<void>;
 	/** Fetch one batch of incremental changes from the cursor and apply them to the cache. */
 	protected abstract fetchChanges(cursor: string): Promise<IncrementalChangesResult>;
+	/** Fetch current metadata for one stable backend id without touching the delta cursor. */
+	protected abstract fetchCurrentFile(fileId: string): Promise<TFile | null>;
+	/**
+	 * Independently resolve every current occupant of one path. An empty array is
+	 * authoritative absence, multiple entries are a provider-level name conflict,
+	 * and null means the provider could not establish path authority.
+	 */
+	protected abstract fetchCurrentPath(path: string): Promise<TFile[] | null>;
+	/** Resolve a complete authoritative path without consulting shared cache state. */
+	protected abstract resolveDetachedPath(file: TFile): Promise<string | null>;
+	/** Project request-local metadata without consulting cache authority. */
+	protected abstract toDetachedEntity(path: string, file: TFile): FileEntity;
+	/** Opaque provider version token; null means this request is unverifiable. */
+	protected abstract detachedVersionToken(file: TFile): string | null;
 	/** Download a file's content by its backend id. */
 	protected abstract downloadFile(fileId: string): Promise<ArrayBuffer>;
 	/** Delete a file/folder by its backend id (remote side only; cache is updated here). */
@@ -259,7 +280,10 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	 * after success (a throw propagates and retains it for the next clean cycle's retry).
 	 */
 	async commitCheckpoint(context?: { scopeFingerprint?: string }): Promise<void> {
-		if (!this.metadataStore) return;
+		if (!this.metadataStore) {
+			this.pendingReplayDelta = null;
+			return;
+		}
 		await this.cacheMutex.run(async () => {
 			if (context?.scopeFingerprint !== undefined) {
 				this._scopeFingerprint = context.scopeFingerprint;
@@ -267,6 +291,7 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 			await this.commitCache();
 			this.pendingFullPersist = false;
 			this.touchedPaths.clear();
+			this.pendingReplayDelta = null;
 		});
 	}
 
@@ -353,6 +378,7 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 			this.initialized = false;
 			this.touchedPaths.clear();
 			this.pendingFullPersist = false;
+			this.pendingReplayDelta = null;
 		});
 	}
 
@@ -369,13 +395,16 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 
 	/** Apply incremental changes from the current cursor (caller ensured init + holds mutex). */
 	private async _applyIncrementalChanges(): Promise<RemoteDelta | null> {
+		if (this.pendingReplayDelta) return cloneDelta(this.pendingReplayDelta);
 		if (!this._changesPageToken) return null;
 
 		const result = await this.fetchChanges(this._changesPageToken);
 
 		if (result.needsFullScan) {
 			// Cursor expired (e.g. Google Drive 410): snapshot-diff a fresh full scan for the delta.
-			return this.fullScanWithDelta();
+			const delta = await this.fullScanWithDelta();
+			this.pendingReplayDelta = delta ? cloneDelta(delta) : null;
+			return delta;
 		}
 
 		this._changesPageToken = result.newToken;
@@ -396,7 +425,9 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 				deleted.push(path);
 			}
 		}
-		return { modified, deleted, renamed: result.renamedPaths };
+		const delta = { modified, deleted, renamed: result.renamedPaths };
+		this.pendingReplayDelta = cloneDelta(delta);
+		return delta;
 	}
 
 	/**
@@ -500,6 +531,37 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 			if (!file) return null;
 			return this.cache.toEntity(path, file);
 		});
+	}
+
+	/**
+	 * Refresh one cached identity directly from the provider. This deliberately does
+	 * not call {@link getChangedPaths}, mutate `_changesPageToken`, or mark anything
+	 * for checkpoint persistence: the normal lifecycle still owns and later consumes
+	 * the global delta. Only an identity that still resolves to the requested path is
+	 * admitted, so a rename/delete/replacement cannot become a fast-pass overwrite.
+	 */
+	private async observePriority(request: PriorityObservationRequest): Promise<PriorityObservation> {
+		const path = normalizeSyncPath(request.path);
+		return observeDetachedPriority({ ...request, path }, {
+			fetchIdentity: (identityKey) => this.fetchCurrentFile(identityKey),
+			fetchPath: (requestedPath) => this.fetchCurrentPath(requestedPath),
+			resolvePath: async (file) => {
+				const resolved = await this.resolveDetachedPath(file);
+				return resolved ? normalizeSyncPath(resolved) : null;
+			},
+			toEntity: (requestedPath, file) => this.toDetachedEntity(requestedPath, file),
+			versionToken: (file) => this.detachedVersionToken(file),
+		});
+	}
+
+	private async readPriority(
+		observation: Extract<PriorityObservation, { kind: "current" }>,
+	): Promise<PriorityReadResult> {
+		return readDetachedPriority(
+			observation,
+			(identityKey) => this.downloadFile(identityKey),
+			(request) => this.observePriority(request),
+		);
 	}
 
 	/** Download file content. Like stat(), relies on list() having refreshed the cache. */

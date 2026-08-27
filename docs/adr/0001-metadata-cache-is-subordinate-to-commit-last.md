@@ -4,6 +4,12 @@
 **Context area:** sync pipeline / Google Drive backend
 **Related:** [sync-pipeline.md → Crash recovery](../sync-pipeline.md), [google-drive-backend.md](../google-drive-backend.md)
 
+> **2026-08-28 supersession notice:** [Late-bound component execution](adr-20260828-late-bound-component-execution.md)
+> supersedes Decision 2 only for ordinary same-session incomplete cycles with a usable
+> cursor. `CachingRemoteFs` now retains and re-emits the uncommitted delta instead of
+> setting `recoverViaColdScan`. The atomic cache/cursor commit-last invariant and explicit
+> COLD conditions remain governing. The text below records the original decision history.
+
 ## Context
 
 Sync correctness rests on **two authoritative, commit-last states** (A and B) — **plus** a

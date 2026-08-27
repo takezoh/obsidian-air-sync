@@ -10,7 +10,7 @@ import { INTERNAL_METADATA_PATH } from "../remote-vault-contract";
 import { sha256 } from "../../utils/hash";
 import { normalizeSyncPath, validateRename } from "../../utils/path";
 import { CachingRemoteFs } from "../caching/remote-fs";
-import type { IncrementalChangesResult } from "../caching/remote-fs";
+import type { IncrementalChangesResult } from "../caching/remote-delta";
 
 function isCaseOnlyRename(oldPath: string, newPath: string): boolean {
 	return oldPath !== newPath && oldPath.toLowerCase() === newPath.toLowerCase();
@@ -18,12 +18,7 @@ function isCaseOnlyRename(oldPath: string, newPath: string): boolean {
 
 const CASE_RENAME_PENDING_META_KEY = "dropboxCaseRenamePending";
 
-interface PendingCaseRename {
-	oldPath: string;
-	newPath: string;
-	tempPath: string;
-	expectedId: string;
-}
+type PendingCaseRename = { oldPath: string; newPath: string; tempPath: string; expectedId: string };
 
 /** Deterministic so a retry can resume a move interrupted after its first leg. */
 function caseRenameTempPath(path: string, identity: string): string {
@@ -124,6 +119,44 @@ export class DropboxFs extends CachingRemoteFs<DropboxEntry> {
 		// refresh the anchor) is tracked.
 		await this.refreshRootPath();
 		return applyDropboxDelta({ cache: this.cache, client: this.client, logger: this.logger }, cursor);
+	}
+
+	protected async fetchCurrentFile(fileId: string): Promise<DropboxEntry | null> {
+		return this.getOptionalMetadata(fileId);
+	}
+
+	protected async fetchCurrentPath(path: string): Promise<DropboxEntry[]> {
+		const entry = await this.getOptionalMetadata(this.addr(path));
+		return entry ? [entry] : [];
+	}
+
+	protected async resolveDetachedPath(file: DropboxEntry): Promise<string | null> {
+		const root = await this.getOptionalMetadata(this.rootFolderId);
+		if (!root?.id || root.id !== this.rootFolderId || !root.path_display) return null;
+		if (!file.id || !file.path_display) return null;
+		const rootPath = root.path_display.replace(/\/$/, "");
+		if (!file.path_display.startsWith(`${rootPath}/`)) return null;
+		return file.path_display.slice(rootPath.length + 1);
+	}
+
+	protected toDetachedEntity(path: string, file: DropboxEntry): FileEntity {
+		const entity = {
+			path,
+			pathAuthority: "actual_resolved" as const,
+			identityKey: file.id,
+			isDirectory: file[".tag"] === "folder",
+			size: file[".tag"] === "folder" ? 0 : file.size ?? 0,
+			mtime: parseDropboxTime(file.server_modified ?? file.client_modified),
+			hash: "",
+			remoteChecksum: file.content_hash ? { algo: "dropbox" as const, value: file.content_hash } : undefined,
+			backendMeta: { dropboxId: file.id, rev: file.rev },
+		};
+		return entity;
+	}
+
+	protected detachedVersionToken(file: DropboxEntry): string | null {
+		if (!file.id || !file.rev || !file.content_hash || !Number.isFinite(file.size)) return null;
+		return `dropbox:${file.rev}`;
 	}
 
 	protected downloadFile(fileId: string): Promise<ArrayBuffer> {
@@ -367,15 +400,13 @@ function parsePendingCaseRename(raw: string): PendingCaseRename {
 	} catch {
 		throw new Error("Invalid persisted Dropbox case-only rename operation");
 	}
-	if (!value || typeof value !== "object") {
-		throw new Error("Invalid persisted Dropbox case-only rename operation");
-	}
+	if (!value || typeof value !== "object") throw new Error("Invalid persisted Dropbox case-only rename operation");
 	const pending = value as Partial<PendingCaseRename>;
-	if (typeof pending.oldPath !== "string" || typeof pending.newPath !== "string" ||
-		typeof pending.tempPath !== "string" || typeof pending.expectedId !== "string" ||
-		!isCaseOnlyRename(pending.oldPath, pending.newPath) ||
-		pending.tempPath !== caseRenameTempPath(pending.oldPath, pending.expectedId)) {
-		throw new Error("Invalid persisted Dropbox case-only rename operation");
-	}
+	const validShape = typeof pending.oldPath === "string" && typeof pending.newPath === "string" &&
+		typeof pending.tempPath === "string" && typeof pending.expectedId === "string";
+	if (!validShape || !isCaseOnlyRename(pending.oldPath!, pending.newPath!) || pending.tempPath !==
+		caseRenameTempPath(pending.oldPath!, pending.expectedId!)) throw new Error(
+			"Invalid persisted Dropbox case-only rename operation",
+		);
 	return pending as PendingCaseRename;
 }

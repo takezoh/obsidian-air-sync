@@ -3,6 +3,7 @@ import { AsyncPool } from "../queue/async-queue";
 import { digest, isLocallyComputable, sha256 } from "../utils/hash";
 import { exactEntity, observePath, replaceObservation } from "./path-observation";
 import type { MixedEntity, PathObservation } from "./types";
+import { hasChanged, hasRemoteChanged } from "./change-compare";
 
 /** Enrich initial same-size pairs when the remote checksum is locally reproducible. */
 export async function enrichHashesForInitialMatch(
@@ -28,6 +29,40 @@ export async function enrichHashesForInitialMatch(
 			}
 		} catch {
 			// A failed read stays unenriched and therefore takes the safe conflict path.
+		}
+	})));
+}
+
+/**
+ * Recover a write-completed / baseline-save-failed path without durable marker
+ * state. Only the exact ambiguous shape pays two reads; unequal content remains a
+ * normal conflict.
+ */
+export async function enrichHashesForBothChangedEqualContent(
+	entries: MixedEntity[],
+	localFs: IFileSystem,
+	remoteFs: IFileSystem,
+): Promise<void> {
+	const candidates = entries.filter((entry) =>
+		entry.prevSync && entry.local && entry.remote &&
+		!entry.local.isDirectory && !entry.remote.isDirectory &&
+		entry.local.size === entry.remote.size &&
+		hasChanged(entry.local, entry.prevSync) && hasRemoteChanged(entry.remote, entry.prevSync),
+	);
+	const pool = new AsyncPool(4);
+	await Promise.all(candidates.map((entry) => pool.run(async () => {
+		try {
+			const [localContent, remoteContent] = await Promise.all([
+				localFs.read(entry.path), remoteFs.read(entry.path),
+			]);
+			const [localHash, remoteHash] = await Promise.all([
+				sha256(localContent), sha256(remoteContent),
+			]);
+			if (localHash !== remoteHash) return;
+			entry.local = { ...entry.local!, hash: localHash };
+			entry.remote = { ...entry.remote!, hash: remoteHash };
+		} catch {
+			// Read failure preserves the existing conflict admission.
 		}
 	})));
 }

@@ -252,6 +252,13 @@ export function createMockStateStore(): {
 			records.set(record.path, record);
 			return Promise.resolve();
 		},
+		compareAndPut(expected: SyncRecord | undefined, record: SyncRecord) {
+			if (JSON.stringify(records.get(record.path)) !== JSON.stringify(expected)) {
+				return Promise.resolve(false);
+			}
+			records.set(record.path, record);
+			return Promise.resolve(true);
+		},
 		delete(path: string) {
 			records.delete(path);
 			contents.delete(path);

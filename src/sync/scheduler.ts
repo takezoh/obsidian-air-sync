@@ -3,7 +3,6 @@ import type { EventRef, Workspace, Vault, TAbstractFile, TFile } from "../platfo
 import type { IFileSystem } from "../fs/interface";
 import type { SyncStateStore } from "./state";
 import type { LocalChangeTracker } from "./local-tracker";
-import { hasChanged, hasRemoteChanged } from "./change-compare";
 
 const DEBOUNCE_MS = 5000;
 
@@ -27,7 +26,7 @@ function folderDescendantTouchesScope(
 
 export interface SyncOrchestrator {
 	runSync(): Promise<void>;
-	pullSingle(path: string): Promise<void>;
+	syncOpenedFile(path: string): Promise<unknown>;
 	isSyncing(): boolean;
 }
 
@@ -214,24 +213,12 @@ export class SyncScheduler {
 	}
 
 	private wireFileOpenEvent(): void {
-		const { workspace, stateStore, localFs, remoteFs, orchestrator } = this.deps;
+		const { workspace, orchestrator } = this.deps;
 
 		this.deps.registerEvent(
 			workspace.on("file-open", async (file: TFile | null) => {
 				if (!file) return;
-				const record = await stateStore.get(file.path);
-				if (!record) return;
-				const lFs = localFs();
-				const rFs = remoteFs();
-				if (!lFs || !rFs) return;
-				const [localStat, remote] = await Promise.all([
-					lFs.stat(file.path),
-					rFs.stat(file.path),
-				]);
-				if (!remote || remote.isDirectory) return;
-				if (!hasRemoteChanged(remote, record)) return;
-				if (localStat && hasChanged(localStat, record)) return;
-				await orchestrator.pullSingle(file.path);
+				await orchestrator.syncOpenedFile(file.path);
 			}),
 		);
 	}

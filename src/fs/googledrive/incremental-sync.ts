@@ -4,7 +4,7 @@ import { LIST_PAGE_CAP } from "./client";
 import type { GoogleDriveClient } from "./client";
 import type { Logger } from "../../logging/logger";
 import type { AbstractMetadataCache } from "../caching/metadata-cache";
-import type { IncrementalChangesResult } from "../caching/remote-fs";
+import type { IncrementalChangesResult } from "../caching/remote-delta";
 import { applyIdDeltaPage, createIdDeltaResult, type IdDeltaEntry } from "../caching/id-delta";
 
 /**

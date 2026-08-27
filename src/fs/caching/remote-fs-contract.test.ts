@@ -39,15 +39,10 @@ export interface CachingRemoteFsHarness<TFile> {
  *
  * - **Path 1 (crash ⇒ fresh FS object replays from the committed cursor)** is fully
  *   guaranteed here — it is entirely an FS property, so the contract asserts it.
- * - **Path 2 (same-session failure ⇒ state C)** is NOT, and cannot be, closed by the
- *   FS alone: a live FS that already advanced its in-memory cursor past un-committed
- *   work will not re-surface it (the `does NOT self-heal` test below pins exactly this
- *   FS-observable boundary). Recovery is the orchestrator's job via
- *   `recoverViaColdScan` (force the next cycle cold). So a backend that runs this
- *   contract gets path-1 coverage for free but MUST ALSO be exercised at the
- *   orchestrator level for path-2 — see `orchestrator.test.ts` "forces a cold
- *   reconcile on the cycle after a failure" and ADR 0001 (state C). Parameterizing
- *   that orchestrator-level test by backend is the B3 follow-up.
+ * - **Path 2 (same-session failure)** is guaranteed by the base's private replay
+ *   buffer: until `commitCheckpoint()` succeeds, the next incremental collection
+ *   receives a clone of the same delta without another provider call or full list.
+ *   The provider-specific contract below pins that behavior for every subclass.
  */
 export function runCachingRemoteFsContract<TFile>(
 	name: string,
@@ -111,15 +106,10 @@ export function runCachingRemoteFsContract<TFile>(
 			await store.close();
 		});
 
-		it("does NOT self-heal an un-committed change in-session (path 2 is the orchestrator's job)", async () => {
-			// The flip side of the crash test, and the reason `recoverViaColdScan` exists.
-			// A live FS that detected a change advanced its IN-MEMORY cursor past it (state
-			// C). Without a commit, a SECOND pass on the SAME FS does not re-surface it —
-			// the FS cannot self-recover in-session. So an orchestrator that re-ran only
-			// the live FS after a failed cycle would silently drop the work; that gap is
-			// closed at the orchestrator level (force-cold next cycle), NOT here. Pinning
-			// this FS-observable boundary keeps a new backend from assuming the contract
-			// covers path 2.
+		it("replays an uncommitted change in-session from the committed cut", async () => {
+			// The durable cursor is intentionally commit-last, but the live cursor has
+			// already advanced. The private replay buffer must bridge that same-process
+			// interval without forcing a list/COLD recovery.
 			const h = makeHarness();
 			h.seedFile("a.md");
 			const store = h.makeStore("contract-no-self-heal");
@@ -132,9 +122,9 @@ export function runCachingRemoteFsContract<TFile>(
 			const first = await fs.getChangedPaths();
 			expect(first?.deleted).toContain("a.md"); // detected once; in-memory cursor advanced
 
-			// No commit ⇒ committed cursor still behind. The live FS does NOT re-report it.
+			// No commit ⇒ the exact work is re-emitted from request-local memory.
 			const second = await fs.getChangedPaths();
-			expect(second?.deleted ?? []).not.toContain("a.md");
+			expect(second?.deleted).toContain("a.md");
 			expect(await fs.hasCheckpoint()).toBe(true); // in-memory cursor present, unchanged
 			await store.close();
 		});
@@ -282,7 +272,10 @@ export function runCachingRemoteFsContract<TFile>(
 			expect(snapshot.some((entry) => entry.path === "archive/b.md")).toBe(false);
 
 			const second = await fs.getChangedPaths();
-			expect(second?.renamed).toContainEqual({
+			expect(second).toEqual(first);
+			await fs.commitCheckpoint();
+			const afterCommit = await fs.getChangedPaths();
+			expect(afterCommit?.renamed).toContainEqual({
 				oldPath: "papers", newPath: "archive", isFolder: true,
 			});
 			await store.close();

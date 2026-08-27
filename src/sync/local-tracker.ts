@@ -10,6 +10,7 @@ export interface TrackerSnapshot {
 	readonly dirtyPaths: ReadonlySet<string>;
 	readonly renamePairs: ReadonlyMap<string, string>;
 	readonly folderRenamePairs: ReadonlyMap<string, string>;
+	readonly generations?: ReadonlyMap<string, number>;
 	readonly initialized: boolean;
 }
 
@@ -32,8 +33,14 @@ export class LocalChangeTracker {
 	private renamePairs = new Map<string, string>(); // newPath → oldPath
 	private folderRenamePairs = new Map<string, string>(); // newFolder → oldFolder
 	private initialized = false;
+	private generations = new Map<string, number>();
+
+	private bump(path: string): void {
+		this.generations.set(path, (this.generations.get(path) ?? 0) + 1);
+	}
 
 	markDirty(path: string): void {
+		this.bump(path);
 		this.dirtyPaths.add(path);
 	}
 
@@ -43,6 +50,8 @@ export class LocalChangeTracker {
 		this.renamePairs.delete(oldPath);
 		if (resolved === newPath) return; // renamed back to original — no-op
 		this.renamePairs.set(newPath, resolved);
+		this.bump(resolved);
+		this.bump(newPath);
 		this.dirtyPaths.add(resolved);
 		this.dirtyPaths.add(newPath);
 	}
@@ -52,6 +61,8 @@ export class LocalChangeTracker {
 		this.folderRenamePairs.delete(oldPath);
 		if (resolved === newPath) return;
 		this.folderRenamePairs.set(newPath, resolved);
+		this.bump(resolved);
+		this.bump(newPath);
 	}
 
 	getRenamePairs(): ReadonlyMap<string, string> {
@@ -79,6 +90,7 @@ export class LocalChangeTracker {
 			dirtyPaths: new Set(this.dirtyPaths),
 			renamePairs: new Map(this.renamePairs),
 			folderRenamePairs: new Map(this.folderRenamePairs),
+			generations: new Map(this.generations),
 			initialized: this.initialized,
 		});
 	}
@@ -92,7 +104,9 @@ export class LocalChangeTracker {
 	 */
 	acknowledge(snap: TrackerSnapshot): void {
 		for (const p of snap.dirtyPaths) {
-			this.dirtyPaths.delete(p);
+			if (!snap.generations || this.generation(p) === (snap.generations.get(p) ?? 0)) {
+				this.dirtyPaths.delete(p);
+			}
 		}
 		// Drop a rename pair only if the LIVE entry still equals what the snapshot
 		// captured. A mid-cycle rename that re-created or overwrote the key (a fresh
@@ -107,14 +121,19 @@ export class LocalChangeTracker {
 
 	/**
 	 * Clear a single path after an out-of-band priority pull (see
-	 * `SyncOrchestrator.pullSingle`). Unlike `acknowledge`, this intentionally
+	 * `SyncOrchestrator.syncOpenedFile`). Unlike `acknowledge`, this intentionally
 	 * does NOT touch `folderRenamePairs` (a single-file pull must not wipe pending
 	 * folder renames) nor flip `initialized` (it must not move the tracker out of
 	 * its cold-start state).
 	 */
-	acknowledgePath(path: string): void {
+	acknowledgePath(path: string, expectedGeneration = this.generation(path)): void {
+		if (this.generation(path) !== expectedGeneration) return;
 		this.dirtyPaths.delete(path);
 		this.renamePairs.delete(path);
+	}
+
+	generation(path: string): number {
+		return this.generations.get(path) ?? 0;
 	}
 
 	isInitialized(): boolean {

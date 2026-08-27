@@ -12,6 +12,8 @@ informed: []
 relations:
   - type: originatedFrom
     target: change-20260825-issue43-destructive-authorization
+  - type: references
+    target: adr-20260828-late-bound-component-execution
 source_paths:
   - src/sync/sync-cycle-planning.ts
   - src/sync/plan-admission.ts
@@ -78,3 +80,11 @@ The frontmatter records the normative positive, negative, and neutral consequenc
 implementation must compile planning, Admission, executor, orchestrator, and finalization
 changes together; no persisted-data migration or Issue #46 implementation coupling is
 introduced.
+
+## 2026-08-28 refinement
+
+[Late-bound component execution](adr-20260828-late-bound-component-execution.md) retains
+this ADR's immutable evidence snapshot and sole Admission boundary, while refining its
+executable authority into direction-free component/member obligations. It also supersedes
+the ordinary same-session COLD recovery described above with private uncommitted-delta
+replay. Explicit missing/reset/expired-cursor and scope-change COLD policies remain.

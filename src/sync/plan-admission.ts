@@ -8,57 +8,27 @@ import type {
 	SyncAction,
 	SyncPlan,
 } from "./types";
-
-const authorizedSyncPlanBrand: unique symbol = Symbol("AuthorizedSyncPlan");
-
-export interface CycleAdmissionSnapshot {
-	readonly plan: { readonly actions: readonly SyncAction[] };
-	readonly identityEvidence: readonly IdentityEvidence[];
-	readonly observations: readonly PathObservation[];
-	readonly scope: ScopeProjection;
-	readonly namespace: string;
-}
-
-/** The executor input that only Admission can construct. */
-export interface AuthorizedSyncPlan {
-	readonly actions: readonly SyncAction[];
-	readonly [authorizedSyncPlanBrand]: CycleAdmissionSnapshot;
-}
-
-type AdmissionDeferralReason =
-	| "alias_target_mutation"
-	| "conflicting_identity"
-	| "identity_postcondition_unproven"
-	| "incomplete_folder_mapping"
-	| "opposing_deletes"
-	| "present_unresolved"
-	| "rename_mismatch"
-	| "unknown_observation"
-	| "unknown_scope";
-
-interface AdmissionComponentDisposition {
-	paths: string[];
-	actions: SyncAction[];
-	evidence: IdentityEvidence[];
-}
-
-export interface AuthorizedComponent extends AdmissionComponentDisposition {
-	kind: "authorized";
-}
-
-export interface ResolvedNoActionComponent extends AdmissionComponentDisposition {
-	kind: "resolved_no_action";
-}
-
-export interface DeferredComponent extends AdmissionComponentDisposition {
-	kind: "deferred";
-	reasons: AdmissionDeferralReason[];
-}
-
-export type AdmissionDisposition =
-	| AuthorizedComponent
-	| ResolvedNoActionComponent
-	| DeferredComponent;
+import { authorityId, compareEvidence, createAuthorizedSyncPlan, proposalPaths } from "./plan-authority";
+import type {
+	AdmissionDeferralReason,
+	AdmissionDisposition,
+	AuthorizedExecutionComponent,
+	AuthorizedMemberObligation,
+	AuthorizedSyncPlan,
+	CycleAdmissionSnapshot,
+	DeferredComponent,
+} from "./plan-authority";
+export type {
+	AdmissionDisposition,
+	AuthorizedComponent,
+	AuthorizedExecutionComponent,
+	AuthorizedMemberObligation,
+	AuthorizedSyncPlan,
+	CycleAdmissionSnapshot,
+	DeferredComponent,
+	ResolvedNoActionComponent,
+} from "./plan-authority";
+export { memberObligationFor } from "./plan-authority";
 
 export interface AdmissionResult {
 	snapshot: CycleAdmissionSnapshot;
@@ -96,10 +66,25 @@ export function admitDestructivePlan(
 		snapshot.plan, snapshot.identityEvidence, snapshot.observations, snapshot.scope,
 	);
 	const authorizedActions = new Set<SyncAction>();
+	const memberByProposal = new Map<SyncAction, AuthorizedMemberObligation>();
+	const executableComponents: AuthorizedExecutionComponent[] = [];
 	const dispositions: AdmissionDisposition[] = [];
 	for (const component of components) {
+		const paths = [...component.paths].sort();
+		const componentId = authorityId("component", snapshot.namespace, paths);
+		const admissionEpoch = 1;
+		const members = component.actions.map((action, index): AuthorizedMemberObligation => ({
+			id: authorityId("member", componentId, [String(index), ...proposalPaths(action)]),
+			componentId,
+			admissionEpoch,
+			path: action.path,
+			paths: Object.freeze(proposalPaths(action)),
+		}));
 		const shared = {
-			paths: [...component.paths].sort(),
+			componentId,
+			admissionEpoch,
+			memberObligationIds: members.map(({ id }) => id),
+			paths,
 			actions: [...component.actions],
 			evidence: [...component.evidence].sort(compareEvidence),
 		};
@@ -113,16 +98,22 @@ export function admitDestructivePlan(
 		} else if (component.actions.length === 0) {
 			dispositions.push({ kind: "resolved_no_action", ...shared });
 		} else {
-			for (const action of component.actions) authorizedActions.add(action);
+			for (const [index, action] of component.actions.entries()) {
+				authorizedActions.add(action);
+				memberByProposal.set(action, members[index]!);
+			}
+			executableComponents.push(Object.freeze({
+				id: componentId,
+				admissionEpoch,
+				paths: Object.freeze(paths),
+				memberObligations: Object.freeze(members),
+			}));
 			dispositions.push({ kind: "authorized", ...shared });
 		}
 	}
 	dispositions.sort((left, right) => left.paths.join("\0").localeCompare(right.paths.join("\0")));
 	const actions = snapshot.plan.actions.filter((action) => authorizedActions.has(action));
-	const executable = Object.freeze({
-		actions: Object.freeze(actions),
-		[authorizedSyncPlanBrand]: snapshot,
-	});
+	const executable = createAuthorizedSyncPlan(snapshot, executableComponents, actions, memberByProposal);
 	return {
 		snapshot,
 		executable,
@@ -432,8 +423,4 @@ function isOccupied(component: AdmissionComponent, side: "local" | "remote", pat
 		((observation.kind === "exact" && observation.requestedPath === path) ||
 			(observation.kind === "alias" && observation.resolvedPath === path) ||
 			(observation.kind === "present_unresolved" && observation.returnedPath === path)));
-}
-
-function compareEvidence(left: IdentityEvidence, right: IdentityEvidence): number {
-	return JSON.stringify(left).localeCompare(JSON.stringify(right));
 }

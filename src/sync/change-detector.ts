@@ -4,7 +4,11 @@ import type { IdentityEvidence, MixedEntity, PathObservation, SyncRecord } from 
 import type { SyncStateStore } from "./state";
 import type { TrackerSnapshot } from "./local-tracker";
 import { hasChanged, hasRemoteChanged } from "./change-compare";
-import { enrichHashesForInitialMatch, enrichHashesForRenames } from "./change-hash-enrichment";
+import {
+	enrichHashesForBothChangedEqualContent,
+	enrichHashesForInitialMatch,
+	enrichHashesForRenames,
+} from "./change-hash-enrichment";
 import { collectLocalRenameEvidence, completeIdentityEvidence, renameOptimizerView } from "./identity-evidence";
 import {
 	getRemoteChanges,
@@ -38,10 +42,10 @@ export interface ChangeDetectorDeps {
 
 export interface CollectChangesOptions {
 	/**
-	 * Force a COLD full join regardless of tracker/store state. Used for crash
-	 * recovery: after an interrupted or partial sync the delta-based hot/warm
-	 * path can't rediscover remote files that were reported but never baselined
-	 * (the cursor has moved past them). A full remote list vs records can.
+	 * Force a COLD full join regardless of tracker/store state. Used when there is
+	 * no committed checkpoint, scope changed, manual rescan was requested, or local
+	 * rename debt requires a complete namespace view. Ordinary incomplete cycles
+	 * retain and replay their uncommitted remote delta instead.
 	 */
 	forceFullScan?: boolean;
 	/** Durable local rename evidence replayed before endpoint confirmation/hash enrichment. */
@@ -104,6 +108,7 @@ export async function collectChanges(
 	}
 	// Hash enrichment operates only on exact entries and cannot upgrade observations.
 	await enrichHashesForInitialMatch(changeSet.entries, deps.localFs);
+	await enrichHashesForBothChangedEqualContent(changeSet.entries, deps.localFs, deps.remoteFs);
 	const renameView = renameOptimizerView(changeSet.identityEvidence);
 	await enrichHashesForRenames(
 		changeSet.entries, changeSet.observations, deps.localFs,

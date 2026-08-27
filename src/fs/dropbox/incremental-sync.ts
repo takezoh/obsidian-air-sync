@@ -6,7 +6,7 @@ import { LIST_PAGE_CAP } from "./client";
 import type { DropboxClient } from "./client";
 import type { RenamePair } from "../types";
 import type { Logger } from "../../logging/logger";
-import type { IncrementalChangesResult } from "../caching/remote-fs";
+import type { IncrementalChangesResult } from "../caching/remote-delta";
 import { INTERNAL_METADATA_PATH } from "../remote-vault-contract";
 
 /**

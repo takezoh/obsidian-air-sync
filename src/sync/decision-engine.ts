@@ -25,6 +25,9 @@ function decideAction(entry: MixedEntity): SyncAction | null {
 			const remoteDiff = hasRemoteChanged(remote, prevSync);
 
 			if (localDiff && remoteDiff) {
+				if (local.size === remote.size && sameContent(local, remote)) {
+					return { ...base, action: "match" };
+				}
 				return { ...base, action: "conflict" };
 			}
 			if (localDiff) {

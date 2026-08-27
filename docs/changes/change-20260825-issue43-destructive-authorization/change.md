@@ -55,7 +55,9 @@ promotion: []
 unresolved_decisions: []
 tags: []
 owners: []
-relations: []
+relations:
+- {type: references, target: change-20260827-late-bound-sync-execution}
+- {type: references, target: adr-20260828-late-bound-component-execution}
 source_paths:
 - src/sync/plan-admission.ts
 - src/sync/plan-admission-graph.ts
@@ -80,3 +82,7 @@ input, mechanical commit-last finalization, and strict pre-Admission COLD recove
 Main-session review and the branch-wide minimality audit found no remaining blocking
 issue; one redundant logging carrier was removed. Repository gates, dev-evidence scope
 checks, and live Google Drive, Dropbox, and OneDrive E2E all pass.
+
+The follow-on late-bound execution change preserves this package's immutable Admission
+snapshot and fail-closed component boundary, while replacing directional action identity
+as completion authority and ordinary same-session forced-COLD recovery.
