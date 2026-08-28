@@ -14,6 +14,9 @@ export interface ConflictResolverContext {
 	baseline?: SyncRecord;
 	stateStore?: SyncStateStore;
 	logger?: Logger;
+	boundRemoteContent?: ArrayBuffer;
+	boundLocalContent?: ArrayBuffer;
+	validateBeforeEffect?: () => Promise<boolean>;
 }
 
 export type { ConflictResolutionResult };
@@ -46,7 +49,10 @@ export async function resolveConflict(
 					remote: ctx.remote,
 					prevSync: ctx.baseline,
 					stateStore: ctx.stateStore,
-					logger: ctx.logger,
+						logger: ctx.logger,
+						boundRemoteContent: ctx.boundRemoteContent,
+						boundLocalContent: ctx.boundLocalContent,
+						validateBeforeEffect: ctx.validateBeforeEffect,
 				},
 				"duplicate",
 			);
@@ -56,7 +62,10 @@ export async function resolveConflict(
 async function resolveAutoMerge(
 	ctx: ConflictResolverContext,
 ): Promise<ConflictResolutionResult> {
-	const { path, localFs, remoteFs, local, remote, baseline, stateStore, logger } = ctx;
+	const {
+		path, localFs, remoteFs, local, remote, baseline, stateStore, logger,
+		boundRemoteContent, boundLocalContent, validateBeforeEffect,
+	} = ctx;
 
 	const conflictCtx = {
 		path,
@@ -67,6 +76,9 @@ async function resolveAutoMerge(
 		prevSync: baseline,
 		stateStore,
 		logger,
+		boundRemoteContent,
+		boundLocalContent,
+		validateBeforeEffect,
 	};
 
 	// attemptThreeWayMerge already handles every missing-prerequisite case — a deleted

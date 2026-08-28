@@ -17,6 +17,8 @@ export interface ConflictResolutionResult {
 	duplicatePath?: string;
 	/** True if the merged result contains unresolved conflict markers */
 	hasConflictMarkers?: boolean;
+	/** Original-path state produced by the resolver, used for the commit-boundary guard. */
+	expectedLocalEntity?: FileEntity | null;
 }
 
 export interface ConflictContext {
@@ -28,6 +30,24 @@ export interface ConflictContext {
 	prevSync?: SyncRecord;
 	stateStore?: SyncStateStore;
 	logger?: Logger;
+	/** Content read through the identity/token-bound observation used for late admission. */
+	boundRemoteContent?: ArrayBuffer;
+	boundLocalContent?: ArrayBuffer;
+	/** Revalidate admission after asynchronous preparation and before the first write. */
+	validateBeforeEffect?: () => Promise<boolean>;
+}
+
+export class ConflictAdmissionInvalidatedError extends Error {
+	constructor() {
+		super("Conflict admission was invalidated before mutation");
+		this.name = "ConflictAdmissionInvalidatedError";
+	}
+}
+
+async function assertCurrentBeforeEffect(
+	validate: (() => Promise<boolean>) | undefined,
+): Promise<void> {
+	if (validate && !(await validate())) throw new ConflictAdmissionInvalidatedError();
 }
 
 export async function resolveWithStrategy(
@@ -35,14 +55,19 @@ export async function resolveWithStrategy(
 	strategy: ResolverStrategy,
 	fallback?: ResolverStrategy,
 ): Promise<ConflictResolutionResult> {
-	const { path, localFs, remoteFs, local, remote } = ctx;
+	const {
+		path, localFs, remoteFs, local, remote, boundRemoteContent, boundLocalContent,
+		validateBeforeEffect,
+	} = ctx;
 
 	switch (strategy) {
 		case "keep_newer":
-			return keepNewer(path, localFs, remoteFs, local, remote);
+			return keepNewer(path, localFs, remoteFs, local, remote,
+				boundRemoteContent, boundLocalContent, validateBeforeEffect);
 
 		case "duplicate":
-			return duplicate(path, localFs, remoteFs, local, remote);
+			return duplicate(path, localFs, remoteFs, local, remote,
+				boundRemoteContent, boundLocalContent, validateBeforeEffect);
 
 		case "auto_merge":
 			return attemptThreeWayMerge(ctx, fallback ?? "keep_newer");
@@ -53,30 +78,40 @@ async function keepLocal(
 	path: string,
 	localFs: IFileSystem,
 	remoteFs: IFileSystem,
-	local?: FileEntity
+	local?: FileEntity,
+	boundLocalContent?: ArrayBuffer,
+	validateBeforeEffect?: () => Promise<boolean>,
 ): Promise<ConflictResolutionResult> {
 	if (local) {
-		const content = await localFs.read(path);
+		const content = boundLocalContent ?? await localFs.read(path);
+		await assertCurrentBeforeEffect(validateBeforeEffect);
 		await remoteFs.write(path, content, local.mtime);
+		return { action: "kept_local", expectedLocalEntity: local };
 	} else {
+		await assertCurrentBeforeEffect(validateBeforeEffect);
 		await remoteFs.delete(path);
+		return { action: "kept_local", expectedLocalEntity: null };
 	}
-	return { action: "kept_local" };
 }
 
 async function keepRemote(
 	path: string,
 	localFs: IFileSystem,
 	remoteFs: IFileSystem,
-	remote?: FileEntity
+	remote?: FileEntity,
+	boundRemoteContent?: ArrayBuffer,
+	validateBeforeEffect?: () => Promise<boolean>,
 ): Promise<ConflictResolutionResult> {
 	if (remote) {
-		const content = await remoteFs.read(path);
-		await localFs.write(path, content, remote.mtime);
+		const content = boundRemoteContent ?? await remoteFs.read(path);
+		await assertCurrentBeforeEffect(validateBeforeEffect);
+		const expectedLocalEntity = await localFs.write(path, content, remote.mtime);
+		return { action: "kept_remote", expectedLocalEntity };
 	} else {
+		await assertCurrentBeforeEffect(validateBeforeEffect);
 		await localFs.delete(path);
+		return { action: "kept_remote", expectedLocalEntity: null };
 	}
-	return { action: "kept_remote" };
 }
 
 async function keepNewer(
@@ -85,34 +120,38 @@ async function keepNewer(
 	remoteFs: IFileSystem,
 	local?: FileEntity,
 	remote?: FileEntity,
+	boundRemoteContent?: ArrayBuffer,
+	boundLocalContent?: ArrayBuffer,
+	validateBeforeEffect?: () => Promise<boolean>,
 ): Promise<ConflictResolutionResult> {
 	// If one side is deleted, the other side wins
 	if (!local && remote) {
-		return keepRemote(path, localFs, remoteFs, remote);
+		return keepRemote(path, localFs, remoteFs, remote, boundRemoteContent, validateBeforeEffect);
 	}
 	if (local && !remote) {
-		return keepLocal(path, localFs, remoteFs, local);
+		return keepLocal(path, localFs, remoteFs, local, boundLocalContent, validateBeforeEffect);
 	}
 	if (!local && !remote) {
-		return { action: "kept_local" };
+		return { action: "kept_local", expectedLocalEntity: null };
 	}
 
 	// Both exist — compare mtime only when both are known (> 0)
 	if (local!.mtime > 0 && remote!.mtime > 0) {
 		if (local!.mtime > remote!.mtime) {
-			return keepLocal(path, localFs, remoteFs, local);
+			return keepLocal(path, localFs, remoteFs, local, boundLocalContent, validateBeforeEffect);
 		}
 		if (local!.mtime < remote!.mtime) {
-			return keepRemote(path, localFs, remoteFs, remote);
+			return keepRemote(path, localFs, remoteFs, remote, boundRemoteContent, validateBeforeEffect);
 		}
 	}
 	// Same mtime or unknown mtime: compare by content hash — if identical, keep local; otherwise tieBreak.
 	// Remote FileEntity.hash is "" for backends that don't compute it on list/stat (e.g. Google Drive);
 	// fall back to remoteChecksum in that case.
 	if (sameContent(local!, remote!)) {
-		return keepLocal(path, localFs, remoteFs, local); // content identical
+		return keepLocal(path, localFs, remoteFs, local, boundLocalContent, validateBeforeEffect); // content identical
 	}
-	return duplicate(path, localFs, remoteFs, local, remote);
+	return duplicate(path, localFs, remoteFs, local, remote,
+		boundRemoteContent, boundLocalContent, validateBeforeEffect);
 }
 
 async function duplicate(
@@ -120,37 +159,43 @@ async function duplicate(
 	localFs: IFileSystem,
 	remoteFs: IFileSystem,
 	local?: FileEntity,
-	remote?: FileEntity
+	remote?: FileEntity,
+	boundRemoteContent?: ArrayBuffer,
+	boundLocalContent?: ArrayBuffer,
+	validateBeforeEffect?: () => Promise<boolean>,
 ): Promise<ConflictResolutionResult> {
 	// Delete-vs-modify: local deleted, remote has content → restore remote version locally
 	if (!local && remote) {
-		const remoteContent = await remoteFs.read(path);
-		await localFs.write(path, remoteContent, remote.mtime);
-		return { action: "duplicated" };
+		const remoteContent = boundRemoteContent ?? await remoteFs.read(path);
+		await assertCurrentBeforeEffect(validateBeforeEffect);
+		const expectedLocalEntity = await localFs.write(path, remoteContent, remote.mtime);
+		return { action: "duplicated", expectedLocalEntity };
 	}
 
 	// Delete-vs-modify: remote deleted, local has content → restore local version remotely
 	if (local && !remote) {
-		const localContent = await localFs.read(path);
+		const localContent = boundLocalContent ?? await localFs.read(path);
+		await assertCurrentBeforeEffect(validateBeforeEffect);
 		await remoteFs.write(path, localContent, local.mtime);
-		return { action: "duplicated" };
+		return { action: "duplicated", expectedLocalEntity: local };
 	}
 
 	// Both deleted — nothing to do
 	if (!local && !remote) {
-		return { action: "kept_local" };
+		return { action: "kept_local", expectedLocalEntity: null };
 	}
 
 	// Both exist: save remote as .conflict duplicate on both sides, keep local at original path
-	const remoteContent = await remoteFs.read(path);
+	const remoteContent = boundRemoteContent ?? await remoteFs.read(path);
 	const duplicatePath = await generateConflictPath(path, localFs, remoteFs);
+	await assertCurrentBeforeEffect(validateBeforeEffect);
 	await localFs.write(duplicatePath, remoteContent, remote!.mtime);
 	await remoteFs.write(duplicatePath, remoteContent, remote!.mtime);
 
-	const localContent = await localFs.read(path);
+	const localContent = boundLocalContent ?? await localFs.read(path);
 	await remoteFs.write(path, localContent, local!.mtime);
 
-	return { action: "duplicated", duplicatePath };
+	return { action: "duplicated", duplicatePath, expectedLocalEntity: local };
 }
 
 /** Generate a conflict file path with sequential numbering to avoid overwrites.
@@ -194,7 +239,10 @@ async function attemptThreeWayMerge(
 	ctx: ConflictContext,
 	fallback: ResolverStrategy = "keep_newer",
 ): Promise<ConflictResolutionResult> {
-	const { path, localFs, remoteFs, local, remote, prevSync, stateStore, logger } = ctx;
+	const {
+		path, localFs, remoteFs, local, remote, prevSync, stateStore, logger,
+		boundRemoteContent, boundLocalContent, validateBeforeEffect,
+	} = ctx;
 	const tag = "auto_merge";
 
 	logger?.debug(`${tag}: attempting 3-way merge`, { path });
@@ -236,9 +284,9 @@ async function attemptThreeWayMerge(
 	const encoder = new TextEncoder();
 
 	const baseText = decoder.decode(prevSyncContent);
-	const localContent = await localFs.read(path);
+	const localContent = boundLocalContent ?? await localFs.read(path);
 	const localText = decoder.decode(localContent);
-	const remoteContent = await remoteFs.read(path);
+	const remoteContent = boundRemoteContent ?? await remoteFs.read(path);
 	const remoteText = decoder.decode(remoteContent);
 
 	let mergeResult;
@@ -274,7 +322,8 @@ async function attemptThreeWayMerge(
 				reason: mergeResult.hasConflicts ? "merge produced conflict markers" : "merged content is not valid JSON",
 				outcome: "duplicate",
 			});
-			return duplicate(path, localFs, remoteFs, local, remote);
+			return duplicate(path, localFs, remoteFs, local, remote,
+				boundRemoteContent, boundLocalContent, validateBeforeEffect);
 		}
 	}
 
@@ -282,7 +331,8 @@ async function attemptThreeWayMerge(
 
 	// Write merged content to both sides (with rollback if remote fails)
 	const now = Date.now();
-	await localFs.write(path, mergedBuffer, now);
+	await assertCurrentBeforeEffect(validateBeforeEffect);
+	const expectedLocalEntity = await localFs.write(path, mergedBuffer, now);
 	try {
 		await remoteFs.write(path, mergedBuffer, now);
 	} catch (remoteWriteErr) {
@@ -298,6 +348,7 @@ async function attemptThreeWayMerge(
 	return {
 		action: "merged",
 		hasConflictMarkers: mergeResult.hasConflicts,
+		expectedLocalEntity,
 	};
 }
 

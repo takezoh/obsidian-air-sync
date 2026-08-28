@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { OneDriveFs } from "./index";
 import type { OneDriveClient } from "./client";
-import type { OneDriveItem } from "./types";
+import { GraphApiError, type OneDriveItem } from "./types";
 
 function item(overrides: Partial<OneDriveItem> = {}): OneDriveItem {
 	return {
@@ -49,5 +49,15 @@ describe("OneDriveFs detached priority observation", () => {
 
 		expect(await fs.priority.observe({ path: "note.md", identityKey: "file-1" }))
 			.toMatchObject({ kind: "structural", occupant: { kind: "current", identityKey: "file-2" } });
+	});
+
+	it("reports authoritative absence when both identity and path are gone", async () => {
+		const missing = () => Promise.reject(new GraphApiError("gone", 404, "itemNotFound"));
+		const fs = new OneDriveFs({
+			getItem: vi.fn(missing), getChildByName: vi.fn(missing),
+		} as unknown as OneDriveClient, "root");
+
+		expect(await fs.priority.observe({ path: "note.md", identityKey: "file-1" }))
+			.toEqual({ kind: "missing", occupant: { kind: "absent" } });
 	});
 });

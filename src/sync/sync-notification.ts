@@ -42,7 +42,7 @@ export function buildNotificationMessage(result: ExecutionResult): string {
  */
 export class CycleSummary {
 	private readonly merged: ExecutionResult = {
-		succeeded: [], failed: [], blocked: [], conflicts: [], deferred: [],
+		succeeded: [], failed: [], blocked: [], conflicts: [], deferred: [], componentReceipts: [],
 	};
 
 	add(cycle: ExecutionResult): void {
@@ -54,6 +54,7 @@ export class CycleSummary {
 		for (const b of cycle.blocked) this.merged.blocked.push(b);
 		for (const c of cycle.conflicts) this.merged.conflicts.push(c);
 		for (const d of cycle.deferred) this.merged.deferred.push(d);
+		for (const r of cycle.componentReceipts) this.merged.componentReceipts.push(r);
 	}
 
 	get message(): string {

@@ -287,7 +287,7 @@ export default defineConfig(
 		// its component policy from disposition issuance would add an internal policy
 		// boundary and make the safety decision span modules solely to satisfy a count.
 		files: ["src/sync/plan-admission.ts"],
-		rules: { "max-lines": ["error", { max: 398, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 418, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Re-pinned for the detached observation/read capability. It deliberately lives
@@ -306,10 +306,10 @@ export default defineConfig(
 	},
 	{
 		// Action admission, mutation lease, I/O, and per-action commit are one indivisible
-		// executor boundary. The extra safe-point wrapper must remain common to normal
-		// and conflict actions so neither route can bypass priority admission.
+		// executor boundary. Effect/commit guards remain in this boundary so neither
+		// normal nor conflict actions can bypass current-state admission.
 		files: ["src/sync/plan-executor.ts"],
-		rules: { "max-lines": ["error", { max: 320, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 356, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Re-pinned from 303 for the top-level Google Picker callback. The

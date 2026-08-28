@@ -123,8 +123,8 @@ call. Provider cursor rejection/expiry alone uses the existing typed COLD policy
 
 Planning content is complete and its governing architecture decision was accepted in
 consultation `consultation-late-bound-sync-execution-20260828`. Implementation and the
-repository gate are complete; change-package closure remains separate because the shared
-dirty worktree contains pre-existing changes outside this package's declared scope. The design fixes
+repository gate are complete; change-package closure remains separate from implementation
+while the feature branch is under review. The design fixes
 late-bound execution, no stale-driven COLD recovery, existing schema-neutral content CAS,
 and observable replay/isolation outcomes while delegating private reversible mechanisms.
 The accepted ADR narrowly supersedes ADR 0001 Decision 2's mandatory same-session

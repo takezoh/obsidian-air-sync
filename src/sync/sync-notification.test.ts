@@ -5,6 +5,7 @@ import type { ExecutionResult } from "./execution-result";
 function result(deferred = 0): ExecutionResult {
 	return {
 		succeeded: [], failed: [], blocked: [], conflicts: [],
+		componentReceipts: [],
 		deferred: Array.from({ length: deferred }, (_, index) => ({
 			kind: "deferred", componentId: `component-${index}`, admissionEpoch: 1,
 			memberObligationIds: [], paths: [`path-${index}.md`], actions: [], evidence: [],

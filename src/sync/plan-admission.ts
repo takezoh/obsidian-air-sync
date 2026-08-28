@@ -1,5 +1,6 @@
 import { projectRenameScope, type RenameScopeConsequence } from "./scope-projection";
 import { buildAdmissionComponents, type AdmissionComponent } from "./plan-admission-graph";
+import { componentRemoteIdentities, remoteIdentityAuthority } from "./plan-admission-identities";
 import type {
 	IdentityEvidence,
 	PathObservation,
@@ -45,12 +46,16 @@ export function captureCycleAdmissionSnapshot(
 	namespace: string,
 ): CycleAdmissionSnapshot {
 	const capturedScope = Object.freeze({ byEndpoint: new Map(scope.byEndpoint) });
+	const frozenDeltaWitness = authorityId("delta", namespace, [
+		JSON.stringify(plan.actions), JSON.stringify(identityEvidence), JSON.stringify(observations),
+	]);
 	return Object.freeze({
 		plan: Object.freeze({ actions: Object.freeze([...plan.actions]) }),
 		identityEvidence: Object.freeze([...identityEvidence]),
 		observations: Object.freeze([...observations]),
 		scope: capturedScope,
 		namespace,
+		frozenDeltaWitness,
 	});
 }
 
@@ -61,6 +66,7 @@ export function captureCycleAdmissionSnapshot(
  */
 export function admitDestructivePlan(
 	snapshot: CycleAdmissionSnapshot,
+	previous?: AuthorizedSyncPlan,
 ): AdmissionResult {
 	const components = buildAdmissionComponents(
 		snapshot.plan, snapshot.identityEvidence, snapshot.observations, snapshot.scope,
@@ -71,14 +77,31 @@ export function admitDestructivePlan(
 	const dispositions: AdmissionDisposition[] = [];
 	for (const component of components) {
 		const paths = [...component.paths].sort();
-		const componentId = authorityId("component", snapshot.namespace, paths);
-		const admissionEpoch = 1;
+		const priorCandidates = previous?.components.filter((candidate) =>
+			candidate.paths.every((path) => paths.includes(path))) ?? [];
+		const prior = priorCandidates.length === 1 ? priorCandidates[0] : undefined;
+		const componentId = prior?.id ?? authorityId("component", snapshot.namespace, paths);
+		const proposedMemberIds = component.actions.map((action, index) =>
+			authorityId("member", componentId, [String(index), ...proposalPaths(action)]));
+		const remoteIdentities = componentRemoteIdentities(component);
+		const identityAuthority = remoteIdentityAuthority(remoteIdentities);
+		const priorIdentityAuthority = remoteIdentityAuthority(
+			prior?.memberObligations[0]?.componentRemoteIdentities ?? {});
+		const unchangedAuthority = !!prior && prior.paths.length === paths.length &&
+			prior.paths.every((path, index) => path === paths[index]) &&
+			prior.memberObligations.length === proposedMemberIds.length &&
+			prior.memberObligations.every((member, index) => member.id === proposedMemberIds[index]) &&
+			priorIdentityAuthority === identityAuthority;
+		const admissionEpoch = prior ? prior.admissionEpoch + (unchangedAuthority ? 0 : 1) : 1;
 		const members = component.actions.map((action, index): AuthorizedMemberObligation => ({
-			id: authorityId("member", componentId, [String(index), ...proposalPaths(action)]),
+			id: proposedMemberIds[index]!,
 			componentId,
 			admissionEpoch,
 			path: action.path,
 			paths: Object.freeze(proposalPaths(action)),
+			componentPaths: Object.freeze(paths),
+			componentRemoteIdentities: Object.freeze(remoteIdentities),
+			frozenDeltaWitness: snapshot.frozenDeltaWitness,
 		}));
 		const shared = {
 			componentId,

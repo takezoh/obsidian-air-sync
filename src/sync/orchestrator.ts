@@ -1,6 +1,5 @@
 import type { AirSyncSettings } from "../settings";
 import type { IFileSystem } from "../fs/interface";
-import type { FileEntity } from "../fs/types";
 import type { IBackendProvider } from "../fs/backend";
 import type { Logger } from "../logging/logger";
 import { AsyncMutex } from "../queue/async-queue";
@@ -13,11 +12,11 @@ import { LocalChangeTracker, type TrackerSnapshot } from "./local-tracker";
 import { collectChanges, type ChangeSet } from "./change-detector";
 import { computeScopeFingerprint } from "./scope-fingerprint";
 import { executePlan, toConflictRecords, DESKTOP_TRANSFER_POOL, MOBILE_TRANSFER_POOL } from "./plan-executor";
-import type { ExecutionContext, ExecutionResult } from "./plan-executor";
+import type { ExecutionContext, ExecutionResult, ExecutionResume } from "./plan-executor";
 import { classifyHttpError } from "../fs/errors";
 import type { ErrorClassification } from "../fs/errors";
 import { decideRetry, sleep } from "./error";
-import type { ConflictRecord, IdentityEvidence, SyncAction, SyncRecord, SyncStatus } from "./types";
+import type { ConflictRecord, IdentityEvidence, SyncStatus } from "./types";
 import { buildSyncRecord } from "./state-committer";
 import { CycleSummary } from "./sync-notification";
 import type { SyncCycleResult } from "./sync-notification";
@@ -33,7 +32,7 @@ import { admitDestructivePlan } from "./plan-admission";
 import { PriorityCoordinator } from "./priority-coordinator";
 import { LocalMutationBarrier } from "./local-mutation-barrier";
 import { hasChanged, hasRemoteChanged } from "./change-compare";
-import { planSync } from "./decision-engine";
+import { admitCurrentAction, validateNoActionFreshness } from "./current-action-admission";
 
 export type { SyncStatus };
 
@@ -78,18 +77,6 @@ export interface SyncOrchestratorDeps {
 }
 
 const MAX_RETRIES = 3;
-
-function recordFingerprint(record: SyncRecord | undefined): string {
-	return JSON.stringify(record);
-}
-
-function entityStampMatches(current: FileEntity | null, expected: FileEntity | undefined): boolean {
-	if (!current || !expected) return current === null && expected === undefined;
-	if (current.identityKey && expected.identityKey && current.identityKey !== expected.identityKey) return false;
-	if (current.hash && expected.hash) return current.hash === expected.hash && current.size === expected.size;
-	return current.mtime === expected.mtime && current.size === expected.size &&
-		current.isDirectory === expected.isDirectory;
-}
 
 class PreAdmissionRecoveryError extends Error {
 	constructor(cause: unknown) {
@@ -282,7 +269,6 @@ export class SyncOrchestrator {
 				}
 
 				summary.add(result.result);
-
 				// Record this cycle's resolved conflicts to the audit history — once per
 				// cycle, and only when there were any. Writing stays separate from
 				// resolution: the resolver produced the outcomes, this just persists them.
@@ -482,80 +468,6 @@ export class SyncOrchestrator {
 		void this.runSync();
 	}
 
-	private async admitNormalAction(action: SyncAction): Promise<
-		| { kind: "run"; action: SyncAction }
-		| { kind: "no_action" }
-		| { kind: "nonterminal"; reason: string }
-	> {
-		const remoteFs = this.deps.remoteFs();
-		const localFs = this.deps.localFs();
-		if (!remoteFs || !localFs) {
-			return { kind: "nonterminal", reason: "current_observation_unavailable" };
-		}
-		if (action.action === "rename_remote" || action.action === "rename_local") {
-			// Capability-less filesystem doubles cannot participate in file-open priority,
-			// so no priority work can invalidate the freshly admitted structural proposal.
-			if (!remoteFs.priority) return { kind: "run", action };
-			const baselinePath = action.baseline?.path ?? action.oldPath;
-			const expectedIdentity = action.remote?.identityKey ?? action.baseline?.remoteIdentityKey;
-			const [baselineNow, localSource, localDestination, remoteSource, remoteDestination] =
-				await Promise.all([
-					this.stateStore.get(baselinePath),
-					localFs.stat(action.oldPath),
-					localFs.stat(action.path),
-					remoteFs.priority.observe({
-						path: action.action === "rename_remote" ? action.oldPath : action.path,
-						identityKey: expectedIdentity,
-					}),
-					action.action === "rename_remote"
-						? remoteFs.priority.observe({ path: action.path })
-						: Promise.resolve(null),
-				]);
-			if (recordFingerprint(baselineNow) !== recordFingerprint(action.baseline) ||
-				remoteSource.kind !== "current" || remoteSource.identityKey !== expectedIdentity) {
-				return { kind: "nonterminal", reason: "structural_reobservation_required" };
-			}
-			if (action.action === "rename_remote") {
-				const destinationAbsent = remoteDestination?.kind === "missing" &&
-					remoteDestination.occupant.kind === "absent";
-				if (!destinationAbsent || !entityStampMatches(localDestination, action.local)) {
-					return { kind: "nonterminal", reason: "structural_reobservation_required" };
-				}
-				return { kind: "run", action };
-			}
-			const destinationIsSourceAlias = !!localDestination && !!localSource &&
-				localDestination.path.toLocaleLowerCase() === localSource.path.toLocaleLowerCase() &&
-				entityStampMatches(localDestination, localSource);
-			if (!entityStampMatches(localSource, action.local) ||
-				(localDestination !== null && !destinationIsSourceAlias)) {
-				return { kind: "nonterminal", reason: "structural_reobservation_required" };
-			}
-			return { kind: "run", action };
-		}
-		const [currentRecord, currentLocal] = await Promise.all([
-			this.stateStore.get(action.path),
-			localFs.stat(action.path),
-		]);
-		const observed = remoteFs.priority ? await remoteFs.priority.observe({
-			path: action.path,
-			identityKey: currentRecord?.remoteIdentityKey ?? action.remote?.identityKey,
-		}) : null;
-		if (observed?.kind === "unverifiable" || observed?.kind === "structural") {
-			return { kind: "nonterminal", reason: `current_observation_${observed.kind}` };
-		}
-		const currentRemote = observed
-			? (observed.kind === "current" ? observed.entity : undefined)
-			: await remoteFs.stat(action.path) ?? undefined;
-
-		const replanned = planSync([{
-			path: action.path,
-			local: currentLocal ?? undefined,
-			remote: currentRemote,
-			prevSync: currentRecord,
-		}]).actions[0];
-		return replanned ? { kind: "run", action: replanned } : { kind: "no_action" };
-	}
-
 	getStatus(): SyncStatus {
 		return this.syncMutex.isLocked ? "syncing" : "idle";
 	}
@@ -636,6 +548,9 @@ export class SyncOrchestrator {
 		const total = admission.executable.actions.length;
 
 		const classifyError = (err: unknown) => provider?.classifyError?.(err) ?? classifyHttpError(err);
+		const currentAdmissionContext = {
+			localFs, remoteFs, stateStore: this.stateStore, localTracker: this.deps.localTracker,
+		};
 		const ctx: ExecutionContext = {
 			localFs,
 			remoteFs,
@@ -655,24 +570,54 @@ export class SyncOrchestrator {
 			transferPool: this.deps.isMobile() ? MOBILE_TRANSFER_POOL : DESKTOP_TRANSFER_POOL,
 			acquireActionPermit: () => this.priorityCoordinator.acquireNormalPermit(),
 			mutationBarrier: this.localMutationBarrier,
-			admitAction: (action) => this.admitNormalAction(action),
+			yieldNonterminal: () => sleep(1000),
+			admitAction: (action, member) => admitCurrentAction(currentAdmissionContext, action, member),
 		};
 
-		const execution = await executePlan(admission.executable, ctx);
-		const result: ExecutionResult = { ...execution, deferred: admission.deferred };
-		this.updateFailedActionTracker(settings.backendType, result, classifyError);
+		let result: ExecutionResult;
+		let resume: ExecutionResume | undefined;
+		for (;;) {
+			const execution = await executePlan(admission.executable, ctx, resume);
+			result = { ...execution, deferred: admission.deferred };
+			const invalidatedMembers = new Set<string>();
 
-		// Persist backend state. commitCheckpoint advances the delta cursor (+ file map,
-		// atomically) only on a fully clean cycle; a partial sync keeps the prior cursor.
-		this.pendingAdmissionEvidence = await this.priorityCoordinator.finalize(async () => {
-			const pending = await finalizeSyncCycle({
+			// commitCheckpoint advances the delta cursor (+ file map, atomically) only on
+			// a fully clean cycle. A priority action that lands before this safe point can
+			// invalidate a no-action receipt; resume the same admitted plan in that case.
+			this.pendingAdmissionEvidence = await this.priorityCoordinator.finalize(() => finalizeSyncCycle({
 				admission,
 				result, pendingEvidence: this.pendingAdmissionEvidence, persistedDebts,
 				localRenameDebts: planning.localRenameDebts,
 				checkpoint: remoteFs.checkpoint, scopeFingerprint, stateStore: this.stateStore,
-			});
+				validateNoActionFreshness: async (witness) => {
+					const member = admission.executable.components.flatMap((component) =>
+						component.memberObligations).find((candidate) =>
+						candidate.id === witness.memberObligationId &&
+						candidate.componentId === witness.componentId);
+					const valid = !!member && await validateNoActionFreshness(
+						currentAdmissionContext, member.path, witness,
+					);
+					if (!valid) invalidatedMembers.add(witness.memberObligationId);
+					return valid;
+				},
+			}));
+			if (invalidatedMembers.size === 0) break;
+			resume = {
+				result: {
+					...result,
+					succeeded: result.succeeded.filter(({ memberObligationId }) =>
+						!invalidatedMembers.has(memberObligationId)),
+					componentReceipts: [],
+				},
+				memberObligationIds: invalidatedMembers,
+			};
+			this.deps.logger?.warn("no-action freshness invalidated; resuming admitted cycle");
+		}
+		this.updateFailedActionTracker(settings.backendType, result, classifyError);
+
+		await this.priorityCoordinator.finalize(async () => {
 			// readBackendState persists only non-secret token state; finalization shares
-			// the priority safe point with checkpoint commit.
+			// the priority safe point with the completed checkpoint decision.
 			if (provider?.readBackendState) {
 				settings.backendData = {
 					...settings.backendData,
@@ -680,7 +625,6 @@ export class SyncOrchestrator {
 				};
 			}
 			await this.deps.saveSettings();
-			return pending;
 		});
 
 		return result;

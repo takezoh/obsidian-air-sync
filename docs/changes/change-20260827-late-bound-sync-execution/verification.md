@@ -94,11 +94,14 @@ weakened.
 - RED witness: disabling the private same-session replay branch made
   `src/fs/caching/remote-fs.contract.test.ts` lose both the target and sibling delta;
   restoring the branch returned the contract to green without a provider call or list.
-- Direction-free Admission and exact component/member/epoch finalization tests pass,
-  including duplicate and unknown completion rejection.
-- Late routing tests prove push↔pull may execute within the transfer barrier, while
-  transfer→conflict, conflict→transfer, and structural→transfer stay nonterminal and
-  perform no I/O in the wrong scheduler state.
+- Direction-free Admission preserves a stable component ID while authoritative expansion
+  replaces the in-memory epoch. Exact component receipts reject duplicates, obsolete epochs,
+  incomplete member sets, and incomplete no-action freshness witnesses.
+- Late routing tests prove push↔pull may execute within the transfer barrier and cross-phase
+  transfer→conflict, conflict→transfer, and structural→transfer work re-enters a bounded
+  same-cycle quantum without performing I/O in the wrong scheduler state. Repeated
+  incomparable evidence consumes exactly three attempts, emits diagnostics, and remains
+  nonterminal/checkpoint-blocking.
 - The file-open integration witness proves strict priority over an unstarted sixth batch
   member and proves that member late-plans after the fast pass rather than reading the
   remote through its frozen pull.
@@ -107,8 +110,35 @@ weakened.
   schema or `DB_VERSION` changed.
 - Google Drive complete same-name pagination and Google Drive/Dropbox/OneDrive paired
   identity/path replacement-conflict tests pass.
+- Normal pull/conflict content is read through the identity/token-bound observation rather
+  than a later unbound path read. No-action completion carries Local generation, whole-record,
+  paired occupant, frozen-delta, component/member, and latest-epoch witnesses revalidated
+  under the complete component path lease.
+- Multi-member partial success followed by failure emits no component receipt; the retained
+  effect remains recoverable through the uncommitted incremental delta.
+- A local edit arriving while a bound push write is in flight invalidates the pre-commit
+  generation/record/entity guard; the same admitted member replans and uploads the newer
+  bytes without committing the stale baseline. An edit arriving during an identity-bound
+  pull read is likewise preserved and merged from current state.
+- A push revalidates the exact Remote observation after binding Local content and before
+  every I/O attempt, including retries after backoff. A concurrent same-identity revision
+  therefore reroutes to conflict in the same cycle and preserves the newer Remote bytes
+  instead of overwriting them.
+- Conflict execution rechecks generation, the whole SyncRecord, and the original Local
+  entity plus the bound Remote identity/token/occupant after asynchronous merge preparation
+  and before its first mutation. Before baseline commit it also verifies the resolver-produced
+  Local entity and current record; Local edits, Remote revision changes, or recreation of
+  an authoritatively absent Remote path in these windows keep the member nonterminal and
+  replan it in the same cycle.
+- Final no-action occupant, Local generation/entity, or whole-record invalidation resumes
+  only the affected member under the same Admission while retaining terminal siblings;
+  an exact absent-record witness may commit cleanly. Structural extra endpoints reject a
+  replacement whose current identity differs from the frozen component identity.
+- Dropbox, Google Drive, and OneDrive each distinguish authoritative path absence from
+  replacement; Dropbox and Google Drive now also prove token change across an identity-bound
+  read returns `target_changed`.
 - Required gate passed exactly: `npm run lint`, `npm run lint:bot-repro`, `npm run build`,
-  and `npm test` (100 files, 1,637 tests).
+  and `npm test` (101 files, 1,674 tests).
 
 ## Closure criteria
 

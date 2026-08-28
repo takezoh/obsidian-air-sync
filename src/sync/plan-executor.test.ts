@@ -8,6 +8,8 @@ import { AdaptivePool } from "../queue/async-queue";
 import {
 	admitDestructivePlan,
 	captureCycleAdmissionSnapshot,
+	memberObligationFor,
+	type AuthorizedMemberObligation,
 	type AuthorizedSyncPlan,
 } from "./plan-admission";
 
@@ -57,7 +59,16 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("executePlan", () => {
 	it("treats a current-state no-action admission as a successful no-op", async () => {
-		const ctx = makeCtx({ admitAction: vi.fn().mockResolvedValue({ kind: "no_action" }) });
+		const ctx = makeCtx({ admitAction: vi.fn().mockImplementation((_action: SyncAction, member: AuthorizedMemberObligation) => Promise.resolve({
+			kind: "no_action" as const,
+			freshness: {
+				localGeneration: 1, localFingerprint: "entity:a", recordFingerprint: "record", identityKey: "id",
+				pathOccupant: { kind: "current" as const, identityKey: "id", token: "token" },
+				frozenDeltaWitness: member.frozenDeltaWitness,
+				componentId: member.componentId, memberObligationId: member.id,
+				admissionEpoch: member.admissionEpoch,
+			},
+		})) });
 		const localFs = ctx.localFs as MockFileSystem;
 		const remoteFs = ctx.remoteFs as MockFileSystem;
 		addFile(localFs, "a.md", "content");
@@ -69,13 +80,26 @@ describe("executePlan", () => {
 		}]), ctx);
 
 		expect(result.succeeded).toHaveLength(1);
+		expect(result.componentReceipts).toHaveLength(1);
+		expect(result.componentReceipts[0]?.completions[0]?.freshness?.pathOccupant)
+			.toEqual({ kind: "current", identityKey: "id", token: "token" });
 		expect(write).not.toHaveBeenCalled();
 	});
 
-	it("keeps the component nonterminal when current evidence is incomparable", async () => {
-		const ctx = makeCtx({ admitAction: vi.fn().mockResolvedValue({
-			kind: "nonterminal", reason: "current_observation_unverifiable",
-		}) });
+	it("yields bounded quanta and resumes the same authorized member after evidence stabilizes", async () => {
+		const members: AuthorizedMemberObligation[] = [];
+		let attempts = 0;
+		const yieldNonterminal = vi.fn().mockResolvedValue(undefined);
+		const ctx = makeCtx({
+			yieldNonterminal,
+			admitAction: vi.fn((action: SyncAction, member: AuthorizedMemberObligation) => {
+				members.push(member);
+				attempts++;
+				return Promise.resolve(attempts <= 3
+					? { kind: "nonterminal" as const, reason: "current_observation_unverifiable" }
+					: { kind: "run" as const, action });
+			}),
+		});
 		const localFs = ctx.localFs as MockFileSystem;
 		addFile(localFs, "a.md", "content");
 
@@ -84,12 +108,15 @@ describe("executePlan", () => {
 			local: { path: "a.md", isDirectory: false, size: 7, mtime: 1000, hash: "" },
 		}]), ctx);
 
-		expect(result.blocked).toEqual([
-			expect.objectContaining({ reason: "current_observation_unverifiable" }),
-		]);
+		expect(ctx.admitAction).toHaveBeenCalledTimes(4);
+		expect(yieldNonterminal).toHaveBeenCalledOnce();
+		expect(new Set(members.map(({ id }) => id)).size).toBe(1);
+		expect(new Set(members.map(({ admissionEpoch }) => admissionEpoch))).toEqual(new Set([1]));
+		expect(result.blocked).toEqual([]);
+		expect(result.componentReceipts).toHaveLength(1);
 	});
 
-	it("keeps the component nonterminal when late planning crosses a phase boundary", async () => {
+	it("reroutes a late transfer-to-conflict decision in the same cycle", async () => {
 		const currentConflict: SyncAction = {
 			path: "a.md",
 			action: "conflict",
@@ -102,18 +129,17 @@ describe("executePlan", () => {
 		const localFs = ctx.localFs as MockFileSystem;
 		const remoteFs = ctx.remoteFs as MockFileSystem;
 		addFile(localFs, "a.md", "local");
-		const write = vi.spyOn(remoteFs, "write");
+		addFile(remoteFs, "a.md", "remote");
+		const write = vi.spyOn(localFs, "write");
 
 		const result = await executePlan(makePlan([{
 			path: "a.md", action: "push",
 			local: { path: "a.md", isDirectory: false, size: 5, mtime: 1000, hash: "" },
 		}]), ctx);
 
-		expect(result.blocked).toEqual([
-			expect.objectContaining({ reason: "current_action_requires_reroute" }),
-		]);
-		expect(result.succeeded).toHaveLength(0);
-		expect(write).not.toHaveBeenCalled();
+		expect(result.blocked).toHaveLength(0);
+		expect(result.succeeded).toHaveLength(1);
+		expect(write).toHaveBeenCalled();
 	});
 
 	it("executes a late push-to-pull change within the transfer phase", async () => {
@@ -138,14 +164,18 @@ describe("executePlan", () => {
 		expect(readText(ctx.localFs as MockFileSystem, "a.md")).toBe("remote");
 	});
 
-	it("does not use a later conflict slot as authority for a late transfer", async () => {
+	it("reroutes a late conflict-to-transfer decision through a new quantum", async () => {
 		const currentPull: SyncAction = {
 			path: "a.md", action: "pull",
 			remote: { path: "a.md", isDirectory: false, size: 6, mtime: 3000, hash: "remote" },
 		};
-		const ctx = makeCtx({ admitAction: vi.fn().mockResolvedValue({ kind: "run", action: currentPull }) });
+		const boundRemoteContent = new TextEncoder().encode("bound-remote").buffer;
+		const ctx = makeCtx({ admitAction: vi.fn().mockResolvedValue({
+			kind: "run", action: currentPull, boundRemoteContent,
+		}) });
 		const remoteFs = ctx.remoteFs as MockFileSystem;
 		addFile(remoteFs, "a.md", "remote");
+		const unboundRead = vi.spyOn(remoteFs, "read");
 
 		const result = await executePlan(makePlan([{
 			path: "a.md", action: "conflict",
@@ -153,14 +183,13 @@ describe("executePlan", () => {
 			remote: { path: "a.md", isDirectory: false, size: 6, mtime: 2000, hash: "old" },
 		}]), ctx);
 
-		expect(result.blocked).toEqual([
-			expect.objectContaining({ reason: "current_action_requires_reroute" }),
-		]);
-		expect(result.succeeded).toHaveLength(0);
-		expect((ctx.localFs as MockFileSystem).files.has("a.md")).toBe(false);
+		expect(result.blocked).toHaveLength(0);
+		expect(result.succeeded[0]?.action.action).toBe("pull");
+		expect(readText(ctx.localFs as MockFileSystem, "a.md")).toBe("bound-remote");
+		expect(unboundRead).not.toHaveBeenCalled();
 	});
 
-	it("does not run a late transfer from a structural scheduler state", async () => {
+	it("reroutes a late structural-to-transfer decision through a new quantum", async () => {
 		const currentPull: SyncAction = {
 			path: "a.md", action: "pull",
 			remote: { path: "a.md", isDirectory: false, size: 6, mtime: 3000, hash: "remote" },
@@ -175,10 +204,153 @@ describe("executePlan", () => {
 				localSize: 1, remoteSize: 1, syncedAt: 1 },
 		}]), ctx);
 
-		expect(result.blocked).toEqual([
-			expect.objectContaining({ reason: "current_action_requires_reroute" }),
-		]);
-		expect(result.succeeded).toHaveLength(0);
+		expect(result.blocked).toHaveLength(0);
+		expect(result.succeeded[0]?.action.action).toBe("pull");
+	});
+
+	it("emits no component receipt when a later member fails after an earlier effect", async () => {
+		const ctx = makeCtx();
+		const localFs = ctx.localFs as MockFileSystem;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
+		addFile(localFs, "a.md", "local");
+		const originalWrite = remoteFs.write.bind(remoteFs);
+		let writes = 0;
+		vi.spyOn(remoteFs, "write").mockImplementation((...args) => {
+			writes++;
+			return writes === 1 ? originalWrite(...args) : Promise.reject(new Error("second write failed"));
+		});
+		const actions: SyncAction[] = [
+			{ path: "a.md", action: "push", local: { path: "a.md", isDirectory: false, size: 5, mtime: 1, hash: "" } },
+			{ path: "a.md", action: "push", local: { path: "a.md", isDirectory: false, size: 5, mtime: 2, hash: "" } },
+		];
+
+		const result = await executePlan(makePlan(actions), ctx);
+
+		expect(result.succeeded).toHaveLength(1);
+		expect(result.failed).toHaveLength(1);
+		expect(result.componentReceipts).toEqual([]);
+	});
+
+	it("resumes only an invalidated member while retaining terminal siblings", async () => {
+		const actions: SyncAction[] = [
+			{ path: "B.md", oldPath: "A.md", action: "rename_local" },
+			{ path: "B.md", action: "match",
+				local: { path: "B.md", isDirectory: false, size: 1, mtime: 1, hash: "h" },
+				remote: { path: "B.md", isDirectory: false, size: 1, mtime: 1, hash: "h" } },
+		];
+		const plan = makePlan(actions);
+		const first = memberObligationFor(plan, actions[0]!);
+		const second = memberObligationFor(plan, actions[1]!);
+		const ctx = makeCtx({ admitAction: vi.fn((_action: SyncAction, member: AuthorizedMemberObligation) =>
+			Promise.resolve({ kind: "no_action" as const, freshness: {
+				localGeneration: 1, localFingerprint: "entity:b", recordFingerprint: "record:b",
+				identityKey: "remote-id",
+				pathOccupant: { kind: "current" as const, identityKey: "remote-id", token: "token" },
+				frozenDeltaWitness: member.frozenDeltaWitness,
+				componentId: member.componentId, memberObligationId: member.id,
+				admissionEpoch: member.admissionEpoch,
+			} })) });
+		const rename = vi.spyOn(ctx.localFs, "rename");
+
+		const result = await executePlan(plan, ctx, {
+			result: {
+				succeeded: [{ action: actions[0]!, componentId: first.componentId,
+					memberObligationId: first.id, admissionEpoch: first.admissionEpoch }],
+				failed: [], blocked: [], conflicts: [], deferred: [], componentReceipts: [],
+			},
+			memberObligationIds: new Set([second.id]),
+		});
+
+		expect(rename).not.toHaveBeenCalled();
+		expect(ctx.admitAction).toHaveBeenCalledOnce();
+		expect(result.succeeded).toHaveLength(2);
+		expect(result.componentReceipts[0]?.completions).toHaveLength(2);
+	});
+
+	it("executes a push from admission-bound local content without a later path read", async () => {
+		const bound = new TextEncoder().encode("bound-local").buffer;
+		const ctx = makeCtx({ admitAction: vi.fn((action: SyncAction) => Promise.resolve({
+			kind: "run" as const, action, boundLocalContent: bound,
+		})) });
+		const localFs = ctx.localFs as MockFileSystem;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
+		addFile(localFs, "a.md", "changed-after-admission");
+		const unboundRead = vi.spyOn(localFs, "read");
+
+		const result = await executePlan(makePlan([{
+			path: "a.md", action: "push",
+			local: { path: "a.md", isDirectory: false, size: bound.byteLength, mtime: 1, hash: "" },
+		}]), ctx);
+
+		expect(result.failed).toEqual([]);
+		expect(unboundRead).not.toHaveBeenCalled();
+		expect(readText(remoteFs, "a.md")).toBe("bound-local");
+	});
+
+	it("re-admits current state when bound local content changes before baseline commit", async () => {
+		const first = new TextEncoder().encode("first").buffer;
+		const second = new TextEncoder().encode("second").buffer;
+		let admissions = 0;
+		const ctx = makeCtx({ admitAction: vi.fn((action: SyncAction) => {
+			admissions++;
+			return Promise.resolve({
+				kind: "run" as const, action,
+				boundLocalContent: admissions === 1 ? first : second,
+				validateBeforeCommit: () => Promise.resolve(admissions > 1),
+			});
+		}) });
+		const localFs = ctx.localFs as MockFileSystem;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
+		addFile(localFs, "a.md", "second");
+
+		const result = await executePlan(makePlan([{
+			path: "a.md", action: "push",
+			local: { path: "a.md", isDirectory: false, size: second.byteLength, mtime: 1, hash: "" },
+		}]), ctx);
+
+		expect(admissions).toBe(2);
+		expect(result.succeeded).toHaveLength(1);
+		expect(readText(remoteFs, "a.md")).toBe("second");
+	});
+
+	it("revalidates remote evidence before every retried push attempt", async () => {
+		const first = new TextEncoder().encode("first").buffer;
+		const second = new TextEncoder().encode("second").buffer;
+		let admissions = 0;
+		let validations = 0;
+		const ctx = makeCtx({ admitAction: vi.fn((action: SyncAction) => {
+			admissions++;
+			const currentAdmission = admissions;
+			return Promise.resolve({
+				kind: "run" as const, action,
+				boundLocalContent: currentAdmission === 1 ? first : second,
+				validateBeforeEffect: () => {
+					validations++;
+					return Promise.resolve(currentAdmission > 1 || validations === 1);
+				},
+			});
+		}) });
+		const remoteFs = ctx.remoteFs as MockFileSystem;
+		const originalWrite = remoteFs.write.bind(remoteFs);
+		let writes = 0;
+		vi.spyOn(remoteFs, "write").mockImplementation((...args) => {
+			writes++;
+			return writes === 1
+				? Promise.reject(Object.assign(new Error("HTTP 429"), { status: 429 }))
+				: originalWrite(...args);
+		});
+
+		const result = await executePlan(makePlan([{
+			path: "retry-race.md", action: "push",
+			local: { path: "retry-race.md", isDirectory: false, size: second.byteLength,
+				mtime: 1, hash: "" },
+		}]), ctx);
+
+		expect(admissions).toBe(2);
+		expect(validations).toBe(3);
+		expect(writes).toBe(2);
+		expect(result.succeeded).toHaveLength(1);
+		expect(readText(remoteFs, "retry-race.md")).toBe("second");
 	});
 
 	describe("push", () => {

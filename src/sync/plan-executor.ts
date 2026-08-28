@@ -1,4 +1,5 @@
 import type { IFileSystem } from "../fs/interface";
+import type { FileEntity } from "../fs/types";
 import type { ConflictStrategy, SyncAction } from "./types";
 import { memberObligationFor } from "./plan-authority";
 import type { AuthorizedMemberObligation, AuthorizedSyncPlan } from "./plan-authority";
@@ -7,6 +8,7 @@ import type { ConflictResolverContext } from "./conflict-resolver";
 import type { Logger } from "../logging/logger";
 import { commitAction } from "./state-committer";
 import { resolveConflict } from "./conflict-resolver";
+import { ConflictAdmissionInvalidatedError } from "./conflict";
 import { AuthError, classifyHttpError } from "../fs/errors";
 import type { ErrorClassification } from "../fs/errors";
 import { AsyncPool, AdaptivePool } from "../queue/async-queue";
@@ -19,7 +21,10 @@ import {
 } from "./execution-routing";
 import { runActionIO } from "./action-io";
 import { decideRetry, sleep } from "./error";
-import type { ExecutionResult } from "./execution-result";
+import {
+	buildComponentReceipts, copyExecutionResultForResume, type ExecutionResult,
+} from "./execution-result";
+import type { NoActionFreshnessWitness } from "./execution-result";
 import type { NormalActionPermit } from "./priority-coordinator";
 import type { LocalMutationBarrier } from "./local-mutation-barrier";
 export type { BlockedAction, CompletedAction, ExecutionResult, FailedAction, ResolvedConflict } from "./execution-result";
@@ -52,11 +57,19 @@ export interface ExecutionContext {
 	isActionBlocked?: (action: SyncAction) => string | null;
 	acquireActionPermit?: () => Promise<NormalActionPermit>;
 	mutationBarrier?: LocalMutationBarrier;
-	admitAction?: (action: SyncAction) => Promise<
-		| { kind: "run"; action: SyncAction }
-		| { kind: "no_action" }
+	yieldNonterminal?: () => Promise<void>;
+	admitAction?: (action: SyncAction, member: AuthorizedMemberObligation) => Promise<
+		| { kind: "run"; action: SyncAction; boundRemoteContent?: ArrayBuffer; boundLocalContent?: ArrayBuffer;
+			validateBeforeEffect?: () => Promise<boolean>;
+			validateBeforeCommit?: (expectedLocal?: FileEntity | null) => Promise<boolean> }
+		| { kind: "no_action"; freshness: NoActionFreshnessWitness }
 		| { kind: "nonterminal"; reason: string }
 	>;
+}
+
+export interface ExecutionResume {
+	result: ExecutionResult;
+	memberObligationIds: ReadonlySet<string>;
 }
 
 /**
@@ -67,6 +80,7 @@ export interface ExecutionContext {
  * it never multiplies with the cycle-level retry. Worst case: 3 I/O attempts.
  */
 const MAX_ACTION_RETRIES = 3;
+const MAX_ATTEMPTS_PER_QUANTUM = 3;
 /**
  * AIMD transfer-pool presets, selected by the orchestrator per platform. `start`
  * is today's fixed value (5) on desktop ⇒ zero behaviour change at t=0; it ramps
@@ -123,13 +137,11 @@ const STATE_COMMIT_CONCURRENCY = 5;
 export async function executePlan(
 	plan: AuthorizedSyncPlan,
 	ctx: ExecutionContext,
+	resume?: ExecutionResume,
 ): Promise<ExecutionResult> {
-	const result: ExecutionResult = {
-		succeeded: [],
-		failed: [],
-		blocked: [],
-		conflicts: [],
-		deferred: [],
+	const result: ExecutionResult = resume ? copyExecutionResultForResume(resume.result) : {
+		succeeded: [], failed: [], blocked: [], conflicts: [], deferred: [],
+		componentReceipts: [],
 	};
 
 	const total = plan.actions.length;
@@ -139,17 +151,10 @@ export async function executePlan(
 		ctx.onProgress?.(completed, total);
 	};
 
-	// Partition by (lane, tier). Conflict is its own phase; match/cleanup are
-	// state-only (run inline, no pool slot); renames/deletes split by lane.
-	const transfers: SyncAction[] = [];
-	const stateOnly: SyncAction[] = [];
-	const conflicts: SyncAction[] = [];
-	const renameRemote: SyncAction[] = [];
-	const deleteRemote: SyncAction[] = [];
-	const renameLocal: SyncAction[] = [];
-	const deleteLocal: SyncAction[] = [];
-
+	let pending: WorkItem[] = [];
 	for (const action of plan.actions) {
+		const member = memberObligationFor(plan, action);
+		if (resume && !resume.memberObligationIds.has(member.id)) continue;
 		const blockedReason = ctx.isActionBlocked?.(action);
 		if (blockedReason) {
 			result.blocked.push({ action, reason: blockedReason });
@@ -161,79 +166,80 @@ export async function executePlan(
 			reportProgress();
 			continue;
 		}
-		const { lane, tier } = ACTION_CLASS[action.action];
-		if (action.action === "conflict") {
-			conflicts.push(action);
-		} else if (tier === "none") {
-			stateOnly.push(action);
-		} else if (tier === "transfer") {
-			transfers.push(action);
-		} else if (tier === "rename") {
-			(lane === "remote" ? renameRemote : renameLocal).push(action);
-		} else {
-			(lane === "remote" ? deleteRemote : deleteLocal).push(action);
-		}
+		pending.push({ proposal: action, scheduled: action, member });
 	}
 
-	// ── Phase 1 — transfers (adaptive pool) + state-only (bounded pool). ──
-	// One action per path ⇒ concurrent transfers target disjoint paths. State-only
-	// actions (match/cleanup) issue no network I/O, but their commit can read a file
-	// to store a 3-way-merge base, so they run through their own bounded pool rather
-	// than all at once (a cold scan can emit thousands of matches).
+	let attempt = 0;
+	while (pending.length > 0) {
+		pending = await runSchedulingQuantum(pending, ctx, result, reportProgress);
+		attempt++;
+		if (pending.length > 0 && attempt === MAX_ATTEMPTS_PER_QUANTUM) {
+			ctx.logger?.warn("executePlan: current-state work yielded", {
+				pending: pending.length, attempts: MAX_ATTEMPTS_PER_QUANTUM,
+			});
+			await (ctx.yieldNonterminal?.() ?? sleep(1000));
+			attempt = 0;
+		}
+	}
+	result.componentReceipts = buildComponentReceipts(plan, result);
+	return result;
+}
+
+interface WorkItem {
+	proposal: SyncAction;
+	scheduled: SyncAction;
+	member: AuthorizedMemberObligation;
+}
+
+type AttemptResult =
+	| { kind: "terminal" }
+	| { kind: "reroute"; action: SyncAction }
+	| { kind: "nonterminal" };
+
+class ActionAdmissionInvalidatedError extends Error {}
+
+async function runSchedulingQuantum(
+	items: WorkItem[], ctx: ExecutionContext, result: ExecutionResult, reportProgress: () => void,
+): Promise<WorkItem[]> {
+	const transfers: WorkItem[] = [];
+	const stateOnly: WorkItem[] = [];
+	const conflicts: WorkItem[] = [];
+	const renameRemote: WorkItem[] = [];
+	const deleteRemote: WorkItem[] = [];
+	const renameLocal: WorkItem[] = [];
+	const deleteLocal: WorkItem[] = [];
+	for (const item of items) {
+		const { lane, tier } = ACTION_CLASS[item.scheduled.action];
+		if (item.scheduled.action === "conflict") conflicts.push(item);
+		else if (tier === "none") stateOnly.push(item);
+		else if (tier === "transfer") transfers.push(item);
+		else if (tier === "rename") (lane === "remote" ? renameRemote : renameLocal).push(item);
+		else (lane === "remote" ? deleteRemote : deleteLocal).push(item);
+	}
+	const next: WorkItem[] = [];
+	const settle = (item: WorkItem, attempt: AttemptResult) => {
+		if (attempt.kind === "terminal") reportProgress();
+		else next.push({ ...item, scheduled: attempt.kind === "reroute" ? attempt.action : item.scheduled });
+	};
 	const transferPool = new AdaptivePool(ctx.transferPool ?? DESKTOP_TRANSFER_POOL);
 	const statePool = new AsyncPool(STATE_COMMIT_CONCURRENCY);
 	await Promise.all([
-		...transfers.map((action) =>
-			transferPool.run(
-				() =>
-					executeAction(action, memberObligationFor(plan, action), ctx, result, reportProgress, () =>
-						transferPool.noteRateLimit()
-					),
-				transferSize(action)
-			)
-		),
-		...stateOnly.map((action) =>
-			statePool.run(() => executeAction(
-				action, memberObligationFor(plan, action), ctx, result, reportProgress,
-			))
-		),
+		...transfers.map((item) => transferPool.run(async () => settle(item,
+			await executeAction(item.scheduled, item.member, ctx, result, () => transferPool.noteRateLimit())),
+			transferSize(item.scheduled))),
+		...stateOnly.map((item) => statePool.run(async () => settle(item,
+			await executeAction(item.scheduled, item.member, ctx, result)))),
 	]);
-
-	// ── Phase 2 — conflicts (serial, own phase). ──
-	// Headless, but mutates a planner-invisible `.conflict` sibling — kept serial so
-	// concurrent resolutions can't collide on that sibling namespace (see ACTION_CLASS).
-	for (const action of conflicts) {
-		await executeConflictAction(
-			action, memberObligationFor(plan, action), ctx, result, reportProgress,
-		);
-	}
-
-	// ── Phase 3 — structural mutations; the two lanes run concurrently. ──
-	// They touch disjoint filesystems (the local FS has no remote metadata cache), so
-	// they share no mutable state — safe to overlap. Within each lane: renames first
-	// (serial — a rename has two endpoints and folder renames rewrite subtrees), then
-	// deletes pooled (the bulk-folder-delete win). Each lane has its OWN delete pool.
-	const runLane = async (renames: SyncAction[], deletes: SyncAction[]) => {
-		for (const action of renames) {
-			await executeAction(
-				action, memberObligationFor(plan, action), ctx, result, reportProgress,
-			);
-		}
+	for (const item of conflicts) settle(item,
+		await executeConflictAction(item.scheduled, item.member, ctx, result));
+	const runLane = async (renames: WorkItem[], deletes: WorkItem[]) => {
+		for (const item of renames) settle(item, await executeAction(item.scheduled, item.member, ctx, result));
 		const pool = new AsyncPool(DELETE_CONCURRENCY);
-		await Promise.all(
-			deletes.map((action) =>
-				pool.run(() => executeAction(
-					action, memberObligationFor(plan, action), ctx, result, reportProgress,
-				))
-			)
-		);
+		await Promise.all(deletes.map((item) => pool.run(async () => settle(item,
+			await executeAction(item.scheduled, item.member, ctx, result)))));
 	};
-	await Promise.all([
-		runLane(renameRemote, deleteRemote),
-		runLane(renameLocal, deleteLocal),
-	]);
-
-	return result;
+	await Promise.all([runLane(renameRemote, deleteRemote), runLane(renameLocal, deleteLocal)]);
+	return next;
 }
 
 /**
@@ -258,6 +264,7 @@ async function withIoRetry<T>(
 			return await io();
 		} catch (err) {
 			if (err instanceof AuthError) throw err;
+			if (err instanceof ActionAdmissionInvalidatedError) throw err;
 			const classification = classify(err);
 			const decision = decideRetry(classification, attempt, MAX_ACTION_RETRIES, rng);
 			if (decision.action !== "retry") throw err;
@@ -272,38 +279,47 @@ async function executeAction(
 	member: AuthorizedMemberObligation,
 	ctx: ExecutionContext,
 	result: ExecutionResult,
-	reportProgress: () => void,
 	onRateLimit?: () => void,
-): Promise<void> {
+): Promise<AttemptResult> {
 	const permit = await ctx.acquireActionPermit?.();
 	try {
-		const run = async () => {
-			const admission = await ctx.admitAction?.(action) ?? { kind: "run" as const, action };
+		const run = async (): Promise<AttemptResult> => {
+			const admission = await ctx.admitAction?.(action, member) ?? { kind: "run" as const, action };
 			if (admission.kind === "no_action") {
 				result.succeeded.push({
 					action,
 					componentId: member.componentId,
 					memberObligationId: member.id,
 					admissionEpoch: member.admissionEpoch,
+					completionKind: "no_action",
+					freshness: admission.freshness,
 				});
-				return;
+				return { kind: "terminal" };
 			}
 			if (admission.kind === "nonterminal") {
-				result.blocked.push({ action, reason: admission.reason });
-				return;
+				return { kind: "nonterminal" };
 			}
 			const admittedAction = admission.action;
 			if (!canRunInScheduledRoute(action, admittedAction)) {
-				result.blocked.push({ action, reason: "current_action_requires_reroute" });
-				return;
+				return { kind: "reroute", action: admittedAction };
 			}
 			// Retry only operations that replay safely: push/pull overwrite by path and
 			// delete is idempotent. Renames remain single-attempt.
-			const io = () => runActionIO(admittedAction, ctx);
+			const io = async () => {
+				if (admission.validateBeforeEffect && !(await admission.validateBeforeEffect())) {
+					throw new ActionAdmissionInvalidatedError();
+				}
+				return await runActionIO(
+					admittedAction, ctx, admission.boundRemoteContent, admission.boundLocalContent,
+				);
+			};
 			const { localEntity, remoteEntity } =
 				ACTION_CLASS[admittedAction.action].tier === "rename"
 					? await io()
 					: await withIoRetry(io, ctx, onRateLimit);
+			if (admission.validateBeforeCommit && !(await admission.validateBeforeCommit())) {
+				return { kind: "nonterminal" };
+			}
 			await commitAction(admittedAction, localEntity, remoteEntity, ctx.committer);
 			result.succeeded.push({
 				action,
@@ -314,11 +330,13 @@ async function executeAction(
 				localEntity,
 				remoteEntity,
 			});
+			return { kind: "terminal" };
 		};
-		if (ctx.mutationBarrier) await ctx.mutationBarrier.run(actionMutationPaths(action), run);
-		else await run();
+		if (ctx.mutationBarrier) return await ctx.mutationBarrier.run(member.componentPaths, run);
+		return await run();
 	} catch (err) {
 		if (err instanceof AuthError) throw err;
+		if (err instanceof ActionAdmissionInvalidatedError) return { kind: "nonterminal" };
 		const error = err instanceof Error ? err : new Error(String(err));
 		ctx.logger?.error("executePlan: action failed", {
 			path: action.path,
@@ -326,17 +344,10 @@ async function executeAction(
 			error: error.message,
 		});
 		result.failed.push({ action, error });
+		return { kind: "terminal" };
 	} finally {
 		permit?.release();
-		reportProgress();
 	}
-}
-
-function actionMutationPaths(action: SyncAction): string[] {
-	if (action.action === "rename_local" || action.action === "rename_remote") {
-		return [action.oldPath, action.path, ...(action.descendants?.flatMap((pair) => [pair.oldPath, pair.newPath]) ?? [])];
-	}
-	return [action.path];
 }
 
 async function executeConflictAction(
@@ -344,34 +355,38 @@ async function executeConflictAction(
 	member: AuthorizedMemberObligation,
 	ctx: ExecutionContext,
 	result: ExecutionResult,
-	reportProgress: () => void,
-): Promise<void> {
+): Promise<AttemptResult> {
 	const permit = await ctx.acquireActionPermit?.();
 	try {
-		const run = async () => {
-		const admission = await ctx.admitAction?.(action) ?? { kind: "run" as const, action };
+		const run = async (): Promise<AttemptResult> => {
+		const admission = await ctx.admitAction?.(action, member) ?? { kind: "run" as const, action };
 		if (admission.kind === "no_action") {
 			result.succeeded.push({
 				action,
 				componentId: member.componentId,
 				memberObligationId: member.id,
 				admissionEpoch: member.admissionEpoch,
+				completionKind: "no_action",
+				freshness: admission.freshness,
 			});
-			return;
+			return { kind: "terminal" };
 		}
 		if (admission.kind === "nonterminal") {
-			result.blocked.push({ action, reason: admission.reason });
-			return;
+			return { kind: "nonterminal" };
 		}
 		const admittedAction = admission.action;
 		if (!canRunInScheduledRoute(action, admittedAction)) {
-			result.blocked.push({ action, reason: "current_action_requires_reroute" });
-			return;
+			return { kind: "reroute", action: admittedAction };
 		}
 		if (admittedAction.action !== "conflict") {
 			const { localEntity, remoteEntity } = await withIoRetry(
-				() => runActionIO(admittedAction, ctx), ctx,
+				() => runActionIO(
+					admittedAction, ctx, admission.boundRemoteContent, admission.boundLocalContent,
+				), ctx,
 			);
+			if (admission.validateBeforeCommit && !(await admission.validateBeforeCommit())) {
+				return { kind: "nonterminal" };
+			}
 			await commitAction(admittedAction, localEntity, remoteEntity, ctx.committer);
 			result.succeeded.push({
 				action,
@@ -382,7 +397,7 @@ async function executeConflictAction(
 				localEntity,
 				remoteEntity,
 			});
-			return;
+				return { kind: "terminal" };
 		}
 		const conflictCtx: ConflictResolverContext = {
 			path: admittedAction.path,
@@ -393,6 +408,9 @@ async function executeConflictAction(
 			baseline: admittedAction.baseline,
 			stateStore: ctx.committer.stateStore,
 			logger: ctx.logger,
+			boundRemoteContent: admission.boundRemoteContent,
+			boundLocalContent: admission.boundLocalContent,
+			validateBeforeEffect: admission.validateBeforeEffect,
 		};
 
 		// No in-cycle retry: conflict resolution (the `duplicate` strategy) is NOT
@@ -401,6 +419,10 @@ async function executeConflictAction(
 		// fails the action and re-resolves next cycle (it runs serially and never feeds
 		// the transfer pool's AIMD).
 		const resolution = await resolveConflict(conflictCtx, ctx.conflictStrategy);
+		if (admission.validateBeforeCommit &&
+			!(await admission.validateBeforeCommit(resolution.expectedLocalEntity))) {
+			return { kind: "nonterminal" };
+		}
 
 		const localEntity = await ctx.localFs.stat(admittedAction.path) ?? admittedAction.local;
 		const remoteEntity = await ctx.remoteFs.stat(admittedAction.path) ?? admittedAction.remote;
@@ -417,19 +439,21 @@ async function executeConflictAction(
 			localEntity,
 			remoteEntity,
 		});
+		return { kind: "terminal" };
 		};
-		if (ctx.mutationBarrier) await ctx.mutationBarrier.run(actionMutationPaths(action), run);
-		else await run();
+		if (ctx.mutationBarrier) return await ctx.mutationBarrier.run(member.componentPaths, run);
+		return await run();
 	} catch (err) {
 		if (err instanceof AuthError) throw err;
+		if (err instanceof ConflictAdmissionInvalidatedError) return { kind: "nonterminal" };
 		const error = err instanceof Error ? err : new Error(String(err));
 		ctx.logger?.error("executePlan: conflict action failed", {
 			path: action.path,
 			error: error.message,
 		});
 		result.failed.push({ action, error });
+		return { kind: "terminal" };
 	} finally {
 		permit?.release();
-		reportProgress();
 	}
 }

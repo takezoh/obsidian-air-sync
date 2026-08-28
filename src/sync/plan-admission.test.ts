@@ -209,6 +209,64 @@ describe("admitDestructivePlan", () => {
 		});
 	});
 
+	it("re-admits an authoritative component expansion with the same id and a new epoch", () => {
+		const firstAction: SyncAction = {
+			path: "B", oldPath: "A", action: "rename_local", isFolder: true,
+			descendants: [{ oldPath: "A/x.md", newPath: "B/x.md" }],
+		};
+		const evidence = [remoteRename({ oldPath: "A", newPath: "B", isFolder: true })];
+		const firstScope = projection({
+			A: "included", B: "included", "A/x.md": "included", "B/x.md": "included",
+		});
+		const first = admit([firstAction], evidence, [], firstScope);
+		const expandedAction: SyncAction = {
+			...firstAction,
+			descendants: [
+				{ oldPath: "A/x.md", newPath: "B/x.md" },
+				{ oldPath: "A/y.md", newPath: "B/y.md" },
+			],
+		};
+		const expandedSnapshot = captureCycleAdmissionSnapshot(
+			{ actions: [expandedAction] }, evidence, [],
+			projection({
+				A: "included", B: "included", "A/x.md": "included", "B/x.md": "included",
+				"A/y.md": "included", "B/y.md": "included",
+			}),
+			"backend\0root",
+		);
+
+		const expanded = admitDestructivePlan(expandedSnapshot, first.executable);
+
+		expect(expanded.executable.components).toHaveLength(1);
+		expect(expanded.executable.components[0]?.id).toBe(first.executable.components[0]?.id);
+		expect(expanded.executable.components[0]?.admissionEpoch).toBe(2);
+		expect(expanded.executable.components[0]?.paths).toEqual([
+			"A", "A/x.md", "A/y.md", "B", "B/x.md", "B/y.md",
+		]);
+		expect(expanded.executable.components[0]?.memberObligations).toHaveLength(1);
+	});
+
+	it("replaces the epoch when remote identity authority changes at the same path", () => {
+		const firstAction: SyncAction = {
+			path: "note.md", action: "match", local: entity("note.md"),
+			remote: entity("note.md", "remote-1"),
+		};
+		const first = admit([firstAction], [], [], projection({ "note.md": "included" }));
+		const nextAction: SyncAction = {
+			...firstAction, remote: entity("note.md", "remote-2"),
+		};
+		const snapshot = captureCycleAdmissionSnapshot(
+			{ actions: [nextAction] }, [], [], projection({ "note.md": "included" }), "backend\0root",
+		);
+
+		const next = admitDestructivePlan(snapshot, first.executable);
+
+		expect(next.executable.components[0]?.id).toBe(first.executable.components[0]?.id);
+		expect(next.executable.components[0]?.admissionEpoch).toBe(2);
+		expect(next.executable.components[0]?.memberObligations[0]?.componentRemoteIdentities)
+			.toEqual({ "note.md": "remote-2" });
+	});
+
 	it("defers match and delete together when an alias links them", () => {
 		const actions: SyncAction[] = [
 			{ path: "A.md", action: "delete_local", local: entity("A.md") },

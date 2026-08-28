@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { IncrementalCheckpoint } from "../fs/interface";
-import type { ExecutionResult } from "./execution-result";
+import type { ComponentReceipt, ExecutionResult } from "./execution-result";
 import { finalizeSyncCycle } from "./sync-cycle-finalization";
 import type { SyncStateStore } from "./state";
 import type { IdentityEvidence, PathObservation, ScopeProjection, SyncAction } from "./types";
@@ -50,7 +50,7 @@ describe("finalizeSyncCycle", () => {
 
 		const retained = await finalizeSyncCycle({
 			admission: admitted,
-			result: { succeeded: [], failed: [], blocked: [], conflicts: [], deferred: [] },
+			result: { succeeded: [], failed: [], blocked: [], conflicts: [], deferred: [], componentReceipts: [] },
 			pendingEvidence: [pending], persistedDebts: [], localRenameDebts: [],
 			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
 			stateStore: { deleteRenameDebts } as unknown as SyncStateStore,
@@ -70,6 +70,7 @@ describe("finalizeSyncCycle", () => {
 		const result: ExecutionResult = {
 			succeeded: [], failed: [], conflicts: [], deferred: [],
 			blocked: [{ action, reason: "quarantined" }],
+			componentReceipts: [],
 		};
 		const commitCheckpoint = vi.fn<IncrementalCheckpoint["commitCheckpoint"]>()
 			.mockResolvedValue(undefined);
@@ -103,10 +104,210 @@ describe("finalizeSyncCycle", () => {
 
 		await finalizeSyncCycle({
 			admission: admitted,
-			result: { succeeded: [completion, completion], failed: [], blocked: [], conflicts: [], deferred: [] },
+			result: { succeeded: [completion, completion], failed: [], blocked: [], conflicts: [], deferred: [], componentReceipts: [] },
 			pendingEvidence: [edge()], persistedDebts: [], localRenameDebts: [],
 			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
 			stateStore: { deleteRenameDebts: vi.fn() } as unknown as SyncStateStore,
+		});
+
+		expect(commitCheckpoint).not.toHaveBeenCalled();
+	});
+
+	it("accepts one exact latest-epoch component receipt", async () => {
+		const action: SyncAction = { action: "rename_local", oldPath: "A.md", path: "a.md" };
+		const admitted = admission([action], [edge()], { byEndpoint: new Map([
+			["A.md", "included"], ["a.md", "included"],
+		]) });
+		const member = memberObligationFor(admitted.executable, action);
+		const completion = {
+			action, componentId: member.componentId, memberObligationId: member.id,
+			admissionEpoch: member.admissionEpoch, completionKind: "applied" as const,
+		};
+		const commitCheckpoint = vi.fn<IncrementalCheckpoint["commitCheckpoint"]>()
+			.mockResolvedValue(undefined);
+
+		await finalizeSyncCycle({
+			admission: admitted,
+			result: {
+				succeeded: [completion], failed: [], blocked: [], conflicts: [], deferred: [],
+				componentReceipts: [{
+					componentId: member.componentId, admissionEpoch: member.admissionEpoch,
+					memberObligationIds: [member.id],
+					completions: [{ memberObligationId: member.id, kind: "applied" }],
+				}],
+			},
+			pendingEvidence: [edge()], persistedDebts: [], localRenameDebts: [],
+			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
+			stateStore: { deleteRenameDebts: vi.fn() } as unknown as SyncStateStore,
+		});
+
+		expect(commitCheckpoint).toHaveBeenCalledOnce();
+	});
+
+	it("rejects an obsolete-epoch receipt", async () => {
+		const action: SyncAction = { action: "rename_local", oldPath: "A.md", path: "a.md" };
+		const admitted = admission([action], [edge()], { byEndpoint: new Map([
+			["A.md", "included"], ["a.md", "included"],
+		]) });
+		const member = memberObligationFor(admitted.executable, action);
+		const commitCheckpoint = vi.fn<IncrementalCheckpoint["commitCheckpoint"]>()
+			.mockResolvedValue(undefined);
+
+		await finalizeSyncCycle({
+			admission: admitted,
+			result: {
+				succeeded: [{ action, componentId: member.componentId, memberObligationId: member.id,
+					admissionEpoch: member.admissionEpoch }],
+				failed: [], blocked: [], conflicts: [], deferred: [],
+				componentReceipts: [{
+					componentId: member.componentId, admissionEpoch: member.admissionEpoch + 1,
+					memberObligationIds: [member.id],
+					completions: [{ memberObligationId: member.id, kind: "applied" }],
+				}],
+			},
+			pendingEvidence: [edge()], persistedDebts: [], localRenameDebts: [],
+			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
+			stateStore: { deleteRenameDebts: vi.fn() } as unknown as SyncStateStore,
+		});
+
+		expect(commitCheckpoint).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		"duplicate receipt", "unknown component", "unknown member", "missing member",
+		"extra member", "reordered members", "completion kind mismatch",
+	] as const)("rejects %s evidence", async (counterexample) => {
+		const actions: SyncAction[] = [
+			{ path: "note.md", action: "push", local: { path: "note.md", isDirectory: false, size: 1, mtime: 1, hash: "a" } },
+			{ path: "note.md", action: "push", local: { path: "note.md", isDirectory: false, size: 2, mtime: 2, hash: "b" } },
+		];
+		const admitted = admission(actions, [], { byEndpoint: new Map([["note.md", "included"]]) });
+		const members = actions.map((action) => memberObligationFor(admitted.executable, action));
+		const succeeded = actions.map((action, index) => ({
+			action, componentId: members[index]!.componentId,
+			memberObligationId: members[index]!.id,
+			admissionEpoch: members[index]!.admissionEpoch,
+			completionKind: "applied" as const,
+		}));
+		const receipt: ComponentReceipt = {
+			componentId: members[0]!.componentId,
+			admissionEpoch: members[0]!.admissionEpoch,
+			memberObligationIds: members.map(({ id }) => id),
+			completions: members.map(({ id }) => ({ memberObligationId: id, kind: "applied" as const })),
+		};
+		const receipts = [{ ...receipt, memberObligationIds: [...receipt.memberObligationIds],
+			completions: receipt.completions.map((completion) => ({ ...completion })) }];
+		if (counterexample === "duplicate receipt") receipts.push(receipts[0]!);
+		else if (counterexample === "unknown component") receipts[0]!.componentId = "unknown";
+		else if (counterexample === "unknown member") receipts[0]!.completions[0]!.memberObligationId = "unknown";
+		else if (counterexample === "missing member") receipts[0]!.memberObligationIds.pop();
+		else if (counterexample === "extra member") receipts[0]!.memberObligationIds.push("extra");
+		else if (counterexample === "reordered members") receipts[0]!.memberObligationIds.reverse();
+		else receipts[0]!.completions[0]!.kind = "no_action";
+		const commitCheckpoint = vi.fn<IncrementalCheckpoint["commitCheckpoint"]>()
+			.mockResolvedValue(undefined);
+
+		await finalizeSyncCycle({
+			admission: admitted,
+			result: { succeeded, failed: [], blocked: [], conflicts: [], deferred: [], componentReceipts: receipts },
+			pendingEvidence: [], persistedDebts: [], localRenameDebts: [],
+			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
+			stateStore: { deleteRenameDebts: vi.fn() } as unknown as SyncStateStore,
+		});
+
+		expect(commitCheckpoint).not.toHaveBeenCalled();
+	});
+
+	it("rejects a partial multi-member component after one member succeeds and one fails", async () => {
+		const actions: SyncAction[] = [
+			{ path: "note.md", action: "push", local: { path: "note.md", isDirectory: false, size: 1, mtime: 1, hash: "a" } },
+			{ path: "note.md", action: "push", local: { path: "note.md", isDirectory: false, size: 2, mtime: 2, hash: "b" } },
+		];
+		const admitted = admission(actions, [], { byEndpoint: new Map([["note.md", "included"]]) });
+		const member = memberObligationFor(admitted.executable, actions[0]!);
+		const commitCheckpoint = vi.fn<IncrementalCheckpoint["commitCheckpoint"]>()
+			.mockResolvedValue(undefined);
+
+		await finalizeSyncCycle({
+			admission: admitted,
+			result: {
+				succeeded: [{ action: actions[0]!, componentId: member.componentId,
+					memberObligationId: member.id, admissionEpoch: member.admissionEpoch }],
+				failed: [{ action: actions[1]!, error: new Error("failed") }],
+				blocked: [], conflicts: [], deferred: [], componentReceipts: [],
+			},
+			pendingEvidence: [], persistedDebts: [], localRenameDebts: [],
+			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
+			stateStore: { deleteRenameDebts: vi.fn() } as unknown as SyncStateStore,
+		});
+
+		expect(commitCheckpoint).not.toHaveBeenCalled();
+	});
+
+	it("rejects a no-action receipt whose freshness witness is incomplete", async () => {
+		const action: SyncAction = { path: "note.md", action: "match", local: { path: "note.md", isDirectory: false, size: 1, mtime: 1, hash: "h" } };
+		const admitted = admission([action], [], { byEndpoint: new Map([["note.md", "included"]]) });
+		const member = memberObligationFor(admitted.executable, action);
+		const freshness = {
+			localGeneration: 1, localFingerprint: "entity:a", recordFingerprint: "", identityKey: "remote-id",
+			pathOccupant: { kind: "current" as const, identityKey: "remote-id", token: "token" },
+			frozenDeltaWitness: member.frozenDeltaWitness,
+			componentId: member.componentId, memberObligationId: member.id,
+			admissionEpoch: member.admissionEpoch,
+		};
+		const commitCheckpoint = vi.fn<IncrementalCheckpoint["commitCheckpoint"]>()
+			.mockResolvedValue(undefined);
+
+		await finalizeSyncCycle({
+			admission: admitted,
+			result: {
+				succeeded: [{ action, componentId: member.componentId, memberObligationId: member.id,
+					admissionEpoch: member.admissionEpoch, completionKind: "no_action", freshness }],
+				failed: [], blocked: [], conflicts: [], deferred: [],
+				componentReceipts: [{
+					componentId: member.componentId, admissionEpoch: member.admissionEpoch,
+					memberObligationIds: [member.id],
+					completions: [{ memberObligationId: member.id, kind: "no_action", freshness }],
+				}],
+			},
+			pendingEvidence: [], persistedDebts: [], localRenameDebts: [],
+			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
+			stateStore: { deleteRenameDebts: vi.fn() } as unknown as SyncStateStore,
+		});
+
+		expect(commitCheckpoint).not.toHaveBeenCalled();
+	});
+
+	it("revalidates a structurally complete no-action witness before checkpoint commit", async () => {
+		const action: SyncAction = { path: "note.md", action: "match", local: { path: "note.md", isDirectory: false, size: 1, mtime: 1, hash: "h" } };
+		const admitted = admission([action], [], { byEndpoint: new Map([["note.md", "included"]]) });
+		const member = memberObligationFor(admitted.executable, action);
+		const freshness = {
+			localGeneration: 1, localFingerprint: "entity:a", recordFingerprint: "record:absent", identityKey: "remote-id",
+			pathOccupant: { kind: "current" as const, identityKey: "remote-id", token: "token" },
+			frozenDeltaWitness: member.frozenDeltaWitness,
+			componentId: member.componentId, memberObligationId: member.id,
+			admissionEpoch: member.admissionEpoch,
+		};
+		const commitCheckpoint = vi.fn<IncrementalCheckpoint["commitCheckpoint"]>()
+			.mockResolvedValue(undefined);
+
+		await finalizeSyncCycle({
+			admission: admitted,
+			result: {
+				succeeded: [{ action, componentId: member.componentId, memberObligationId: member.id,
+					admissionEpoch: member.admissionEpoch, completionKind: "no_action", freshness }],
+				failed: [], blocked: [], conflicts: [], deferred: [],
+				componentReceipts: [{
+					componentId: member.componentId, admissionEpoch: member.admissionEpoch,
+					memberObligationIds: [member.id],
+					completions: [{ memberObligationId: member.id, kind: "no_action", freshness }],
+				}],
+			},
+			pendingEvidence: [], persistedDebts: [], localRenameDebts: [],
+			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
+			stateStore: { deleteRenameDebts: vi.fn() } as unknown as SyncStateStore,
+			validateNoActionFreshness: vi.fn().mockResolvedValue(false),
 		});
 
 		expect(commitCheckpoint).not.toHaveBeenCalled();
@@ -127,7 +328,7 @@ describe("finalizeSyncCycle", () => {
 
 		const retained = await finalizeSyncCycle({
 			admission: admitted,
-			result: { succeeded: [], failed: [], blocked: [], conflicts: [], deferred: [] },
+			result: { succeeded: [], failed: [], blocked: [], conflicts: [], deferred: [], componentReceipts: [] },
 			pendingEvidence: [pending], persistedDebts: [], localRenameDebts: [],
 			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
 			stateStore: { deleteRenameDebts } as unknown as SyncStateStore,
@@ -146,7 +347,7 @@ describe("finalizeSyncCycle", () => {
 
 		await expect(finalizeSyncCycle({
 			admission: admitted,
-			result: { succeeded: [], failed: [], blocked: [], conflicts: [], deferred: [] },
+			result: { succeeded: [], failed: [], blocked: [], conflicts: [], deferred: [], componentReceipts: [] },
 			pendingEvidence: [pending], persistedDebts: [], localRenameDebts: [],
 			checkpoint: checkpoint(vi.fn().mockRejectedValue(new Error("checkpoint failed"))),
 			scopeFingerprint: "scope",

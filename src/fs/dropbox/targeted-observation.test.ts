@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { DropboxFs } from "./index";
 import type { DropboxClient } from "./client";
-import type { DropboxEntry } from "./types";
+import { DropboxApiError, type DropboxEntry } from "./types";
 
 function entry(overrides: Partial<DropboxEntry> = {}): DropboxEntry {
 	return {
@@ -49,5 +49,31 @@ describe("DropboxFs detached priority observation", () => {
 
 		expect(await fs.priority.observe({ path: "note.md", identityKey: "id:file" }))
 			.toMatchObject({ kind: "structural", occupant: { kind: "current", identityKey: "id:replacement" } });
+	});
+
+	it("reports authoritative absence when both identity and path are gone", async () => {
+		const client = { getMetadata: vi.fn(() => Promise.reject(
+			new DropboxApiError("gone", 409, "path/not_found"),
+		)) } as unknown as DropboxClient;
+		const fs = new DropboxFs(client, "id:root");
+
+		expect(await fs.priority.observe({ path: "note.md", identityKey: "id:file" }))
+			.toEqual({ kind: "missing", occupant: { kind: "absent" } });
+	});
+
+	it("returns target_changed when rev changes across an id-bound read", async () => {
+		let rev = "r2";
+		const root = entry({ ".tag": "folder", id: "id:root", name: "Renamed Vault",
+			path_lower: "/renamed-vault", path_display: "/Renamed Vault", rev: undefined,
+			content_hash: undefined, size: undefined });
+		const client = {
+			getMetadata: vi.fn((id: string) => Promise.resolve(id === "id:root" ? root : entry({ rev }))),
+			download: vi.fn(() => { rev = "r3"; return Promise.resolve(new ArrayBuffer(3)); }),
+		} as unknown as DropboxClient;
+		const fs = new DropboxFs(client, "id:root");
+		const observed = await fs.priority.observe({ path: "note.md", identityKey: "id:file" });
+		if (observed.kind !== "current") throw new Error("expected current");
+
+		expect(await fs.priority.read(observed)).toEqual({ kind: "target_changed" });
 	});
 });

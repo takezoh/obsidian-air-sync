@@ -52,6 +52,31 @@ describe("GoogleDriveFs detached priority observation", () => {
 		});
 	});
 
+	it("reports authoritative absence when both identity and path are gone", async () => {
+		const client = {
+			getFile: vi.fn(() => Promise.reject(Object.assign(new Error("gone"), { status: 404 }))),
+			listChildrenByName: vi.fn(() => Promise.resolve([])),
+		} as unknown as GoogleDriveClient;
+		const fs = new GoogleDriveFs(client, "root");
+
+		expect(await fs.priority.observe({ path: "note.md", identityKey: "file-1" }))
+			.toEqual({ kind: "missing", occupant: { kind: "absent" } });
+	});
+
+	it("returns target_changed when version changes across an id-bound read", async () => {
+		let version = "2";
+		const client = {
+			getFile: vi.fn(() => Promise.resolve(file({ version }))),
+			listChildrenByName: vi.fn(() => Promise.resolve([file({ version })])),
+			downloadFile: vi.fn(() => { version = "3"; return Promise.resolve(new ArrayBuffer(3)); }),
+		} as unknown as GoogleDriveClient;
+		const fs = new GoogleDriveFs(client, "root");
+		const observed = await fs.priority.observe({ path: "note.md", identityKey: "file-1" });
+		if (observed.kind !== "current") throw new Error("expected current");
+
+		expect(await fs.priority.read(observed)).toEqual({ kind: "target_changed" });
+	});
+
 	it("fails closed when complete pagination finds duplicate path occupants", async () => {
 		const admitted = file({ id: "file-1" });
 		const duplicate = file({ id: "file-2", version: "3" });

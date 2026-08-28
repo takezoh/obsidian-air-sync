@@ -8,6 +8,7 @@ export interface CycleAdmissionSnapshot {
 	readonly observations: readonly PathObservation[];
 	readonly scope: ScopeProjection;
 	readonly namespace: string;
+	readonly frozenDeltaWitness: string;
 }
 
 export interface AuthorizedMemberObligation {
@@ -16,6 +17,12 @@ export interface AuthorizedMemberObligation {
 	readonly admissionEpoch: number;
 	readonly path: string;
 	readonly paths: readonly string[];
+	/** Complete Admission-owned component path set held while this member is decided/effected. */
+	readonly componentPaths: readonly string[];
+	/** Frozen remote identity (or authoritative absence) for every proved component path. */
+	readonly componentRemoteIdentities: Readonly<Record<string, string | null>>;
+	/** Request-local frozen batch/delta witness. It is never persisted. */
+	readonly frozenDeltaWitness: string;
 }
 
 export interface AuthorizedExecutionComponent {
@@ -92,7 +99,7 @@ export function proposalPaths(action: SyncAction): string[] {
 		.filter((path, index, all) => all.indexOf(path) === index).sort();
 }
 
-export function authorityId(kind: "component" | "member", namespace: string, parts: readonly string[]): string {
+export function authorityId(kind: "component" | "member" | "delta", namespace: string, parts: readonly string[]): string {
 	let hash = 0x811c9dc5;
 	for (const char of `${kind}\0${namespace}\0${parts.join("\0")}`) {
 		hash ^= char.charCodeAt(0);
