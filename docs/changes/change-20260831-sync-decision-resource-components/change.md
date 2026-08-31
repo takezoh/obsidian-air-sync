@@ -19,7 +19,7 @@ scope:
 - src/sync/ proposal-to-Admission boundary, component outcomes, lifecycle wiring,
   diagnostics, and structural enforcement.
 - src/fs/ shared provider faithful-fake and interface conformance.
-- test/e2e/ targeted opt-in live evidence only when a concrete backend representation
+- e2e/ targeted opt-in live evidence only when a concrete backend representation
   gap is suspected.
 - ARCHITECTURE.md persistent sync decision responsibility boundary.
 - docs/sync-pipeline.md pipeline and lifecycle documentation.
