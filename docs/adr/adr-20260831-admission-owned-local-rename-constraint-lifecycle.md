@@ -16,10 +16,12 @@ owners: []
 relations:
 - {type: partOf, target: change-20260831-issue51-rename-evidence-lifecycle}
 - {type: references, target: adr-20260825-issue43-destructive-authorization}
+- {type: references, target: adr-20260831-admission-owns-identity-component-decisi}
 source_paths:
 - src/sync/plan-admission.ts
 - src/sync/rename-debt.ts
 - src/sync/sync-cycle-finalization.ts
+- src/sync/identity-component-decision.ts
 consequences:
   positive:
   - Admission becomes the single owner of executable and durable local rename safety
@@ -65,6 +67,11 @@ is the exclusive owner of destructive executable authority, and Finalization can
 re-evaluate safety. Any correction must keep that owner and ADR 0008's fail-closed and
 commit-last guarantees.
 
+The accepted identity-component decision ADR extends that same owner to cross-path
+action shaping. Lifecycle membership is therefore not a later interpretation of a
+refined plan: shaped action, disposition, persistence, and release are projections of
+one Admission component result.
+
 ## Decision
 
 Amend only ADR 0008 section 6's local persistence trigger:
@@ -88,7 +95,8 @@ Amend only ADR 0008 section 6's local persistence trigger:
   `releaseAfterSafeCheckpoint` memberships associated with component dispositions. A
   successful safety-binding native rename belongs to both. A deferred edge is
   persist-only. A fresh non-binding report is in neither. A loaded false v6 row is
-  release-only.
+  release-only after its proved additive or already-converged consequence and a clean
+  checkpoint.
 - The orchestrator durably upserts all persistence membership before executor I/O or
   tracker acknowledgement. One failed upsert aborts the cycle visibly before either
   side effect and preserves loaded debt and pending evidence for retry.

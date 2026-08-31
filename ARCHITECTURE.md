@@ -5,7 +5,7 @@
 1. **3-state sync** -- Compare local, remote, and last-sync-record to detect changes. Text conflicts use 3-way merge.
 2. **Swappable backends** -- All remote I/O goes through `IFileSystem` + `IBackendProvider`. Adding a backend requires no changes outside `fs/`.
 3. **Delta-first** -- Only process files that changed. O(n) full scans are allowed on cold start, same-session recovery, scope change, manual rescan, and unresolved local rename debt.
-4. **Pipeline as data** -- Each sync phase is a pure transformation: `ChangeSet → SyncPlan → Result`. I/O is isolated at boundaries; all intermediate states are testable.
+4. **Pipeline as data** -- Each sync phase is a pure transformation: `ChangeSet → plain SyncPlan proposal → AuthorizedSyncPlan → Result`. I/O is isolated at boundaries; all intermediate states are testable.
 5. **Crash-safe by construction** -- State is committed only *after* success: per-file baselines after each admitted action, and the remote delta checkpoint only when no failure/deferral or unresolved remote identity edge remains. An interrupted sync converges by checkpoint replay or COLD reconcile; unresolved local rename edges additionally survive as bounded namespace debt.
 6. **Duplicate over delete** -- When in doubt, keep the file. Deleting an unwanted copy is easy; recovering a lost file is impossible.
 7. **Single responsibility per module** -- Each file owns one concept. Target 200-300 lines; split when exceeded.
@@ -19,7 +19,7 @@ One row per directory; see the layer diagram and per-doc references for module d
 | `main.ts` | Plugin entry point — lifecycle only: load settings, register commands, wire components, handle the OAuth protocol callback. |
 | `settings.ts` | `AirSyncSettings` type and `DEFAULT_SETTINGS`; `settings-normalize.ts` lifts a legacy per-type `backendData` map into the active flat bag on load. |
 | `config-sync.ts` | Experimental config-directory sync: augments `syncDotPaths`/`ignorePatterns` with the vault's config directory and a built-in pattern set when `enableConfigSync` is on, and `isOwnPluginDataPath()` — the unconditional guard `SyncOrchestrator.isExcluded()` uses to keep this plugin's own settings file from ever syncing. |
-| `sync/` | The sync pipeline and its orchestration: change tracking and evidence-complete detection (hot/warm/cold), direction-aware scope projection, the decision engine, rename optimization, fail-closed whole-component admission, plan execution (3-phase lane/tier scheduling), per-action state commit, checkpoint/debt finalization, conflict resolution and 3-way merge, the orchestrator (mutex/retry/status), the scheduler (vault events + triggers), the IndexedDB `SyncStateStore`, error classification, and the conflict-history audit writer. |
+| `sync/` | The sync pipeline and its orchestration: change tracking and evidence-complete detection (hot/warm/cold), direction-aware scope projection, the path-local decision engine, Admission-owned identity-component action shaping and fail-closed authorization, plan execution (3-phase lane/tier scheduling), per-action state commit, checkpoint/debt finalization, conflict resolution and 3-way merge, the orchestrator (mutex/retry/status), the scheduler (vault events + triggers), the IndexedDB `SyncStateStore`, error classification, and the conflict-history audit writer. |
 | `fs/` | Backend-agnostic contracts and lifecycle: `IFileSystem` + `IncrementalCheckpoint`, `IAuthProvider`, `IBackendProvider` + `WebFolderPicker`, `FileEntity`/`RemoteChecksum`, the provider registry, error classification (`errors.ts`), the OAuth PKCE helper (`oauth-pkce.ts`), the backend settings-renderer contract (`settings-renderer.ts`), `BackendManager`, and the `ISecretStore`/token-store wrappers over Obsidian SecretStorage. |
 | `fs/caching/` | Shared base for id-addressed remote backends: `CachingRemoteFs<T>` (path↔id resolution and the `IncrementalCheckpoint` checkpoint lifecycle, ADR 0001) and `AbstractMetadataCache<T>`. Google Drive, Dropbox, and OneDrive all build on it. The id-keyed delta apply (`id-delta.ts`) makes their remote-rename detection order-independent for free (ADR 0006). |
 | `fs/local/` | `LocalFs` (Obsidian Vault API wrapper) plus the raw adapter for dot-prefixed paths. |
@@ -65,15 +65,13 @@ One row per directory; see the layer diagram and per-doc references for module d
      │        ▼                           │
      │  2 Propose                         │  ScopeProjection / DecisionEngine
      │    projectScope()                  │    classify evidence endpoints
-     │      → planSync()                  │    plain action proposal
-     │      → refinePlan()                │  RenameOptimizer
-     │                                    │    native rename optimization
+     │      → planSync()                  │    plain path-local proposal
      │        │                           │
      │        ▼                           │
      │  3 Admit                           │  PlanAdmission
      │    captureCycleAdmissionSnapshot() │    immutable cycle contract
-     │      → admitDestructivePlan()      │    sole destructive authorization owner
-     │      → AuthorizedSyncPlan          │    exhaustive dispositions
+     │      → admitDestructivePlan()      │    one component build + action shaping
+     │      → AuthorizedSyncPlan          │    authorization, disposition, lifecycle
      │        │                           │
      │        ▼                           │
      │  4 Execute                         │  PlanExecutor / StateCommitter
@@ -275,10 +273,10 @@ Key design points:
 
 - `list()` may return `hash: ""` for performance; use `stat()` when an accurate hash is needed. `LocalFs.stat()` is authoritative: on a vault-index miss it falls back to the filesystem adapter, so a not-yet-indexed file on disk is never reported absent (absence drives deletions).
 - **Dot-prefixed (hidden) paths bypass the indexed Vault API.** Obsidian's vault index excludes any hidden path (`.airsync`, `.obsidian`, nested `foo/.bar`), so `getAbstractFileByPath()` returns `null` and `vault.createBinary()` either returns `null` (→ NPE on `.stat`) or throws `File already exists`. `LocalFs` therefore routes every operation on a dot-prefixed path (`isDotPrefixed()`, `utils/path.ts`) through `DotPathAdapter` (the raw `vault.adapter`, which overwrites and is index-independent). This is a **mechanism** decision (which API to use) and is independent of sync **policy** (whether to sync it) — policy is `syncDotPaths` + `ignorePatterns`, enforced separately by `SyncOrchestrator.isExcluded()`. `list()` only enumerates hidden paths under configured `syncDotPaths` roots (it cannot scan every hidden folder, e.g. `.obsidian`), so a hidden path is synced only when opted in. `isExcluded()` also drops OS-generated junk (`desktop.ini`, `thumbs.db`, `.DS_Store` — `isSystemJunkFile()`) unconditionally on every backend, like the reserved metadata path: these are never worth syncing and some backends (Dropbox) reject them outright, which would otherwise fail every cycle and block the delta checkpoint.
-- `checkpoint` is optional; when present, `checkpoint.getChangedPaths()` should be called before `list()`. When implemented (e.g. Google Drive `changes.list`, Dropbox `list_folder/continue`, OneDrive delta query) it supplies the remote-side changed/deleted/renamed paths consumed by both hot and warm change detection (the hot path is triggered by the local change tracker's dirty paths, not by this method). The `renamed` field lets backends report file moves for native rename optimization. The rest of the capability (`hasCheckpoint`/`resetCheckpoint`/`commitCheckpoint`) makes the delta cursor crash-safe — see the checkpoint lifecycle below.
+- `checkpoint` is optional; when present, `checkpoint.getChangedPaths()` should be called before `list()`. When implemented (e.g. Google Drive `changes.list`, Dropbox `list_folder/continue`, OneDrive delta query) it supplies the remote-side changed/deleted/renamed paths consumed by both hot and warm change detection (the hot path is triggered by the local change tracker's dirty paths, not by this method). The `renamed` field supplies normative remote movement evidence to Admission's identity-component decision. The rest of the capability (`hasCheckpoint`/`resetCheckpoint`/`commitCheckpoint`) makes the delta cursor crash-safe — see the checkpoint lifecycle below.
 - `delete()` is idempotent (deleting a non-existent path is a no-op) and backends may use soft deletion (trash). Deleting a directory removes its children recursively; the caller must separately clean up the SyncRecord for each removed child path (`delete()` does not touch sync state).
 - `write()` auto-creates parent directories.
-- `rename(oldPath, newPath)` throws if `oldPath` does not exist or if `newPath` already exists (the rename optimizer relies on the latter to skip occupied destinations); it auto-creates parent directories. `mkdir()` is idempotent and throws if an intermediate component is an existing file.
+- `rename(oldPath, newPath)` throws if `oldPath` does not exist or if `newPath` already exists (Admission proves destination occupancy before issuing a native rename, while execution still fails safely on a race); it auto-creates parent directories. `mkdir()` is idempotent and throws if an intermediate component is an existing file.
 
 ## IBackendProvider / IAuthProvider
 

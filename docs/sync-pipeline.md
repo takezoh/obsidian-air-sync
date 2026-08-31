@@ -5,24 +5,24 @@
 Each sync cycle has five top-level responsibility stages:
 
 1. **Observe** -- `collectChanges()` returns exact `entries`, path `observations`, and normative `identityEvidence`.
-2. **Propose** -- scope is projected before filtering, then `planSync()` and `refinePlan()` produce a plain action proposal.
-3. **Admit** -- the proposal and its evidence are captured in one `CycleAdmissionSnapshot`; `admitDestructivePlan()` assigns every relevant component one disposition and issues the only `AuthorizedSyncPlan`.
+2. **Propose** -- scope is projected before filtering, then `planSync()` produces the plain path-local action proposal.
+3. **Admit** -- the proposal and its evidence are captured in one `CycleAdmissionSnapshot`; `admitDestructivePlan()` builds components once, shapes identity-connected actions, assigns every relevant component one disposition and lifecycle membership, and issues the only `AuthorizedSyncPlan`.
 4. **Execute** -- `executePlan()` accepts that nominal plan only and successful actions commit their per-path state.
 5. **Finalize** -- `finalizeSyncCycle()` mechanically folds the same dispositions with execution completion, commits a safe checkpoint, and only then retires released evidence and debt.
 
-These stages describe responsibility boundaries, not one separately scheduled pass per helper function. Evidence completion is part of **Observe**; scope projection and rename refinement are internal to **Propose**; snapshot capture and component-graph construction are internal to **Admit**. They add no extra network scan merely by being named.
+These stages describe responsibility boundaries, not one separately scheduled pass per helper function. Evidence completion is part of **Observe**; scope projection is internal to **Propose**; snapshot capture, the single component build, and component-local rename shaping are internal to **Admit**. They add no extra network scan merely by being named.
 
 The lower-level cycle sequence within those boundaries is:
 
 1. `collectChanges()` selects HOT/WARM/COLD collection, records authoritative path observations and identity evidence, confirms uncertain absences, and completes required hashes/identity facts.
 2. `projectScope()` classifies every evidence endpoint before exact entries are filtered.
-3. `planSync()` produces per-path actions; `refinePlan()` may replace compatible action pairs with native rename proposals.
+3. `planSync()` produces ordinary per-path actions without consuming identity evidence.
 4. `captureCycleAdmissionSnapshot()` fixes the proposal, evidence, observations, scope, and namespace for this cycle.
-5. `admitDestructivePlan()` builds evidence-connected components, assigns dispositions, and projects the proposal-ordered `AuthorizedSyncPlan`.
+5. `admitDestructivePlan()` builds evidence-connected components once, shapes and decides each component, and projects the `AuthorizedSyncPlan` while preserving disconnected ordinary proposal order.
 6. `executePlan()` runs only that authorized projection; each successful action calls `commitAction()` for per-path state.
 7. `finalizeSyncCycle()` folds disposition membership with execution completion, commits the checkpoint when safe, then retires released evidence and debt.
 
-The orchestrator (`SyncOrchestrator.executeSyncOnce()`) drives the I/O boundaries. `prepareSyncCycleSnapshot()` composes the pure **Propose** transformations and captures the input at the **Admit** boundary. The orchestrator then invokes Admission once at an explicit cut point; proposal output is never executable permission.
+The orchestrator (`SyncOrchestrator.executeSyncOnce()`) drives the I/O boundaries. `prepareSyncCycleSnapshot()` projects scope, creates the plain proposal, and captures the input at the **Admit** boundary. The orchestrator then invokes Admission once at an explicit cut point; proposal output is never executable permission.
 
 **Scope filter (`SyncOrchestrator.isExcluded()`)** — a path is synced only if it passes **both** gates:
 
@@ -100,7 +100,7 @@ After any temperature mode collects entries, `collectChanges()` runs `enrichHash
 
 Uses `AsyncPool(10)` for parallel local reads. Per-file errors are caught and skipped (file stays unenriched → treated as conflict, safe side).
 
-After initial-match enrichment, `enrichHashesForRenames()` runs for destinations in the optimizer view derived from `ChangeSet.identityEvidence`. In warm/cold mode, `list()` returns `hash: ""`, but local-origin rename validation needs SHA-256 content equivalence. This step calls `stat()` on exact local destination entries. Only the `hash` field is updated; `mtime` and `size` from `list()` are preserved.
+After initial-match enrichment, `enrichHashesForRenames()` runs for local rename destinations derived from `ChangeSet.identityEvidence`. In warm/cold mode, `list()` returns `hash: ""`, but Admission's local-origin rename proof needs SHA-256 content equivalence. This step calls `stat()` on exact local destination entries. Only the `hash` field is updated; `mtime` and `size` from `list()` are preserved.
 
 Before hash enrichment, `collectChanges()` creates observations for every rename endpoint, confirms unknown endpoints, confirms the opposite side of carried debt/evidence, and in WARM/COLD confirms every baseline absence. A thrown `stat()` aborts the attempt; it is never converted to absence. Hash enrichment then touches exact entries only, and `completeIdentityEvidence()` adds same-root stable-ID occurrences.
 
@@ -108,9 +108,9 @@ Before hash enrichment, `collectChanges()` creates observations for every rename
 
 ### Local changes
 
-`LocalChangeTracker` (`local-tracker.ts`) tracks dirty paths in memory via a `Set<string>`. Vault events (`create`, `modify`, `delete`) call `markDirty(path)`. The `rename` event calls `markRenamed(newPath, oldPath)`, which records the producer pair and marks both paths dirty. Rename chains are collapsed (A→B→C becomes A→C). At collection, `collectLocalRenameEvidence()` converts the captured pair exactly once into the normative `RenameEvidence`; optimizer views are derived from that evidence rather than maintained as a second source of truth. Each sync cycle captures a `snapshot()` of the tracker at the start (a frozen copy of `dirtyPaths` / `renamePairs` / `folderRenamePairs` / `initialized`) and acknowledges exactly that snapshot at the end: `acknowledge(snapshot)` deletes the snapshot's paths from the dirty set and clears each captured rename / folder-rename pair only when the live entry still matches the snapshot's value (so a mid-cycle rename reusing a key survives), then sets `initialized = true`. Acknowledging the start-of-cycle snapshot rather than the live set keeps a `markDirty` arriving mid-cycle for the next cycle instead of sweeping it (see [Acknowledge pattern](error-handling.md#acknowledge-pattern)).
+`LocalChangeTracker` (`local-tracker.ts`) tracks dirty paths in memory via a `Set<string>`. Vault events (`create`, `modify`, `delete`) call `markDirty(path)`. The `rename` event calls `markRenamed(newPath, oldPath)`, which records the producer pair and marks both paths dirty. Rename chains are collapsed (A→B→C becomes A→C). At collection, `collectLocalRenameEvidence()` converts the captured pair exactly once into the normative `RenameEvidence`; any private action-shaping view is derived from that evidence rather than maintained as a second source of truth. Each sync cycle captures a `snapshot()` of the tracker at the start (a frozen copy of `dirtyPaths` / `renamePairs` / `folderRenamePairs` / `initialized`) and acknowledges exactly that snapshot at the end: `acknowledge(snapshot)` deletes the snapshot's paths from the dirty set and clears each captured rename / folder-rename pair only when the live entry still matches the snapshot's value (so a mid-cycle rename reusing a key survives), then sets `initialized = true`. Acknowledging the start-of-cycle snapshot rather than the live set keeps a `markDirty` arriving mid-cycle for the next cycle instead of sweeping it (see [Acknowledge pattern](error-handling.md#acknowledge-pattern)).
 
-Folder renames are captured separately at the event boundary: a `TFolder` routes to `markFolderRenamed(newPath, oldPath)`, recording a chain-collapsed producer pair while files use `markRenamed`. Unlike file rename capture, this does not mark every descendant dirty. Collection converts both maps into the same normative `RenameEvidence` shape (`isFolder` distinguishes them); `refinePlan(plan, identityEvidence)` receives that single evidence collection and derives its folder optimizer view.
+Folder renames are captured separately at the event boundary: a `TFolder` routes to `markFolderRenamed(newPath, oldPath)`, recording a chain-collapsed producer pair while files use `markRenamed`. Unlike file rename capture, this does not mark every descendant dirty. Collection converts both maps into the same normative `RenameEvidence` shape (`isFolder` distinguishes them); Admission receives that single evidence collection and derives its private folder-shaping view.
 
 ### Remote changes
 
@@ -161,30 +161,34 @@ There is no volume-based abort gate. Deletion safety rests on four independent l
 1. **Decision rules** -- an ambiguous case (a file gone on one side while the surviving side changed since baseline) is routed to `conflict` (keep both), never to a deletion; a missing baseline never yields a deletion.
 2. **layoutReady gate** -- sync does not run before the Obsidian vault index is loaded. `SyncScheduler` defers its event wiring, and `runSync()` is gated on `app.workspace.layoutReady`, so a `list()` that under-reports during startup cannot be mistaken for mass local deletions.
 3. **Authoritative observation** -- listing absence is re-`stat()`'d before it can authorize deletion. `LocalFs.stat()` falls back to the vault adapter on an index miss. `actual_resolved` proves an exact/alias path; `requested_echo` proves presence only; `null` proves absence; a thrown stat aborts the cycle. HOT checkpoint tombstones remain authoritative remote absence (Issue #44).
-4. **Whole-component admission** -- rename, alias, unresolved-presence, and stable-ID edges connect related paths. If the refined plan cannot prove that every known resource survives under the direction-aware scope matrix, `admitDestructivePlan()` removes the entire component before execution. Deletions are additionally soft (trash), but recoverability is not used as authorization.
+4. **Whole-component admission** -- rename, alias, unresolved-presence, and stable-ID edges connect related paths. If the component decision cannot prove that every known resource survives under the direction-aware scope matrix, `admitDestructivePlan()` defers the entire component before execution. Deletions are additionally soft (trash), but recoverability is not used as authorization.
 
-## Rename optimization
+## Identity-component action shaping
 
-`refinePlan()` in `rename-optimizer.ts` runs after `planSync()`. It replaces redundant delete+transfer pairs with native rename operations. The optimizer is split by trust boundary into two modules:
+There is no standalone whole-plan optimizer. PlanAdmission builds the cycle-local
+component partition once and may replace a component's proved delete+transfer pair
+with one native rename as part of the same result that carries authorization,
+disposition, and lifecycle membership. The private shaping helpers retain two proof
+rules:
 
 ### Local renames — hash-verified (`optimize-local-renames.ts`)
 
-For a local reported rename in `ChangeSet.identityEvidence`, the optimizer matches `delete_remote(oldPath) + push(newPath)` → `rename_remote`. Hash verification is mandatory: `push.local.hash === del.baseline.hash` must hold, confirming content is unchanged. The centralized `isValidLocalRename()` function enforces this rule for both file and folder renames.
+For a local reported rename in `ChangeSet.identityEvidence`, Admission may shape `delete_remote(oldPath) + push(newPath)` → `rename_remote`. Hash verification is mandatory: `push.local.hash === del.baseline.hash` must hold, confirming content is unchanged. The private local helper enforces this rule for both file and folder renames.
 
 - **File renames** (`optimizeLocalFileRenames`): Consumes the derived file view of local `RenameEvidence`.
 - **Folder renames** (`coalesceLocalFolderRenames`): Consumes the derived folder view and coalesces all mapped descendant actions into one `rename_remote` with `isFolder: true`. Every descendant must pass hash verification; incomplete mappings are later deferred by admission.
 
 ### Remote renames — trusted (`optimize-remote-renames.ts`)
 
-When `getChangedPaths()` reports a rename pair, the optimizer attempts `delete_local(oldPath) + pull(newPath)` → `rename_local`. The report is authoritative rename evidence, so this optimization needs no content-hash inference. Surfacing that pair is the backend's job and is order-independent across all backends ([ADR 0006](adr/0006-remote-rename-detection-is-order-independent.md)). Optimization is not the safety boundary: whether the refined result may execute is decided afterward by admission.
+When `getChangedPaths()` reports a rename pair, Admission may shape `delete_local(oldPath) + pull(newPath)` → `rename_local`. The report is authoritative rename evidence, so this shaping needs no content-hash inference. Surfacing that pair is the backend's job and is order-independent across all backends ([ADR 0006](adr/0006-remote-rename-detection-is-order-independent.md)). The same component decision validates the shaped result; there is no independently trusted intermediate plan.
 
-- **File renames** (`optimizeRemoteFileRenames`): Matches individual rename pairs from the backend. The match requires the old path to be a pure `delete_local` and the new path a `pull`. If a new object was created at the old path, native rename does not coalesce; admission permits the source-recreation fallback only when stable-ID evidence proves the moved and recreated objects are distinct and the actions preserve both. The local optimizer (`optimize-local-renames.ts`) is symmetric: it needs `delete_remote(old)` + `push(new)`.
+- **File renames** (`optimizeRemoteFileRenames`): Matches individual rename pairs from the backend. The match requires the old path to be a pure `delete_local` and the new path a `pull`. If a new object was created at the old path, native rename does not coalesce; Admission permits the source-recreation fallback only when stable-ID evidence proves the moved and recreated objects are distinct and the actions preserve both. The private local shaping helper is symmetric: it needs `delete_remote(old)` + `push(new)`.
 - **Folder renames** (`coalesceRemoteFolderRenames`): When a folder-level rename pair has `isFolder: true`, coalesce every `delete_local` child under the old prefix into one `rename_local` (`isFolder: true`). Rules: (1) Absorb a descendant whose matching `pull` is missing into the rename — rewrite its baseline to the new path; a genuine remote delete then propagates as `delete_local` next cycle (bias toward safe deletion). (2) Skip the whole folder (reason `destination_occupied`) if any action under the new prefix has a non-null local entity (`a.local != null`), falling back to the per-file actions. Detection is best-effort; a per-action `localFs.rename` failure is caught and recovers next cycle. See `optimize-remote-renames.ts` for rationale. Remaining file-level pairs fall through to individual file rename optimization.
   - **Optimization opportunity (not implemented):** a destination-occupied folder rename may be decomposable into per-child mappings, but only a complete mapping whose postconditions pass admission may execute. Incomplete mappings defer; see [ADR 0006](adr/0006-remote-rename-detection-is-order-independent.md) and [ADR 0008](adr/0008-logical-identity-admission-fails-closed.md).
 
 ## Destructive admission
 
-`prepareSyncCycleSnapshot()` projects scope before filtering, creates/refines the plain
+`prepareSyncCycleSnapshot()` projects scope before filtering, creates the plain
 `SyncPlan` proposal, and freezes the proposal, normative evidence, observations, scope,
 and backend/root namespace into one cycle snapshot. The orchestrator passes that value
 once to pure `admitDestructivePlan()`. Admission builds connected components from
@@ -196,7 +200,9 @@ Admission alone proves exact deletion authority, native rename, a direction-spec
 scope transition, two-sided convergence, or the recognized source-recreation
 postcondition. Unknown, conflicting, incomplete, or otherwise unproved components
 defer as a whole, including state-only actions. Only actions from `authorized`
-dispositions are projected, in proposal order, into the nominal `AuthorizedSyncPlan`;
+dispositions are projected into the nominal `AuthorizedSyncPlan`; disconnected
+ordinary work retains proposal order, while a proved component replacement occupies
+that component's place.
 `executePlan()` cannot accept a plain proposal through the supported typed API.
 
 Endpoint dispositions are `included`, `policy_out`, `mobile_deferred`, or `unknown`.
@@ -214,7 +220,11 @@ old-target in-flight cycle cannot recreate debt after teardown.
 
 ### Observability
 
-Each optimization step returns `RenameOptResult` with `applied` (successful renames) and `skipped` (with structured `reason`: `action_type_mismatch`, `hash_mismatch`, `hash_missing`, `no_descendants`, `destination_occupied`). `refinePlan()` logs these via the debug logger. Admission logs each deferred component's reason, evidence kind/origin, endpoint dispositions, and paths (never content or credentials); status and the coalesced user notification include the deferred count.
+Admission logs executable/proposed counts and each deferred component's reason,
+evidence kind/origin, endpoint dispositions, and paths (never content or credentials);
+status and the coalesced user notification include the deferred count. Private shaping
+helpers expose typed skip reasons to their focused tests, but do not form an observable
+pipeline stage.
 
 ## Execution phases (lane/tier scheduling)
 
@@ -227,7 +237,7 @@ Each optimization step returns `RenameOptResult` with `applied` (successful rena
 | 2 — Conflicts | `conflict` | Serial (own phase) | Mutates both filesystems **and a planner-invisible `.conflict` sibling** (`generateConflictPath`); serial avoids sibling-path collisions — see [ADR 0001](adr/0001-metadata-cache-is-subordinate-to-commit-last.md) (prohibited patterns) |
 | 3 — Structural | remote lane: `rename_remote` → `delete_remote`; local lane: `rename_local` → `delete_local` | The two lanes run **concurrently**; within each lane renames are **serial** then deletes **pooled** (own `AsyncPool(DELETE_CONCURRENCY=5)` per lane) | Renames serial (two endpoints + folder-subtree rewrites); deletes pooled (bulk-folder-delete throughput); lanes independent (the local FS has no remote metadata cache) |
 
-The phases run behind **sequential barriers** (Phase 1 fully drains before Phase 2 before Phase 3). This preserves two safety properties: no content write (Phase 1) runs concurrently with a same-subtree structural rename/delete (Phase 3), and conflict (Phase 2, which touches both sides + a sibling path) never overlaps either. Renames stay serial so the rename optimizer's destination-occupancy assumptions hold; pooled deletes are safe even for the legitimate folder+descendant overlap via the inline delete CAS guard (the folder's `removeTree` evicts the child entry, so the child delete short-circuits) — see [ADR 0001 → T7](adr/0001-metadata-cache-is-subordinate-to-commit-last.md).
+The phases run behind **sequential barriers** (Phase 1 fully drains before Phase 2 before Phase 3). This preserves two safety properties: no content write (Phase 1) runs concurrently with a same-subtree structural rename/delete (Phase 3), and conflict (Phase 2, which touches both sides + a sibling path) never overlaps either. Renames stay serial so Admission's destination-occupancy proof is not deliberately invalidated by another rename in the same lane; pooled deletes are safe even for the legitimate folder+descendant overlap via the inline delete CAS guard (the folder's `removeTree` evicts the child entry, so the child delete short-circuits) — see [ADR 0001 → T7](adr/0001-metadata-cache-is-subordinate-to-commit-last.md).
 
 Phases 1 and 3 use `executeAction()`, which runs `runActionIO()` followed by `commitAction()` and records success in `result.succeeded`. Phase 2 (conflict) uses `executeConflictAction()` instead: it runs `resolveConflict()` per the configured strategy (`auto_merge` / `duplicate`), re-stats both local and remote sides, commits, and records the action in both `result.conflicts` and `result.succeeded`. In both paths, `AuthError` is re-thrown to abort the entire cycle (it rejects the phase's pool/lane and propagates); all other errors are caught per-action and recorded in `result.failed`. Known repeated local-origin poison actions can be skipped before I/O and recorded in `result.blocked`; they are visible in notifications and status but do not commit per-file state.
 

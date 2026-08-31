@@ -1,6 +1,6 @@
 # ADR 0008 — Logical-identity admission fails closed before sync-plan execution
 
-**Status:** Accepted · 2026-08-25
+**Status:** Accepted · 2026-08-25 · **Revised 2026-08-31** (Admission owns identity-component action shaping and lifecycle; the standalone optimizer stage is retired)
 **Context area:** `sync/` — change evidence, scope projection, destructive admission, checkpoint/debt lifecycle
 **Related:** [ADR 0001](0001-metadata-cache-is-subordinate-to-commit-last.md), [ADR 0002](0002-backends-verified-by-shared-behaviour-contracts.md), [ADR 0006](0006-remote-rename-detection-is-order-independent.md), [Issue #43](https://github.com/takezoh/obsidian-air-sync/issues/43), [Issue #45](https://github.com/takezoh/obsidian-air-sync/issues/45), [Issue #47](https://github.com/takezoh/obsidian-air-sync/issues/47)
 
@@ -30,7 +30,7 @@ depend on that repair being complete.
    `present_unresolved`. A thrown stat aborts the cycle and is never absence.
 
 2. Reported local/remote renames remain one normative `RenameEvidence` record through
-   collection, refinement, and admission. Backend-native `identityKey` values are
+   collection and admission. Backend-native `identityKey` values are
    opaque, same-root evidence only. Equal non-empty keys relate occurrences; unequal
    keys separate them. Missing keys provide no evidence.
 
@@ -39,12 +39,14 @@ depend on that repair being complete.
    deletion, no-op, or deferral. `unknown`, `mobile_deferred`, and incomplete folder
    mappings defer the whole connected component.
 
-4. `admitDestructivePlan` is the sole final owner of destructive admissibility. It is
-   pure and cycle-local, consumes one immutable cycle snapshot, and emits exactly one
-   `authorized`, `resolved_no_action`, or `deferred` disposition for every relevant
-   component, including zero-action evidence components. Only Admission can issue the
-   nominal `AuthorizedSyncPlan` accepted by `executePlan`; disconnected authorized
-   actions retain proposal order.
+4. `admitDestructivePlan` is the sole owner of cross-path identity-component action
+   shaping, destructive admissibility, disposition, and local lifecycle membership.
+   It is pure and cycle-local, consumes one immutable cycle snapshot, builds the
+   exhaustive component partition once, and emits exactly one `authorized`,
+   `resolved_no_action`, or `deferred` result for every relevant component, including
+   zero-action evidence components. Only Admission can issue the nominal
+   `AuthorizedSyncPlan` accepted by `executePlan`; disconnected authorized actions
+   retain proposal order.
 
 5. Deferral is visible and non-clean: status is `partial_error`, notifications count
    deferred components, structured logs identify reasons/evidence/scope/paths, the
@@ -72,8 +74,9 @@ depend on that repair being complete.
 - The durable state remains O(U): one record per namespace-unique unresolved local
   edge, not a persistent identity graph or descendant closure.
 - Native IDs improve evidence but do not authorize cross-backend/root comparison.
-- Optimizers remain performance/plan-shaping steps. Their failure to match is not
-  permission to execute the fallback; admission independently proves or rejects it.
+- Local and remote rename shaping helpers are private to Admission. There is no
+  standalone whole-plan optimizer or second component build; a failed native
+  projection defers unless another complete component outcome is independently proved.
 - Issue #46 can be fixed without changing this boundary. Better cache causality should
   reduce ambiguity, while this admission policy remains the safety net.
 

@@ -78,6 +78,7 @@ owners: []
 relations:
 - {type: references, target: adr-20260825-issue43-destructive-authorization}
 - {type: introduces, target: adr-20260831-admission-owned-local-rename-constraint-lifecycle}
+- {type: references, target: adr-20260831-admission-owns-identity-component-decisi}
 source_paths:
 - src/sync/change-detector.ts
 - src/sync/path-observation.ts
@@ -114,6 +115,11 @@ membership before I/O; Finalization retires exact release membership only after 
 corresponding consequence and checkpoint succeed. Existing v6 rows are replayed as
 candidates and re-evaluated from fresh authoritative facts. The stored wire shape and
 schema remain unchanged.
+
+The follow-on identity-component decision redesign keeps this exact debt lifecycle
+contract. It removes the separate whole-plan optimizer and makes the same Admission
+outcome select action shaping, disposition, and lifecycle membership together; it does
+not broaden retirement or change the persisted v6 representation.
 
 ## Closure Notes
 

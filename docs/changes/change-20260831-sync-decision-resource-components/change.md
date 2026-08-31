@@ -19,16 +19,21 @@ scope:
 - src/sync/ proposal-to-Admission boundary, component outcomes, lifecycle wiring,
   diagnostics, and structural enforcement.
 - src/fs/ shared provider faithful-fake and interface conformance.
-- e2e/ targeted opt-in live evidence only when a concrete backend representation
-  gap is suspected.
+- e2e/ targeted opt-in live evidence only when a concrete backend representation gap
+  is suspected.
 - ARCHITECTURE.md persistent sync decision responsibility boundary.
 - docs/sync-pipeline.md pipeline and lifecycle documentation.
 - docs/adr/ accepted Admission ownership decision and reconciled ownership text.
+- eslint.config.mts Admission-private import and pure-transform enforcement.
+- docs/code-enforcement.md structural enforcement documentation.
+- docs/error-handling.md pipeline error-boundary documentation.
+- docs/changes/change-20260831-issue51-rename-evidence-lifecycle/change.md compatibility
+  note for the retained debt lifecycle contract.
 non_goals:
 - Changing SyncState v6, RenameDebt wire shape, checkpoint formats, or executor ordering.
 - Introducing provider-specific sync policy, a persistent resource graph, or a general
   sync compiler.
-- Implementing Issue
+- Claiming that the redesign fixes the unmeasured Issue #51 blank-file symptom.
 change_classes:
 - responsibility
 - boundary
@@ -75,6 +80,11 @@ source_paths:
 - src/sync/orchestrator.ts
 - src/sync/plan-executor.ts
 - src/sync/sync-cycle-finalization.ts
+- src/sync/identity-component-decision.ts
+- eslint.config.mts
+- docs/code-enforcement.md
+- docs/error-handling.md
+- docs/changes/change-20260831-issue51-rename-evidence-lifecycle/change.md
 summary: Replace plan-then-optimize-then-revalidate with one component decision boundary
   while preserving crash and destructive-safety invariants.
 updated: '2026-08-31'

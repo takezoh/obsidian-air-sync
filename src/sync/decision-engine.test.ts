@@ -476,8 +476,8 @@ describe("one plan action per path (ADR 0001 T7 invariant)", () => {
 	// (Group-A: push/pull/match/cleanup) actions ever target the same path — a parallel
 	// write then can't re-key another write's guarded path mid-upload. The source of
 	// that uniqueness is here: planSync mints exactly one action per changeset entry,
-	// and entries are unique by path. (refinePlan only removes/reclassifies Group-A
-	// actions into Group-B renames — see rename-optimizer.test.ts — so it preserves it.)
+	// and entries are unique by path. Admission may replace a connected delete+transfer
+	// pair with one native rename, while its component tests preserve unique targets.
 	it("emits exactly one action per path across every action type", () => {
 		const entries: MixedEntity[] = [
 			{ path: "push.md", local: local({ mtime: 2000, hash: "h-local" }), remote: remote(), prevSync: baseline() },

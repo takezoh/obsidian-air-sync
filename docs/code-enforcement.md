@@ -96,9 +96,17 @@ functions — no I/O, no clock, no randomness — so every intermediate state is
 | | |
 |---|---|
 | **Prevents** | the pure transforms importing `fs/interface` (IFileSystem), or calling `Date.now()` / `Math.random()` |
-| **Where** | `PURE_TRANSFORMS` list in `eslint.config.mts` (`decision-engine`, `change-compare`, `merge`, `rename-optimizer`, `optimize-local-renames`, `optimize-remote-renames`) |
+| **Where** | `PURE_TRANSFORMS` list in `eslint.config.mts` (`decision-engine`, `change-compare`, `merge`, PlanAdmission + its component graph/decision/lifecycle helpers, and the private local/remote shaping helpers) |
 | **How** | `no-restricted-imports` + `no-restricted-syntax` (error), scoped to those files |
 | **Exception** | Pass timestamps/variation in as data. To add a new pure transform, list its file in `PURE_TRANSFORMS` |
+
+The identity-component implementation has a second structural guard:
+`ADMISSION_INTERNAL_IMPORTS` prevents any other production sync module from importing
+the component graph, decision, lifecycle, shaping helpers, or a revived
+`rename-optimizer` stage. Only `plan-admission.ts` and its private helper modules may
+use those imports; the rest of production consumes the public Admission result or
+`AuthorizedSyncPlan`. This keeps path-local proposal and identity-component authority
+from becoming two whole-plan policy owners again.
 
 ### Producer-qualified mock path evidence
 
@@ -136,9 +144,9 @@ the new size, with a comment saying why the split was deferred. The pin is a
 ratchet: it stops *silent* growth and flags the file as split-when-convenient — it
 is not a mandate to shrink the file by force.
 
-Five modules currently carry such overrides as known debt: `fs/googledrive/auth.ts`
-(337), `sync/orchestrator.ts` (408), `sync/plan-admission.ts` (398),
-`fs/caching/remote-fs.ts` (326), and `fs/backend-manager.ts` (341). Ratchet them down
+Four modules currently carry such overrides as known debt: `fs/googledrive/auth.ts`
+(337), `sync/orchestrator.ts` (408), `fs/caching/remote-fs.ts` (326), and
+`fs/backend-manager.ts` (341). Ratchet them down
 when a natural responsibility split presents itself.
 (`fs/googledrive/index.ts` was here at 397; ADR 0001 lifted its cache/checkpoint
 machinery into `fs/caching/`, dropping it back under 300, so it is no longer

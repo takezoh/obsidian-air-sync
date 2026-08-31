@@ -63,10 +63,26 @@ const PURE_TRANSFORMS = [
 	"src/sync/decision-engine.ts",
 	"src/sync/change-compare.ts",
 	"src/sync/merge.ts",
-	"src/sync/rename-optimizer.ts",
+	"src/sync/plan-admission.ts",
+	"src/sync/plan-admission-graph.ts",
+	"src/sync/identity-component-decision.ts",
+	"src/sync/local-rename-admission.ts",
 	"src/sync/optimize-local-renames.ts",
 	"src/sync/optimize-remote-renames.ts",
 ];
+
+const ADMISSION_INTERNAL_IMPORTS = {
+	group: [
+		"**/identity-component-decision",
+		"**/plan-admission-graph",
+		"**/local-rename-admission",
+		"**/optimize-local-renames",
+		"**/optimize-remote-renames",
+		"**/rename-optimizer",
+	],
+	message:
+		"Identity-component shaping and policy are private to PlanAdmission; other production modules consume AuthorizedSyncPlan or the public Admission result.",
+};
 
 // no-restricted-syntax selectors -------------------------------------------
 
@@ -236,6 +252,28 @@ export default defineConfig(
 		},
 	},
 	{
+		// The identity-component implementation is one private Admission boundary,
+		// not a reusable pre/post planning stage.
+		files: ["src/sync/**/*.ts"],
+		ignores: [
+			"src/sync/**/*.test.ts",
+			"src/sync/plan-admission.ts",
+			"src/sync/identity-component-decision.ts",
+			"src/sync/local-rename-admission.ts",
+			"src/sync/optimize-local-renames.ts",
+			"src/sync/optimize-remote-renames.ts",
+		],
+		rules: {
+			"no-restricted-imports": [
+				"error",
+				{
+					paths: [AXIOS_IMPORT],
+					patterns: [NODE_API_IMPORTS, BACKEND_SPECIFIC_IMPORTS, ADMISSION_INTERNAL_IMPORTS],
+				},
+			],
+		},
+	},
+	{
 		// Producer-qualified path evidence: sync tests choose a local/remote role;
 		// only the dedicated mock contract may select authority directly.
 		files: ["src/sync/**/*.test.ts"],
@@ -280,13 +318,6 @@ export default defineConfig(
 		// crash-safety cut point is visible rather than hidden behind a shallow wrapper.
 		files: ["src/sync/orchestrator.ts"],
 		rules: { "max-lines": ["error", { max: 408, skipBlankLines: true, skipComments: true }] },
-	},
-	{
-		// Admission is the one pure owner of final destructive authorization. Splitting
-		// its component policy from disposition issuance would add an internal policy
-		// boundary and make the safety decision span modules solely to satisfy a count.
-		files: ["src/sync/plan-admission.ts"],
-		rules: { "max-lines": ["error", { max: 398, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Re-pinned from 317: replay-free post-delta snapshots must stay under the

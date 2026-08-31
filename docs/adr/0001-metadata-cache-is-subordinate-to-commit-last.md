@@ -240,8 +240,9 @@ FS (`resetCheckpoint()`), not by editing settings.
   suites (a cache re-key injected mid-phase-2 ⇒ the phase-3 write is skipped with a
   warning). Its *dormancy* rests on **one plan action per path**, pinned by
   `decision-engine.test.ts` → *"emits exactly one action per path across every action
-  type"* and `rename-optimizer.test.ts` → *"keeps concurrent Group-A actions on distinct
-  paths"*. Breaking that invariant (a plan emitting two Group-A actions for one path) is
+  type"* and `plan-admission.test.ts` → *"shapes disconnected local and remote renames
+  without disturbing ordinary order"*. Breaking that invariant (a plan emitting two
+  Group-A actions for one path) is
   what would wake the write/rename guard — these tests fail the day it does.
 - **Lane/tier rescheduling (2026-06-15).** The now-**active** delete CAS guard's
   overlapping-delete behavior is pinned by `googledrive/index.test.ts` → *"delete()
