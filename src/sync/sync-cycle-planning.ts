@@ -5,7 +5,6 @@ import type { AdmissionResult } from "./plan-admission";
 import { captureCycleAdmissionSnapshot } from "./plan-admission";
 import { mergeRenameDebtEvidence, renameDebtEvidence } from "./rename-debt";
 import { renameEvidenceKey } from "./identity-evidence";
-import { refinePlan } from "./rename-optimizer";
 import { projectScope, type ScopeProjectionPolicy } from "./scope-projection";
 import type { RenameDebt } from "./state";
 
@@ -62,11 +61,7 @@ export function prepareSyncCycleSnapshot(
 			excluded: completeChangeSet.entries.length - filtered.length,
 		});
 	}
-	const plan = refinePlan(
-		planSync(filtered),
-		completeChangeSet.identityEvidence,
-		logger,
-	);
+	const plan = planSync(filtered);
 	const snapshot = captureCycleAdmissionSnapshot(
 		plan,
 		completeChangeSet.identityEvidence,
@@ -84,11 +79,12 @@ export function logSyncCyclePlan(
 	admission: AdmissionResult,
 ): void {
 	const actionBreakdown: Record<string, number> = {};
-	for (const { action } of admission.snapshot.plan.actions) {
+	for (const { action } of admission.executable.actions) {
 		actionBreakdown[action] = (actionBreakdown[action] ?? 0) + 1;
 	}
 	logger?.info("Sync plan created", {
-		total: admission.snapshot.plan.actions.length,
+		total: admission.executable.actions.length,
+		proposed: admission.snapshot.plan.actions.length,
 		localRenameCandidates: admission.snapshot.localRenameCandidates.length,
 		freshLocalRenameCandidates: admission.snapshot.localRenameCandidates.filter((candidate) =>
 			!admission.snapshot.replayedLocalRenameKeys.has(renameEvidenceKey(candidate))).length,

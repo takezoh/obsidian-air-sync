@@ -1,7 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { collectChanges } from "./change-detector";
 import { planSync } from "./decision-engine";
-import { refinePlan } from "./rename-optimizer";
 import { executePlan } from "./plan-executor";
 import type { ExecutionResult } from "./plan-executor";
 import { LocalChangeTracker } from "./local-tracker";
@@ -56,13 +55,10 @@ async function runCycle(
 		stateStore,
 		changes: snapshot,
 	});
-	const plan = refinePlan(
-		planSync(changeSet.entries),
-		changeSet.identityEvidence,
-	);
+	const proposal = planSync(changeSet.entries);
 	const scope = projectScope(changeSet, { classifyPath: () => "included" });
 	const admission = admitDestructivePlan(captureCycleAdmissionSnapshot(
-		plan, changeSet.identityEvidence, changeSet.observations, scope, "crash-safety-test",
+		proposal, changeSet.identityEvidence, changeSet.observations, scope, "crash-safety-test",
 	));
 	const result = await executePlan(admission.executable, {
 		localFs,
@@ -76,7 +72,11 @@ async function runCycle(
 	// assert in each test that recovery comes from the next full re-scan
 	// (warm/cold), not from a lingering dirty flag.
 	localTracker.acknowledge(snapshot);
-	return { plan, result, temperature: changeSet.temperature };
+	return {
+		plan: { actions: [...admission.executable.actions] },
+		result,
+		temperature: changeSet.temperature,
+	};
 }
 
 describe("an interrupted sync converges by re-syncing", () => {

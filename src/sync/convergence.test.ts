@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { collectChanges } from "./change-detector";
 import { planSync } from "./decision-engine";
-import { refinePlan } from "./rename-optimizer";
 import { executePlan } from "./plan-executor";
 import { LocalChangeTracker } from "./local-tracker";
 import {
@@ -27,7 +26,7 @@ import { projectScope } from "./scope-projection";
  *
  * Each test drives the real pipeline composition — the core of
  * `SyncOrchestrator.executeSyncOnce()`:
- *   collectChanges → planSync → refinePlan → executePlan (+ per-action commit)
+ *   collectChanges → planSync → PlanAdmission → executePlan (+ per-action commit)
  * — then runs it a SECOND time and asserts the plan is empty (the fixed point).
  */
 
@@ -66,13 +65,10 @@ async function runCycle(env: Env): Promise<SyncPlan> {
 		stateStore,
 		changes: snapshot,
 	});
-	const plan = refinePlan(
-		planSync(changeSet.entries),
-		changeSet.identityEvidence,
-	);
+	const proposal = planSync(changeSet.entries);
 	const scope = projectScope(changeSet, { classifyPath: () => "included" });
 	const admission = admitDestructivePlan(captureCycleAdmissionSnapshot(
-		plan, changeSet.identityEvidence, changeSet.observations, scope, "convergence-test",
+		proposal, changeSet.identityEvidence, changeSet.observations, scope, "convergence-test",
 	));
 	await executePlan(admission.executable, {
 		localFs,
@@ -83,7 +79,7 @@ async function runCycle(env: Env): Promise<SyncPlan> {
 	// Acknowledging the snapshot also flips the tracker into its "initialized"
 	// state for the next cycle.
 	localTracker.acknowledge(snapshot);
-	return plan;
+	return { actions: [...admission.executable.actions] };
 }
 
 function actionTypes(plan: SyncPlan): string[] {
