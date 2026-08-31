@@ -183,7 +183,7 @@ contracts:
     verification:
       - id: verify-shared-fs-contracts
         tier: T1
-        command: npm test -- src/fs/googledrive/ifilesystem-contract.test.ts src/fs/dropbox/ifilesystem-contract.test.ts src/fs/onedrive/ifilesystem-contract.test.ts src/fs/caching/remote-fs.contract.test.ts
+        command: npm test -- src/fs/googledrive/ifilesystem-contract.test.ts src/fs/dropbox/ifilesystem-contract.test.ts src/fs/onedrive/ifilesystem-contract.test.ts src/fs/googledrive/crash-safety-contract.test.ts src/fs/dropbox/crash-safety-contract.test.ts src/fs/onedrive/crash-safety-contract.test.ts
       - id: verify-live-google
         tier: T2
         command: npm run test:e2e:google
