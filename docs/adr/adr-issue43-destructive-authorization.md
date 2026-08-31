@@ -2,33 +2,41 @@
 id: adr-20260825-issue43-destructive-authorization
 kind: adr
 title: Bind destructive execution to immutable Admission authority
-summary: Freeze cycle inputs before Admission and make its nominal output the sole executable destructive plan.
+summary: Freeze cycle inputs before Admission and make its nominal output the sole
+  executable destructive plan.
 status: accepted
 created: '2026-08-25'
 decision_makers:
-  - user
+- user
 consulted: []
 informed: []
 relations:
-  - type: originatedFrom
-    target: change-20260825-issue43-destructive-authorization
+- {type: originatedFrom, target: change-20260825-issue43-destructive-authorization}
 source_paths:
-  - src/sync/sync-cycle-planning.ts
-  - src/sync/plan-admission.ts
-  - src/sync/plan-admission-graph.ts
-  - src/sync/plan-executor.ts
-  - src/sync/sync-cycle-finalization.ts
-  - src/sync/orchestrator.ts
+- src/sync/sync-cycle-planning.ts
+- src/sync/plan-admission.ts
+- src/sync/plan-admission-graph.ts
+- src/sync/plan-executor.ts
+- src/sync/sync-cycle-finalization.ts
+- src/sync/orchestrator.ts
 consequences:
   positive:
-    - A proposal cannot reach the executor through supported typed production paths without Admission issuing permission from one stable input set.
-    - Zero-action uncertainty is represented explicitly and remains visible, checkpoint-holding, and recoverable.
+  - A proposal cannot reach the executor through supported typed production paths
+    without Admission issuing permission from one stable input set.
+  - Zero-action uncertainty is represented explicitly and remains visible, checkpoint-holding,
+    and recoverable.
   negative:
-    - Executor tests and callers must obtain authorized plans through Admission, increasing fixture setup at the safety boundary.
-    - Snapshot and disposition types must evolve atomically across planning, execution, and finalization.
+  - Executor tests and callers must obtain authorized plans through Admission, increasing
+    fixture setup at the safety boundary.
+  - Snapshot and disposition types must evolve atomically across planning, execution,
+    and finalization.
   neutral:
-    - Existing RenameDebt, remote session evidence, SyncState v6, and Issue 46 backend ownership remain unchanged.
-confirmation: Focused admission/orchestrator/finalization tests prove nominal executor input, snapshot stability, actionless deferral, strict pre-Admission recovery, and independent OneDrive/A-B evidence causality.
+  - Existing RenameDebt, remote session evidence, SyncState v6, and Issue 46 backend
+    ownership remain unchanged.
+confirmation: Focused admission/orchestrator/finalization tests prove nominal executor
+  input, snapshot stability, actionless deferral, strict pre-Admission recovery, and
+  independent OneDrive/A-B evidence causality.
+updated: '2026-09-01'
 ---
 
 # Bind destructive execution to immutable Admission authority

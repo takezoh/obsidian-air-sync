@@ -4,11 +4,16 @@ import { digest, isLocallyComputable, sha256 } from "../utils/hash";
 import { exactEntity, observePath, replaceObservation } from "./path-observation";
 import type { MixedEntity, PathObservation } from "./types";
 
+export interface HashEnrichmentResult {
+	candidates: number;
+	matches: number;
+}
+
 /** Enrich initial same-size pairs when the remote checksum is locally reproducible. */
 export async function enrichHashesForInitialMatch(
 	entries: MixedEntity[],
 	localFs: IFileSystem,
-): Promise<void> {
+): Promise<HashEnrichmentResult> {
 	const candidates = entries.filter(
 		(entry) => entry.local && entry.remote && !entry.prevSync &&
 			!entry.local.hash && !entry.remote.hash &&
@@ -17,7 +22,7 @@ export async function enrichHashesForInitialMatch(
 			isLocallyComputable(entry.remote.remoteChecksum.algo),
 	);
 	const pool = new AsyncPool(10);
-	await Promise.all(candidates.map((entry) => pool.run(async () => {
+	const outcomes = await Promise.all(candidates.map((entry) => pool.run(async () => {
 		try {
 			const remoteChecksum = entry.remote!.remoteChecksum!;
 			const content = await localFs.read(entry.path);
@@ -25,11 +30,17 @@ export async function enrichHashesForInitialMatch(
 				const hash = await sha256(content);
 				entry.local = { ...entry.local!, hash };
 				entry.remote = { ...entry.remote!, hash };
+				return true;
 			}
 		} catch {
 			// A failed read stays unenriched and therefore takes the safe conflict path.
 		}
+		return false;
 	})));
+	return {
+		candidates: candidates.length,
+		matches: outcomes.filter(Boolean).length,
+	};
 }
 
 /** Resolve and hash rename destinations that came from hash-free listings. */

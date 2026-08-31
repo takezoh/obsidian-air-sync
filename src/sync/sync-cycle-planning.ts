@@ -22,6 +22,8 @@ export function logChangeDetection(
 		remoteOnly: remoteOnlyPaths.length,
 		both: changeSet.entries.filter((entry) => entry.local && entry.remote).length,
 		enriched: changeSet.entries.filter((entry) => entry.local?.hash && !entry.prevSync).length,
+		hashEnrichmentCandidates: changeSet.hashEnrichment?.candidates ?? 0,
+		hashEnrichmentMatches: changeSet.hashEnrichment?.matches ?? 0,
 		renamePairs: renamePairs.size,
 	});
 	if (remoteOnlyPaths.length > 0) logger?.debug("Remote-only paths", { paths: remoteOnlyPaths });

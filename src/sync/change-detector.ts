@@ -4,7 +4,11 @@ import type { IdentityEvidence, MixedEntity, PathObservation, SyncRecord } from 
 import type { SyncStateStore } from "./state";
 import type { TrackerSnapshot } from "./local-tracker";
 import { hasChanged, hasRemoteChanged } from "./change-compare";
-import { enrichHashesForInitialMatch, enrichHashesForRenames } from "./change-hash-enrichment";
+import {
+	enrichHashesForInitialMatch,
+	enrichHashesForRenames,
+	type HashEnrichmentResult,
+} from "./change-hash-enrichment";
 import { collectLocalRenameEvidence, completeIdentityEvidence, renameOptimizerView } from "./identity-evidence";
 import {
 	getRemoteChanges,
@@ -26,6 +30,8 @@ export interface ChangeSet {
 	observations: PathObservation[];
 	identityEvidence: IdentityEvidence[];
 	temperature: "hot" | "warm" | "cold";
+	/** Acquisition diagnostics; production collection always supplies this after enrichment. */
+	hashEnrichment?: HashEnrichmentResult;
 }
 
 export interface ChangeDetectorDeps {
@@ -103,7 +109,7 @@ export async function collectChanges(
 		await confirmEntryAbsences(changeSet, deps.localFs, deps.remoteFs);
 	}
 	// Hash enrichment operates only on exact entries and cannot upgrade observations.
-	await enrichHashesForInitialMatch(changeSet.entries, deps.localFs);
+	changeSet.hashEnrichment = await enrichHashesForInitialMatch(changeSet.entries, deps.localFs);
 	const renameView = renameOptimizerView(changeSet.identityEvidence);
 	await enrichHashesForRenames(
 		changeSet.entries, changeSet.observations, deps.localFs,

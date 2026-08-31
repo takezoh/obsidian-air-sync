@@ -29,11 +29,13 @@ scope:
 - docs/error-handling.md pipeline error-boundary documentation.
 - docs/changes/change-20260831-issue51-rename-evidence-lifecycle/change.md compatibility
   note for the retained debt lifecycle contract.
+- docs/changes/change-20260825-issue43-destructive-authorization/change.md compatibility
+  review for observational-only planning diagnostics.
 non_goals:
 - Changing SyncState v6, RenameDebt wire shape, checkpoint formats, or executor ordering.
 - Introducing provider-specific sync policy, a persistent resource graph, or a general
   sync compiler.
-- Claiming that the redesign fixes the unmeasured Issue #51 blank-file symptom.
+- Claiming that the redesign fixes the unmeasured Issue
 change_classes:
 - responsibility
 - boundary
@@ -98,6 +100,11 @@ The accepted plan removes standalone `refinePlan`, constructs components once, a
 uses an exhaustive fail-closed outcome table with exact v6 debt membership.
 
 ## Closure Notes
+
+Cold-cycle checksum enrichment now exposes its candidate and successful-match counts in
+the existing change-detection diagnostic event. This is observational only: acquisition
+owns the measurement, while Decision and Admission remain unchanged. The integration
+witness also preserves the user notification count for successful `match` actions.
 
 
 {% transition from="draft" to="ready" date="2026-08-31" %}

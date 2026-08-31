@@ -75,6 +75,40 @@ function mockProvider(
 }
 
 describe("SyncOrchestrator", () => {
+	describe("cold hash-match diagnostics", () => {
+		it("reports checksum enrichment candidates and successful fast matches", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			const content = new TextEncoder().encode("same").buffer;
+			addFile(localFs, "same.md", "same");
+			const remote = addFile(remoteFs, "same.md", "same");
+			remote.remoteChecksum = { algo: "sha256", value: await sha256(content) };
+			const info = vi.fn();
+			const settings = baseMockSettings({
+				backendType: "test",
+				vaultId: `test-${Math.random()}`,
+				showSyncNotifications: true,
+			});
+			const deps = createDeps({
+				getSettings: () => settings,
+				localFs: () => localFs,
+				remoteFs: () => remoteFs,
+				logger: { debug: vi.fn(), info, warn: vi.fn(), error: vi.fn(), flush: vi.fn() } as unknown as Logger,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+
+			await orchestrator.runSync();
+
+			expect(info).toHaveBeenCalledWith("Change detection completed", expect.objectContaining({
+				temperature: "cold",
+				hashEnrichmentCandidates: 1,
+				hashEnrichmentMatches: 1,
+			}));
+			expect(deps.notify).toHaveBeenCalledWith("Sync: 1 matched");
+			await orchestrator.close();
+		});
+	});
+
 	describe("plan admission and durable rename debt", () => {
 		it("pushes a never-synchronized local rename without creating durable debt", async () => {
 			const localFs = createMockLocalFs();

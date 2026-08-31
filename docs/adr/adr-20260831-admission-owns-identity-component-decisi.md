@@ -35,7 +35,7 @@ consequences:
 confirmation: Lint keeps Admission internals pure and private; focused Admission,
   convergence, crash-safety, and provider contract tests plus the full project gate
   verify the boundary.
-updated: '2026-08-31'
+updated: '2026-09-01'
 ---
 
 # Admission owns identity-component decision

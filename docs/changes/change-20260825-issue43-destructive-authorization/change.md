@@ -65,7 +65,7 @@ source_paths:
 - src/sync/orchestrator.ts
 summary: Centralize destructive authorization in Admission and simplify Issue 43 recovery
   and finalization boundaries.
-updated: '2026-08-25'
+updated: '2026-09-01'
 ---
 
 ## Summary

@@ -34,9 +34,12 @@ scope:
 - src/sync/orchestrator.test.ts — lifecycle ordering and false-debt convergence regressions.
 - src/sync/plan-admission.test.ts — additive whitelist and fail-closed counterexamples.
 - src/sync/rename-debt.test.ts — mechanical persistence-carrier contract tests.
-- docs/code-enforcement.md — documented orchestrator cap matching the cohesive pre-I/O cut point.
-- eslint.config.mts — ratcheted orchestrator line cap for the visible pre-I/O cut point.
-- docs/adr/adr-20260831-admission-owned-local-rename-constraint-lifecycle.md — accepted responsibility decision.
+- docs/code-enforcement.md — documented orchestrator cap matching the cohesive pre-I/O
+  cut point.
+- eslint.config.mts — ratcheted orchestrator line cap for the visible pre-I/O cut
+  point.
+- docs/adr/adr-20260831-admission-owned-local-rename-constraint-lifecycle.md — accepted
+  responsibility decision.
 non_goals:
 - Proving or fixing the Issue 51 blank-file symptom without second-device runtime
   evidence.
@@ -98,7 +101,7 @@ source_paths:
 - src/sync/rename-debt.test.ts
 - eslint.config.mts
 - docs/code-enforcement.md
-updated: '2026-08-31'
+updated: '2026-09-01'
 ---
 
 ## Summary
