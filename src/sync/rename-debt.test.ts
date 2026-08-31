@@ -1,13 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
-	applyRenameDebtScope,
-	collectLocalRenameDebts,
 	mergeRenameDebtEvidence,
 	renameDebtsBoundToEvidence,
+	serializeLocalRenameDebts,
 	unreleasedIdentityEvidence,
 } from "./rename-debt";
 import type { RenameDebt } from "./state";
-import type { RenameEvidence, ScopeProjection } from "./types";
+import type { LocalRenameEvidence, ScopeProjection } from "./types";
 
 function debt(overrides: Partial<RenameDebt> = {}): RenameDebt {
 	return {
@@ -16,7 +15,7 @@ function debt(overrides: Partial<RenameDebt> = {}): RenameDebt {
 	};
 }
 
-function rename(): RenameEvidence {
+function rename(): LocalRenameEvidence {
 	return {
 		kind: "rename", side: "local", oldPath: "A.md", newPath: "a.md",
 		isFolder: false, authority: "reported",
@@ -34,33 +33,11 @@ describe("rename debt orchestration helpers", () => {
 		expect(merged).toEqual([rename()]);
 	});
 
-	it("restores stored endpoint dispositions only where fresh projection is unknown", () => {
-		const restored = applyRenameDebtScope(
-			projection({ "A.md": "unknown", "a.md": "policy_out" }),
-			[debt({ oldDisposition: "included", newDisposition: "included" })],
-		);
-
-		expect([...restored.byEndpoint]).toEqual([
-			["A.md", "included"], ["a.md", "policy_out"],
-		]);
-	});
-
-	it("keeps unknown when persisted edges disagree about one endpoint", () => {
-		const restored = applyRenameDebtScope(projection({ "A.md": "unknown" }), [
-			debt({ oldDisposition: "included" }),
-			debt({ newPath: "B.md", oldDisposition: "policy_out" }),
-		]);
-
-		expect(restored.byEndpoint.get("A.md")).toBe("unknown");
-	});
-
-	it("persists local rename constraints except an explicit out-to-out no-op", () => {
-		expect(collectLocalRenameDebts(
+	it("serializes only the local rename membership selected by Admission", () => {
+		expect(serializeLocalRenameDebts(
 			"onedrive:root", [rename()], projection({ "A.md": "included", "a.md": "included" }),
 		)).toEqual([debt()]);
-		expect(collectLocalRenameDebts(
-			"onedrive:root", [rename()], projection({ "A.md": "policy_out", "a.md": "policy_out" }),
-		)).toEqual([]);
+		expect(serializeLocalRenameDebts("onedrive:root", [], projection({}))).toEqual([]);
 	});
 
 	it("selects only namespace-local debts bound to released evidence", () => {

@@ -21,7 +21,7 @@ import { buildSyncRecord } from "./state-committer";
 import { CycleSummary } from "./sync-notification";
 import type { SyncCycleResult } from "./sync-notification";
 import { FailedActionTracker } from "./failed-action-tracker";
-import { mergeIdentityEvidence, renameDebtEvidence } from "./rename-debt";
+import { mergeIdentityEvidence, renameDebtEvidence, serializeLocalRenameDebts } from "./rename-debt";
 import {
 	logChangeDetection,
 	logSyncCyclePlan,
@@ -455,6 +455,8 @@ export class SyncOrchestrator {
 		// are not reclassified as evidence-acquisition recovery.
 		const admission = admitDestructivePlan(planning.snapshot);
 		logSyncCyclePlan(this.deps.logger, admission);
+		const localRenameDebts = serializeLocalRenameDebts(debtNamespace,
+			admission.localRenameLifecycle.persistBeforeExecution, admission.snapshot.scope);
 		const { folderRenamePairs } = snapshot;
 
 		if (folderRenamePairs.size > 0) {
@@ -463,9 +465,10 @@ export class SyncOrchestrator {
 				pairs: [...folderRenamePairs.entries()].map(([n, o]) => `${o} → ${n}`),
 			});
 		}
-		// This write is deliberately before executePlan: a crash after tracker capture
-		// must not erase the only authoritative local rename edge.
-		await this.stateStore.upsertRenameDebts(planning.localRenameDebts);
+		// Persist Admission-selected constraints before execution so tracker evidence cannot be lost.
+		await this.stateStore.upsertRenameDebts(localRenameDebts).catch((cause: unknown) => {
+			throw new Error("Local rename constraint persistence failed", { cause });
+		});
 		const total = admission.executable.actions.length;
 
 		const classifyError = (err: unknown) => provider?.classifyError?.(err) ?? classifyHttpError(err);
@@ -497,7 +500,7 @@ export class SyncOrchestrator {
 		this.pendingAdmissionEvidence = await finalizeSyncCycle({
 			admission,
 			result, pendingEvidence: this.pendingAdmissionEvidence, persistedDebts,
-			localRenameDebts: planning.localRenameDebts,
+			localRenameDebts,
 			checkpoint: remoteFs.checkpoint, scopeFingerprint, stateStore: this.stateStore,
 		});
 		// readBackendState now persists only non-secret token state (the cursor lives

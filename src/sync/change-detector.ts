@@ -14,7 +14,7 @@ import {
 } from "./remote-change-source";
 import {
 	confirmEntryAbsences,
-	confirmCarriedRenameOppositeEndpoints,
+	confirmRenameOppositeEndpoints,
 	confirmUnknownRenameEndpoints,
 	ensureRenameEndpointObservations,
 	exactEntity,
@@ -90,9 +90,9 @@ export async function collectChanges(
 		...collectLocalRenameEvidence(changes));
 	ensureRenameEndpointObservations(changeSet.observations, changeSet.identityEvidence);
 	await confirmUnknownRenameEndpoints(changeSet, deps.localFs, deps.remoteFs);
-	await confirmCarriedRenameOppositeEndpoints(
+	await confirmRenameOppositeEndpoints(
 		changeSet.observations,
-		opts.carriedIdentityEvidence ?? [],
+		changeSet.identityEvidence,
 		deps.localFs,
 		deps.remoteFs,
 	);

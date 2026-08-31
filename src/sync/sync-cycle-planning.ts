@@ -3,11 +3,8 @@ import type { ChangeSet } from "./change-detector";
 import { planSync } from "./decision-engine";
 import type { AdmissionResult } from "./plan-admission";
 import { captureCycleAdmissionSnapshot } from "./plan-admission";
-import {
-	applyRenameDebtScope,
-	collectLocalRenameDebts,
-	mergeRenameDebtEvidence,
-} from "./rename-debt";
+import { mergeRenameDebtEvidence, renameDebtEvidence } from "./rename-debt";
+import { renameEvidenceKey } from "./identity-evidence";
 import { refinePlan } from "./rename-optimizer";
 import { projectScope, type ScopeProjectionPolicy } from "./scope-projection";
 import type { RenameDebt } from "./state";
@@ -55,7 +52,7 @@ export function prepareSyncCycleSnapshot(
 		...changeSet,
 		identityEvidence: mergeRenameDebtEvidence(changeSet.identityEvidence, persistedDebts),
 	};
-	const scopeProjection = applyRenameDebtScope(projectScope(completeChangeSet, policy), persistedDebts);
+	const scopeProjection = projectScope(completeChangeSet, policy);
 	const filtered = completeChangeSet.entries.filter((entry) =>
 		scopeProjection.byEndpoint.get(entry.path) === "included");
 	if (filtered.length !== completeChangeSet.entries.length) {
@@ -76,16 +73,10 @@ export function prepareSyncCycleSnapshot(
 		completeChangeSet.observations,
 		scopeProjection,
 		namespace,
+		completeChangeSet.entries.flatMap((entry) => entry.prevSync ? [entry.path] : []),
+		persistedDebts.map((debt) => renameEvidenceKey(renameDebtEvidence(debt))),
 	);
-	const localRenameDebts = collectLocalRenameDebts(
-		namespace,
-		completeChangeSet.identityEvidence,
-		scopeProjection,
-	);
-	return {
-		snapshot,
-		localRenameDebts,
-	};
+	return { snapshot };
 }
 
 export function logSyncCyclePlan(
@@ -98,6 +89,14 @@ export function logSyncCyclePlan(
 	}
 	logger?.info("Sync plan created", {
 		total: admission.snapshot.plan.actions.length,
+		localRenameCandidates: admission.snapshot.localRenameCandidates.length,
+		freshLocalRenameCandidates: admission.snapshot.localRenameCandidates.filter((candidate) =>
+			!admission.snapshot.replayedLocalRenameKeys.has(renameEvidenceKey(candidate))).length,
+		replayedLocalRenameCandidates: admission.snapshot.replayedLocalRenameKeys.size,
+		persistedLocalRenameConstraints: admission.localRenameLifecycle.persistBeforeExecution.length,
+		nonBindingLocalRenameCandidates: admission.snapshot.localRenameCandidates.length -
+			admission.localRenameLifecycle.persistBeforeExecution.length,
+		releasableLocalRenameCandidates: admission.localRenameLifecycle.releaseAfterSafeCheckpoint.length,
 		...actionBreakdown,
 	});
 	for (const component of admission.deferred) {

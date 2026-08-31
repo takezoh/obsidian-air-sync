@@ -25,12 +25,16 @@ interface SyncCycleFinalizationInput {
  */
 export async function finalizeSyncCycle(input: SyncCycleFinalizationInput): Promise<IdentityEvidence[]> {
 	const succeeded = new Set(input.result.succeeded.map(({ action }) => action));
-	const releasable = input.admission.dispositions.flatMap((disposition) => {
+	const dispositionEvidence = input.admission.dispositions.flatMap((disposition) => {
 		if (disposition.kind === "deferred") return [];
 		if (disposition.kind === "authorized" &&
 			!disposition.actions.every((action) => succeeded.has(action))) return [];
 		return disposition.evidence;
 	});
+	const releasable = [
+		...dispositionEvidence,
+		...input.admission.localRenameLifecycle.releaseAfterSafeCheckpoint,
+	];
 	const checkpointSafe = input.result.failed.length === 0 && input.result.blocked.length === 0 &&
 		input.admission.dispositions.every((disposition) =>
 			disposition.kind !== "deferred" &&
@@ -41,7 +45,7 @@ export async function finalizeSyncCycle(input: SyncCycleFinalizationInput): Prom
 	await input.checkpoint?.commitCheckpoint({ scopeFingerprint: input.scopeFingerprint });
 	const resolvedDebts = renameDebtsBoundToEvidence(
 		[...input.persistedDebts, ...input.localRenameDebts],
-		releasable,
+		input.admission.localRenameLifecycle.releaseAfterSafeCheckpoint,
 		input.admission.snapshot.namespace,
 	);
 	await input.stateStore.deleteRenameDebts(resolvedDebts);

@@ -1,23 +1,22 @@
 import { projectRenameScope, type RenameScopeConsequence } from "./scope-projection";
 import { buildAdmissionComponents, type AdmissionComponent } from "./plan-admission-graph";
+import type { CycleAdmissionSnapshot } from "./cycle-admission-snapshot";
+export { captureCycleAdmissionSnapshot, type CycleAdmissionSnapshot } from "./cycle-admission-snapshot";
+import {
+	buildLocalRenameLifecycle,
+	classifyNonBindingLocalRenames,
+	type LocalRenameLifecycle,
+} from "./local-rename-admission";
+import { renameEvidenceKey } from "./identity-evidence";
 import type {
 	IdentityEvidence,
 	PathObservation,
 	RenameEvidence,
 	ScopeProjection,
 	SyncAction,
-	SyncPlan,
 } from "./types";
 
 const authorizedSyncPlanBrand: unique symbol = Symbol("AuthorizedSyncPlan");
-
-export interface CycleAdmissionSnapshot {
-	readonly plan: { readonly actions: readonly SyncAction[] };
-	readonly identityEvidence: readonly IdentityEvidence[];
-	readonly observations: readonly PathObservation[];
-	readonly scope: ScopeProjection;
-	readonly namespace: string;
-}
 
 /** The executor input that only Admission can construct. */
 export interface AuthorizedSyncPlan {
@@ -65,23 +64,7 @@ export interface AdmissionResult {
 	executable: AuthorizedSyncPlan;
 	dispositions: AdmissionDisposition[];
 	deferred: DeferredComponent[];
-}
-
-export function captureCycleAdmissionSnapshot(
-	plan: SyncPlan,
-	identityEvidence: readonly IdentityEvidence[],
-	observations: readonly PathObservation[],
-	scope: ScopeProjection,
-	namespace: string,
-): CycleAdmissionSnapshot {
-	const capturedScope = Object.freeze({ byEndpoint: new Map(scope.byEndpoint) });
-	return Object.freeze({
-		plan: Object.freeze({ actions: Object.freeze([...plan.actions]) }),
-		identityEvidence: Object.freeze([...identityEvidence]),
-		observations: Object.freeze([...observations]),
-		scope: capturedScope,
-		namespace,
-	});
+	localRenameLifecycle: LocalRenameLifecycle;
 }
 
 /**
@@ -92,8 +75,16 @@ export function captureCycleAdmissionSnapshot(
 export function admitDestructivePlan(
 	snapshot: CycleAdmissionSnapshot,
 ): AdmissionResult {
-	const components = buildAdmissionComponents(
+	const candidateComponents = buildAdmissionComponents(
 		snapshot.plan, snapshot.identityEvidence, snapshot.observations, snapshot.scope,
+	);
+	const nonBindingCandidates = classifyNonBindingLocalRenames(
+		candidateComponents, snapshot.baselinePaths, snapshot.scope,
+	);
+	const effectiveEvidence = snapshot.identityEvidence.filter((item) =>
+		item.kind !== "rename" || item.side !== "local" || !nonBindingCandidates.has(renameEvidenceKey(item)));
+	const components = buildAdmissionComponents(
+		snapshot.plan, effectiveEvidence, snapshot.observations, snapshot.scope,
 	);
 	const authorizedActions = new Set<SyncAction>();
 	const dispositions: AdmissionDisposition[] = [];
@@ -123,11 +114,17 @@ export function admitDestructivePlan(
 		actions: Object.freeze(actions),
 		[authorizedSyncPlanBrand]: snapshot,
 	});
+	const localRenameLifecycle = buildLocalRenameLifecycle(
+		snapshot.localRenameCandidates,
+		nonBindingCandidates,
+		dispositions.flatMap((disposition) => disposition.kind === "deferred" ? [] : disposition.evidence),
+	);
 	return {
 		snapshot,
 		executable,
 		dispositions,
 		deferred: dispositions.filter((item): item is DeferredComponent => item.kind === "deferred"),
+		localRenameLifecycle,
 	};
 }
 

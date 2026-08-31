@@ -71,6 +71,8 @@ export interface RenameEvidence {
 	identityKey?: string;
 }
 
+export type LocalRenameEvidence = RenameEvidence & { side: "local" };
+
 export type IdentityEvidence =
 	| RenameEvidence
 	| { kind: "alias"; side: SyncSide; requestedPath: string; resolvedPath: string }

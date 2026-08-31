@@ -134,8 +134,8 @@ export async function confirmUnknownRenameEndpoints(
 	})));
 }
 
-/** Confirm the other side of durable rename evidence so a clean replay can retire its debt. */
-export async function confirmCarriedRenameOppositeEndpoints(
+/** Confirm the opposite side of every rename candidate before Admission classifies it. */
+export async function confirmRenameOppositeEndpoints(
 	observations: PathObservation[],
 	evidence: readonly IdentityEvidence[],
 	localFs: IFileSystem,

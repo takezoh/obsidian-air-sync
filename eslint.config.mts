@@ -275,11 +275,11 @@ export default defineConfig(
 		rules: { "max-lines": ["error", { max: 337, skipBlankLines: true, skipComments: true }] },
 	},
 	{
-		// Re-pinned from 385: the explicit pre-Admission try/catch and the single
-		// admitDestructivePlan cut point must remain together in the composition root;
-		// extracting either would hide which exceptions own COLD evidence recovery.
+		// Re-pinned from 406: Admission-selected debt persistence, its explicit failure,
+		// and executePlan must remain adjacent in the composition root so the pre-I/O
+		// crash-safety cut point is visible rather than hidden behind a shallow wrapper.
 		files: ["src/sync/orchestrator.ts"],
-		rules: { "max-lines": ["error", { max: 406, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 408, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Admission is the one pure owner of final destructive authorization. Splitting

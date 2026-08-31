@@ -1,9 +1,10 @@
 import { projectRenameScope } from "./scope-projection";
+import { renameEvidenceKey } from "./identity-evidence";
 import type { RenameDebt } from "./state";
 import type {
 	IdentityEvidence,
+	LocalRenameEvidence,
 	RenameEvidence,
-	ScopeDisposition,
 	ScopeProjection,
 } from "./types";
 
@@ -24,36 +25,15 @@ export function mergeIdentityEvidence(
 	return [...merged.values()];
 }
 
-/** Fill only unknown endpoints; current explicit policy/mobile classifications win. */
-export function applyRenameDebtScope(
-	projection: ScopeProjection,
-	debts: readonly RenameDebt[],
-): ScopeProjection {
-	const candidates = new Map<string, ScopeDisposition>();
-	const conflicts = new Set<string>();
-	for (const debt of debts) {
-		rememberDisposition(candidates, conflicts, debt.oldPath, debt.oldDisposition);
-		rememberDisposition(candidates, conflicts, debt.newPath, debt.newDisposition);
-	}
-	const byEndpoint = new Map(projection.byEndpoint);
-	for (const [path, disposition] of candidates) {
-		if (!conflicts.has(path) && byEndpoint.get(path) === "unknown") {
-			byEndpoint.set(path, disposition);
-		}
-	}
-	return { byEndpoint };
-}
-
-export function collectLocalRenameDebts(
+/** Mechanical v6 serialization for membership already selected by Admission. */
+export function serializeLocalRenameDebts(
 	namespace: string,
-	evidence: readonly IdentityEvidence[],
+	evidence: readonly LocalRenameEvidence[],
 	projection: ScopeProjection,
 ): RenameDebt[] {
-	return evidence.flatMap((item): RenameDebt[] => {
-		if (item.kind !== "rename" || item.side !== "local") return [];
+	return evidence.map((item): RenameDebt => {
 		const rule = projectRenameScope(item, projection);
-		if (rule.consequence === "none") return [];
-		return [{
+		return {
 			namespace,
 			side: item.side,
 			oldPath: item.oldPath,
@@ -61,7 +41,7 @@ export function collectLocalRenameDebts(
 			isFolder: item.isFolder,
 			oldDisposition: rule.oldDisposition,
 			newDisposition: rule.newDisposition,
-		}];
+		};
 	});
 }
 
@@ -99,19 +79,4 @@ export function renameDebtEvidence(debt: RenameDebt): RenameEvidence {
 		isFolder: debt.isFolder,
 		authority: "reported",
 	};
-}
-
-function renameEvidenceKey(evidence: RenameEvidence): string {
-	return `${evidence.side}\0${evidence.oldPath}\0${evidence.newPath}\0${evidence.isFolder}`;
-}
-
-function rememberDisposition(
-	candidates: Map<string, ScopeDisposition>,
-	conflicts: Set<string>,
-	path: string,
-	disposition: ScopeDisposition,
-): void {
-	const current = candidates.get(path);
-	if (current !== undefined && current !== disposition) conflicts.add(path);
-	else candidates.set(path, disposition);
 }

@@ -1,0 +1,292 @@
+artifact: design-plan-spine
+version: 2
+granularity_profile: boundary-complete
+
+scope_expansion_signals:
+  - id: scope-signal-admission-lifecycle-authority
+    kind: shared_boundary
+    target_ref: component-plan-admission
+    witness: AdmissionResult gains exact pre-I/O persistence and post-checkpoint release membership, replacing planning-owned scope-only debt promotion.
+    requirement_refs: [FR-RENAME-001, FR-PERSIST-001, FR-FINALIZE-001]
+    authority_refs: [adr-0008-logical-identity-admission-fails-closed, adr-20260825-issue43-destructive-authorization]
+  - id: scope-signal-v6-reclassification-operation
+    kind: compatibility_operation
+    target_ref: contract-v6-persistence
+    witness: Existing v6 debt is re-evaluated from current authoritative facts and may be selectively retired only after its admitted consequence and checkpoint succeed.
+    requirement_refs: [FR-COMPAT-001, FR-FINALIZE-001]
+    authority_refs: [adr-0008-logical-identity-admission-fails-closed]
+  - id: scope-signal-fixed-candidate-proof
+    kind: critic_induced_contract
+    target_ref: contract-candidate-proof
+    witness: Critique removed the cross-component snapshot carrier from private discretion and fixed the complete immutable proof projection and current-scope authority.
+    requirement_refs: [FR-RENAME-001, FR-RENAME-003, NFR-SAFETY-001]
+    authority_refs: [adr-0008-logical-identity-admission-fails-closed, adr-20260825-issue43-destructive-authorization]
+
+requirements:
+  - id: FR-RENAME-001
+    type: event_driven
+    priority: must
+    statement: Only Admission shall classify fresh or replayed local rename candidates and emit exact pre-I/O persistence and post-checkpoint release membership.
+  - id: FR-RENAME-002
+    type: event_driven
+    priority: must
+    statement: A positively proven additive unbaselined local rename component shall authorize terminal pushes without rename_mismatch and a fresh report shall create no debt.
+  - id: FR-RENAME-003
+    type: state_driven
+    priority: must
+    statement: Synchronized, destructive, scope-transitioning, unknown, conflicting, or incomplete rename components shall remain safety binding and fail closed unless their exact consequence is proven.
+  - id: FR-COMPAT-001
+    type: event_driven
+    priority: must
+    statement: Existing false SyncState v6 debt shall be reclassified from current authoritative facts and retired only after successful admitted progress and a safe checkpoint without reset or migration.
+  - id: FR-PERSIST-001
+    type: unwanted
+    priority: must
+    statement: If any retained rename constraint cannot be upserted, the cycle shall fail visibly before executor I/O or tracker acknowledgement and shall preserve retry evidence.
+  - id: FR-FINALIZE-001
+    type: state_driven
+    priority: must
+    statement: Finalization shall retire exact release membership only after its corresponding disposition succeeds or resolves with no action and the clean checkpoint commits.
+  - id: NFR-SAFETY-001
+    type: ubiquitous
+    priority: must
+    statement: Admission-only executable authority, stat-backed absence, fresh current-scope authority, and fail-closed handling of incomplete facts shall remain intact.
+  - id: NFR-OBSERVE-001
+    type: ubiquitous
+    priority: must
+    statement: Structured non-sensitive diagnostics shall distinguish report, replay, promotion, non-binding, retention, release, and persistence-failure lifecycle stages.
+  - id: NFR-SCOPE-001
+    type: ubiquitous
+    priority: must
+    statement: The correction shall reuse the RenameEvidence tuple and SyncState v6 and shall not add a general identity graph, persistent state machine, blanket deletion, or blank-file claim.
+
+components:
+  - id: component-cycle-acquisition
+    kind: existing
+    contract_refs: [contract-candidate-proof]
+    paths: [src/sync/change-detector.ts, src/sync/identity-evidence.ts, src/sync/sync-cycle-planning.ts]
+  - id: component-plan-admission
+    kind: existing
+    contract_refs: [contract-admission-lifecycle]
+    paths: [src/sync/plan-admission.ts, src/sync/plan-admission-graph.ts]
+  - id: component-rename-debt-carrier
+    kind: existing
+    contract_refs: [contract-v6-persistence]
+    paths: [src/sync/rename-debt.ts, src/sync/state.ts, src/sync/orchestrator.ts]
+  - id: component-cycle-finalization
+    kind: existing
+    contract_refs: [contract-commit-last-retirement]
+    paths: [src/sync/sync-cycle-finalization.ts, src/sync/orchestrator.ts]
+  - id: component-design-verification
+    kind: existing
+    contract_refs: [contract-candidate-proof, contract-admission-lifecycle, contract-v6-persistence, contract-commit-last-retirement]
+    paths: [src/sync/plan-admission.test.ts, src/sync/rename-debt.test.ts, src/sync/sync-cycle-finalization.test.ts, src/sync/orchestrator.test.ts, ARCHITECTURE.md, docs/sync-pipeline.md, docs/adr]
+
+contracts:
+  - id: contract-candidate-proof
+    dimension: integration_contract
+    owner: component-cycle-acquisition
+    requirement_refs: [FR-RENAME-001, FR-RENAME-003, FR-COMPAT-001, NFR-SAFETY-001]
+    unit_refs: [unit-candidate-proof]
+    adr_refs: [adr-0008-logical-identity-admission-fails-closed, adr-20260825-issue43-destructive-authorization, adr-20260831-admission-owned-local-rename-constraint-lifecycle]
+    verification:
+      - id: verify-candidate-proof
+        tier: T1
+        command: npm test -- --run src/sync/change-detector.test.ts src/sync/sync-cycle-planning.test.ts
+    partition:
+      outcomes: [determinate, unknown, inconclusive, conflicting]
+      default_policy: The fixed immutable projection carries edge, authoritative observations, baseline, identity/conflict, completeness, current scope, proposal, origin, and namespace; missing facts remain explicit and old v6 scope cannot fill current unknown.
+
+  - id: contract-admission-lifecycle
+    dimension: security_boundary
+    owner: component-plan-admission
+    requirement_refs: [FR-RENAME-001, FR-RENAME-002, FR-RENAME-003, NFR-SAFETY-001]
+    unit_refs: [unit-admission-lifecycle]
+    adr_refs: [adr-0008-logical-identity-admission-fails-closed, adr-20260825-issue43-destructive-authorization, adr-20260831-admission-owned-local-rename-constraint-lifecycle]
+    verification:
+      - id: verify-fresh-unbaselined
+        tier: T1
+        command: npm test -- --run src/sync/plan-admission.test.ts src/sync/orchestrator.test.ts
+      - id: verify-ambiguous-retention
+        tier: T1
+        command: npm test -- --run src/sync/plan-admission.test.ts
+      - id: verify-lifecycle-membership
+        tier: T1
+        command: npm test -- --run src/sync/plan-admission.test.ts src/sync/sync-cycle-finalization.test.ts
+    partition:
+      outcomes: [determinate, unknown, inconclusive, conflicting]
+      default_policy: Only the complete positive additive-unbaselined witness is non-binding; every other candidate is safety binding or inconclusive and retained fail closed.
+
+  - id: contract-v6-persistence
+    dimension: migration_compatibility
+    owner: component-rename-debt-carrier
+    requirement_refs: [FR-COMPAT-001, FR-PERSIST-001, NFR-OBSERVE-001, NFR-SCOPE-001]
+    unit_refs: [unit-persistence-integration]
+    adr_refs: [adr-0008-logical-identity-admission-fails-closed, adr-20260831-admission-owned-local-rename-constraint-lifecycle]
+    verification:
+      - id: verify-replayed-false-v6
+        tier: T1
+        command: npm test -- --run src/sync/orchestrator.test.ts src/sync/state.test.ts
+      - id: verify-persistence-abort
+        tier: T1
+        command: npm test -- --run src/sync/orchestrator.test.ts src/sync/rename-debt.test.ts
+      - id: verify-lifecycle-diagnostics
+        tier: T1
+        command: npm test -- --run src/sync/orchestrator.test.ts
+    partition:
+      outcomes: [determinate, unknown, inconclusive, conflicting]
+      default_policy: The unchanged v6 row is a replay candidate; retained membership must upsert before I/O and any upsert failure aborts before executor or tracker acknowledgement.
+
+  - id: contract-commit-last-retirement
+    dimension: state_lifecycle
+    owner: component-cycle-finalization
+    requirement_refs: [FR-COMPAT-001, FR-FINALIZE-001, NFR-SAFETY-001]
+    unit_refs: [unit-finalization, unit-persistence-integration]
+    adr_refs: [adr-0008-logical-identity-admission-fails-closed, adr-20260825-issue43-destructive-authorization, adr-20260831-admission-owned-local-rename-constraint-lifecycle]
+    verification:
+      - id: verify-finalization-faults
+        tier: T1
+        command: npm test -- --run src/sync/sync-cycle-finalization.test.ts src/sync/orchestrator.test.ts
+      - id: verify-repository-gate
+        tier: T2
+        command: npm run lint && npm run lint:bot-repro && npm run build && npm test
+    partition:
+      outcomes: [determinate, unknown, inconclusive, conflicting]
+      default_policy: Release requires exact Admission membership, successful corresponding disposition, and committed checkpoint; deferred, failed, blocked, unassociated, or checkpoint-failed edges remain retained.
+
+adrs:
+  - id: adr-20260831-admission-owned-local-rename-constraint-lifecycle
+    status: accepted
+    decision_input_refs: [decision-input-admission-owner, decision-input-v6-shape, decision-input-false-runtime, decision-input-fail-closed, decision-input-finalization, decision-input-blank-unknown, decision-input-scope-bounded]
+  - id: adr-0008-logical-identity-admission-fails-closed
+    status: accepted
+    decision_input_refs: [decision-input-admission-owner, decision-input-fail-closed, decision-input-finalization]
+  - id: adr-20260825-issue43-destructive-authorization
+    status: accepted
+    decision_input_refs: [decision-input-admission-owner, decision-input-finalization]
+
+units:
+  - title: unit-candidate-proof
+    chunk: acquisition
+    contract_refs: [contract-candidate-proof]
+    files: [src/sync/change-detector.ts, src/sync/identity-evidence.ts, src/sync/sync-cycle-planning.ts, src/sync/change-detector.test.ts, src/sync/sync-cycle-planning.test.ts]
+    acceptance:
+      - Fresh and replayed candidates share the fixed immutable proof projection.
+      - Current scope is freshly projected and old v6 dispositions cannot fill unknown.
+      - Listing absence alone cannot establish additive safety.
+    objective: Supply Admission with complete immutable candidate facts without persistence policy.
+    output_format: TypeScript carrier/acquisition changes and focused Vitest coverage.
+    tool_guidance: Reuse RenameEvidence and existing observations; add only the semantic candidate channel.
+    task_boundaries: Do not classify relevance, authorize actions, persist debt, or add a general graph.
+    decision_closure_reason: Shared proof shape and authority are fixed with no cross-component carrier discretion.
+
+  - title: unit-admission-lifecycle
+    chunk: admission
+    contract_refs: [contract-admission-lifecycle]
+    files: [src/sync/plan-admission.ts, src/sync/plan-admission-graph.ts, src/sync/plan-admission.test.ts]
+    depends_on: [unit-candidate-proof]
+    acceptance:
+      - Proven additive components authorize only terminal pushes and produce no fresh persistence membership.
+      - Safety-binding successful rename produces both persist and release membership.
+      - Deferred or inconclusive components produce persist-only membership and no destructive I/O.
+    objective: Consolidate executable and durable local rename lifecycle authority in Admission.
+    output_format: TypeScript Admission result/policy changes and discriminating component tests.
+    tool_guidance: Extend the existing component evaluation; do not add a persisted graph or state machine.
+    task_boundaries: Do not perform persistence, checkpointing, filesystem I/O, or optimizer rewrites.
+    decision_closure_reason: Positive proof, fail-closed default, and both exact memberships are fully specified.
+
+  - title: unit-persistence-integration
+    chunk: persistence
+    contract_refs: [contract-candidate-proof, contract-admission-lifecycle, contract-v6-persistence, contract-commit-last-retirement]
+    files: [src/sync/rename-debt.ts, src/sync/state.ts, src/sync/orchestrator.ts, src/sync/rename-debt.test.ts, src/sync/state.test.ts, src/sync/orchestrator.test.ts]
+    depends_on: [unit-candidate-proof, unit-admission-lifecycle]
+    acceptance:
+      - Only explicit Admission retained membership is serialized to unchanged v6 rows.
+      - Failed upsert yields visible failure with zero executor I/O and zero tracker acknowledgement.
+      - Fresh and seeded false-v6 Issue 51 cases converge while genuine and ambiguous rows retain.
+      - Lifecycle diagnostics distinguish every contracted stage without content or credentials.
+    objective: Rewire pre-I/O persistence and existing v6 compatibility around Admission output.
+    output_format: TypeScript integration/store helper changes and orchestrator fault/compatibility tests.
+    tool_guidance: Use existing state, tracker, executor, observation, and checkpoint seams to assert ordering.
+    task_boundaries: Do not change SyncState version, delete rows in bulk, alter backends, or infer relevance.
+    decision_closure_reason: Wire shape, compatibility authority, failure abort, ordering, and diagnostics are fixed.
+
+  - title: unit-finalization
+    chunk: finalization
+    contract_refs: [contract-commit-last-retirement]
+    files: [src/sync/sync-cycle-finalization.ts, src/sync/sync-cycle-finalization.test.ts]
+    depends_on: [unit-admission-lifecycle]
+    acceptance:
+      - Exact release membership retires only after its successful disposition and checkpoint.
+      - Deferral, action failure, blocking, missing association, and checkpoint failure retain debt.
+      - Finalization performs no relevance, scope, baseline, or identity evaluation.
+    objective: Preserve commit-last semantics while consuming Admission lifecycle output mechanically.
+    output_format: TypeScript finalization changes and fault-path Vitest coverage.
+    tool_guidance: Keep checkpoint commit before exact debt deletion and reuse disposition completion data.
+    task_boundaries: Do not acquire facts or reconstruct membership from action names.
+    decision_closure_reason: Release membership, corresponding-success predicate, and failure retention are fixed.
+
+  - title: unit-design-verification
+    chunk: verification
+    contract_refs: [contract-candidate-proof, contract-admission-lifecycle, contract-v6-persistence, contract-commit-last-retirement]
+    files: [ARCHITECTURE.md, docs/sync-pipeline.md, docs/adr/adr-20260831-admission-owned-local-rename-constraint-lifecycle.md, docs/changes/change-20260831-issue51-rename-evidence-lifecycle]
+    depends_on: [unit-persistence-integration, unit-finalization]
+    acceptance:
+      - The accepted ADR explicitly amends only ADR 0008 section 6 persistence trigger and preserves Issue 43 authority.
+      - Focused tests, docs lint, and the full repository gate pass.
+      - Completion makes no blank-file causality claim.
+    objective: Persist the corrected authority boundary and verify its release contract.
+    output_format: ADR/change documentation and recorded mechanical verification.
+    tool_guidance: Use dev-docs lint and repository npm scripts after implementation.
+    task_boundaries: Do not broaden into unrelated ff87f7d changes or unsupported runtime claims.
+    decision_closure_reason: Stable cross-component ownership requires persistent rationale and full-gate evidence.
+
+acceptance:
+  - id: acceptance-fresh-progress
+    criteria: A fresh unbaselined rename executes only terminal additive pushes without rename_mismatch and creates no debt.
+    requirement_refs: [FR-RENAME-001, FR-RENAME-002]
+  - id: acceptance-v6-compatibility
+    criteria: A seeded false v6 row converges without reset and deletes only after its successful consequence and checkpoint while genuine or ambiguous rows retain.
+    requirement_refs: [FR-COMPAT-001, FR-FINALIZE-001]
+  - id: acceptance-safety-preserved
+    criteria: Synchronized native rename, destructive mismatch, current-scope unknown, chain conflict, and incomplete folder evidence preserve exact authorization or whole-component deferral.
+    requirement_refs: [FR-RENAME-003, NFR-SAFETY-001]
+  - id: acceptance-persistence-abort
+    criteria: Injected debt upsert failure causes visible failure with no executor I/O and no tracker acknowledgement while retry evidence remains.
+    requirement_refs: [FR-PERSIST-001]
+  - id: acceptance-boundary-correct
+    criteria: Planning no longer promotes every report, Admission emits both exact memberships, and Finalization performs only consequence-bound commit-last retirement.
+    requirement_refs: [FR-RENAME-001, FR-FINALIZE-001, NFR-SCOPE-001]
+  - id: acceptance-release-green
+    criteria: Focused lifecycle tests, lifecycle diagnostics tests, docs lint, lint, bot-repro, build, and full Vitest pass without a blank-file claim.
+    requirement_refs: [NFR-OBSERVE-001, NFR-SCOPE-001]
+
+dispositions:
+  - decision_input_ref: decision-input-admission-owner
+    disposition: adopted — Admission solely owns candidate promotion and exact persistence/release membership; pre-Admission scope-only debt policy is removed.
+    adr_refs: [adr-0008-logical-identity-admission-fails-closed, adr-20260825-issue43-destructive-authorization, adr-20260831-admission-owned-local-rename-constraint-lifecycle]
+    contract_refs: [contract-admission-lifecycle]
+  - decision_input_ref: decision-input-v6-shape
+    disposition: adopted — Keep the unchanged v6 wire shape, replay rows as candidates, and reclassify from current authoritative facts.
+    adr_refs: [adr-20260831-admission-owned-local-rename-constraint-lifecycle]
+    contract_refs: [contract-candidate-proof, contract-v6-persistence]
+  - decision_input_ref: decision-input-false-runtime
+    disposition: adopted — Use the narrow positive additive-unbaselined component proof and reject push-spelling-only release.
+    adr_refs: [adr-20260831-admission-owned-local-rename-constraint-lifecycle]
+    contract_refs: [contract-admission-lifecycle]
+  - decision_input_ref: decision-input-fail-closed
+    disposition: adopted — Unknown, conflicting, synchronized, destructive, or incomplete candidates remain retained fail closed.
+    adr_refs: [adr-0008-logical-identity-admission-fails-closed, adr-20260831-admission-owned-local-rename-constraint-lifecycle]
+    contract_refs: [contract-candidate-proof, contract-admission-lifecycle]
+  - decision_input_ref: decision-input-finalization
+    disposition: adopted — Finalization consumes exact consequence-bound release membership after checkpoint and never reclassifies facts.
+    adr_refs: [adr-20260825-issue43-destructive-authorization, adr-20260831-admission-owned-local-rename-constraint-lifecycle]
+    contract_refs: [contract-commit-last-retirement]
+  - decision_input_ref: decision-input-blank-unknown
+    disposition: not_applicable — Blank-file causality lacks second-device evidence and is excluded from this design and success claim.
+    adr_refs: [adr-20260831-admission-owned-local-rename-constraint-lifecycle]
+    contract_refs: []
+  - decision_input_ref: decision-input-scope-bounded
+    disposition: adopted — Repair only the rename evidence lifecycle boundary and reject broad rollback or generalized identity infrastructure.
+    adr_refs: [adr-20260831-admission-owned-local-rename-constraint-lifecycle]
+    contract_refs: [contract-candidate-proof, contract-v6-persistence]

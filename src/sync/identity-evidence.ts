@@ -38,6 +38,10 @@ export function renameOptimizerView(evidence: readonly IdentityEvidence[]): {
 	return { localFiles, localFolders, remote };
 }
 
+export function renameEvidenceKey(evidence: RenameEvidence): string {
+	return `${evidence.side}\0${evidence.oldPath}\0${evidence.newPath}\0${evidence.isFolder}`;
+}
+
 export function completeIdentityEvidence(
 	reported: readonly IdentityEvidence[],
 	observations: readonly PathObservation[],
@@ -102,7 +106,7 @@ function appendOccurrence(
 function dedupeRenameEvidence(evidence: RenameEvidence[]): RenameEvidence[] {
 	const unique = new Map<string, RenameEvidence>();
 	for (const item of evidence) {
-		unique.set(JSON.stringify([item.side, item.oldPath, item.newPath, item.isFolder]), item);
+		unique.set(renameEvidenceKey(item), item);
 	}
 	return [...unique.values()];
 }
