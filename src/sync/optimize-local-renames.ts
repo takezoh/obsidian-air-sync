@@ -1,7 +1,14 @@
 import type { RenamePair, SyncAction } from "./types";
 import type { FolderRenameOptResult, RenameOptResult, SkippedRename } from "./rename-optimizer-types";
 import type { Logger } from "../logging/logger";
-import { replaceConsumed } from "./rename-optimizer";
+
+function replaceConsumed(
+	actions: SyncAction[],
+	consumed: ReadonlySet<string>,
+	replacements: SyncAction[],
+): SyncAction[] {
+	return actions.filter((action) => !consumed.has(action.path)).concat(replacements);
+}
 
 /**
  * Validate that a delete_remote + push pair represents a pure local rename

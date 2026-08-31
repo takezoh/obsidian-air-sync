@@ -1,11 +1,7 @@
 import { projectRenameScope } from "./scope-projection";
 import type { AdmissionComponent } from "./plan-admission-graph";
 import { renameEvidenceKey } from "./identity-evidence";
-import type {
-	IdentityEvidence,
-	LocalRenameEvidence,
-	ScopeProjection,
-} from "./types";
+import type { LocalRenameEvidence, ScopeProjection } from "./types";
 
 export interface LocalRenameLifecycle {
 	persistBeforeExecution: readonly LocalRenameEvidence[];
@@ -30,17 +26,12 @@ export function classifyNonBindingLocalRenames(
 }
 
 export function buildLocalRenameLifecycle(
-	candidates: readonly LocalRenameEvidence[],
-	nonBinding: ReadonlySet<string>,
-	releasableEvidence: readonly IdentityEvidence[],
+	persistBeforeExecution: readonly LocalRenameEvidence[],
+	releaseAfterSafeCheckpoint: readonly LocalRenameEvidence[],
 ): LocalRenameLifecycle {
-	const releasableKeys = new Set(releasableEvidence.flatMap((item) =>
-		item.kind === "rename" && item.side === "local" ? [renameEvidenceKey(item)] : []));
 	return {
-		persistBeforeExecution: Object.freeze(candidates.filter((candidate) =>
-			!nonBinding.has(renameEvidenceKey(candidate)))),
-		releaseAfterSafeCheckpoint: Object.freeze(candidates.filter((candidate) =>
-			nonBinding.has(renameEvidenceKey(candidate)) || releasableKeys.has(renameEvidenceKey(candidate)))),
+		persistBeforeExecution: Object.freeze([...persistBeforeExecution]),
+		releaseAfterSafeCheckpoint: Object.freeze([...releaseAfterSafeCheckpoint]),
 	};
 }
 

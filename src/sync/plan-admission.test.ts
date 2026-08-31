@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FileEntity } from "../fs/types";
+import { renameEvidenceKey } from "./identity-evidence";
 import {
 	admitDestructivePlan,
 	captureCycleAdmissionSnapshot,
@@ -32,7 +33,9 @@ function admit(
 	));
 }
 
-function remoteRename(overrides: Partial<Extract<IdentityEvidence, { kind: "rename" }>> = {}): IdentityEvidence {
+function remoteRename(
+	overrides: Partial<Extract<IdentityEvidence, { kind: "rename" }>> = {},
+): Extract<IdentityEvidence, { kind: "rename" }> {
 	return {
 		kind: "rename", side: "remote", oldPath: "A.md", newPath: "B.md",
 		isFolder: false, authority: "reported", identityKey: "X", ...overrides,
@@ -132,7 +135,7 @@ describe("admitDestructivePlan", () => {
 
 		expect(result.executable.actions).toEqual([action]);
 		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual([]);
-		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual(evidence);
+		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual([]);
 	});
 
 	it("defers unobserved case-distinct deletions independently", () => {
@@ -248,6 +251,25 @@ describe("admitDestructivePlan", () => {
 		expect(result.dispositions).toEqual([expect.objectContaining({
 			kind: "resolved_no_action", paths: ["A.md", "B.md"], actions: [],
 		})]);
+		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual([]);
+	});
+
+	it("releases only replayed debt for an already-converged rename", () => {
+		const evidence = remoteRename({ side: "local", identityKey: undefined });
+		const observations: PathObservation[] = (["local", "remote"] as const).flatMap((side) => [
+			{ kind: "absent" as const, side, requestedPath: "A.md", authority: "stat" as const },
+			{ kind: "exact" as const, side, requestedPath: "B.md", entity: entity("B.md") },
+		]);
+		const snapshot = captureCycleAdmissionSnapshot(
+			{ actions: [] }, [evidence], observations,
+			projection({ "A.md": "included", "B.md": "included" }),
+			"backend\0root", [], [renameEvidenceKey(evidence)],
+		);
+
+		const result = admitDestructivePlan(snapshot);
+
+		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual([]);
+		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual([evidence]);
 	});
 
 	it("admits an additive push when a local rename has no synchronized anchor", () => {
@@ -267,7 +289,29 @@ describe("admitDestructivePlan", () => {
 		expect(result.executable.actions).toEqual([action]);
 		expect(result.deferred).toEqual([]);
 		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual([]);
-		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual(evidence);
+		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual([]);
+	});
+
+	it("releases replayed debt after its additive push succeeds", () => {
+		const action: SyncAction = { path: "B.md", action: "push", local: entity("B.md") };
+		const evidence = remoteRename({ side: "local", identityKey: undefined });
+		const observations: PathObservation[] = [
+			{ kind: "absent", side: "local", requestedPath: "A.md", authority: "stat" },
+			{ kind: "absent", side: "remote", requestedPath: "A.md", authority: "stat" },
+			{ kind: "exact", side: "local", requestedPath: "B.md", entity: entity("B.md") },
+			{ kind: "absent", side: "remote", requestedPath: "B.md", authority: "stat" },
+		];
+		const snapshot = captureCycleAdmissionSnapshot(
+			{ actions: [action] }, [evidence], observations,
+			projection({ "A.md": "included", "B.md": "included" }),
+			"backend\0root", [], [renameEvidenceKey(evidence)],
+		);
+
+		const result = admitDestructivePlan(snapshot);
+
+		expect(result.executable.actions).toEqual([action]);
+		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual([]);
+		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual([evidence]);
 	});
 
 	it("keeps captured inputs stable when caller-owned containers change", () => {
@@ -334,6 +378,92 @@ describe("admitDestructivePlan", () => {
 
 		expect(result.executable.actions).toEqual([action]);
 		expect(result.deferred).toEqual([]);
+	});
+
+	it("shapes a proved local rename and its lifecycle from the base component", () => {
+		const baseline = {
+			path: "A.md", hash: "h", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, syncedAt: 1, remoteIdentityKey: "X",
+		};
+		const deletion: SyncAction = {
+			path: "A.md", action: "delete_remote",
+			remote: entity("A.md", "X"),
+			baseline,
+		};
+		const push: SyncAction = { path: "B.md", action: "push", local: entity("B.md") };
+		const evidence = [remoteRename({ side: "local", identityKey: undefined })];
+		const result = admit([deletion, push], evidence, [], projection({
+			"A.md": "included", "B.md": "included",
+		}));
+
+		expect(result.executable.actions).toEqual([{
+			path: "B.md", oldPath: "A.md", action: "rename_remote",
+			local: push.local, remote: deletion.remote, baseline: deletion.baseline,
+		}]);
+		expect(result.deferred).toEqual([]);
+		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual(evidence);
+		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual(evidence);
+	});
+
+	it("shapes a backend-reported remote rename from the base component", () => {
+		const baseline = {
+			path: "A.md", hash: "h", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, syncedAt: 1, remoteIdentityKey: "X",
+		};
+		const deletion: SyncAction = {
+			path: "A.md", action: "delete_local", local: entity("A.md"), baseline,
+		};
+		const pull: SyncAction = { path: "B.md", action: "pull", remote: entity("B.md", "X") };
+
+		const result = admit([deletion, pull], [remoteRename()], [], projection({
+			"A.md": "included", "B.md": "included",
+		}));
+
+		expect(result.executable.actions).toEqual([{
+			path: "B.md", oldPath: "A.md", action: "rename_local",
+			local: deletion.local, remote: pull.remote, baseline,
+		}]);
+		expect(result.deferred).toEqual([]);
+	});
+
+	it("shapes disconnected local and remote renames without disturbing ordinary order", () => {
+		const baseline = (path: string, remoteIdentityKey?: string) => ({
+			path, hash: "h", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, syncedAt: 1, remoteIdentityKey,
+		});
+		const ordinary: SyncAction = { path: "middle.md", action: "push", local: entity("middle.md") };
+		const proposal: SyncAction[] = [
+			{
+				path: "local-old.md", action: "delete_remote",
+				remote: entity("local-old.md", "L"), baseline: baseline("local-old.md", "L"),
+			},
+			{ path: "local-new.md", action: "push", local: entity("local-new.md") },
+			ordinary,
+			{
+				path: "remote-old.md", action: "delete_local",
+				local: entity("remote-old.md"), baseline: baseline("remote-old.md", "R"),
+			},
+			{ path: "remote-new.md", action: "pull", remote: entity("remote-new.md", "R") },
+		];
+		const evidence: IdentityEvidence[] = [
+			remoteRename({
+				side: "local", oldPath: "local-old.md", newPath: "local-new.md",
+				identityKey: undefined,
+			}),
+			remoteRename({ oldPath: "remote-old.md", newPath: "remote-new.md", identityKey: "R" }),
+		];
+		const scope = projection(Object.fromEntries([
+			"local-old.md", "local-new.md", "middle.md", "remote-old.md", "remote-new.md",
+		].map((path) => [path, "included" as const])));
+
+		const result = admit(proposal, evidence, [], scope);
+
+		expect(result.executable.actions.map((action) => action.action)).toEqual([
+			"rename_remote", "push", "rename_local",
+		]);
+		expect(result.executable.actions[1]).toBe(ordinary);
+		const targets = result.executable.actions.map((action) => action.path);
+		expect(new Set(targets).size).toBe(targets.length);
 	});
 
 	it("admits a remote case-only rename when the local destination aliases its source", () => {

@@ -4,8 +4,15 @@ import type {
 	RemoteFolderRenameOptResult,
 } from "./rename-optimizer-types";
 import type { Logger } from "../logging/logger";
-import { replaceConsumed } from "./rename-optimizer";
 import { isDotPrefixed } from "../utils/path";
+
+function replaceConsumed(
+	actions: SyncAction[],
+	consumed: ReadonlySet<string>,
+	replacements: SyncAction[],
+): SyncAction[] {
+	return actions.filter((action) => !consumed.has(action.path)).concat(replacements);
+}
 
 /**
  * Replace matching `delete_local(oldPath) + pull(newPath)` pairs

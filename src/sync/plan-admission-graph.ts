@@ -21,11 +21,12 @@ export function buildAdmissionComponents(
 		...actionPathSets.flat(), ...evidencePathSets.flat(), ...observationPathSets.flat(),
 		...scope.byEndpoint.keys(),
 	]);
+	const sortedKnownPaths = [...knownPaths].sort();
 	for (const paths of actionPathSets) graph.connect(paths);
 	for (const [index, evidence] of identityEvidence.entries()) {
 		const paths = evidencePathSets[index]!;
 		graph.connect(evidence.kind === "rename" && evidence.isFolder
-			? [...paths, ...folderDescendantPaths(evidence.oldPath, evidence.newPath, knownPaths)]
+			? [...paths, ...folderDescendantPaths(evidence.oldPath, evidence.newPath, sortedKnownPaths)]
 			: paths);
 	}
 	for (const paths of observationPathSets) graph.connect(paths);
@@ -53,11 +54,29 @@ export function buildAdmissionComponents(
 function folderDescendantPaths(
 	oldPath: string,
 	newPath: string,
-	knownPaths: ReadonlySet<string>,
+	sortedKnownPaths: readonly string[],
 ): string[] {
-	const oldPrefix = `${oldPath}/`;
-	const newPrefix = `${newPath}/`;
-	return [...knownPaths].filter((path) => path.startsWith(oldPrefix) || path.startsWith(newPrefix));
+	return [
+		...pathsWithPrefix(sortedKnownPaths, `${oldPath}/`),
+		...pathsWithPrefix(sortedKnownPaths, `${newPath}/`),
+	];
+}
+
+function pathsWithPrefix(sortedPaths: readonly string[], prefix: string): string[] {
+	let low = 0;
+	let high = sortedPaths.length;
+	while (low < high) {
+		const middle = (low + high) >>> 1;
+		if (sortedPaths[middle]! < prefix) low = middle + 1;
+		else high = middle;
+	}
+	const matches: string[] = [];
+	for (let index = low; index < sortedPaths.length; index++) {
+		const path = sortedPaths[index]!;
+		if (!path.startsWith(prefix)) break;
+		matches.push(path);
+	}
+	return matches;
 }
 
 function actionPaths(action: SyncAction): string[] {
