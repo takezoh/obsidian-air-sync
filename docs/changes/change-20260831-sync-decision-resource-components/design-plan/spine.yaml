@@ -1,0 +1,362 @@
+artifact: design-plan-spine
+version: 2
+granularity_profile: boundary-complete
+scope_expansion_signals:
+  - id: scope-signal-provider-boundary-preverification
+    kind: shared_boundary
+    target_ref: contract-fs-evidence-conformance
+    witness: Google Drive, Dropbox, and OneDrive require shared faithful-fake and interface-level conformance; ADR 0003 keeps live E2E opt-in, with targeted live preverification only for a backend with concrete representation-gap evidence.
+    requirement_refs: [FR-SD-007, NFR-SD-005]
+    authority_refs: [adr-0002-backends-verified-by-shared-behaviour-contracts, decision-input-backend-convergence]
+requirements:
+  - id: FR-SD-001
+    type: functional
+    priority: must
+    statement: When a projected current path is proposed, the existing path-local table MUST emit at most one ordinary action in input order and MUST NOT propose deletion without a baseline.
+  - id: FR-SD-002
+    type: invariant
+    priority: must
+    statement: Admission MUST consume one immutable cycle snapshot, build one exhaustive cycle-local component partition exactly once, and emit one outcome for every relevant component.
+  - id: FR-SD-003
+    type: invariant
+    priority: must
+    statement: PlanAdmission MUST be the sole owner of cross-path rename action shaping, component-wide destructive authorization, disposition, and local lifecycle membership.
+  - id: FR-SD-004
+    type: functional
+    priority: must
+    statement: Proved unbaselined additive work MUST authorize only terminal pushes with no new debt; proved already-converged work MUST resolve without action and release only matching replayed v6 debt after a clean checkpoint; all other unproved cases MUST remain binding or defer.
+  - id: FR-SD-005
+    type: invariant
+    priority: must
+    statement: Local native rename MUST require baseline/hash proof, remote native rename MUST require backend-reported same-root evidence, and identity MUST NOT be inferred from spelling or content equality.
+  - id: FR-SD-006
+    type: invariant
+    priority: must
+    statement: Every component outcome MUST carry exact persist-before-execution and release-after-safe-checkpoint membership that orchestration and finalization consume mechanically in commit-last order.
+  - id: FR-SD-007
+    type: functional
+    priority: must
+    statement: Unprovable filesystem evidence MUST remain unresolved or abort through existing IFileSystem semantics, and Admission MUST defer without provider-specific fallback.
+  - id: NFR-SD-001
+    type: non_functional
+    priority: must
+    statement: Admission MUST remain pure, deterministic, cycle-local, snapshot-bound, and proposal-order-preserving for disconnected authorized work.
+  - id: NFR-SD-002
+    type: non_functional
+    priority: must
+    statement: AuthorizedSyncPlan, executor ordering, SyncState v6 RenameDebt, bounded replay, pre-I/O persistence, and checkpoint-before-retirement MUST remain compatible without persisted migration.
+  - id: NFR-SD-003
+    type: non_functional
+    priority: must
+    statement: Production MUST have one path proposal owner, one identity-component owner, one component build, no standalone whole-plan optimizer, no second build, and no provider-name decision branch.
+  - id: NFR-SD-004
+    type: non_functional
+    priority: must
+    statement: For V path/fact vertices and E connectivity edges, one pure component build MUST run in O((V + E) log V) time or better with O(V + E) auxiliary memory and no I/O or repeated component construction.
+  - id: NFR-SD-005
+    type: non_functional
+    priority: must
+    statement: Existing safety and convergence suites plus exhaustive-table, permutation, scale, mutation, and mandatory shared faithful-fake/interface checks MUST remain discriminating and green; ADR 0003 live E2E remains opt-in and non-CI.
+components:
+  - id: component-path-proposal
+    kind: existing
+    contract_refs: [contract-path-proposal-table]
+    paths:
+      - src/sync/decision-engine.ts
+      - src/sync/change-compare.ts
+      - src/sync/content-identity.ts
+      - src/sync/decision-engine.test.ts
+  - id: component-plan-admission
+    kind: existing
+    contract_refs: [contract-identity-component-decision, contract-single-build-structure]
+    paths:
+      - src/sync/plan-admission.ts
+      - src/sync/plan-admission-graph.ts
+      - src/sync/local-rename-admission.ts
+      - src/sync/optimize-local-renames.ts
+      - src/sync/optimize-remote-renames.ts
+      - src/sync/plan-admission.test.ts
+  - id: component-cycle-evidence
+    kind: existing
+    contract_refs: [contract-fs-evidence-conformance]
+    paths:
+      - src/sync/change-detector.ts
+      - src/sync/path-observation.ts
+      - src/sync/scope-projection.ts
+      - src/sync/cycle-admission-snapshot.ts
+      - src/fs/interface.ts
+      - src/fs/types.ts
+  - id: component-execution-finalization
+    kind: existing
+    contract_refs: [contract-crash-finalization-preservation, contract-pipeline-migration]
+    paths:
+      - src/sync/sync-cycle-planning.ts
+      - src/sync/orchestrator.ts
+      - src/sync/rename-debt.ts
+      - src/sync/plan-executor.ts
+      - src/sync/sync-cycle-finalization.ts
+contracts:
+  - id: contract-path-proposal-table
+    dimension: decision_logic
+    owner: component-path-proposal
+    requirement_refs: [FR-SD-001, NFR-SD-001, NFR-SD-005]
+    unit_refs: [unit-1-single-identity-component-owner, unit-2-pipeline-and-lifecycle-migration]
+    adr_refs: [adr-admission-owns-identity-component-decision]
+    verification:
+      - id: verify-path-table
+        tier: T0
+        command: npm test -- src/sync/decision-engine.test.ts
+      - id: verify-path-order-cardinality
+        tier: T1
+        command: npm test -- src/sync/decision-engine.test.ts src/sync/convergence.test.ts
+  - id: contract-identity-component-decision
+    dimension: authority_and_decision_logic
+    owner: component-plan-admission
+    requirement_refs: [FR-SD-002, FR-SD-003, FR-SD-004, FR-SD-005, FR-SD-006, NFR-SD-001, NFR-SD-003, NFR-SD-004, NFR-SD-005]
+    unit_refs: [unit-1-single-identity-component-owner, unit-2-pipeline-and-lifecycle-migration]
+    adr_refs: [adr-0008-logical-identity-admission-fails-closed, adr-20260825-issue43-destructive-authorization, adr-20260831-admission-owned-local-rename-constraint-lifecycle, adr-admission-owns-identity-component-decision]
+    verification:
+      - id: verify-component-outcome-table
+        tier: T0
+        command: npm test -- src/sync/plan-admission.test.ts
+      - id: verify-component-permutation-scale
+        tier: T0
+        command: npm test -- src/sync/plan-admission.test.ts
+      - id: verify-rename-convergence
+        tier: T1
+        command: npm test -- src/sync/plan-admission.test.ts src/sync/convergence.test.ts
+      - id: verify-executor-authority
+        tier: T1
+        command: npm test -- src/sync/plan-executor.test.ts
+    partition:
+      outcomes: [determinate, unknown, inconclusive, conflicting]
+      default_policy: The precedence table in design.md is exhaustive; missing predicates, multiple non-deferral matches, conflicts, failed native projection, or any uncovered state defer the whole component with no actions.
+    discretion:
+      - id: discretion-component-index-representation
+        unit_ref: unit-1-single-identity-component-owner
+        question: Which private map, set, union-find, or traversal representation indexes the one immutable component build?
+        scope:
+          files: [src/sync/identity-component-decision.ts, src/sync/plan-admission.ts]
+          component: component-plan-admission
+          visibility: private
+        escalate_when:
+          - The choice changes component membership, outcome precedence, proposal order, reason taxonomy, lifecycle membership, or requires a shared/public type.
+          - The implementation cannot meet deterministic one-build O((V + E) log V)-or-better time and O(V + E) auxiliary memory verification.
+        constraints:
+          - The representation is cycle-local, built once, and never persisted.
+          - It performs no filesystem, network, settings, or persistence reads.
+        preserves:
+          contract_refs: [contract-identity-component-decision, contract-single-build-structure]
+          invariant_refs: [FR-SD-002, FR-SD-003, NFR-SD-001, NFR-SD-003, NFR-SD-004]
+        verification_refs: [verify-component-outcome-table, verify-component-permutation-scale, verify-single-component-build]
+        difficulty_inputs:
+          decision_reasoning: local_tradeoff
+          boundary_reach: private
+          context_scope: files
+          reversibility: bounded
+          verification_strength: discriminating
+          runtime_risk: data_loss
+          coupling: coupled_within_unit
+          grounding: evidenced
+  - id: contract-single-build-structure
+    dimension: responsibility_boundary
+    owner: component-plan-admission
+    requirement_refs: [FR-SD-002, FR-SD-003, NFR-SD-003, NFR-SD-004]
+    unit_refs: [unit-1-single-identity-component-owner, unit-3-architecture-and-conformance]
+    adr_refs: [adr-admission-owns-identity-component-decision]
+    verification:
+      - id: verify-single-component-build
+        tier: T0
+        command: npm test -- src/sync/plan-admission.test.ts
+      - id: verify-no-refine-plan
+        tier: T0
+        command: null
+      - id: verify-no-provider-branch
+        tier: T0
+        command: null
+  - id: contract-fs-evidence-conformance
+    dimension: integration_contract_and_cutover
+    owner: component-cycle-evidence
+    requirement_refs: [FR-SD-005, FR-SD-007, NFR-SD-005]
+    unit_refs: [unit-0-provider-evidence-preverification]
+    adr_refs: [adr-0002-backends-verified-by-shared-behaviour-contracts, adr-0006-remote-rename-detection-is-order-independent, adr-0008-logical-identity-admission-fails-closed]
+    verification:
+      - id: verify-shared-fs-contracts
+        tier: T1
+        command: npm test -- src/fs/ifilesystem-contract.test.ts src/fs/caching/remote-fs-contract.test.ts
+      - id: verify-live-google
+        tier: T2
+        command: npm run test:e2e:google
+      - id: verify-live-dropbox
+        tier: T2
+        command: npm run test:e2e:dropbox
+      - id: verify-live-onedrive
+        tier: T2
+        command: npm run test:e2e:onedrive
+    partition:
+      outcomes: [determinate, unknown, inconclusive, conflicting]
+      default_policy: Shared faithful-fake and interface-level cases are the mandatory provider gate. Live E2E is opt-in/non-CI and missing credentials skip under ADR 0003; concrete evidence of a possible representation gap triggers targeted live preverification and holds only that backend change, while a proved gap requires separate interface design.
+  - id: contract-crash-finalization-preservation
+    dimension: failure_recovery
+    owner: component-execution-finalization
+    requirement_refs: [FR-SD-004, FR-SD-006, NFR-SD-002, NFR-SD-005]
+    unit_refs: [unit-2-pipeline-and-lifecycle-migration]
+    adr_refs: [adr-0001-metadata-cache-subordinate-to-commit-last, adr-0008-logical-identity-admission-fails-closed, adr-20260831-admission-owned-local-rename-constraint-lifecycle]
+    verification:
+      - id: verify-pre-io-persistence
+        tier: T1
+        command: npm test -- src/sync/orchestrator.test.ts
+      - id: verify-checkpoint-retirement
+        tier: T1
+        command: npm test -- src/sync/sync-cycle-finalization.test.ts
+      - id: verify-crash-replay
+        tier: T1
+        command: npm test -- src/sync/crash-safety.test.ts
+  - id: contract-pipeline-migration
+    dimension: migration_compatibility
+    owner: component-execution-finalization
+    requirement_refs: [FR-SD-003, NFR-SD-002, NFR-SD-003, NFR-SD-005]
+    unit_refs: [unit-2-pipeline-and-lifecycle-migration, unit-3-architecture-and-conformance]
+    adr_refs: [adr-admission-owns-identity-component-decision]
+    verification:
+      - id: verify-v6-wire-compatibility
+        tier: T0
+        command: npm test -- src/sync/state.test.ts src/sync/rename-debt.test.ts
+      - id: verify-project-gate
+        tier: T1
+        command: npm run lint && npm run lint:bot-repro && npm run build && npm test
+adrs:
+  - id: adr-0001-metadata-cache-subordinate-to-commit-last
+    status: accepted
+    decision_input_refs: [decision-input-crash-commit-last]
+  - id: adr-0002-backends-verified-by-shared-behaviour-contracts
+    status: accepted
+    decision_input_refs: [decision-input-backend-convergence]
+  - id: adr-0006-remote-rename-detection-is-order-independent
+    status: accepted
+    decision_input_refs: [decision-input-normative-rename-evidence, decision-input-backend-convergence]
+  - id: adr-0008-logical-identity-admission-fails-closed
+    status: accepted
+    decision_input_refs: [decision-input-admission-exclusive-authority, decision-input-normative-rename-evidence, decision-input-optimizer-compatibility, decision-input-no-general-framework, decision-input-crash-commit-last]
+  - id: adr-20260825-issue43-destructive-authorization
+    status: accepted
+    decision_input_refs: [decision-input-admission-exclusive-authority, decision-input-crash-commit-last]
+  - id: adr-20260831-admission-owned-local-rename-constraint-lifecycle
+    status: accepted
+    decision_input_refs: [decision-input-admission-exclusive-authority, decision-input-crash-commit-last, decision-input-blank-file-unknown]
+  - id: adr-admission-owns-identity-component-decision
+    status: accepted
+    decision_input_refs: [decision-input-simple-single-owner, decision-input-path-local-table, decision-input-admission-exclusive-authority, decision-input-normative-rename-evidence, decision-input-optimizer-compatibility, decision-input-no-general-framework, decision-input-backend-convergence, decision-input-crash-commit-last, decision-input-blank-file-unknown]
+    status_provenance:
+      source: user_consultation
+      confidence: confirmed
+      evidence_refs: [user-adr-approval-20260831]
+      rationale: The user explicitly approved the sole proposed ADR after the final canonical design and its responsibility boundary were presented.
+      consultation_id: consultation-sync-decision-resource-components-adr
+units:
+  - title: unit-0-provider-evidence-preverification
+    chunk: "0"
+    contract_refs: [contract-fs-evidence-conformance]
+    files: [src/fs/ifilesystem-contract.test.ts, src/fs/caching/remote-fs-contract.test.ts, src/fs/googledrive, src/fs/dropbox, src/fs/onedrive, test/e2e]
+    depends_on: []
+    acceptance: [AC-SD-006]
+    objective: Prove Google Drive, Dropbox, and OneDrive against mandatory shared faithful-fake/interface contracts and target live preverification only at a backend with concrete representation-gap evidence.
+    output_format: Shared conformance results, backend-local fixes for representable failures, and targeted live evidence only when triggered.
+    tool_guidance: Reuse public IFileSystem contracts; preserve ADR 0003 opt-in/non-CI live suites and credential-missing skip semantics.
+    task_boundaries: Do not change sync decision code, add provider switches, weaken shared cases, or extend IFileSystem without an exact unrepresentable live response and separate design.
+    decision_closure_reason: Shared conformance is the mandatory gate; targeted unknown evidence holds only the affected backend and cannot authorize an interface extension.
+  - title: unit-1-single-identity-component-owner
+    chunk: "1"
+    contract_refs: [contract-path-proposal-table, contract-identity-component-decision, contract-single-build-structure]
+    files: [src/sync/plan-admission.ts, src/sync/plan-admission-graph.ts, src/sync/identity-component-decision.ts, src/sync/local-rename-admission.ts, src/sync/optimize-local-renames.ts, src/sync/optimize-remote-renames.ts, src/sync/plan-admission.test.ts]
+    depends_on: [unit-0-provider-evidence-preverification]
+    acceptance: [AC-SD-001, AC-SD-002, AC-SD-003, AC-SD-004, AC-SD-007]
+    objective: Build components once and decide exact actions, authority, disposition, and lifecycle membership under one private Admission owner.
+    output_format: Pure TypeScript precedence-table decision, exhaustive typed outcomes, bounded private indexing, and discriminating tests.
+    tool_guidance: Start with positive and adversarial row tests, permutation/scale tests, and mutations for hash, absence, completeness, multiple matches, and fallback rejection.
+    task_boundaries: Do not alter the path table, executor, persistence schema, provider interface, or introduce a general/persistent resource graph.
+    decision_closure_reason: Owner, inputs, precedence, outcomes, fallback policy, lifecycle, and resource bounds are fixed; only bounded private representation is delegated.
+  - title: unit-2-pipeline-and-lifecycle-migration
+    chunk: "2"
+    contract_refs: [contract-path-proposal-table, contract-identity-component-decision, contract-crash-finalization-preservation, contract-pipeline-migration]
+    files: [src/sync/sync-cycle-planning.ts, src/sync/cycle-admission-snapshot.ts, src/sync/rename-optimizer.ts, src/sync/rename-optimizer.test.ts, src/sync/orchestrator.ts, src/sync/plan-executor.ts, src/sync/sync-cycle-finalization.ts, src/sync/convergence.test.ts, src/sync/crash-safety.test.ts, src/sync/delete-safety.test.ts]
+    depends_on: [unit-1-single-identity-component-owner]
+    acceptance: [AC-SD-003, AC-SD-004, AC-SD-005, AC-SD-008]
+    objective: Remove the refinement stage and migrate consumers/tests to Admission over the immutable plain proposal while preserving v6, execution, and commit-last behavior.
+    output_format: Atomic call-site migration, retired optimizer API/module, component diagnostics, and integration evidence.
+    tool_guidance: Verify executor input typing and failure call order before the full gate.
+    task_boundaries: Do not add a refinePlan shim, change SyncState v6, reorder executor barriers, or let Finalization reinterpret evidence.
+    decision_closure_reason: The internal migration and compatibility invariants are fixed and no persisted/public migration is authorized.
+  - title: unit-3-architecture-and-conformance
+    chunk: "3"
+    contract_refs: [contract-single-build-structure, contract-pipeline-migration]
+    files: [ARCHITECTURE.md, docs/sync-pipeline.md, docs/adr/0008-logical-identity-admission-fails-closed.md, docs/adr/adr-20260831-admission-owned-local-rename-constraint-lifecycle.md, docs/code-enforcement.md]
+    depends_on: [unit-2-pipeline-and-lifecycle-migration]
+    acceptance: [AC-SD-002, AC-SD-006, AC-SD-008]
+    objective: Promote the verified single-owner boundary, record the proposed ADR disposition, and enforce absence of obsolete ownership and blank-file claims.
+    output_format: ADR proposal/accepted update, architecture and pipeline documentation, structural checks, and full gate evidence.
+    tool_guidance: Update persistent docs after code stabilizes and run docs conformance plus the repository gate.
+    task_boundaries: Do not mix Issue 51 implementation or PR 53, claim blank-file causality, or document private representation as architecture.
+    decision_closure_reason: Persistent ownership changes require one proposed ADR; code and docs then conform to its accepted disposition.
+acceptance:
+  - id: AC-SD-001
+    criteria: The complete path-local decision table, input order, at-most-one-action, and no-baseline delete prohibition remain unchanged.
+    requirement_refs: [FR-SD-001, NFR-SD-001, NFR-SD-005]
+  - id: AC-SD-002
+    criteria: Production has one plain proposal owner, one identity-component owner, one component build, no refinePlan stage, and no provider-name branch.
+    requirement_refs: [FR-SD-002, FR-SD-003, NFR-SD-003]
+  - id: AC-SD-003
+    criteria: Every precedence-table row has a positive case; unmatched, multiply matching, conflicting, failed-native, and ambiguous-survival cases defer with no actions; action and lifecycle outputs come from the same result.
+    requirement_refs: [FR-SD-003, FR-SD-004, FR-SD-005, FR-SD-006, NFR-SD-005]
+  - id: AC-SD-004
+    criteria: Already-converged evidence resolves without action and releases only matching replayed v6 debt after a clean checkpoint; action, persistence, or checkpoint failure withholds release.
+    requirement_refs: [FR-SD-004, FR-SD-006, NFR-SD-002]
+  - id: AC-SD-005
+    criteria: Pre-I/O persistence, zero I/O on upsert failure, remote replay, non-clean recovery, AuthorizedSyncPlan typing, executor ordering, checkpoint-before-retirement, and SyncState v6 remain green.
+    requirement_refs: [FR-SD-006, NFR-SD-002, NFR-SD-005]
+  - id: AC-SD-006
+    criteria: Google Drive, Dropbox, and OneDrive pass mandatory shared faithful-fake/interface cases; live E2E remains opt-in/non-CI and skips without credentials; concrete representation-gap evidence triggers targeted live preverification that holds only the affected backend.
+    requirement_refs: [FR-SD-007, NFR-SD-005]
+  - id: AC-SD-007
+    criteria: One deterministic component build meets O((V + E) log V)-or-better time and O(V + E) auxiliary memory under permutation and scale-sensitive verification without a runtime speedup claim.
+    requirement_refs: [FR-SD-002, NFR-SD-004, NFR-SD-005]
+  - id: AC-SD-008
+    criteria: Architecture, ADR proposal, code, and full gates agree; no blank-file claim or Issue 51 or PR 53 implementation is included.
+    requirement_refs: [NFR-SD-002, NFR-SD-003, NFR-SD-005]
+dispositions:
+  - decision_input_ref: decision-input-simple-single-owner
+    disposition: Adopt one Admission-owned identity-component decision without a replacement mega-compiler.
+    adr_refs: [adr-admission-owns-identity-component-decision]
+    contract_refs: [contract-identity-component-decision, contract-single-build-structure]
+  - decision_input_ref: decision-input-path-local-table
+    disposition: Retain unchanged as proposal-only behavior.
+    adr_refs: [adr-admission-owns-identity-component-decision]
+    contract_refs: [contract-path-proposal-table]
+  - decision_input_ref: decision-input-admission-exclusive-authority
+    disposition: Preserve Admission authority and extend it only to cross-path action shaping and lifecycle membership.
+    adr_refs: [adr-0008-logical-identity-admission-fails-closed, adr-20260825-issue43-destructive-authorization, adr-admission-owns-identity-component-decision]
+    contract_refs: [contract-identity-component-decision]
+  - decision_input_ref: decision-input-normative-rename-evidence
+    disposition: Consume existing normative evidence directly with no optimizer-owned source.
+    adr_refs: [adr-0006-remote-rename-detection-is-order-independent, adr-0008-logical-identity-admission-fails-closed]
+    contract_refs: [contract-identity-component-decision, contract-fs-evidence-conformance]
+  - decision_input_ref: decision-input-optimizer-compatibility
+    disposition: Preserve hash, reported-edge, complete-folder, occupancy, and source-recreation rules in the precedence table.
+    adr_refs: [adr-0008-logical-identity-admission-fails-closed, adr-admission-owns-identity-component-decision]
+    contract_refs: [contract-identity-component-decision]
+  - decision_input_ref: decision-input-no-general-framework
+    disposition: Reject general or persisted resource graphs and retain only the private cycle-local partition.
+    adr_refs: [adr-0008-logical-identity-admission-fails-closed, adr-admission-owns-identity-component-decision]
+    contract_refs: [contract-single-build-structure]
+  - decision_input_ref: decision-input-backend-convergence
+    disposition: Require shared faithful-fake/interface conformance, preserve ADR 0003 opt-in live E2E, and target live preverification only at a backend with concrete representation-gap evidence; use separate design only for a proved unrepresentable real response.
+    adr_refs: [adr-0002-backends-verified-by-shared-behaviour-contracts, adr-0006-remote-rename-detection-is-order-independent, adr-admission-owns-identity-component-decision]
+    contract_refs: [contract-fs-evidence-conformance]
+  - decision_input_ref: decision-input-crash-commit-last
+    disposition: Preserve v6 bounded replay, pre-I/O persistence, executor authority/order, and checkpoint-before-retirement.
+    adr_refs: [adr-0001-metadata-cache-subordinate-to-commit-last, adr-0008-logical-identity-admission-fails-closed, adr-20260831-admission-owned-local-rename-constraint-lifecycle]
+    contract_refs: [contract-crash-finalization-preservation, contract-pipeline-migration]
+  - decision_input_ref: decision-input-blank-file-unknown
+    disposition: Exclude blank-file causality and resolution and exclude Issue 51 implementation or PR 53 from this package.
+    adr_refs: [adr-20260831-admission-owned-local-rename-constraint-lifecycle, adr-admission-owns-identity-component-decision]
+    contract_refs: [contract-pipeline-migration]
