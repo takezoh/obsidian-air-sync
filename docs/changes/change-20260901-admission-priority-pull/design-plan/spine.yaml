@@ -1,0 +1,159 @@
+artifact: design-plan-spine
+version: 2
+granularity_profile: boundary-complete
+
+scope_expansion_signals:
+  - id: scope-signal-priority-capability
+    kind: shared_boundary
+    target_ref: component-filesystem-priority
+    witness: File-open freshness requires detached provider authority without consuming batch delta state.
+    requirement_refs: [FR-PRIORITY-001, NFR-CALLS-001]
+    authority_refs: [adr-20260901-admission-priority-pull]
+  - id: scope-signal-exact-supersession
+    kind: shared_boundary
+    target_ref: component-plan-admission
+    witness: Admission must project the exact singleton pull reference that alone may be replaced after CAS.
+    requirement_refs: [FR-SUPERSEDE-001, NFR-ADMISSION-001]
+    authority_refs: [adr-20260901-admission-priority-pull, adr-20260831-admission-owns-identity-component-decisi]
+  - id: scope-signal-finalizer-exclusivity
+    kind: critic_induced_contract
+    target_ref: component-cycle-finalization
+    witness: Completion proof through checkpoint and debt release must exclude priority mutation.
+    requirement_refs: [FR-ORDER-001, FR-FINALIZE-001]
+    authority_refs: [adr-20260901-admission-priority-pull]
+
+requirements:
+  - {id: FR-PRIORITY-001, type: event_driven, priority: must, statement: An eligible opened tracked regular file shall use detached identity/path/version observation and may perform only a pull.}
+  - {id: FR-SUPERSEDE-001, type: state_driven, priority: must, statement: A priority pull shall supersede only the Admission-marked exact pending singleton pull after local preconditions and whole-record CAS succeed.}
+  - {id: FR-FAIL-CLOSED-001, type: unwanted, priority: must, statement: Structural multi-path unknown Local-changed identity-changed and CAS-loss cases shall perform no stale normal effect or clean checkpoint.}
+  - {id: FR-ORDER-001, type: state_driven, priority: must, statement: Planning and debt persistence each normal effect plus commit priority mutation and finalization shall be mutually exclusive.}
+  - {id: FR-FINALIZE-001, type: state_driven, priority: must, statement: Finalization shall accept only succeeded actions or Admission-marked exact superseded actions and retain commit-last.}
+  - {id: NFR-ADMISSION-001, type: ubiquitous, priority: must, statement: Normal decisions shall remain one Admission cut with no runtime re-Admission reroute epoch receipt or EffectCommitResult.}
+  - {id: NFR-CALLS-001, type: ubiquitous, priority: must, statement: Normal batch actions shall make zero priority observe and read calls independent of component count.}
+  - {id: NFR-OBSERVE-001, type: ubiquitous, priority: must, statement: Existing hash-enrichment candidate match and user-visible matched counts shall remain batch-owned and unchanged.}
+
+components:
+  - {id: component-filesystem-priority, kind: existing, contract_refs: [contract-detached-provider], paths: [src/fs/interface.ts, src/fs/caching/remote-fs.ts, src/fs/googledrive, src/fs/dropbox, src/fs/onedrive]}
+  - {id: component-scheduling-primitives, kind: existing, contract_refs: [contract-priority-ordering, contract-whole-record-cas], paths: [src/sync/state.ts, src/sync/state-committer.ts, src/sync/local-tracker.ts]}
+  - {id: component-plan-admission, kind: existing, contract_refs: [contract-exact-supersession], paths: [src/sync/plan-admission.ts]}
+  - {id: component-plan-executor, kind: existing, contract_refs: [contract-priority-ordering, contract-exact-supersession], paths: [src/sync/plan-executor.ts, src/sync/execution-result.ts]}
+  - {id: component-cycle-finalization, kind: existing, contract_refs: [contract-finalization], paths: [src/sync/sync-cycle-finalization.ts]}
+  - {id: component-orchestrator, kind: existing, contract_refs: [contract-detached-provider, contract-priority-ordering, contract-whole-record-cas, contract-exact-supersession, contract-finalization], paths: [src/sync/orchestrator.ts, src/sync/scheduler.ts]}
+  - {id: component-design-verification, kind: existing, contract_refs: [contract-detached-provider, contract-priority-ordering, contract-exact-supersession, contract-finalization], paths: [ARCHITECTURE.md, docs/sync-pipeline.md, docs/adr/adr-20260901-admission-priority-pull.md]}
+
+contracts:
+  - id: contract-detached-provider
+    dimension: integration_contract
+    owner: component-filesystem-priority
+    requirement_refs: [FR-PRIORITY-001, FR-FAIL-CLOSED-001, NFR-CALLS-001]
+    unit_refs: [unit-detached-provider, unit-orchestrator-integration, unit-design-verification]
+    adr_refs: [adr-20260901-admission-priority-pull]
+    verification: [{id: verify-detached-provider, tier: T1, command: npm test -- --run src/fs/caching/remote-fs.contract.test.ts src/fs/googledrive/targeted-observation.test.ts src/fs/dropbox/targeted-observation.test.ts src/fs/onedrive/targeted-observation.test.ts}]
+    partition: {outcomes: [determinate, unknown, inconclusive, conflicting], default_policy: Missing capability ambiguous occupant incomplete ancestry identity mismatch or changed version defers without content effect.}
+  - id: contract-priority-ordering
+    dimension: concurrency_boundary
+    owner: component-scheduling-primitives
+    requirement_refs: [FR-ORDER-001, NFR-ADMISSION-001]
+    unit_refs: [unit-scheduling-primitives, unit-admission-execution, unit-orchestrator-integration, unit-design-verification]
+    adr_refs: [adr-20260901-admission-priority-pull]
+    verification: [{id: verify-priority-ordering, tier: T1, command: npm test -- --run src/sync/priority-coordinator.test.ts src/sync/local-mutation-barrier.test.ts src/sync/plan-executor.test.ts}]
+    partition: {outcomes: [determinate, unknown, inconclusive, conflicting], default_policy: Priority waits for complete normal effect and commit while planning and finalization remain closed.}
+  - id: contract-whole-record-cas
+    dimension: state_lifecycle
+    owner: component-scheduling-primitives
+    requirement_refs: [FR-SUPERSEDE-001, FR-FAIL-CLOSED-001]
+    unit_refs: [unit-scheduling-primitives, unit-orchestrator-integration, unit-design-verification]
+    adr_refs: [adr-20260901-admission-priority-pull]
+    verification: [{id: verify-whole-record-cas, tier: T1, command: npm test -- --run src/sync/state.test.ts src/sync/state-committer.test.ts src/sync/orchestrator.test.ts}]
+    partition: {outcomes: [determinate, unknown, inconclusive, conflicting], default_policy: CAS mismatch preserves the current record records no supersession and leaves retry evidence.}
+  - id: contract-exact-supersession
+    dimension: security_boundary
+    owner: component-plan-admission
+    requirement_refs: [FR-SUPERSEDE-001, FR-FAIL-CLOSED-001, NFR-ADMISSION-001]
+    unit_refs: [unit-admission-execution, unit-orchestrator-integration, unit-design-verification]
+    adr_refs: [adr-20260901-admission-priority-pull]
+    verification: [{id: verify-exact-supersession, tier: T1, command: npm test -- --run src/sync/plan-admission.test.ts src/sync/plan-executor.test.ts src/sync/sync-cycle-finalization.test.ts}]
+    partition: {outcomes: [determinate, unknown, inconclusive, conflicting], default_policy: Only a complete singleton regular-file pull witness is substitutable and every broader component fails closed.}
+  - id: contract-finalization
+    dimension: state_lifecycle
+    owner: component-cycle-finalization
+    requirement_refs: [FR-FINALIZE-001, NFR-ADMISSION-001]
+    unit_refs: [unit-admission-execution, unit-orchestrator-integration, unit-design-verification]
+    adr_refs: [adr-20260901-admission-priority-pull]
+    verification:
+      - {id: verify-finalization, tier: T1, command: npm test -- --run src/sync/sync-cycle-finalization.test.ts src/sync/rename-debt.test.ts src/sync/orchestrator.test.ts}
+      - {id: verify-repository-gate, tier: T2, command: npm run lint && npm run lint:bot-repro && npm run build && npm test}
+    partition: {outcomes: [determinate, unknown, inconclusive, conflicting], default_policy: Foreign invalidated failed blocked deferred or partial completion retains checkpoint and debt.}
+
+adrs:
+  - {id: adr-20260901-admission-priority-pull, status: accepted, decision_input_refs: [decision-input-pr54-authority, decision-input-detached-provider, decision-input-exact-reference, decision-input-no-runtime-reroute]}
+  - {id: adr-20260831-admission-owns-identity-component-decisi, status: accepted, decision_input_refs: [decision-input-pr54-authority, decision-input-exact-reference]}
+  - {id: adr-20260831-admission-owned-local-rename-constraint-lifecycle, status: accepted, decision_input_refs: [decision-input-pr54-authority]}
+
+units:
+  - title: unit-detached-provider
+    chunk: provider-capability
+    contract_refs: [contract-detached-provider]
+    files: [src/fs/interface.ts, src/fs/priority-observation.ts, src/fs/caching/detached-priority.ts, src/fs/caching/remote-fs.ts, src/fs/googledrive, src/fs/dropbox, src/fs/onedrive]
+    acceptance: [All three providers return the shared authority partition., Observe and read do not consume global batch state., Missing optional capability leaves normal batch unchanged.]
+    objective: Add request-local Remote authority for file-open without changing normal batch calls.
+    output_format: TypeScript capability provider adapters and contract tests.
+    tool_guidance: Keep provider-specific facts behind the shared union.
+    task_boundaries: Do not alter Admission normal execution or checkpoint policy.
+    decision_closure_reason: Shared partition neutrality and provider ownership are fixed.
+  - title: unit-scheduling-primitives
+    chunk: scheduling
+    contract_refs: [contract-priority-ordering, contract-whole-record-cas]
+    files: [src/sync/priority-coordinator.ts, src/sync/local-mutation-barrier.ts, src/sync/state.ts, src/sync/state-committer.ts, src/sync/local-tracker.ts]
+    acceptance: [Priority waits for active normal commit., Finalizer lease excludes priority., CAS and generation checks preserve newer state.]
+    objective: Add policy-free ordering and baseline primitives.
+    output_format: TypeScript primitives and deterministic tests.
+    tool_guidance: Keep the state schema unchanged.
+    task_boundaries: Do not choose actions inspect components or call providers.
+    decision_closure_reason: Permit finalizer CAS and tracker semantics are fixed.
+  - title: unit-admission-execution
+    chunk: admission-executor-finalization
+    contract_refs: [contract-priority-ordering, contract-exact-supersession, contract-finalization]
+    files: [src/sync/plan-admission.ts, src/sync/execution-result.ts, src/sync/plan-executor.ts, src/sync/sync-cycle-finalization.ts, src/sync/plan-admission.test.ts, src/sync/plan-executor.test.ts, src/sync/sync-cycle-finalization.test.ts]
+    depends_on: [unit-scheduling-primitives]
+    acceptance: [Admission marks only exact singleton pulls., Executor never reroutes actions., Finalization accepts only marked exact supersession.]
+    objective: Connect priority substitution to PR54 exact action authority.
+    output_format: TypeScript changes and focused tests.
+    tool_guidance: Reuse exact object identity and existing action results.
+    task_boundaries: Do not perform provider I/O rebuild components or add IDs receipts epochs.
+    decision_closure_reason: Positive witness terminal predicate and failure behavior are fixed.
+  - title: unit-orchestrator-integration
+    chunk: lifecycle-wiring
+    contract_refs: [contract-detached-provider, contract-priority-ordering, contract-whole-record-cas, contract-exact-supersession, contract-finalization]
+    files: [src/sync/orchestrator.ts, src/sync/scheduler.ts, src/sync/orchestrator.test.ts, src/sync/scheduler.test.ts]
+    depends_on: [unit-detached-provider, unit-admission-execution]
+    acceptance: [Planning and finalization close priority mutation., Safe pending pulls may be substituted., Unsafe cases retain retry evidence without replanning unrelated actions.]
+    objective: Wire one pull-only operation into the active PR54 lifecycle.
+    output_format: TypeScript orchestration changes and deterministic race tests.
+    tool_guidance: Keep policy in Admission and provider facts in IFileSystem.priority.
+    task_boundaries: Do not add runtime Admission resume loops requeue or durable coordination.
+    decision_closure_reason: Lifecycle gates active object state and outcomes are fixed.
+  - title: unit-design-verification
+    chunk: verification
+    contract_refs: [contract-detached-provider, contract-priority-ordering, contract-whole-record-cas, contract-exact-supersession, contract-finalization]
+    files: [ARCHITECTURE.md, docs/sync-pipeline.md, docs/adr/adr-20260901-admission-priority-pull.md, docs/changes/change-20260901-admission-priority-pull]
+    depends_on: [unit-orchestrator-integration]
+    acceptance: [Docs preserve PR54 owners., Hash-enrichment observability remains unchanged., Focused tests full gate and backend E2E are reported.]
+    objective: Reconcile durable design and verify integrated behavior.
+    output_format: Documentation and verification evidence.
+    tool_guidance: Preserve accepted PR54 ADRs.
+    task_boundaries: Do not revive late-bound machinery or claim unexecuted E2E.
+    decision_closure_reason: Documentation observability gate and E2E expectations are fixed.
+
+acceptance:
+  - {id: acceptance-singleton, criteria: Successful detached CAS supersedes only the same pending Admission-marked singleton pull with zero normal I/O., requirement_refs: [FR-PRIORITY-001, FR-SUPERSEDE-001]}
+  - {id: acceptance-fail-closed, criteria: Structural multi-path stale changed and CAS-loss cases perform no stale normal effect or clean checkpoint., requirement_refs: [FR-FAIL-CLOSED-001, FR-FINALIZE-001]}
+  - {id: acceptance-ordering, criteria: Planning normal effect plus commit priority mutation and finalization are mutually exclusive., requirement_refs: [FR-ORDER-001, NFR-ADMISSION-001]}
+  - {id: acceptance-call-count, criteria: Normal batches make no priority observe or read calls., requirement_refs: [NFR-CALLS-001]}
+  - {id: acceptance-observability, criteria: Hash enrichment candidate match and visible matched counts remain unchanged., requirement_refs: [NFR-OBSERVE-001]}
+
+dispositions:
+  - {decision_input_ref: decision-input-pr54-authority, disposition: adopted — Keep PR54 Admission exact actions global phases rename lifecycle and finalization., adr_refs: [adr-20260901-admission-priority-pull], contract_refs: [contract-exact-supersession, contract-finalization]}
+  - {decision_input_ref: decision-input-detached-provider, disposition: adopted — Put provider authority behind optional IFileSystem.priority., adr_refs: [adr-20260901-admission-priority-pull], contract_refs: [contract-detached-provider]}
+  - {decision_input_ref: decision-input-exact-reference, disposition: adopted — Use cycle-local exact SyncAction object identity., adr_refs: [adr-20260901-admission-priority-pull], contract_refs: [contract-exact-supersession]}
+  - {decision_input_ref: decision-input-no-runtime-reroute, disposition: adopted — Reject universal runtime Admission epochs receipts reroute and EffectCommitResult., adr_refs: [adr-20260901-admission-priority-pull], contract_refs: [contract-priority-ordering, contract-exact-supersession]}
