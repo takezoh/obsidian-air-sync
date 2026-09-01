@@ -1,7 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import { expect, vi } from "vitest";
+import {
+	runPriorityObservationContract,
+	type PriorityObservationContractHarness,
+	type PriorityObservationScenario,
+} from "../priority-observation-contract";
 import { DropboxFs } from "./index";
 import type { DropboxClient } from "./client";
 import { DropboxApiError, type DropboxEntry } from "./types";
+
+const CONTENT = new Uint8Array([1, 2, 3]).buffer;
 
 function entry(overrides: Partial<DropboxEntry> = {}): DropboxEntry {
 	return { ".tag": "file", id: "id:file", name: "note.md", path_lower: "/vault/note.md",
@@ -9,37 +16,38 @@ function entry(overrides: Partial<DropboxEntry> = {}): DropboxEntry {
 		server_modified: "2026-08-27T00:00:00Z", ...overrides };
 }
 
-describe("DropboxFs detached priority observation", () => {
-	it("uses a request-local root lookup and revalidates an id-bound read", async () => {
-		let rev = "r2";
-		const root = entry({ ".tag": "folder", id: "id:root", name: "Vault", path_display: "/Vault",
-			rev: undefined, content_hash: undefined, size: undefined });
-		const getMetadata = vi.fn((id: string) => Promise.resolve(id === "id:root" ? root : entry({ rev })));
-		const download = vi.fn(() => { rev = "r3"; return Promise.resolve(new ArrayBuffer(3)); });
-		const fs = new DropboxFs({ getMetadata, download } as unknown as DropboxClient, "id:root");
-		const observed = await fs.priority.observe({ path: "note.md", identityKey: "id:file" });
-		expect(observed).toMatchObject({ kind: "current", token: "dropbox:r2" });
-		if (observed.kind !== "current") throw new Error("expected current");
-		expect(await fs.priority.read(observed)).toEqual({ kind: "target_changed" });
-		expect(getMetadata).toHaveBeenNthCalledWith(2, "id:root/note.md");
-	});
+function makeDropboxHarness(scenario: PriorityObservationScenario): PriorityObservationContractHarness {
+	let current = entry();
+	const root = entry({ ".tag": "folder", id: "id:root", name: "Vault", path_display: "/Vault",
+		rev: undefined, content_hash: undefined, size: undefined });
+	const replacement = entry({ id: "id:replacement", rev: "r3" });
+	const missingError = new DropboxApiError("gone", 409, "path/not_found");
+	if (scenario === "unverifiable") current = entry({ rev: undefined });
 
-	it("fails closed for incomplete evidence, replacement, and missing path", async () => {
-		const root = entry({ ".tag": "folder", id: "id:root", path_display: "/Vault" });
-		const incomplete = new DropboxFs({ getMetadata: vi.fn((id: string) => Promise.resolve(
-			id === "id:root" ? root : entry({ rev: undefined }),
-		)) } as unknown as DropboxClient, "id:root");
-		expect((await incomplete.priority.observe({ path: "note.md", identityKey: "id:file" })).kind).toBe("unverifiable");
-		const replacement = new DropboxFs({ getMetadata: vi.fn((id: string) => Promise.resolve(
-			id === "id:root" ? root : entry({ id: "id:replacement", rev: "r3" }),
-		)) } as unknown as DropboxClient, "id:root");
-		expect(await replacement.priority.observe({ path: "note.md", identityKey: "id:file" })).toMatchObject({
-			kind: "structural", occupant: { identityKey: "id:replacement" },
-		});
-		const missing = new DropboxFs({ getMetadata: vi.fn(() => Promise.reject(
-			new DropboxApiError("gone", 409, "path/not_found"),
-		)) } as unknown as DropboxClient, "id:root");
-		expect(await missing.priority.observe({ path: "note.md", identityKey: "id:file" }))
-			.toEqual({ kind: "missing", occupant: { kind: "absent" } });
+	const getMetadata = vi.fn((address: string) => {
+		if (address === "id:root") return Promise.resolve(root);
+		if (scenario === "missing") return Promise.reject(missingError);
+		if (scenario === "replacement") {
+			return address === "id:file" ? Promise.reject(missingError) : Promise.resolve(replacement);
+		}
+		return Promise.resolve(current);
 	});
-});
+	const download = vi.fn(() => {
+		if (scenario === "changed-during-read") current = entry({ rev: "r3" });
+		return Promise.resolve(CONTENT);
+	});
+	const fs = new DropboxFs({ getMetadata, download } as unknown as DropboxClient, "id:root");
+	return {
+		fs,
+		request: { path: "note.md", identityKey: "id:file" },
+		expectedToken: "dropbox:r2",
+		expectedContent: CONTENT,
+		replacementIdentityKey: "id:replacement",
+		assertCurrentReadCalls: () => {
+			expect(getMetadata).toHaveBeenCalledWith("id:root/note.md");
+			expect(download).toHaveBeenCalledWith("id:file");
+		},
+	};
+}
+
+runPriorityObservationContract("DropboxFs", makeDropboxHarness);
