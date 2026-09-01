@@ -46,6 +46,7 @@ export interface ExecutionContext {
 	acquireActionPermit?: () => Promise<NormalActionPermit>;
 	/** Consume the active cycle's exact-object scheduler state; never chooses another action. */
 	beginAction?: (action: SyncAction) => "run" | "superseded" | "invalidated";
+	onActionBlocked?: (action: SyncAction) => void;
 	mutationBarrier?: LocalMutationBarrier;
 	onPhaseChange?: (phase: "transfer" | "conflict" | "structural") => void;
 }
@@ -181,6 +182,7 @@ export async function executePlan(
 	for (const action of plan.actions) {
 		const blockedReason = ctx.isActionBlocked?.(action);
 		if (blockedReason) {
+			ctx.onActionBlocked?.(action);
 			result.blocked.push({ action, reason: blockedReason });
 			ctx.logger?.warn("executePlan: action blocked", {
 				path: action.path,

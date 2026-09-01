@@ -5,7 +5,7 @@ import type { SyncOrchestratorDeps } from "./orchestrator";
 import { LocalChangeTracker } from "./local-tracker";
 import {
 	confirmMockPath, createMockLocalFs, createMockRemoteFs, type MockFileSystem,
-	addFile,
+	addFile, deferred,
 	readText,
 	mockSettings as baseMockSettings,
 } from "../__mocks__/sync-test-helpers";
@@ -1067,34 +1067,81 @@ describe("SyncOrchestrator", () => {
 	});
 
 	describe("pullSingle()", () => {
-		it("pulls a remote file and saves sync record", async () => {
-			const deps = createDeps();
+		async function arrangePriorityPull(options: { failRead?: boolean; remoteMissing?: boolean } = {}) {
+			const info = vi.fn();
+			const warn = vi.fn();
+			const deps = createDeps({
+				isLayoutReady: () => false,
+				logger: {
+					debug: vi.fn(), info, warn, error: vi.fn(),
+					flush: vi.fn().mockResolvedValue(undefined),
+				} as unknown as SyncOrchestratorDeps["logger"],
+			});
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();
 			deps.localFs = () => localFs;
 			deps.remoteFs = () => remoteFs;
-			addFile(remoteFs, "note.md", "remote content", 2000);
-
+			addFile(localFs, "note.md", "old", 1000);
+			const local = await localFs.stat("note.md");
+			if (!local) throw new Error("test setup failed");
+			const remote = addFile(remoteFs, "note.md", "remote content", 2000);
+			remote.identityKey = "remote-note-id";
+			const observed = {
+				kind: "current" as const,
+				path: "note.md",
+				identityKey: "remote-note-id",
+				token: "revision-2",
+				entity: { ...remote },
+				occupant: {
+					kind: "current" as const,
+					path: "note.md",
+					identityKey: "remote-note-id",
+					token: "revision-2",
+					entity: { ...remote },
+				},
+			};
+			const priorityRead = options.failRead
+				? vi.fn().mockRejectedValue(new Error("network error"))
+				: vi.fn().mockResolvedValue({
+					kind: "content" as const,
+					content: remoteFs.files.get("note.md")?.content.slice(0) ?? new ArrayBuffer(0),
+				});
+			remoteFs.priority = {
+				observe: vi.fn().mockResolvedValue(options.remoteMissing
+					? { kind: "missing", occupant: { kind: "absent" } }
+					: observed),
+				read: priorityRead,
+			};
 			const orchestrator = new SyncOrchestrator(deps);
+			await orchestrator.state.put({
+				path: "note.md",
+				hash: local.hash,
+				localMtime: local.mtime,
+				remoteMtime: 1000,
+				localSize: local.size,
+				remoteSize: local.size,
+				remoteIdentityKey: "remote-note-id",
+				syncedAt: 1000,
+			});
+			return { deps, localFs, remoteFs, orchestrator, info, warn, priorityRead };
+		}
+
+		it("pulls a remote file and saves sync record", async () => {
+			const { localFs, orchestrator } = await arrangePriorityPull();
 			await orchestrator.pullSingle("note.md");
 
-			expect(localFs.files.has("note.md")).toBe(true);
+			expect(readText(localFs, "note.md")).toBe("remote content");
 			const record = await orchestrator.state.get("note.md");
-			expect(record).toBeDefined();
-			expect(record?.path).toBe("note.md");
+			expect(record).toMatchObject({
+				path: "note.md", remoteMtime: 2000, remoteIdentityKey: "remote-note-id",
+			});
 			await orchestrator.close();
 		});
 
 		it("acknowledges path after pull", async () => {
-			const deps = createDeps();
-			const localFs = createMockLocalFs();
-			const remoteFs = createMockRemoteFs();
-			deps.localFs = () => localFs;
-			deps.remoteFs = () => remoteFs;
-			addFile(remoteFs, "note.md", "content", 2000);
+			const { deps, orchestrator } = await arrangePriorityPull();
 			deps.localTracker.markDirty("note.md");
 
-			const orchestrator = new SyncOrchestrator(deps);
 			await orchestrator.pullSingle("note.md");
 
 			expect(deps.localTracker.getDirtyPaths().has("note.md")).toBe(
@@ -1103,93 +1150,105 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.close();
 		});
 
-		it("logs error but does not throw on pull failure", async () => {
-			const errorSpy = vi.fn();
-			const deps = createDeps({
-				logger: {
-					debug: vi.fn(),
-					info: vi.fn(),
-					warn: vi.fn(),
-					error: errorSpy,
-					flush: vi.fn().mockResolvedValue(undefined),
-				} as unknown as SyncOrchestratorDeps["logger"],
-			});
-			const localFs = createMockLocalFs();
-			const remoteFs = createMockRemoteFs();
-			deps.localFs = () => localFs;
-			deps.remoteFs = () => remoteFs;
-
-			vi.spyOn(remoteFs, "stat").mockResolvedValue({
-				path: "note.md",
-				isDirectory: false,
-				size: 10,
-				mtime: 1000,
-				hash: "",
-			});
-			vi.spyOn(remoteFs, "read").mockRejectedValue(
-				new Error("network error"),
-			);
-
-			const orchestrator = new SyncOrchestrator(deps);
+		it("fails closed and requests the normal lifecycle on detached read failure", async () => {
+			const { orchestrator, warn } = await arrangePriorityPull({ failRead: true });
 			await expect(
 				orchestrator.pullSingle("note.md"),
 			).resolves.toBeUndefined();
-			expect(errorSpy).toHaveBeenCalledWith(
-				"pullSingle: failed",
+			expect(warn).toHaveBeenCalledWith(
+				"file-open priority attempt failed",
 				expect.objectContaining({ path: "note.md" }),
 			);
 			await orchestrator.close();
 		});
 
-		it("skips when remote file is not found", async () => {
-			const warnSpy = vi.fn();
-			const deps = createDeps({
-				logger: {
-					debug: vi.fn(),
-					info: vi.fn(),
-					warn: warnSpy,
-					error: vi.fn(),
-					flush: vi.fn().mockResolvedValue(undefined),
-				} as unknown as SyncOrchestratorDeps["logger"],
+		it("defers a missing detached observation without overwriting local content", async () => {
+			const { localFs, orchestrator, info, priorityRead } =
+				await arrangePriorityPull({ remoteMissing: true });
+			await orchestrator.pullSingle("note.md");
+
+			expect(readText(localFs, "note.md")).toBe("old");
+			expect(priorityRead).not.toHaveBeenCalled();
+			expect(info).toHaveBeenCalledWith("file-open priority completed", {
+				path: "note.md", outcome: "deferred_to_batch",
 			});
-			const localFs = createMockLocalFs();
-			const remoteFs = createMockRemoteFs();
-			deps.localFs = () => localFs;
-			deps.remoteFs = () => remoteFs;
-			// remote file does not exist
-
-			const orchestrator = new SyncOrchestrator(deps);
-			await orchestrator.pullSingle("missing.md");
-
-			expect(localFs.files.has("missing.md")).toBe(false);
-			expect(warnSpy).toHaveBeenCalled();
 			await orchestrator.close();
 		});
 
-		it("runs pullSingle within mutex (exclusive with runSync)", async () => {
-			const deps = createDeps();
+		it("uses detached provider I/O instead of the batch stat/read path", async () => {
+			const { remoteFs, orchestrator, priorityRead } = await arrangePriorityPull();
+			const stat = vi.spyOn(remoteFs, "stat");
+			const read = vi.spyOn(remoteFs, "read");
+
+			await orchestrator.pullSingle("note.md");
+
+			expect(priorityRead).toHaveBeenCalledOnce();
+			expect(stat).not.toHaveBeenCalled();
+			expect(read).not.toHaveBeenCalled();
+			await orchestrator.close();
+		});
+
+		it("supersedes an admitted pull before its normal provider read starts", async () => {
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();
-			deps.localFs = () => localFs;
-			deps.remoteFs = () => remoteFs;
-			addFile(remoteFs, "note.md", "content", 2000);
-
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`,
+			});
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(false);
+			const paths = ["a.md", "b.md", "c.md", "d.md", "e.md", "f.md"];
+			const deps = createDeps({
+				getSettings: () => settings,
+				localFs: () => localFs,
+				remoteFs: () => remoteFs,
+			});
 			const orchestrator = new SyncOrchestrator(deps);
+			for (const [index, path] of paths.entries()) {
+				const local = addFile(localFs, path, `old-${index}`, 1000);
+				const localStat = await localFs.stat(path);
+				if (!localStat) throw new Error("test setup failed");
+				const remote = addFile(remoteFs, path, `new-${index}`, 2000);
+				remote.identityKey = `id-${index}`;
+				await orchestrator.state.put({
+					path, hash: localStat.hash, localMtime: local.mtime, remoteMtime: 1000,
+					localSize: local.size, remoteSize: local.size,
+					remoteIdentityKey: `id-${index}`, syncedAt: 900,
+				});
+			}
+			remoteFs.priority = {
+				observe: vi.fn(async ({ path }) => {
+					const entity = { ...remoteFs.files.get(path)!.entity };
+					const occupant = {
+						kind: "current" as const, path, identityKey: entity.identityKey!,
+						token: `revision-${entity.mtime}`, entity,
+					};
+					return { ...occupant, occupant };
+				}),
+				read: vi.fn(async (observation) => ({
+					kind: "content" as const,
+					content: remoteFs.files.get(observation.path)!.content.slice(0),
+				})),
+			};
 
-			// Start runSync first, then immediately call pullSingle
-			// pullSingle should wait because mutex is held
-			let syncStarted = false;
-			vi.spyOn(localFs, "list").mockImplementation(() => {
-				syncStarted = true;
-				return Promise.resolve([]);
+			const releaseReads = deferred<void>();
+			const fiveReadsStarted = deferred<void>();
+			const normalReadPaths: string[] = [];
+			vi.spyOn(remoteFs, "read").mockImplementation(async (path) => {
+				normalReadPaths.push(path);
+				if (normalReadPaths.length === 5) fiveReadsStarted.resolve();
+				await releaseReads.promise;
+				return remoteFs.files.get(path)!.content.slice(0);
 			});
 
-			const syncPromise = orchestrator.runSync();
-			const pullPromise = orchestrator.pullSingle("note.md");
+			const batch = orchestrator.runSync();
+			await fiveReadsStarted.promise;
+			const priority = orchestrator.pullSingle("f.md");
+			releaseReads.resolve();
+			await Promise.all([priority, batch]);
 
-			await Promise.all([syncPromise, pullPromise]);
-
-			expect(syncStarted).toBe(true);
+			expect(remoteFs.priority.read).toHaveBeenCalledOnce();
+			expect(normalReadPaths).not.toContain("f.md");
+			expect(readText(localFs, "f.md")).toBe("new-5");
+			expect(deps.onStatusChange).toHaveBeenLastCalledWith("idle");
 			await orchestrator.close();
 		});
 	});

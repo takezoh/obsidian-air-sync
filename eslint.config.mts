@@ -313,11 +313,11 @@ export default defineConfig(
 		rules: { "max-lines": ["error", { max: 337, skipBlankLines: true, skipComments: true }] },
 	},
 	{
-		// Re-pinned from 406: Admission-selected debt persistence, its explicit failure,
-		// and executePlan must remain adjacent in the composition root so the pre-I/O
-		// crash-safety cut point is visible rather than hidden behind a shallow wrapper.
+		// Re-pinned from 408: preparation/Admission publication, executor wiring, and
+		// finalization are the composition root's ordering contract. Priority scheduling
+		// adds coordination here while its policy and effects remain separate modules.
 		files: ["src/sync/orchestrator.ts"],
-		rules: { "max-lines": ["error", { max: 408, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 441, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Exact action effects, commitAction, terminal result publication, and their
@@ -327,11 +327,18 @@ export default defineConfig(
 		rules: { "max-lines": ["error", { max: 330, skipBlankLines: true, skipComments: true }] },
 	},
 	{
-		// Re-pinned from 317: replay-free post-delta snapshots must stay under the
-		// same cache mutex/cursor owner as getChangedPaths. Splitting that method
-		// would break the atomic observation boundary this class enforces.
+		// Re-pinned from 326: cached lifecycle and detached priority observation share
+		// the backend-specific identity seams but not mutable cursor state. Keeping the
+		// capability assembly here makes that separation explicit; its algorithm is split out.
 		files: ["src/fs/caching/remote-fs.ts"],
-		rules: { "max-lines": ["error", { max: 326, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 364, skipBlankLines: true, skipComments: true }] },
+	},
+	{
+		// Dropbox's detached identity/path seams belong beside its other API-addressing
+		// seams. Its case-only rename lifecycle is also provider-specific and cannot be
+		// moved into the shared cache or priority layers without crossing ownership.
+		files: ["src/fs/dropbox/index.ts"],
+		rules: { "max-lines": ["error", { max: 317, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Re-pinned from 303 for the top-level Google Picker callback. The

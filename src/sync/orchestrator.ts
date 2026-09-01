@@ -17,7 +17,6 @@ import { classifyHttpError } from "../fs/errors";
 import type { ErrorClassification } from "../fs/errors";
 import { decideRetry, sleep } from "./error";
 import type { ConflictRecord, IdentityEvidence, SyncStatus } from "./types";
-import { buildSyncRecord } from "./state-committer";
 import { CycleSummary } from "./sync-notification";
 import type { SyncCycleResult } from "./sync-notification";
 import { FailedActionTracker } from "./failed-action-tracker";
@@ -29,6 +28,10 @@ import {
 } from "./sync-cycle-planning";
 import { finalizeSyncCycle } from "./sync-cycle-finalization";
 import { admitDestructivePlan } from "./plan-admission";
+import { PriorityCoordinator } from "./priority-coordinator";
+import { LocalMutationBarrier } from "./local-mutation-barrier";
+import { PriorityBatchState } from "./priority-batch-state";
+import { syncOpenedFilePriority } from "./opened-file-priority";
 
 export type { SyncStatus };
 
@@ -80,6 +83,9 @@ export class SyncOrchestrator {
 	/** Reported edges retained until a clean checkpoint; remote edges are not durable debt. */
 	private pendingAdmissionEvidence: IdentityEvidence[] = [];
 	private failedActionTracker = new FailedActionTracker();
+	private readonly priorityCoordinator = new PriorityCoordinator();
+	private readonly localMutationBarrier = new LocalMutationBarrier();
+	private activeBatch: PriorityBatchState | null = null;
 	/** Stable id grouping this plugin session's conflict-history records. */
 	private readonly sessionId = crypto.randomUUID();
 	private deps: SyncOrchestratorDeps;
@@ -301,7 +307,7 @@ export class SyncOrchestrator {
 				lastResult = await this.executeSyncOnce(forceFullScan, snapshot, scopeFingerprint);
 				return {
 					result: lastResult,
-					succeeded: lastResult.succeeded.length,
+					succeeded: lastResult.succeeded.length + lastResult.superseded.length,
 					failed: lastResult.failed.length,
 					blocked: lastResult.blocked.length,
 					conflicts: lastResult.conflicts.length,
@@ -354,38 +360,37 @@ export class SyncOrchestrator {
 			this.deps.logger?.debug("pullSingle: skipped — out of sync scope", { path });
 			return;
 		}
-		await this.syncMutex.run(async () => {
+		await this.priorityCoordinator.enqueue(path, async () => {
 			const localFs = this.deps.localFs();
 			const remoteFs = this.deps.remoteFs();
 			if (!localFs || !remoteFs) {
 				this.deps.logger?.warn("pullSingle: skipped — no local or remote fs", { path });
 				return;
 			}
-
-			try {
-				const remote = await remoteFs.stat(path);
-				if (!remote || remote.isDirectory) {
-					this.deps.logger?.warn("pullSingle: remote file not found or is a directory", { path });
-					return;
-				}
-
-				const content = await remoteFs.read(path);
-				const localEntity = await localFs.write(path, content, remote.mtime);
-				const remoteEntity = remote;
-
-				const record = buildSyncRecord(localEntity, remoteEntity, path);
-				await this.stateStore.put(record);
-
-				this.deps.logger?.info("pullSingle: completed", { path });
-			} catch (err) {
-				this.deps.logger?.error("pullSingle: failed", {
-					path,
-					error: err instanceof Error ? err.message : String(err),
-				});
-			} finally {
-				this.deps.localTracker.acknowledgePath(path);
-			}
+			const activeBatch = this.activeBatch;
+			const target = activeBatch
+				? activeBatch.priorityTarget(path)
+				: this.syncMutex.isLocked ? { kind: "defer" as const } : { kind: "independent" as const };
+			const outcome = await syncOpenedFilePriority({
+				path, localFs, remoteFs, stateStore: this.stateStore,
+				localTracker: this.deps.localTracker,
+				mutationBarrier: this.localMutationBarrier,
+				target,
+				supersede: (action) => activeBatch?.supersede(action) ?? false,
+				invalidate: (action) => activeBatch?.invalidate(action) ?? false,
+				requestNormalLifecycle: () => this.requestNormalLifecycle(),
+				logger: this.deps.logger,
+			});
+			this.deps.logger?.info("file-open priority completed", { path, outcome });
 		});
+	}
+
+	private requestNormalLifecycle(): void {
+		if (this.syncMutex.isLocked) {
+			this.syncPending = true;
+			return;
+		}
+		void this.runSync();
 	}
 
 	getStatus(): SyncStatus {
@@ -398,6 +403,9 @@ export class SyncOrchestrator {
 		if (!localFs || !remoteFs) {
 			throw new Error("Cannot sync: local or remote filesystem is not available");
 		}
+		const preparationPermit = await this.priorityCoordinator.acquireNormalPermit();
+		const prepared = await (async () => {
+		try {
 		const settings = this.deps.getSettings();
 		const provider = this.deps.backendProvider();
 		const debtNamespace = (provider?.getIdentity?.(settings) ?? settings.lastSyncedIdentity) ||
@@ -469,6 +477,13 @@ export class SyncOrchestrator {
 		await this.stateStore.upsertRenameDebts(localRenameDebts).catch((cause: unknown) => {
 			throw new Error("Local rename constraint persistence failed", { cause });
 		});
+		this.activeBatch = new PriorityBatchState(admission);
+		return { settings, provider, admission, persistedDebts, localRenameDebts };
+		} finally {
+			preparationPermit.release();
+		}
+		})();
+		const { settings, provider, admission, persistedDebts, localRenameDebts } = prepared;
 		const total = admission.executable.actions.length;
 
 		const classifyError = (err: unknown) => provider?.classifyError?.(err) ?? classifyHttpError(err);
@@ -489,31 +504,38 @@ export class SyncOrchestrator {
 			classifyError,
 			isActionBlocked: (action) => this.failedActionTracker.isBlocked(settings.backendType, action),
 			transferPool: this.deps.isMobile() ? MOBILE_TRANSFER_POOL : DESKTOP_TRANSFER_POOL,
+			acquireActionPermit: () => this.priorityCoordinator.acquireNormalPermit(),
+			beginAction: (action) => this.activeBatch?.beginAction(action) ?? "invalidated",
+			onActionBlocked: (action) => this.activeBatch?.removeBlocked(action),
+			mutationBarrier: this.localMutationBarrier,
+			onPhaseChange: (phase) => this.activeBatch?.setPhase(phase),
 		};
 
-		const execution = await executePlan(admission.executable, ctx);
-		const result: ExecutionResult = { ...execution, deferred: admission.deferred };
-		this.updateFailedActionTracker(settings.backendType, result, classifyError);
+		try {
+			const execution = await executePlan(admission.executable, ctx);
+			const result: ExecutionResult = { ...execution, deferred: admission.deferred };
+			this.updateFailedActionTracker(settings.backendType, result, classifyError);
 
-		// Persist backend state. commitCheckpoint advances the delta cursor (+ file map,
-		// atomically) only on a fully clean cycle; a partial sync keeps the prior cursor.
-		this.pendingAdmissionEvidence = await finalizeSyncCycle({
-			admission,
-			result, pendingEvidence: this.pendingAdmissionEvidence, persistedDebts,
-			localRenameDebts,
-			checkpoint: remoteFs.checkpoint, scopeFingerprint, stateStore: this.stateStore,
-		});
-		// readBackendState now persists only non-secret token state (the cursor lives
-		// in the backend store, committed above) — safe to run every cycle.
-		if (provider?.readBackendState) {
-			settings.backendData = {
-				...settings.backendData,
-				...provider.readBackendState(),
-			};
+			await this.priorityCoordinator.finalize(async () => {
+				this.activeBatch?.setPhase("finalizing");
+				this.pendingAdmissionEvidence = await finalizeSyncCycle({
+					admission,
+					result, pendingEvidence: this.pendingAdmissionEvidence, persistedDebts,
+					localRenameDebts,
+					checkpoint: remoteFs.checkpoint, scopeFingerprint, stateStore: this.stateStore,
+				});
+				if (provider?.readBackendState) {
+					settings.backendData = {
+						...settings.backendData,
+						...provider.readBackendState(),
+					};
+				}
+				await this.deps.saveSettings();
+			});
+			return result;
+		} finally {
+			this.activeBatch = null;
 		}
-		await this.deps.saveSettings();
-
-		return result;
 	}
 
 	private updateFailedActionTracker(
@@ -523,6 +545,9 @@ export class SyncOrchestrator {
 	): void {
 		for (const succeeded of result.succeeded) {
 			this.failedActionTracker.recordSuccess(backendType, succeeded.action);
+		}
+		for (const action of result.superseded) {
+			this.failedActionTracker.recordSuccess(backendType, action);
 		}
 		for (const failed of result.failed) {
 			this.failedActionTracker.recordFailure(
