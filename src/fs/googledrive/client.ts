@@ -16,7 +16,7 @@ import { ResumableUploader, RESUMABLE_THRESHOLD } from "./resumable-upload";
 
 const GOOGLE_DRIVE_API = "https://www.googleapis.com/drive/v3";
 const UPLOAD_API = "https://www.googleapis.com/upload/drive/v3";
-const FILE_FIELDS = "id,name,mimeType,size,modifiedTime,parents,md5Checksum,trashed";
+const FILE_FIELDS = "id,name,mimeType,size,modifiedTime,parents,md5Checksum,trashed,version";
 
 // LIST_PAGE_CAP lives in ./types (a leaf) so the listing helper can import it
 // without a client↔list-all cycle; re-exported here for existing `./client` importers.
@@ -117,6 +117,27 @@ export class GoogleDriveClient {
 		return result.files[0] ?? null;
 	}
 
+	/** Drain every same-parent/name candidate so duplicate names remain an explicit conflict. */
+	async listChildrenByName(parentId: string, name: string): Promise<GoogleDriveFile[]> {
+		const escapedParent = parentId.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+		const escapedName = name.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+		const q = `'${escapedParent}' in parents and name = '${escapedName}' and trashed = false`;
+		const files: GoogleDriveFile[] = [];
+		let pageToken: string | undefined;
+		do {
+			const params = new URLSearchParams({ q, fields: `nextPageToken,files(${FILE_FIELDS})`, pageSize: "1000" });
+			if (pageToken) params.set("pageToken", pageToken);
+			const response = await this.request("listChildrenByName", {
+				url: `${GOOGLE_DRIVE_API}/files?${params.toString()}`,
+			});
+			const result: unknown = response.json;
+			assertGoogleDriveFileList(result);
+			files.push(...result.files);
+			pageToken = result.nextPageToken;
+		} while (pageToken);
+		return files;
+	}
+
 	/** Get a file's metadata by ID */
 	async getFile(fileId: string): Promise<GoogleDriveFile> {
 		const params = new URLSearchParams({ fields: FILE_FIELDS });
@@ -136,7 +157,7 @@ export class GoogleDriveClient {
 		const escapedId = folderId.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 		const params = new URLSearchParams({
 			q: `'${escapedId}' in parents and trashed = false`,
-			fields: "nextPageToken,files(id,name,mimeType,size,modifiedTime,parents,md5Checksum)",
+			fields: "nextPageToken,files(id,name,mimeType,size,modifiedTime,parents,md5Checksum,version)",
 			pageSize: "1000",
 		});
 		if (pageToken) {
@@ -305,7 +326,7 @@ export class GoogleDriveClient {
 		const params = new URLSearchParams({
 			pageToken: pageToken ?? startPageToken,
 			fields:
-				"nextPageToken,newStartPageToken,changes(type,fileId,removed,file(id,name,mimeType,size,modifiedTime,parents,md5Checksum,trashed))",
+				"nextPageToken,newStartPageToken,changes(type,fileId,removed,file(id,name,mimeType,size,modifiedTime,parents,md5Checksum,trashed,version))",
 			pageSize: "1000",
 		});
 

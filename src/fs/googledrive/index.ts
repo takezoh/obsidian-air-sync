@@ -11,6 +11,7 @@ import { sha256 } from "../../utils/hash";
 import { normalizeSyncPath, validateRename } from "../../utils/path";
 import { CachingRemoteFs } from "../caching/remote-fs";
 import type { IncrementalChangesResult } from "../caching/remote-fs";
+import { resolveDetachedIdPath } from "../priority-observation";
 
 /**
  * IFileSystem implementation backed by Google Drive.
@@ -57,6 +58,55 @@ export class GoogleDriveFs extends CachingRemoteFs<GoogleDriveFile> {
 			{ cache: this.cache, client: this.client, logger: this.logger },
 			cursor,
 		);
+	}
+
+	protected async fetchCurrentFile(fileId: string): Promise<GoogleDriveFile | null> {
+		try {
+			const file = await this.client.getFile(fileId);
+			return file.trashed ? null : file;
+		} catch (err) {
+			if (err && typeof err === "object" && "status" in err && err.status === 404) return null;
+			throw err;
+		}
+	}
+
+	protected async fetchCurrentPath(path: string): Promise<GoogleDriveFile[]> {
+		let parentId = this.rootFolderId;
+		const segments = path.split("/");
+		for (const [index, segment] of segments.entries()) {
+			const candidates = await this.client.listChildrenByName(parentId, segment);
+			if (candidates.length !== 1 || index === segments.length - 1) return candidates;
+			const parent = candidates[0]!;
+			if (parent.mimeType !== FOLDER_MIME) return [];
+			parentId = parent.id;
+		}
+		return [];
+	}
+
+	protected resolveDetachedPath(file: GoogleDriveFile): Promise<string | null> {
+		return resolveDetachedIdPath(file, this.rootFolderId, (id) => this.fetchCurrentFile(id), {
+			id: (entry) => entry.id,
+			name: (entry) => entry.name,
+			parents: (entry) => entry.parents,
+			isFolder: (entry) => entry.mimeType === FOLDER_MIME,
+		});
+	}
+
+	protected toDetachedEntity(path: string, file: GoogleDriveFile): FileEntity {
+		return {
+			path, pathAuthority: "actual_resolved", identityKey: file.id,
+			isDirectory: file.mimeType === FOLDER_MIME,
+			size: file.mimeType === FOLDER_MIME ? 0 : Number(file.size ?? 0),
+			mtime: file.modifiedTime ? Date.parse(file.modifiedTime) || 0 : 0,
+			hash: "", remoteChecksum: toRemoteChecksum(file),
+			backendMeta: { googleDriveId: file.id, version: file.version },
+		};
+	}
+
+	protected detachedVersionToken(file: GoogleDriveFile): string | null {
+		if (!file.version || !/^\d+$/.test(file.version)) return null;
+		if (file.mimeType !== FOLDER_MIME && (!file.md5Checksum || !file.size || !/^\d+$/.test(file.size))) return null;
+		return `googledrive:${file.version}`;
 	}
 
 	protected downloadFile(fileId: string): Promise<ArrayBuffer> {
@@ -117,7 +167,7 @@ export class GoogleDriveFs extends CachingRemoteFs<GoogleDriveFile> {
 				: 0,
 			hash,
 			remoteChecksum: toRemoteChecksum(googleDriveFile),
-			backendMeta: { googleDriveId: googleDriveFile.id },
+			backendMeta: { googleDriveId: googleDriveFile.id, version: googleDriveFile.version },
 		};
 	}
 

@@ -1,5 +1,6 @@
 import type { FileEntity } from "./types";
 import type { RenamePair } from "./types";
+import type { PriorityObservationCapability } from "./priority-observation";
 
 /**
  * Abstract filesystem interface for sync operations.
@@ -29,6 +30,9 @@ export interface IFileSystem {
 	 * `remoteChecksum` for change detection.
 	 */
 	stat(path: string): Promise<FileEntity | null>;
+
+	/** Detached, identity-addressed file-open observation; never consumes global delta state. */
+	priority?: PriorityObservationCapability;
 
 	/**
 	 * Read file content as ArrayBuffer.

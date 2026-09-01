@@ -30,6 +30,7 @@ export interface GoogleDriveFile {
 	parents?: string[];
 	trashed?: boolean;
 	md5Checksum?: string;
+	version?: string;
 }
 
 /** Response from files.list API */

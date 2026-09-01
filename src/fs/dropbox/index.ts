@@ -126,6 +126,39 @@ export class DropboxFs extends CachingRemoteFs<DropboxEntry> {
 		return applyDropboxDelta({ cache: this.cache, client: this.client, logger: this.logger }, cursor);
 	}
 
+	protected async fetchCurrentFile(fileId: string): Promise<DropboxEntry | null> {
+		return this.getOptionalMetadata(fileId);
+	}
+
+	protected async fetchCurrentPath(path: string): Promise<DropboxEntry[]> {
+		const entry = await this.getOptionalMetadata(this.addr(path));
+		return entry ? [entry] : [];
+	}
+
+	protected async resolveDetachedPath(file: DropboxEntry): Promise<string | null> {
+		const root = await this.getOptionalMetadata(this.rootFolderId);
+		if (!root?.id || root.id !== this.rootFolderId || !root.path_display) return null;
+		if (!file.id || !file.path_display) return null;
+		const rootPath = root.path_display.replace(/\/$/, "");
+		if (!file.path_display.startsWith(`${rootPath}/`)) return null;
+		return file.path_display.slice(rootPath.length + 1);
+	}
+
+	protected toDetachedEntity(path: string, file: DropboxEntry): FileEntity {
+		return {
+			path, pathAuthority: "actual_resolved", identityKey: file.id,
+			isDirectory: file[".tag"] === "folder", size: file[".tag"] === "folder" ? 0 : file.size ?? 0,
+			mtime: parseDropboxTime(file.server_modified ?? file.client_modified), hash: "",
+			remoteChecksum: file.content_hash ? { algo: "dropbox", value: file.content_hash } : undefined,
+			backendMeta: { dropboxId: file.id, rev: file.rev },
+		};
+	}
+
+	protected detachedVersionToken(file: DropboxEntry): string | null {
+		if (!file.id || !file.rev || !file.content_hash || !Number.isFinite(file.size)) return null;
+		return `dropbox:${file.rev}`;
+	}
+
 	protected downloadFile(fileId: string): Promise<ArrayBuffer> {
 		// fileId is the entry's stable id (`id:…`); Dropbox download accepts it directly,
 		// so a download works regardless of where the vault folder currently lives.

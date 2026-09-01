@@ -11,6 +11,7 @@ import { sha256 } from "../../utils/hash";
 import { normalizeSyncPath, validateRename } from "../../utils/path";
 import { CachingRemoteFs } from "../caching/remote-fs";
 import type { IncrementalChangesResult } from "../caching/remote-fs";
+import { resolveDetachedIdPath } from "../priority-observation";
 
 /**
  * IFileSystem implementation backed by OneDrive (Microsoft Graph, App Folder scope).
@@ -66,6 +67,59 @@ export class OneDriveFs extends CachingRemoteFs<OneDriveItem> {
 		);
 	}
 
+	protected async fetchCurrentFile(fileId: string): Promise<OneDriveItem | null> {
+		try {
+			const item = await this.client.getItem(fileId);
+			return item.deleted ? null : item;
+		} catch (err) {
+			if (err instanceof GraphApiError && err.status === 404) return null;
+			throw err;
+		}
+	}
+
+	protected async fetchCurrentPath(path: string): Promise<OneDriveItem[]> {
+		let parentId = this.rootFolderId;
+		const segments = path.split("/");
+		for (const [index, segment] of segments.entries()) {
+			let item: OneDriveItem;
+			try {
+				item = await this.client.getChildByName(parentId, segment);
+			} catch (err) {
+				if (err instanceof GraphApiError && err.status === 404) return [];
+				throw err;
+			}
+			if (index === segments.length - 1) return [item];
+			if (!item.folder) return [];
+			parentId = item.id;
+		}
+		return [];
+	}
+
+	protected resolveDetachedPath(item: OneDriveItem): Promise<string | null> {
+		return resolveDetachedIdPath(item, this.rootFolderId, (id) => this.fetchCurrentFile(id), {
+			id: (entry) => entry.id,
+			name: (entry) => entry.name,
+			parents: (entry) => entry.parentReference?.id ? [entry.parentReference.id] : undefined,
+			isFolder: (entry) => !!entry.folder,
+		});
+	}
+
+	protected toDetachedEntity(path: string, item: OneDriveItem): FileEntity {
+		return {
+			path, pathAuthority: "actual_resolved", identityKey: item.id,
+			isDirectory: !!item.folder, size: item.folder ? 0 : item.size ?? 0,
+			mtime: itemMtime(item), hash: "", remoteChecksum: toRemoteChecksum(item),
+			backendMeta: { oneDriveId: item.id, cTag: item.cTag, eTag: item.eTag },
+		};
+	}
+
+	protected detachedVersionToken(item: OneDriveItem): string | null {
+		const tag = item.cTag || item.eTag;
+		if (!tag) return null;
+		if (!item.folder && (!Number.isFinite(item.size) || !item.file?.hashes?.quickXorHash)) return null;
+		return `onedrive:${tag}`;
+	}
+
 	protected downloadFile(fileId: string): Promise<ArrayBuffer> {
 		return this.client.download(fileId);
 	}
@@ -108,7 +162,7 @@ export class OneDriveFs extends CachingRemoteFs<OneDriveItem> {
 			mtime: itemMtime(item),
 			hash,
 			remoteChecksum: toRemoteChecksum(item),
-			backendMeta: { oneDriveId: item.id },
+			backendMeta: { oneDriveId: item.id, cTag: item.cTag, eTag: item.eTag },
 		};
 	}
 

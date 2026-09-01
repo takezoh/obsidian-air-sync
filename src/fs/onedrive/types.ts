@@ -26,6 +26,8 @@ export interface OneDriveItem {
 	fileSystemInfo?: { lastModifiedDateTime?: string };
 	lastModifiedDateTime?: string;
 	deleted?: { state?: string };
+	cTag?: string;
+	eTag?: string;
 }
 
 /**
@@ -231,6 +233,6 @@ export function oneDriveItemToEntity(path: string, item: OneDriveItem): FileEnti
 		mtime: itemMtime(item),
 		hash: "",
 		remoteChecksum: toRemoteChecksum(item),
-		backendMeta: { oneDriveId: item.id },
+		backendMeta: { oneDriveId: item.id, cTag: item.cTag, eTag: item.eTag },
 	};
 }

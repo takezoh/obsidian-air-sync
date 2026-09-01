@@ -3,8 +3,15 @@ import type { FileEntity, PathAuthority, RenamePair } from "../types";
 import type { MetadataStore } from "../../store/metadata-store";
 import type { Logger } from "../../logging/logger";
 import { AsyncMutex } from "../../queue/async-queue";
+import type {
+	PriorityObservation,
+	PriorityObservationCapability,
+	PriorityObservationRequest,
+	PriorityReadResult,
+} from "../priority-observation";
 import { normalizeSyncPath } from "../../utils/path";
 import type { AbstractMetadataCache } from "./metadata-cache";
+import { observeDetachedPriority, readDetachedPriority } from "./detached-priority";
 
 /** A remote delta: paths added/modified, deleted, and renamed since the last cursor. */
 export interface RemoteDelta {
@@ -123,6 +130,17 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	protected abstract downloadFile(fileId: string): Promise<ArrayBuffer>;
 	/** Delete a file/folder by its backend id (remote side only; cache is updated here). */
 	protected abstract deleteRemote(fileId: string): Promise<void>;
+	/** Request-local provider lookup only; priority observation must not touch the cache or delta cursor. */
+	protected abstract fetchCurrentFile(fileId: string): Promise<TFile | null>;
+	protected abstract fetchCurrentPath(path: string): Promise<TFile[] | null>;
+	protected abstract resolveDetachedPath(file: TFile): Promise<string | null>;
+	protected abstract toDetachedEntity(path: string, file: TFile): FileEntity;
+	protected abstract detachedVersionToken(file: TFile): string | null;
+
+	readonly priority: PriorityObservationCapability = {
+		observe: (request) => this.observePriority(request),
+		read: (observation) => this.readPriority(observation),
+	};
 
 	abstract write(path: string, content: ArrayBuffer, mtime: number): Promise<FileEntity>;
 	abstract mkdir(path: string): Promise<FileEntity>;
@@ -466,6 +484,30 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 			await this.ensureInitialized();
 			return this.snapshotEntities();
 		});
+	}
+
+	private async observePriority(request: PriorityObservationRequest): Promise<PriorityObservation> {
+		const path = normalizeSyncPath(request.path);
+		return observeDetachedPriority({ ...request, path }, {
+			fetchIdentity: (identityKey) => this.fetchCurrentFile(identityKey),
+			fetchPath: (requestedPath) => this.fetchCurrentPath(requestedPath),
+			resolvePath: async (file) => {
+				const resolved = await this.resolveDetachedPath(file);
+				return resolved ? normalizeSyncPath(resolved) : null;
+			},
+			toEntity: (requestedPath, file) => this.toDetachedEntity(requestedPath, file),
+			versionToken: (file) => this.detachedVersionToken(file),
+		});
+	}
+
+	private async readPriority(
+		observation: Extract<PriorityObservation, { kind: "current" }>,
+	): Promise<PriorityReadResult> {
+		return readDetachedPriority(
+			observation,
+			(identityKey) => this.downloadFile(identityKey),
+			(request) => this.observePriority(request),
+		);
 	}
 
 	// ── Read-only ops (walk the cache) ──
