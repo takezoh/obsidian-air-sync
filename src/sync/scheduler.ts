@@ -1,9 +1,7 @@
 import { debounce, TFolder } from "../platform/obsidian";
 import type { EventRef, Workspace, Vault, TAbstractFile, TFile } from "../platform/obsidian";
 import type { IFileSystem } from "../fs/interface";
-import type { SyncStateStore } from "./state";
 import type { LocalChangeTracker } from "./local-tracker";
-import { hasChanged, hasRemoteChanged } from "./change-compare";
 
 const DEBOUNCE_MS = 5000;
 
@@ -34,9 +32,7 @@ export interface SyncOrchestrator {
 export interface SyncSchedulerDeps {
 	workspace: Workspace;
 	vault: Vault;
-	localFs: () => IFileSystem | null;
 	remoteFs: () => IFileSystem | null;
-	stateStore: SyncStateStore;
 	localTracker: LocalChangeTracker;
 	orchestrator: SyncOrchestrator;
 	isExcluded: (path: string) => boolean;
@@ -214,23 +210,11 @@ export class SyncScheduler {
 	}
 
 	private wireFileOpenEvent(): void {
-		const { workspace, stateStore, localFs, remoteFs, orchestrator } = this.deps;
+		const { workspace, orchestrator } = this.deps;
 
 		this.deps.registerEvent(
 			workspace.on("file-open", async (file: TFile | null) => {
 				if (!file) return;
-				const record = await stateStore.get(file.path);
-				if (!record) return;
-				const lFs = localFs();
-				const rFs = remoteFs();
-				if (!lFs || !rFs) return;
-				const [localStat, remote] = await Promise.all([
-					lFs.stat(file.path),
-					rFs.stat(file.path),
-				]);
-				if (!remote || remote.isDirectory) return;
-				if (!hasRemoteChanged(remote, record)) return;
-				if (localStat && hasChanged(localStat, record)) return;
 				await orchestrator.pullSingle(file.path);
 			}),
 		);

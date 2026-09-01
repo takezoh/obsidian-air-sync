@@ -13,6 +13,7 @@ import type { AirSyncSettings } from "../settings";
 import { AuthError } from "../fs/errors";
 import { sha256 } from "../utils/hash";
 import type { Logger } from "../logging/logger";
+import type { PriorityObservation, PriorityObservationRequest } from "../fs/priority-observation";
 
 // Make retry backoff instant: the retry tests assert behaviour (retry count,
 // status), not wall-clock timing, and real exponential backoff + jitter added
@@ -1214,19 +1215,21 @@ describe("SyncOrchestrator", () => {
 					remoteIdentityKey: `id-${index}`, syncedAt: 900,
 				});
 			}
+			const priorityRead = vi.fn((observation: Extract<PriorityObservation, { kind: "current" }>) =>
+				Promise.resolve({
+					kind: "content" as const,
+					content: remoteFs.files.get(observation.path)!.content.slice(0),
+				}));
 			remoteFs.priority = {
-				observe: vi.fn(async ({ path }) => {
+				observe: vi.fn(({ path }: PriorityObservationRequest) => {
 					const entity = { ...remoteFs.files.get(path)!.entity };
 					const occupant = {
 						kind: "current" as const, path, identityKey: entity.identityKey!,
 						token: `revision-${entity.mtime}`, entity,
 					};
-					return { ...occupant, occupant };
+					return Promise.resolve({ ...occupant, occupant });
 				}),
-				read: vi.fn(async (observation) => ({
-					kind: "content" as const,
-					content: remoteFs.files.get(observation.path)!.content.slice(0),
-				})),
+				read: priorityRead,
 			};
 
 			const releaseReads = deferred<void>();
@@ -1245,7 +1248,7 @@ describe("SyncOrchestrator", () => {
 			releaseReads.resolve();
 			await Promise.all([priority, batch]);
 
-			expect(remoteFs.priority.read).toHaveBeenCalledOnce();
+			expect(priorityRead).toHaveBeenCalledOnce();
 			expect(normalReadPaths).not.toContain("f.md");
 			expect(readText(localFs, "f.md")).toBe("new-5");
 			expect(deps.onStatusChange).toHaveBeenLastCalledWith("idle");

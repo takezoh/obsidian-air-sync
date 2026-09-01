@@ -13,12 +13,7 @@ import type { SyncSchedulerDeps } from "./scheduler";
 import type { TAbstractFile } from "obsidian";
 import { TFolder } from "../platform/obsidian";
 import { LocalChangeTracker } from "./local-tracker";
-import {
-	createMockLocalFs, createMockRemoteFs,
-	createMockStateStore,
-} from "../__mocks__/sync-test-helpers";
-import { sha256 } from "../utils/hash";
-import type { SyncRecord } from "./types";
+import { createMockRemoteFs } from "../__mocks__/sync-test-helpers";
 
 type VaultHandler = (file: TAbstractFile) => void;
 type RenameHandler = (file: TAbstractFile, oldPath: string) => void;
@@ -72,9 +67,7 @@ function createDeps(
 				return {};
 			}),
 		} as unknown as SyncSchedulerDeps["vault"],
-		localFs: () => createMockLocalFs(),
 		remoteFs: () => createMockRemoteFs(),
-		stateStore: createMockStateStore(),
 		localTracker: new LocalChangeTracker(),
 		orchestrator: { runSync, pullSingle, isSyncing: () => false },
 		isExcluded: () => false,
@@ -336,63 +329,17 @@ describe("SyncScheduler", () => {
 	});
 
 	describe("file-open priority sync", () => {
-		it("pulls when remote changed but local unchanged", async () => {
-			// Baseline hash reflects the local content, so stat()'s SHA-256 matches it
-			// and the local side is correctly seen as unchanged (only remote differs).
-			const localContent = new ArrayBuffer(10);
-			const record: SyncRecord = {
-				path: "note.md",
-				hash: await sha256(localContent),
-				localMtime: 1000,
-				remoteMtime: 1000,
-				localSize: 10,
-				remoteSize: 10,
-				syncedAt: 900,
-			};
-			await deps.stateStore.put(record);
-
-			const localFs = createMockLocalFs();
-			const remoteFs = createMockRemoteFs();
-			localFs.files.set("note.md", {
-				content: localContent,
-				entity: {
-					path: "note.md",
-					isDirectory: false,
-					size: 10,
-					mtime: 1000,
-					hash: "",
-				},
-			});
-			remoteFs.files.set("note.md", {
-				content: new ArrayBuffer(15),
-				entity: {
-					path: "note.md",
-					isDirectory: false,
-					size: 15,
-					mtime: 2000,
-					hash: "",
-				},
-			});
-
-			scheduler.destroy();
-			deps = createDeps({
-				stateStore: deps.stateStore,
-				localFs: () => localFs,
-				remoteFs: () => remoteFs,
-			});
-			scheduler = new SyncScheduler(deps);
-			scheduler.start();
-
+		it("routes an opened file without stale cache or baseline prechecks", async () => {
 			const handler = deps.workspaceHandlers.get("file-open")!;
 			await handler({ path: "note.md" });
 
 			expect(deps.pullSingle).toHaveBeenCalledWith("note.md");
 		});
 
-		it("skips pull when no sync record", async () => {
+		it("lets the priority owner reject an untracked path", async () => {
 			const handler = deps.workspaceHandlers.get("file-open")!;
 			await handler({ path: "unknown.md" });
-			expect(deps.pullSingle).not.toHaveBeenCalled();
+			expect(deps.pullSingle).toHaveBeenCalledWith("unknown.md");
 		});
 
 		it("skips pull when file is null", async () => {

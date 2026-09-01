@@ -144,9 +144,7 @@ export default class AirSyncPlugin extends Plugin {
 		this.scheduler = new SyncScheduler({
 			workspace: this.app.workspace,
 			vault: this.app.vault,
-			localFs: () => this.localFs,
 			remoteFs: () => this.backendManager.getRemoteFs(),
-			stateStore: this.orchestrator.state,
 			localTracker: this.localTracker,
 			orchestrator: this.orchestrator,
 			isExcluded: (path) => this.orchestrator.isExcluded(path),

@@ -96,6 +96,8 @@ One row per directory; see the layer diagram and per-doc references for module d
 
 `runSync` early-returns when no remote backend is present, the backend is connecting, or layout is not ready; it serializes via an `AsyncMutex`. A sync arriving while one runs sets a `syncPending` flag and the running cycle re-runs via a `do/while` loop (coalescing). Each cycle retries up to `MAX_RETRIES = 3`: `AuthError` (status 401) and a non-rate-limit HTTP 403 abort the whole sync immediately; HTTP 404 breaks the retry loop without special handling. For 429 or a rate-limit 403 carrying a `Retry-After` header, delay = `retryAfter * 1000` ms; otherwise exponential backoff with jitter = `2^(attempt-1) * 1000 * (0.5 + Math.random())` ms. See [docs/error-handling.md](docs/error-handling.md) for the full classification/recovery table.
 
+File-open priority is a narrow side entrance to this pipeline, not a second decision engine. The scheduler only forwards the opened path. `IFileSystem.priority` obtains a detached identity/path/version observation without consuming or mutating the batch delta cache. `PriorityCoordinator` admits it only between complete normal actions; after a whole-record `SyncRecord` CAS it may replace the exact still-pending singleton pull projected by Admission. Any missing authority, local race, CAS loss, or closed phase defers to the normal lifecycle. Normal batch actions still use the same `AuthorizedSyncPlan`, provider calls, and global phase barriers.
+
 ## Core data models
 
 ### FileEntity (fs/types.ts)
