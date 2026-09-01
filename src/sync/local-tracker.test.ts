@@ -114,6 +114,14 @@ describe("LocalChangeTracker", () => {
 			expect(tracker.getDirtyPaths().has("new.md")).toBe(true);
 			expect(tracker.isInitialized()).toBe(true);
 		});
+
+		it("retains a path dirtied again after it was captured", () => {
+			tracker.markDirty("again.md");
+			const snap = tracker.snapshot();
+			tracker.markDirty("again.md");
+			tracker.acknowledge(snap);
+			expect(tracker.getDirtyPaths().has("again.md")).toBe(true);
+		});
 	});
 
 	describe("acknowledgePath", () => {
@@ -137,6 +145,14 @@ describe("LocalChangeTracker", () => {
 			tracker.markDirty("a.md");
 			tracker.acknowledgePath("a.md");
 			expect(tracker.isInitialized()).toBe(false);
+		});
+
+		it("does not clear a newer generation", () => {
+			tracker.markDirty("a.md");
+			const expected = tracker.generation("a.md");
+			tracker.markDirty("a.md");
+			tracker.acknowledgePath("a.md", expected);
+			expect(tracker.getDirtyPaths().has("a.md")).toBe(true);
 		});
 	});
 

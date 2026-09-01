@@ -102,6 +102,38 @@ describe("commitAction", () => {
 		expect(stateStore.records.has("d.md")).toBe(true);
 	});
 
+	it("content replacement uses the existing whole-record CAS", async () => {
+		const baseline = {
+			path: "cas.md", hash: "old", localMtime: 1, remoteMtime: 1,
+			localSize: 3, remoteSize: 3, syncedAt: 1,
+		};
+		stateStore.records.set("cas.md", baseline);
+		const compareAndPut = vi.spyOn(stateStore, "compareAndPut");
+		const { entity: local } = makeFile("cas.md", "new", 2);
+		const { entity: remote } = makeFile("cas.md", "new", 2);
+
+		await commitAction({ path: "cas.md", action: "pull", baseline }, local, remote, makeCtx());
+
+		expect(compareAndPut).toHaveBeenCalledWith(baseline, expect.objectContaining({ path: "cas.md" }));
+		expect(compareAndPut.mock.calls[0]).toHaveLength(2);
+	});
+
+	it("content CAS mismatch preserves the winning record and fails the action", async () => {
+		const baseline = {
+			path: "cas-race.md", hash: "old", localMtime: 1, remoteMtime: 1,
+			localSize: 3, remoteSize: 3, syncedAt: 1,
+		};
+		const winner = { ...baseline, hash: "winner", syncedAt: 2 };
+		stateStore.records.set("cas-race.md", winner);
+		const { entity: local } = makeFile("cas-race.md", "new", 2);
+		const { entity: remote } = makeFile("cas-race.md", "new", 2);
+
+		await expect(commitAction(
+			{ path: "cas-race.md", action: "pull", baseline }, local, remote, makeCtx(),
+		)).rejects.toThrow("SyncRecord changed before content commit");
+		expect(stateStore.records.get("cas-race.md")).toEqual(winner);
+	});
+
 	it("delete_local: deletes SyncRecord", async () => {
 		stateStore.records.set("e.md", {
 			path: "e.md", hash: "", localMtime: 1000, remoteMtime: 1000,

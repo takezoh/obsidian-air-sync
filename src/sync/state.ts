@@ -176,6 +176,22 @@ export class SyncStateStore {
 		});
 	}
 
+	/** Replace a record only when the same transaction still observes the expected baseline. */
+	async compareAndPut(expected: SyncRecord | undefined, record: SyncRecord): Promise<boolean> {
+		return this.helper.runTransaction(STORE_NAME, "readwrite", (tx) => {
+			const store = tx.objectStore(STORE_NAME);
+			const request = store.get(record.path);
+			let replaced = false;
+			request.onsuccess = () => {
+				const current = request.result as SyncRecord | undefined;
+				if (JSON.stringify(current) !== JSON.stringify(expected)) return;
+				store.put(record);
+				replaced = true;
+			};
+			return () => replaced;
+		});
+	}
+
 	/** Delete a sync record by path */
 	async delete(path: string): Promise<void> {
 		await this.helper.runTransaction([STORE_NAME, CONTENT_STORE_NAME], "readwrite", (tx) => {

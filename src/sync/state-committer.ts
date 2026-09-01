@@ -79,7 +79,12 @@ export async function commitAction(
 		case "match":
 		case "conflict": {
 			const record = buildSyncRecord(localEntity, remoteEntity, path);
-			await stateStore.put(record);
+			if (action.baseline) {
+				const replaced = await stateStore.compareAndPut(action.baseline, record);
+				if (!replaced) throw new Error(`SyncRecord changed before content commit: ${path}`);
+			} else {
+				await stateStore.put(record);
+			}
 			await maybeStoreMergeBase(ctx, path, localEntity, record.localSize);
 			break;
 		}
