@@ -33,3 +33,11 @@ npm run test:e2e
 ```
 
 E2E は credential-gated。各 backend の実行結果を個別に報告し、未実行を unit/contract test の代用にしない。
+
+## 2026-09-01 results
+
+- repository gate: `npm run lint`、`npm run lint:bot-repro`、`npm run build`、`npm test` は成功。全 unit は 101 files / 1,629 tests passed。
+- integrated priority tests: detached provider I/O、local-edit race、whole-record CAS loss、exact pending pull supersession、normal batch call exclusionを含め成功。
+- live Dropbox / OneDrive E2E: 2 suites、101 tests passed。
+- live Google Drive E2E: OAuth refresh が HTTP 400 で失敗し、suite setup後の50 testsは未実行。credential refresh failureとして未検証であり、greenとは扱わない。
+- cold hash observability:既存の `hashEnrichmentCandidates` / `hashEnrichmentMatches` と matched notification assertions を含む全 unit suite が成功。
