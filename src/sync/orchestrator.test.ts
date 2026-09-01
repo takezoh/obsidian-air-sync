@@ -5,7 +5,7 @@ import type { SyncOrchestratorDeps } from "./orchestrator";
 import { LocalChangeTracker } from "./local-tracker";
 import {
 	confirmMockPath, createMockLocalFs, createMockRemoteFs, type MockFileSystem,
-	addFile, deferred,
+	addFile, deferred, flush,
 	readText,
 	mockSettings as baseMockSettings,
 } from "../__mocks__/sync-test-helpers";
@@ -1317,7 +1317,7 @@ describe("SyncOrchestrator", () => {
 			const priority = orchestrator.pullSingle("note.md");
 			const priorityResolved = vi.fn();
 			void priority.then(priorityResolved);
-			await Promise.resolve();
+			await flush();
 			expect(priorityResolved).not.toHaveBeenCalled();
 			expect(priorityStateRead).not.toHaveBeenCalled();
 			expect(priorityObserve).not.toHaveBeenCalled();
