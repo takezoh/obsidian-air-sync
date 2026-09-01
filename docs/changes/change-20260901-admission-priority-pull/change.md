@@ -14,10 +14,16 @@ outcomes:
   CAS succeeds.
 - Normal batch targeted API call count and hash-enrichment diagnostics remain unchanged.
 scope:
-- Detached priority observation for Google Drive, Dropbox, and OneDrive
-- Priority coordination and local mutation serialization
-- Admission projection, exact-action supersession, executor permits, and finalization
-- File-open orchestration, tests, and architecture documentation
+- src/fs/ remote filesystem contracts, backend harnesses, registry guard, and Google
+  content token
+- src/__mocks__/ and local shared-contract consumers
+- e2e/ live filesystem and priority fidelity wiring
+- vitest.config.ts unit discovery and coverage ownership
+- docs/e2e-testing.md live E2E ownership documentation
+- docs/adr/ testing responsibility ADRs
+- docs/google-drive-backend.md Google Priority content-token responsibility
+- docs/changes/change-20260831-sync-decision-resource-components/ active verification
+  references affected by harness moves
 non_goals:
 - Universal execution-time Admission or action rerouting
 - Epochs, member obligations, component receipts, or EffectCommitResult

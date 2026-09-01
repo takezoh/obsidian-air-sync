@@ -2,7 +2,7 @@ import { vi, afterEach } from "vitest";
 import { spyRequestUrl, mockRes, dbxFile } from "./test-helpers";
 import type { DropboxFsInternal } from "./test-helpers";
 import type { DropboxEntry } from "./types";
-import { bytes, runRemoteChangeDetectionContract, statOrThrow } from "../remote-change-detection-contract.test";
+import { bytes, runRemoteChangeDetectionContract, statOrThrow } from "../contracts/remote-change-detection.contract";
 
 vi.mock("obsidian");
 
@@ -11,7 +11,8 @@ vi.mock("obsidian");
 // checksumBased: the metadata-only touch case (mtime bumped, identical
 // content_hash) makes the checksum plumbing load-bearing — mtime+size alone
 // cannot decide it.
-runRemoteChangeDetectionContract(
+export function registerDropboxChangeDetectionContract(): void {
+	runRemoteChangeDetectionContract(
 	"DropboxFs",
 	async () => {
 		let upload: DropboxEntry = dbxFile("1", "/root/note.md", {
@@ -59,6 +60,7 @@ runRemoteChangeDetectionContract(
 	{ checksumBased: true },
 );
 
-afterEach(() => {
-	vi.restoreAllMocks();
-});
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+}

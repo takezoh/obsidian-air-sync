@@ -1,6 +1,6 @@
-# ADR 0003 — Fake fidelity is backstopped by an opt-in e2e that runs the IFileSystem contract against the real backends
+# ADR 0003 — Fake fidelity is backstopped by opt-in live contracts and capability scenarios
 
-**Status:** Accepted · 2026-06-10 · amended 2026-06-11 (OneDrive extension → `mtimePrecisionMs`, point 8)
+**Status:** Accepted · 2026-06-10 · amended 2026-06-11 (OneDrive extension → `mtimePrecisionMs`, point 8) · amended 2026-09-01 (live Priority fidelity, point 9)
 **Context area:** testing / `fs/` backends (multi-FS foundation)
 **Related:** [ADR 0002](0002-backends-verified-by-shared-behaviour-contracts.md) (the contracts this reuses; the fake-fidelity rule this automates), [docs/e2e-testing.md](../e2e-testing.md) (how to run it), [code-enforcement.md](../code-enforcement.md), [ARCHITECTURE.md](../../ARCHITECTURE.md) (principle 2)
 
@@ -8,7 +8,7 @@
 
 ADR 0002 verifies every backend by running the shared `runIFileSystemContract` against the
 **real FS** over a **faithful fake** at the typed-client boundary
-(`GoogleDriveClient`/`DropboxClient`). It is fast and CI-friendly, but it has one structural blind
+(`GoogleDriveClient`/`DropboxClient`/`OneDriveClient`). It is fast and CI-friendly, but it has one structural blind
 spot, named in that ADR's rule 4: **"the fake MUST be faithful to the boundary it
 replaces."** Nothing *enforces* that. Both concrete failure modes ADR 0002 records were
 caught by **human code review** — the Dropbox `move` `.tag` divergence was literally "Found
@@ -17,7 +17,7 @@ an error it actually returns, a timestamp it truncates), every contract stays gr
 divergence ships.
 
 We want the same contract — the one source of truth for `IFileSystem` semantics — to also be
-runnable against the **live** Google Drive and Dropbox APIs, so a fake that has drifted from
+runnable against the **live** Google Drive, Dropbox, and OneDrive APIs, so a fake that has drifted from
 reality fails a test instead of waiting for a reviewer to notice. This must not become a CI
 gate: real cloud calls need credentials, hit quota, are slow, and flake on the network. So it
 is **opt-in**.
@@ -25,7 +25,7 @@ is **opt-in**.
 ## Decision
 
 1. **Reuse `runIFileSystemContract` verbatim against the real clients.** A new
-   `GoogleDriveFs`/`DropboxFs` built over a *real* `GoogleDriveClient`/`DropboxClient` (authenticated
+   each remote FS built over its *real* typed client (authenticated
    from a stored refresh token) is driven through the exact same contract the fakes run. No
    parallel e2e assertions — drift surfaces as the shared contract going red against the live
    API. The harness lives in a top-level `e2e/` dir; the contract and FS/clients/auth come
@@ -51,7 +51,7 @@ is **opt-in**.
    same client; with only a refresh token and no client id/secret it falls back to the built-in
    `GoogleAuth`. Dropbox uses the public PKCE client id with a loopback redirect URI registered
    on the app. The exact auth path is incidental to what this e2e validates (the real
-   `GoogleDriveClient`/`DropboxClient` CRUD surface vs. the fakes), so a custom Google client is fine.
+   typed-client CRUD surface vs. the fakes), so a custom Google client is fine.
 
 5. **The real `requestUrl` is the only swapped seam.** The shipped `obsidian` test mock rejects
    every `requestUrl`; the e2e config aliases `obsidian` to a shim whose `requestUrl` performs
@@ -93,6 +93,15 @@ is **opt-in**.
    the live run carries the knob. Second precision is not load-bearing for sync (change detection
    is `remoteChecksum`), though it does collapse same-second edits to the conflict-duplicate path.
 
+9. **Capability-specific live fidelity scenarios remain E2E-owned.** The Priority capability
+   reuses neither fake fault injection nor backend client spies. Each live backend verifies four
+   provider-reproducible flows through public operations: write→observe→read current content;
+   observe→overwrite→read the old observation as `target_changed`; delete as missing; and
+   delete→same-path recreate as structural replacement. Credential, transport, remote-folder
+   isolation, and cleanup remain E2E responsibilities. The shared unit contract remains the
+   owner of fail-closed outcomes such as incomplete evidence; the generic `CachingRemoteFs`
+   integration test owns checkpoint non-interference.
+
 ## Consequences
 
 - **The fake-fidelity rule of ADR 0002 now has an automated backstop**, run on demand instead
@@ -113,6 +122,7 @@ is **opt-in**.
 
 - **Adding a new backend extends the e2e in one block**, mirroring its fake-based contract call:
   authenticate a real client, create/clean an isolated folder, run `runIFileSystemContract` with
-  the right `computesHashOnStat`/`preservesWrittenMtime`/`mtimePrecisionMs`. OneDrive (Microsoft
+  the right `computesHashOnStat`/`preservesWrittenMtime`/`mtimePrecisionMs`, and register the
+  live capability scenarios it exposes. OneDrive (Microsoft
   Graph, App Folder scope) was the first such addition — and the first to surface a new knob
   (`mtimePrecisionMs`) from a live failure, which is the backstop working as intended.

@@ -6,7 +6,7 @@ import type { FileEntity } from "../../src/fs/types";
 import { DEFAULT_SETTINGS } from "../../src/settings";
 import { LocalChangeTracker } from "../../src/sync/local-tracker";
 import { SyncOrchestrator } from "../../src/sync/orchestrator";
-import { bytes } from "../../src/fs/ifilesystem-contract.test";
+import { bytes } from "../../src/fs/contracts/ifilesystem.contract";
 
 interface RenameSafetyBackend {
 	fs: IFileSystem;

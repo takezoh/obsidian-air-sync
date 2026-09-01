@@ -5,8 +5,8 @@ import type { DropboxEntry, DropboxListFolderResponse } from "./types";
 import { MetadataStore } from "../../store/metadata-store";
 import { DropboxFs } from "./index";
 import { dbxFile, dbxFolder, dbxDeleted } from "./test-helpers";
-import { runCachingRemoteFsContract } from "../caching/remote-fs-contract.test";
-import type { CachingRemoteFsHarness } from "../caching/remote-fs-contract.test";
+import { runCachingRemoteFsContract } from "../contracts/caching-remote-fs.contract";
+import type { CachingRemoteFsHarness } from "../contracts/caching-remote-fs.contract";
 
 vi.mock("obsidian");
 
@@ -81,4 +81,6 @@ function makeDropboxHarness(): CachingRemoteFsHarness<DropboxEntry> {
 	};
 }
 
-runCachingRemoteFsContract("DropboxFs", makeDropboxHarness);
+export function registerDropboxCachingContract(): void {
+	runCachingRemoteFsContract("DropboxFs", makeDropboxHarness);
+}

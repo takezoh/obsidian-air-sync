@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe } from "vitest";
 import { GoogleDriveClient } from "../src/fs/googledrive/client";
 import { GoogleDriveFs } from "../src/fs/googledrive/index";
 import type { GoogleDriveFile } from "../src/fs/googledrive/types";
-import { runIFileSystemContract } from "../src/fs/ifilesystem-contract.test";
+import { runIFileSystemContract } from "../src/fs/contracts/ifilesystem.contract";
 import { MetadataStore } from "../src/store/metadata-store";
 import {
 	createGoogleE2EAuth,
@@ -15,6 +15,7 @@ import {
 	makeGoogleDriveParent,
 } from "./helpers/isolation";
 import { runRenameSafetyE2E } from "./helpers/rename-safety";
+import { runPriorityFidelityE2E } from "./helpers/priority-fidelity";
 
 /**
  * Opt-in real-cloud e2e (ADR 0003): runs the SAME `runIFileSystemContract` the
@@ -62,6 +63,11 @@ if (!creds) {
 		// empty-start assumption. Runs in beforeEach, after the beforeAll above.
 		async () => new GoogleDriveFs(client, await makeGoogleDriveChild(client, parentId)),
 		{ computesHashOnStat: false, stableIdentity: true }, // Google Drive round-trips full-ms mtime → default preservesWrittenMtime: true
+	);
+
+	runPriorityFidelityE2E(
+		"GoogleDriveFs",
+		async () => new GoogleDriveFs(client, await makeGoogleDriveChild(client, parentId)),
 	);
 
 	runRenameSafetyE2E("GoogleDriveFs", {

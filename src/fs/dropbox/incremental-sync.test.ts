@@ -276,4 +276,4 @@ describe("applyDropboxDelta — official algorithm", () => {
 
 // The cursor-expiry full-scan-and-diff-by-id fallback (formerly computeFullScanDelta)
 // now lives in CachingRemoteFs.diffById — shared by every backend and exercised by the
-// Dropbox crash-safety contract (crash-safety-contract.test.ts) against the real FS.
+// Dropbox crash-safety contract (caching-remote-fs.contract-harness.ts) against the real FS.

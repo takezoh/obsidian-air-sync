@@ -183,7 +183,7 @@ contracts:
     verification:
       - id: verify-shared-fs-contracts
         tier: T1
-        command: npm test -- src/fs/googledrive/ifilesystem-contract.test.ts src/fs/dropbox/ifilesystem-contract.test.ts src/fs/onedrive/ifilesystem-contract.test.ts src/fs/googledrive/crash-safety-contract.test.ts src/fs/dropbox/crash-safety-contract.test.ts src/fs/onedrive/crash-safety-contract.test.ts
+        command: npm test -- src/fs/remote-backend-contracts.test.ts src/fs/caching/remote-fs.contract.test.ts
       - id: verify-live-google
         tier: T2
         command: npm run test:e2e:google
@@ -257,7 +257,7 @@ units:
   - title: unit-0-provider-evidence-preverification
     chunk: "0"
     contract_refs: [contract-fs-evidence-conformance]
-    files: [src/fs/ifilesystem-contract.test.ts, src/fs/caching/remote-fs-contract.test.ts, src/fs/googledrive, src/fs/dropbox, src/fs/onedrive, e2e]
+    files: [src/fs/contracts/ifilesystem.contract.ts, src/fs/contracts/caching-remote-fs.contract.ts, src/fs/remote-backend-contracts.test.ts, src/fs/googledrive, src/fs/dropbox, src/fs/onedrive, e2e]
     depends_on: []
     acceptance: [AC-SD-006]
     objective: Prove Google Drive, Dropbox, and OneDrive against mandatory shared faithful-fake/interface contracts and target live preverification only at a backend with concrete representation-gap evidence.

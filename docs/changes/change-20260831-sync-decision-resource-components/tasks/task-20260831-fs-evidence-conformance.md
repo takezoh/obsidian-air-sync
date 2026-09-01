@@ -7,8 +7,8 @@ created: '2026-08-31'
 priority: normal
 effort: medium
 files_touched:
-- src/fs/ifilesystem-contract.test.ts
-- src/fs/caching/remote-fs-contract.test.ts
+- src/fs/contracts/ifilesystem.contract.ts
+- src/fs/contracts/caching-remote-fs.contract.ts
 - src/fs/googledrive
 - src/fs/dropbox
 - src/fs/onedrive

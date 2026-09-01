@@ -3,7 +3,7 @@ import { DropboxAuth } from "../src/fs/dropbox/auth";
 import { DROPBOX_AUTH } from "../src/fs/auth-config";
 import { DropboxFs } from "../src/fs/dropbox/index";
 import type { DropboxEntry } from "../src/fs/dropbox/types";
-import { runIFileSystemContract, bytes } from "../src/fs/ifilesystem-contract.test";
+import { runIFileSystemContract, bytes } from "../src/fs/contracts/ifilesystem.contract";
 import { MetadataStore } from "../src/store/metadata-store";
 import { RetryingDropboxClient } from "./helpers/dropbox-retry-client";
 import { readCreds } from "./helpers/env";
@@ -13,6 +13,7 @@ import {
 	makeDropboxParent,
 } from "./helpers/isolation";
 import { runRenameSafetyE2E } from "./helpers/rename-safety";
+import { runPriorityFidelityE2E } from "./helpers/priority-fidelity";
 
 /**
  * Opt-in real-cloud e2e (ADR 0003): runs the SAME `runIFileSystemContract` the
@@ -71,6 +72,11 @@ if (!creds) {
 		// written mtime does not round-trip (unlike the fake, which echoes it back).
 		// Verified by this e2e; see ADR 0003 / dropbox/types.ts.
 		{ computesHashOnStat: false, preservesWrittenMtime: false, stableIdentity: true },
+	);
+
+	runPriorityFidelityE2E(
+		"DropboxFs",
+		async () => new DropboxFs(client, await makeDropboxChild(client, parentPath)),
 	);
 
 	runRenameSafetyE2E("DropboxFs", {

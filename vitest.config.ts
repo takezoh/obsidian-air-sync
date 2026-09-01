@@ -4,10 +4,6 @@ export default defineConfig({
 	test: {
 		include: ["src/**/*.test.ts"],
 		exclude: [
-			"src/fs/ifilesystem-contract.test.ts",
-			"src/fs/ifilesystem-contract-writes.test.ts",
-			"src/fs/remote-change-detection-contract.test.ts",
-			"src/fs/caching/remote-fs-contract.test.ts",
 			"src/fs/googledrive/test-helpers.test.ts",
 		],
 		coverage: {
@@ -29,6 +25,9 @@ export default defineConfig({
 				"src/**/*.test.ts",
 				"src/**/*.d.ts",
 				"src/__mocks__/**",
+				"src/fs/contracts/**",
+				"src/**/*contract-harness.ts",
+				"src/**/*contract.harness.ts",
 				"src/**/test-helpers.ts",
 				"src/**/types.ts",
 				"src/main.ts",

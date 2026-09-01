@@ -48,7 +48,7 @@ contracts:
     requirement_refs: [FR-PRIORITY-001, FR-FAIL-CLOSED-001, NFR-CALLS-001]
     unit_refs: [unit-detached-provider, unit-orchestrator-integration, unit-design-verification]
     adr_refs: [adr-20260901-admission-priority-pull]
-    verification: [{id: verify-detached-provider, tier: T1, command: npm test -- --run src/fs/caching/remote-fs.contract.test.ts src/fs/googledrive/targeted-observation.test.ts src/fs/dropbox/targeted-observation.test.ts src/fs/onedrive/targeted-observation.test.ts}]
+    verification: [{id: verify-detached-provider, tier: T1, command: npm test -- --run src/fs/caching/remote-fs.contract.test.ts src/fs/remote-backend-contracts.test.ts src/fs/registry.test.ts}]
     partition: {outcomes: [determinate, unknown, inconclusive, conflicting], default_policy: Missing capability ambiguous occupant incomplete ancestry identity mismatch or changed version defers without content effect.}
   - id: contract-priority-ordering
     dimension: concurrency_boundary

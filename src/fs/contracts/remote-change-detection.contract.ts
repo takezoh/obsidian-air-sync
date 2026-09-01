@@ -1,11 +1,11 @@
 import { describe, it, expect } from "vitest";
-import type { FileEntity } from "./types";
-import { hasRemoteChanged } from "../sync/change-compare";
-import { buildSyncRecord } from "../sync/state-committer";
+import type { FileEntity } from "../types";
+import { hasRemoteChanged } from "../../sync/change-compare";
+import { buildSyncRecord } from "../../sync/state-committer";
 
 // `bytes` lives with the IFileSystem CRUD contract (its natural home); re-exported
 // here so this suite's consumers keep a single import site.
-export { bytes } from "./ifilesystem-contract.test";
+export { bytes } from "./ifilesystem.contract";
 
 /** stat() the path and assert it exists, returning the entity. */
 export async function statOrThrow(

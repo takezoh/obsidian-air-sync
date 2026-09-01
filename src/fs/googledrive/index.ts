@@ -104,9 +104,9 @@ export class GoogleDriveFs extends CachingRemoteFs<GoogleDriveFile> {
 	}
 
 	protected detachedVersionToken(file: GoogleDriveFile): string | null {
-		if (!file.version || !/^\d+$/.test(file.version)) return null;
-		if (file.mimeType !== FOLDER_MIME && (!file.md5Checksum || !file.size || !/^\d+$/.test(file.size))) return null;
-		return `googledrive:${file.version}`;
+		if (file.mimeType === FOLDER_MIME) return null;
+		if (!file.md5Checksum || !file.size || !/^\d+$/.test(file.size)) return null;
+		return `googledrive:md5:${file.md5Checksum}:${file.size}`;
 	}
 
 	protected downloadFile(fileId: string): Promise<ArrayBuffer> {

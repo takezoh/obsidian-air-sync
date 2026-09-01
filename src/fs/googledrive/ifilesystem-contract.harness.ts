@@ -4,7 +4,7 @@ import type { GoogleDriveFile } from "./types";
 import { FOLDER_MIME } from "./types";
 import { GoogleDriveFs } from "./index";
 import { sha256 } from "../../utils/hash";
-import { runIFileSystemContract } from "../ifilesystem-contract.test";
+import { runIFileSystemContract } from "../contracts/ifilesystem.contract";
 
 vi.mock("obsidian");
 
@@ -18,7 +18,7 @@ function httpError(status: number, message: string): Error {
  * (every node carries `name` + `parents`, exactly as the metadata cache resolves
  * paths) over which GoogleDriveFs runs unchanged. It implements the seams the FS
  * actually calls and never touches the network; the read-only crash-safety stub
- * in crash-safety-contract.test.ts is the delta-only ancestor of this.
+ * in caching-remote-fs.contract-harness.ts is the delta-only ancestor of this.
  *
  * The delta log is intentionally empty: every mutating op already updates the
  * in-memory cache (write/mkdir/rename via setFile, delete via removeTree), so a
@@ -162,8 +162,10 @@ function makeFakeGoogleDriveClient(): GoogleDriveClient {
 // fake Google Drive. Remote backends report hash:"" + remoteChecksum from stat(), so
 // computesHashOnStat is false. No metadataStore: the CRUD surface is pure
 // in-memory cache work; the checkpoint machinery has its own contract.
-runIFileSystemContract(
-	"GoogleDriveFs",
-	() => new GoogleDriveFs(makeFakeGoogleDriveClient(), "root"),
-	{ computesHashOnStat: false, stableIdentity: true },
-);
+export function registerGoogleDriveIFileSystemContract(): void {
+	runIFileSystemContract(
+		"GoogleDriveFs",
+		() => new GoogleDriveFs(makeFakeGoogleDriveClient(), "root"),
+		{ computesHashOnStat: false, stableIdentity: true },
+	);
+}

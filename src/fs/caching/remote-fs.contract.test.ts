@@ -6,8 +6,8 @@ import { MetadataStore } from "../../store/metadata-store";
 import { AbstractMetadataCache } from "./metadata-cache";
 import { CachingRemoteFs } from "./remote-fs";
 import type { IncrementalChangesResult } from "./remote-fs";
-import { runCachingRemoteFsContract } from "./remote-fs-contract.test";
-import type { CachingRemoteFsHarness } from "./remote-fs-contract.test";
+import { runCachingRemoteFsContract } from "../contracts/caching-remote-fs.contract";
+import type { CachingRemoteFsHarness } from "../contracts/caching-remote-fs.contract";
 import { resolveDetachedIdPath } from "../priority-observation";
 
 // A minimal id-addressed backend over an in-memory remote. It exists only to drive
@@ -205,8 +205,10 @@ describe("MockRemoteFs incremental authority persistence", () => {
 		});
 		const fs = new MockRemoteFs(remote, store);
 
-		expect(await fs.priority.observe({ path: "note.md", identityKey: "id1" }))
-			.toMatchObject({ kind: "current", identityKey: "id1" });
+		const observed = await fs.priority.observe({ path: "note.md", identityKey: "id1" });
+		expect(observed).toMatchObject({ kind: "current", identityKey: "id1" });
+		if (observed.kind !== "current") throw new Error("expected current priority observation");
+		expect(await fs.priority.read(observed)).toMatchObject({ kind: "content" });
 		expect(await fs.hasCheckpoint()).toBe(false);
 		await fs.close();
 	});

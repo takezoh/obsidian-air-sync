@@ -22,6 +22,20 @@ File-open is one coordinated pull-only operation: detached observe/read, pure el
 - `sync-cycle-finalization.ts`: exact terminality, checkpoint commit-last, debt release.
 - filesystem providers: detached identity/path/version authority behind `IFileSystem.priority`.
 
+## Verification ownership
+
+- Contract modules define public observable semantics and are not Vitest discovery roots.
+- Backend harness modules own faithful fakes and provider API-route assertions; they do not
+  register themselves.
+- `remote-backend-contracts.test.ts` is the only remote unit composition root. A typed
+  implementation-family × contract matrix makes every required cell structural, while the
+  registry guard rejects providers that create an uncatalogued FS implementation.
+- Generic `CachingRemoteFs` integration owns cache/checkpoint non-interference; the Priority
+  contract does not inspect checkpoint state.
+- E2E owns authentication, real transport, remote isolation/cleanup, shared live CRUD, and the
+  four public-operation Priority fidelity scenarios. It does not import the unit composition root
+  or fake-only fault injection.
+
 ## Invariants
 
 1. Normal actions never call the priority provider capability.

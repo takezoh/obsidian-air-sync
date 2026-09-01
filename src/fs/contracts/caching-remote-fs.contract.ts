@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { MetadataStore } from "../../store/metadata-store";
-import type { CachingRemoteFs } from "./remote-fs";
+import type { CachingRemoteFs } from "../caching/remote-fs";
 
 /**
  * What a backend provides so the shared crash-safety contract can drive it without

@@ -3,7 +3,7 @@ import {
 	bytes,
 	runRemoteChangeDetectionContract,
 	statOrThrow,
-} from "../fs/remote-change-detection-contract.test";
+} from "../fs/contracts/remote-change-detection.contract";
 
 // createMockFs is the canonical in-memory test double: hash-based (sha256), mtime
 // round-trips through write → stat. It must satisfy the same remote change-

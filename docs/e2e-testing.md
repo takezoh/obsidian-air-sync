@@ -1,11 +1,13 @@
 # End-to-end testing against real backends
 
-The unit suite verifies each backend with the shared `runIFileSystemContract` over
-**in-memory fakes** of the Google Drive / Dropbox / OneDrive clients (see
+The unit suite verifies every remote implementation through one typed
+backend-family × contract matrix over **faithful fakes** of the Google Drive / Dropbox /
+OneDrive clients (see
 [ADR 0002](adr/0002-backends-verified-by-shared-behaviour-contracts.md)). That is fast and
 runs in CI, but a fake can drift from the real API and every test stays green.
 
-The **opt-in e2e** runs that *same* contract against the **live** APIs to catch such drift
+The **opt-in e2e** runs the shared `IFileSystem` contract against the **live** APIs and adds
+E2E-owned Priority fidelity scenarios to catch such drift
 ([ADR 0003](adr/0003-opt-in-e2e-validates-fakes-against-real-backends.md)). It is
 **local/manual only** — never part of `npm test`, the lint gate, or CI.
 
@@ -17,6 +19,11 @@ delete. The shared CRUD contracts additionally verify that native identity survi
 and changes on same-path replacement. Supplying the real `MetadataStore` in this scenario
 is load-bearing: without it the scope fingerprint cannot commit, every cycle is COLD, and
 the fixture bypasses the WARM delta-evidence path used by the plugin.
+
+Each backend also runs four live Priority scenarios using only public operations: current
+observe/read, overwrite invalidation (`target_changed`), missing after delete, and structural
+same-path replacement. Fake-only incomplete-evidence and changed-during-download injection stay
+in unit contracts; authentication, real transport, isolation, and cleanup stay in E2E.
 
 > **Use a throwaway test account, not a real vault.** The suite creates and then
 > recursively deletes an `airsync-e2e-*` folder on each run.
@@ -109,8 +116,11 @@ npm run test:e2e:onedrive  # OneDrive only
 - The full `runIFileSystemContract` runs against each live API. A fresh child folder is created
   per test (the contract assumes an empty start) under one per-run parent folder, removed in
   `afterAll`. A green run is the proof that the fakes still match reality.
-- **One token missing** → that backend warns and skips; the other runs.
-- **No tokens** → both warn and skip; exit 0.
+- The four Priority fidelity scenarios run against each live API in separate fresh child
+  folders. They validate real provider identity/version/path semantics without importing the
+  fake-backed unit composition root.
+- **One token missing** → that backend warns and skips; every credentialed backend still runs.
+- **No tokens** → all three backends warn and skip; exit 0.
 
 ### Run it OUTSIDE an agent/CLI sandbox
 

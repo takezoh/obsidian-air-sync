@@ -40,6 +40,16 @@ This step 3 is the **compare-and-swap** of an optimistic protocol: releasing the
 
 `stat()` and `read()` deliberately do NOT apply incremental changes -- `list()` is always called first in the sync cycle and refreshes the cache, so these only read it. For folders, the returned entity is `{ isDirectory:true, size:0, mtime:0, hash:"" }` with no `backendMeta`.
 
+### Detached priority observation
+
+File-open priority reads bypass the shared metadata cache and delta cursor. They independently
+resolve the admitted Drive file ID and the current path occupant, then download by the stable ID.
+The read token is `md5Checksum + size`, not Drive's metadata `version`: live E2E showed that
+`version` can settle after a write and produce a false `target_changed` without a content change.
+The checksum token makes the read guard content-scoped; identity and structural/path changes remain
+guarded by the separate ID and occupant observations. Folders and files without complete checksum
+evidence fail closed.
+
 ### Hiding `.airsync/metadata.json`
 
 `.airsync/metadata.json` is a **legacy** backend-internal file. New vaults never create it — the remote vault is now identified by its folder name (`obsidian-air-sync/<Vault Name>`, see below) — but older vaults may still have one, and a device still running an older plugin version could write one, so the exclusion guards are retained as belt-and-suspenders. `GoogleDriveFs` keeps any such file out of the sync engine by **never ingesting it into the metadata cache** (`INTERNAL_METADATA_PATH`, defined in `sync/remote-vault.ts`; skipped in `GoogleDriveMetadataCache.bulkLoad` and `applyFileChange`). Because every read path is cache-backed, that one exclusion covers `list()`, `stat()`, `read()`, `delete()`, `listDir()`, and `getChangedPaths()` uniformly. The single write path that doesn't consult the cache — `write()` (upload) — `throws` for this path rather than fabricating a baseline.
@@ -85,7 +95,7 @@ The 410 fallback triggers `fullScanWithDelta()` which compares persisted metadat
 
 `GoogleDriveClient` (`client.ts`) wraps the Google Drive REST API v3 using Obsidian's `requestUrl` (CORS-free via Electron's net module).
 
-**Requested fields** (`FILE_FIELDS`): `id, name, mimeType, size, modifiedTime, parents, md5Checksum, trashed` (`trashed` is requested so soft-deleted files can be detected and treated as removed)
+**Requested fields** (`FILE_FIELDS`): `id, name, mimeType, size, modifiedTime, parents, md5Checksum, trashed, version` (`trashed` is requested so soft-deleted files can be detected and treated as removed)
 
 Key methods:
 

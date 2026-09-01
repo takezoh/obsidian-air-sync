@@ -5,7 +5,7 @@ import {
 	bytes,
 	runRemoteChangeDetectionContract,
 	statOrThrow,
-} from "../remote-change-detection-contract.test";
+} from "../contracts/remote-change-detection.contract";
 
 vi.mock("obsidian");
 
@@ -22,7 +22,8 @@ interface GoogleDriveUploadResult {
 // remoteChecksum (Google Drive md5) + modifiedTime for change detection.
 // checksumBased: the metadata-touch case (mtime bumped, identical md5) makes the
 // remoteChecksum plumbing load-bearing — mtime+size alone cannot decide it.
-runRemoteChangeDetectionContract(
+export function registerGoogleDriveChangeDetectionContract(): void {
+	runRemoteChangeDetectionContract(
 	"GoogleDriveFs",
 	async () => {
 		let uploadResult: GoogleDriveUploadResult = {
@@ -85,6 +86,7 @@ runRemoteChangeDetectionContract(
 	{ checksumBased: true },
 );
 
-afterEach(() => {
-	vi.restoreAllMocks();
-});
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+}

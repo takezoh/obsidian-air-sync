@@ -2,7 +2,7 @@ import { vi, afterEach } from "vitest";
 import { spyRequestUrl, mockRes, odFile } from "./test-helpers";
 import type { OneDriveFsInternal } from "./test-helpers";
 import type { OneDriveItem } from "./types";
-import { bytes, runRemoteChangeDetectionContract, statOrThrow } from "../remote-change-detection-contract.test";
+import { bytes, runRemoteChangeDetectionContract, statOrThrow } from "../contracts/remote-change-detection.contract";
 
 vi.mock("obsidian");
 
@@ -10,7 +10,8 @@ vi.mock("obsidian");
 // quickXorHash) + fileSystemInfo.lastModifiedDateTime for change detection.
 // checksumBased: the metadata-only touch case (mtime bumped, identical checksum)
 // makes the checksum plumbing load-bearing — mtime+size alone cannot decide it.
-runRemoteChangeDetectionContract(
+export function registerOneDriveChangeDetectionContract(): void {
+	runRemoteChangeDetectionContract(
 	"OneDriveFs",
 	async () => {
 		let uploaded: OneDriveItem = odFile("f1", "note.md", "root", {
@@ -67,6 +68,7 @@ runRemoteChangeDetectionContract(
 	{ checksumBased: true },
 );
 
-afterEach(() => {
-	vi.restoreAllMocks();
-});
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+}

@@ -453,7 +453,7 @@ describe("DropboxFs.rename", () => {
 
 // The checkpoint/commit-last crash-safety (ADR 0001) is owned by CachingRemoteFs and
 // pinned against the real DropboxFs by the shared base contract in
-// crash-safety-contract.test.ts (cursor co-located with the cache in IDB), so it is no
+// caching-remote-fs.contract-harness.ts (cursor co-located with the cache in IDB), so it is no
 // longer re-tested here with a hand-rolled store.
 
 describe("DropboxFs id-based addressing", () => {

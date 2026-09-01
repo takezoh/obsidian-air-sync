@@ -5,8 +5,8 @@ import type { OneDriveItem, OneDriveDeltaResponse } from "./types";
 import { MetadataStore } from "../../store/metadata-store";
 import { OneDriveFs } from "./index";
 import { odFile, odFolder, odDeleted } from "./test-helpers";
-import { runCachingRemoteFsContract } from "../caching/remote-fs-contract.test";
-import type { CachingRemoteFsHarness } from "../caching/remote-fs-contract.test";
+import { runCachingRemoteFsContract } from "../contracts/caching-remote-fs.contract";
+import type { CachingRemoteFsHarness } from "../contracts/caching-remote-fs.contract";
 
 vi.mock("obsidian");
 
@@ -78,4 +78,6 @@ function makeOneDriveHarness(): CachingRemoteFsHarness<OneDriveItem> {
 	};
 }
 
-runCachingRemoteFsContract("OneDriveFs", makeOneDriveHarness);
+export function registerOneDriveCachingContract(): void {
+	runCachingRemoteFsContract("OneDriveFs", makeOneDriveHarness);
+}

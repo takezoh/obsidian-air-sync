@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import type { IFileSystem } from "./interface";
-import { registerWriteContract } from "./ifilesystem-contract-writes.test";
+import type { IFileSystem } from "../interface";
+import { registerWriteContract } from "./ifilesystem-writes.contract";
 
 /**
  * Shared {@link IFileSystem} behaviour contract, parameterized over a backend

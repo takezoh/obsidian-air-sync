@@ -3,6 +3,8 @@ import { initRegistry, getAllBackendProviders } from "./registry";
 import type { ISecretStore } from "./secret-store";
 import type { AirSyncSettings } from "../settings";
 import type { App } from "obsidian";
+import { remoteBackendFamilyOf } from "./contracts/remote-backend-family";
+import { GoogleDriveFs } from "./googledrive";
 
 vi.mock("obsidian");
 
@@ -80,5 +82,23 @@ describe("backend registry ↔ checkpoint-store pairing", () => {
 
 			void fs?.close?.();
 		}
+	});
+
+	it("every registered provider creates a filesystem covered by a remote contract family", () => {
+		for (const provider of getAllBackendProviders()) {
+			const fs = provider.createFs(mockApp, connectedSettings(), undefined);
+			expect(fs, `createFs returned null for "${provider.type}"`).not.toBeNull();
+			expect(
+				fs && remoteBackendFamilyOf(fs),
+				`Backend "${provider.type}" creates an uncontracted filesystem implementation`,
+			).toBeDefined();
+			void fs?.close?.();
+		}
+	});
+
+	it("does not treat an uncatalogued subclass as its parent contract family", () => {
+		class UncontractedGoogleDriveFs extends GoogleDriveFs {}
+		const fs = Object.create(UncontractedGoogleDriveFs.prototype) as GoogleDriveFs;
+		expect(remoteBackendFamilyOf(fs)).toBeUndefined();
 	});
 });

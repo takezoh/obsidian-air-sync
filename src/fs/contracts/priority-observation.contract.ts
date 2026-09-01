@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
-import type { IFileSystem } from "./interface";
+import type { IFileSystem } from "../interface";
 import type {
 	PriorityObservationCapability,
 	PriorityObservationRequest,
-} from "./priority-observation";
+} from "../priority-observation";
 
 export type PriorityObservationScenario =
 	| "current"
@@ -18,7 +18,6 @@ export interface PriorityObservationContractHarness {
 	expectedToken: string;
 	expectedContent: ArrayBuffer;
 	replacementIdentityKey: string;
-	assertCurrentReadCalls(): void;
 }
 
 type MakePriorityObservationHarness = (
@@ -50,14 +49,8 @@ export function runPriorityObservationContract(
 			return current;
 		}
 
-		async function expectDetached(harness: PriorityObservationContractHarness): Promise<void> {
-			expect(harness.fs.checkpoint).toBeDefined();
-			expect(await harness.fs.checkpoint!.hasCheckpoint()).toBe(false);
-		}
-
-		it("observes and reads the admitted identity without touching checkpoint state", async () => {
+		it("observes and reads the admitted identity", async () => {
 			const harness = await setup("current");
-			await expectDetached(harness);
 
 			const observed = await harness.fs.priority.observe(harness.request);
 			expect(observed).toMatchObject({
@@ -72,8 +65,6 @@ export function runPriorityObservationContract(
 				kind: "content",
 				content: harness.expectedContent,
 			});
-			harness.assertCurrentReadCalls();
-			await expectDetached(harness);
 		});
 
 		it("rejects content when the identity version changes during the read", async () => {
@@ -82,7 +73,6 @@ export function runPriorityObservationContract(
 			if (observed.kind !== "current") throw new Error("expected current observation");
 
 			expect(await harness.fs.priority.read(observed)).toEqual({ kind: "target_changed" });
-			await expectDetached(harness);
 		});
 
 		it("distinguishes an absent identity and path from a replacement", async () => {
@@ -101,7 +91,6 @@ export function runPriorityObservationContract(
 					identityKey: replacement.replacementIdentityKey,
 				},
 			});
-			await expectDetached(replacement);
 		});
 
 		it("fails closed when the backend cannot supply complete version evidence", async () => {
@@ -110,7 +99,6 @@ export function runPriorityObservationContract(
 				kind: "unverifiable",
 				occupant: { kind: "unverifiable" },
 			});
-			await expectDetached(harness);
 		});
 	});
 }

@@ -4,7 +4,7 @@ import type { DropboxEntry, DropboxListFolderResponse } from "./types";
 import { DropboxFs } from "./index";
 import { untagged } from "./test-helpers";
 import { sha256 } from "../../utils/hash";
-import { runIFileSystemContract } from "../ifilesystem-contract.test";
+import { runIFileSystemContract } from "../contracts/ifilesystem.contract";
 
 vi.mock("obsidian");
 
@@ -28,7 +28,7 @@ interface FakeNode {
  * path → node tree over which the REAL DropboxFs runs unchanged, plus an id→path
  * index so download/delete address by the stable `id:` (exactly as the cache's
  * `idAt` hands them back). It implements only the seams the FS calls and never
- * touches the network; the delta-only client in crash-safety-contract.test.ts is
+ * touches the network; the delta-only client in caching-remote-fs.contract-harness.ts is
  * the read-side ancestor of this.
  *
  * Dropbox addresses every op by `id:<folderid>/<subpath>` ({@link DropboxFs.addr});
@@ -150,7 +150,9 @@ function makeFakeDropboxClient(): DropboxClient {
 // Dropbox. Remote backends report hash:"" + remoteChecksum from stat(), so
 // computesHashOnStat is false. No metadataStore: the CRUD surface is pure in-memory
 // cache work; the checkpoint machinery has its own contract.
-runIFileSystemContract("DropboxFs", () => new DropboxFs(makeFakeDropboxClient(), ROOT_ID), {
-	computesHashOnStat: false,
-	stableIdentity: true,
-});
+export function registerDropboxIFileSystemContract(): void {
+	runIFileSystemContract("DropboxFs", () => new DropboxFs(makeFakeDropboxClient(), ROOT_ID), {
+		computesHashOnStat: false,
+		stableIdentity: true,
+	});
+}
