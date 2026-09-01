@@ -1314,11 +1314,15 @@ describe("SyncOrchestrator", () => {
 			const batch = orchestrator.runSync();
 			await checkpointStarted.promise;
 			const priority = orchestrator.pullSingle("note.md");
+			const priorityResolved = vi.fn();
+			void priority.then(priorityResolved);
 			await Promise.resolve();
+			expect(priorityResolved).not.toHaveBeenCalled();
 			expect(priorityObserve).not.toHaveBeenCalled();
 			releaseFinalizer.resolve();
 			await Promise.all([priority, batch]);
 
+			expect(priorityResolved).toHaveBeenCalledOnce();
 			expect(priorityObserve).not.toHaveBeenCalled();
 			expect(priorityRead).not.toHaveBeenCalled();
 			await orchestrator.close();
