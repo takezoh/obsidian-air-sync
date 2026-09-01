@@ -493,7 +493,11 @@ describe("executePlan", () => {
 		});
 
 		it("aborts the cycle on AuthError during a conflict (conflict phase)", async () => {
-			const ctx = makeCtx();
+			const order: string[] = [];
+			const ctx = makeCtx({
+				acquireActionPermit: () => Promise.resolve({ release: () => { order.push("release"); } }),
+				onActionFatal: () => { order.push("fatal-published"); },
+			});
 			const authErr = new AuthError("Unauthorized", 401);
 			const localFs = ctx.localFs as MockFileSystem;
 			const remoteFs = ctx.remoteFs as MockFileSystem;
@@ -519,6 +523,7 @@ describe("executePlan", () => {
 			]);
 
 			await expect(executePlan(plan, ctx)).rejects.toThrow(AuthError);
+			expect(order).toEqual(["fatal-published", "release"]);
 		});
 
 		it("logs error for failed individual action", async () => {

@@ -470,7 +470,10 @@ async function executeConflictAction(
 		result.conflicts.push({ action, resolution, localEntity, remoteEntity });
 		result.succeeded.push({ action, localEntity, remoteEntity });
 	} catch (err) {
-		if (err instanceof AuthError) throw err;
+		if (err instanceof AuthError) {
+			ctx.onActionFatal?.(action, err);
+			throw err;
+		}
 		const error = err instanceof Error ? err : new Error(String(err));
 		ctx.logger?.error("executePlan: conflict action failed", {
 			path: action.path,

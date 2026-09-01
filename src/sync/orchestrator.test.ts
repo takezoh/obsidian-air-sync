@@ -1289,6 +1289,40 @@ describe("SyncOrchestrator", () => {
 			expect(priorityRead).not.toHaveBeenCalled();
 			await orchestrator.close();
 		});
+
+		it("keeps file-open priority outside the real checkpoint and debt finalizer lease", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			const checkpointStarted = deferred<void>();
+			const releaseFinalizer = deferred<void>();
+			remoteFs.checkpoint!.commitCheckpoint = vi.fn(async () => {
+				checkpointStarted.resolve();
+				await releaseFinalizer.promise;
+			});
+			const priorityObserve = vi.fn();
+			const priorityRead = vi.fn();
+			remoteFs.priority = { observe: priorityObserve, read: priorityRead };
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`,
+			});
+			const orchestrator = new SyncOrchestrator(createDeps({
+				getSettings: () => settings,
+				localFs: () => localFs,
+				remoteFs: () => remoteFs,
+			}));
+
+			const batch = orchestrator.runSync();
+			await checkpointStarted.promise;
+			const priority = orchestrator.pullSingle("note.md");
+			await Promise.resolve();
+			expect(priorityObserve).not.toHaveBeenCalled();
+			releaseFinalizer.resolve();
+			await Promise.all([priority, batch]);
+
+			expect(priorityObserve).not.toHaveBeenCalled();
+			expect(priorityRead).not.toHaveBeenCalled();
+			await orchestrator.close();
+		});
 	});
 
 	describe("shouldSync()", () => {

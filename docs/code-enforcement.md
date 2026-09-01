@@ -145,7 +145,7 @@ ratchet: it stops *silent* growth and flags the file as split-when-convenient â€
 is not a mandate to shrink the file by force.
 
 Six modules currently carry such overrides as known debt: `fs/googledrive/auth.ts`
-(337), `sync/orchestrator.ts` (444), `sync/plan-executor.ts` (331),
+(337), `sync/orchestrator.ts` (444), `sync/plan-executor.ts` (334),
 `fs/caching/remote-fs.ts` (364), `fs/dropbox/index.ts` (317), and
 `fs/backend-manager.ts` (341). Ratchet them down
 when a natural responsibility split presents itself.
