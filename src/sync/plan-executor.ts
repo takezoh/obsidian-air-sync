@@ -47,6 +47,8 @@ export interface ExecutionContext {
 	/** Consume the active cycle's exact-object scheduler state; never chooses another action. */
 	beginAction?: (action: SyncAction) => "run" | "superseded" | "invalidated";
 	onActionBlocked?: (action: SyncAction) => void;
+	/** Publish a fatal terminal state before releasing the action permit. */
+	onActionFatal?: (action: SyncAction, error: AuthError) => void;
 	mutationBarrier?: LocalMutationBarrier;
 	onPhaseChange?: (phase: "transfer" | "conflict" | "structural") => void;
 }
@@ -329,7 +331,10 @@ async function executeAction(
 			: await execute();
 		result.succeeded.push({ action, localEntity, remoteEntity });
 	} catch (err) {
-		if (err instanceof AuthError) throw err;
+		if (err instanceof AuthError) {
+			ctx.onActionFatal?.(action, err);
+			throw err;
+		}
 		const error = err instanceof Error ? err : new Error(String(err));
 		ctx.logger?.error("executePlan: action failed", {
 			path: action.path,

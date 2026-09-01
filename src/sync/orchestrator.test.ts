@@ -1254,6 +1254,41 @@ describe("SyncOrchestrator", () => {
 			expect(deps.onStatusChange).toHaveBeenLastCalledWith("idle");
 			await orchestrator.close();
 		});
+
+		it("never calls detached priority APIs for an ordinary multi-file batch", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`,
+			});
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(false);
+			const priorityObserve = vi.fn();
+			const priorityRead = vi.fn();
+			remoteFs.priority = { observe: priorityObserve, read: priorityRead };
+			const orchestrator = new SyncOrchestrator(createDeps({
+				getSettings: () => settings,
+				localFs: () => localFs,
+				remoteFs: () => remoteFs,
+			}));
+			for (const [index, path] of ["a.md", "b.md"].entries()) {
+				const local = addFile(localFs, path, `old-${index}`, 1000);
+				const localStat = await localFs.stat(path);
+				if (!localStat) throw new Error("test setup failed");
+				const remote = addFile(remoteFs, path, `new-${index}`, 2000);
+				remote.identityKey = `id-${index}`;
+				await orchestrator.state.put({
+					path, hash: localStat.hash, localMtime: local.mtime, remoteMtime: 1000,
+					localSize: local.size, remoteSize: local.size,
+					remoteIdentityKey: `id-${index}`, syncedAt: 900,
+				});
+			}
+
+			await orchestrator.runSync();
+
+			expect(priorityObserve).not.toHaveBeenCalled();
+			expect(priorityRead).not.toHaveBeenCalled();
+			await orchestrator.close();
+		});
 	});
 
 	describe("shouldSync()", () => {

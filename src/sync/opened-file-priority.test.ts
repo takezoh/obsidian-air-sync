@@ -29,13 +29,14 @@ async function arrange() {
 	const requestNormalLifecycle = vi.fn();
 	const supersede = vi.fn().mockReturnValue(true);
 	const invalidate = vi.fn().mockReturnValue(true);
+	const invalidateCycle = vi.fn();
 	return {
 		localFs, remoteFs, stateStore, localTracker, observation,
-		requestNormalLifecycle, supersede, invalidate,
+		requestNormalLifecycle, supersede, invalidate, invalidateCycle,
 		base: {
 			path: "note.md", localFs, remoteFs, stateStore, localTracker,
 			mutationBarrier: new LocalMutationBarrier(), target: { kind: "independent" as const },
-			supersede, invalidate, requestNormalLifecycle,
+			supersede, invalidate, invalidateCycle, requestNormalLifecycle,
 		},
 	};
 }
@@ -72,6 +73,7 @@ describe("syncOpenedFilePriority", () => {
 		expect(await syncOpenedFilePriority(ctx.base)).toBe("deferred_to_batch");
 		expect(readText(ctx.localFs, "note.md")).toBe("new");
 		expect(ctx.localTracker.getDirtyPaths().has("note.md")).toBe(true);
+		expect(ctx.invalidateCycle).toHaveBeenCalledOnce();
 		expect(ctx.requestNormalLifecycle).toHaveBeenCalledOnce();
 	});
 });

@@ -60,4 +60,28 @@ describe("PriorityCoordinator", () => {
 		const resumed = await coordinator.acquireNormalPermit();
 		resumed.release();
 	});
+
+	it("does not run priority queued while finalization is between checkpoint and debt release", async () => {
+		const coordinator = new PriorityCoordinator();
+		const checkpointCommitted = deferred();
+		const releaseDebt = deferred();
+		const order: string[] = [];
+		const finalization = coordinator.finalize(async () => {
+			order.push("checkpoint");
+			checkpointCommitted.resolve();
+			await releaseDebt.promise;
+			order.push("debt-release");
+		});
+		await checkpointCommitted.promise;
+		const priority = coordinator.enqueue("note.md", () => {
+			order.push("priority");
+			return Promise.resolve();
+		});
+		await Promise.resolve();
+		expect(order).toEqual(["checkpoint"]);
+
+		releaseDebt.resolve();
+		await Promise.all([finalization, priority]);
+		expect(order).toEqual(["checkpoint", "debt-release", "priority"]);
+	});
 });

@@ -142,8 +142,13 @@ describe("executePlan", () => {
 
 		it("holds the action permit through SyncRecord commit and result publication", async () => {
 			let released = false;
+			const order: string[] = [];
 			const ctx = makeCtx({
-				acquireActionPermit: () => Promise.resolve({ release: () => { released = true; } }),
+				acquireActionPermit: () => Promise.resolve({ release: () => {
+					released = true;
+					order.push("release");
+				} }),
+				onProgress: () => { order.push("terminal-published"); },
 			});
 			const remoteFs = ctx.remoteFs as MockFileSystem;
 			addFile(remoteFs, "permit.md", "x");
@@ -162,6 +167,22 @@ describe("executePlan", () => {
 			expect(put).toHaveBeenCalledOnce();
 			expect(result.succeeded).toHaveLength(1);
 			expect(released).toBe(true);
+			expect(order).toEqual(["terminal-published", "release"]);
+		});
+
+		it("publishes a fatal terminal state before releasing its permit", async () => {
+			const order: string[] = [];
+			const ctx = makeCtx({
+				acquireActionPermit: () => Promise.resolve({ release: () => { order.push("release"); } }),
+				onActionFatal: () => { order.push("fatal-published"); },
+			});
+			vi.spyOn(ctx.remoteFs, "read").mockRejectedValue(new AuthError("expired", 401));
+
+			await expect(executePlan(makePlan([{
+				path: "fatal.md", action: "pull",
+				remote: { path: "fatal.md", isDirectory: false, size: 1, mtime: 2, hash: "" },
+			}]), ctx)).rejects.toThrow("expired");
+			expect(order).toEqual(["fatal-published", "release"]);
 		});
 	});
 

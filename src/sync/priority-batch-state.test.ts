@@ -48,10 +48,36 @@ describe("PriorityBatchState", () => {
 		expect(batch.beginAction(action)).toBe("run");
 	});
 
+	it("defers an actionless disposition because its retained observation is non-exact", () => {
+		const snapshot = captureCycleAdmissionSnapshot(
+			{ actions: [] }, [], [{
+				kind: "unknown", side: "remote", requestedPath: "note.md",
+				reason: "not_observed",
+			}], { byEndpoint: new Map([["note.md", "included"]]) }, "priority-batch-test",
+		);
+		const batch = new PriorityBatchState(admitDestructivePlan(snapshot));
+		expect(batch.priorityTarget("note.md")).toEqual({ kind: "defer" });
+	});
+
 	it("marks a stale pending action invalid without substituting another action", () => {
 		const { action, admission } = admittedPull();
 		const batch = new PriorityBatchState(admission);
 		expect(batch.invalidate(action)).toBe(true);
 		expect(batch.beginAction(action)).toBe("invalidated");
+	});
+
+	it("blocks checkpoint independently of exact action membership", () => {
+		const { admission } = admittedPull();
+		const batch = new PriorityBatchState(admission);
+		expect(batch.isCheckpointBlocked).toBe(false);
+		batch.blockCheckpoint();
+		expect(batch.isCheckpointBlocked).toBe(true);
+	});
+
+	it("closes priority admission before a fatal action permit is released", () => {
+		const { action, admission } = admittedPull();
+		const batch = new PriorityBatchState(admission);
+		batch.abort();
+		expect(batch.priorityTarget(action.path)).toEqual({ kind: "defer" });
 	});
 });

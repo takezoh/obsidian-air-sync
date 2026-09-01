@@ -378,6 +378,7 @@ export class SyncOrchestrator {
 				target,
 				supersede: (action) => activeBatch?.supersede(action) ?? false,
 				invalidate: (action) => activeBatch?.invalidate(action) ?? false,
+				invalidateCycle: () => activeBatch?.blockCheckpoint(),
 				requestNormalLifecycle: () => this.requestNormalLifecycle(),
 				logger: this.deps.logger,
 			});
@@ -507,6 +508,7 @@ export class SyncOrchestrator {
 			acquireActionPermit: () => this.priorityCoordinator.acquireNormalPermit(),
 			beginAction: (action) => this.activeBatch?.beginAction(action) ?? "invalidated",
 			onActionBlocked: (action) => this.activeBatch?.removeBlocked(action),
+			onActionFatal: () => this.activeBatch?.abort(),
 			mutationBarrier: this.localMutationBarrier,
 			onPhaseChange: (phase) => this.activeBatch?.setPhase(phase),
 		};
@@ -523,6 +525,7 @@ export class SyncOrchestrator {
 					result, pendingEvidence: this.pendingAdmissionEvidence, persistedDebts,
 					localRenameDebts,
 					checkpoint: remoteFs.checkpoint, scopeFingerprint, stateStore: this.stateStore,
+					checkpointBlocked: this.activeBatch?.isCheckpointBlocked,
 				});
 				if (provider?.readBackendState) {
 					settings.backendData = {

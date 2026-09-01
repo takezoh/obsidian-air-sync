@@ -17,6 +17,8 @@ interface SyncCycleFinalizationInput {
 	checkpoint: IFileSystem["checkpoint"];
 	scopeFingerprint: string;
 	stateStore: SyncStateStore;
+	/** Detached evidence/CAS contradicted the frozen cycle even without an action member. */
+	checkpointBlocked?: boolean;
 }
 
 /**
@@ -39,7 +41,8 @@ export async function finalizeSyncCycle(input: SyncCycleFinalizationInput): Prom
 		...dispositionEvidence,
 		...input.admission.localRenameLifecycle.releaseAfterSafeCheckpoint,
 	];
-	const checkpointSafe = input.result.failed.length === 0 && input.result.blocked.length === 0 &&
+	const checkpointSafe = !input.checkpointBlocked && input.result.failed.length === 0 &&
+		input.result.blocked.length === 0 &&
 		input.admission.dispositions.every((disposition) =>
 			disposition.kind !== "deferred" &&
 			(disposition.kind !== "authorized" ||

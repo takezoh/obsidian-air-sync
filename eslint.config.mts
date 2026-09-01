@@ -317,14 +317,14 @@ export default defineConfig(
 		// finalization are the composition root's ordering contract. Priority scheduling
 		// adds coordination here while its policy and effects remain separate modules.
 		files: ["src/sync/orchestrator.ts"],
-		rules: { "max-lines": ["error", { max: 441, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 444, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Exact action effects, commitAction, terminal result publication, and their
 		// priority permit form one indivisible executor boundary. Keep that ordering
 		// visible here instead of hiding it behind a result-carrier abstraction.
 		files: ["src/sync/plan-executor.ts"],
-		rules: { "max-lines": ["error", { max: 330, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 331, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Re-pinned from 326: cached lifecycle and detached priority observation share

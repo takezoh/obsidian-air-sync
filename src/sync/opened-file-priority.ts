@@ -24,6 +24,7 @@ interface OpenedFilePriorityContext {
 	target: PriorityBatchTarget;
 	supersede(action: SyncAction): boolean;
 	invalidate(action: SyncAction): boolean;
+	invalidateCycle(): void;
 	requestNormalLifecycle(): void;
 	logger?: Logger;
 }
@@ -100,6 +101,7 @@ export async function syncOpenedFilePriority(
 
 			if (!supersedeTarget(ctx)) {
 				ctx.localTracker.markDirty(ctx.path);
+				ctx.invalidateCycle();
 				return deferToBatch(ctx);
 			}
 			const postGeneration = ctx.localTracker.generation(ctx.path);
@@ -125,6 +127,7 @@ function supersedeTarget(ctx: OpenedFilePriorityContext): boolean {
 
 function invalidateTarget(ctx: OpenedFilePriorityContext): void {
 	if (ctx.target.kind === "superseding") ctx.invalidate(ctx.target.action);
+	ctx.invalidateCycle();
 	ctx.requestNormalLifecycle();
 }
 

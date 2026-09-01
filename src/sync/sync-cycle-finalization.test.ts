@@ -121,6 +121,25 @@ describe("finalizeSyncCycle", () => {
 		expect(deleteRenameDebts).not.toHaveBeenCalled();
 	});
 
+	it("withholds a clean checkpoint when detached evidence invalidated an actionless cycle", async () => {
+		const commitCheckpoint = vi.fn<IncrementalCheckpoint["commitCheckpoint"]>()
+			.mockResolvedValue(undefined);
+		const deleteRenameDebts = vi.fn().mockResolvedValue(undefined);
+		const admitted = admission([], [], { byEndpoint: new Map() });
+
+		await finalizeSyncCycle({
+			admission: admitted,
+			result: { succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [], deferred: [] },
+			pendingEvidence: [], persistedDebts: [], localRenameDebts: [],
+			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
+			stateStore: { deleteRenameDebts } as unknown as SyncStateStore,
+			checkpointBlocked: true,
+		});
+
+		expect(commitCheckpoint).not.toHaveBeenCalled();
+		expect(deleteRenameDebts).not.toHaveBeenCalled();
+	});
+
 	it("commits the checkpoint before retiring resolved-no-action evidence", async () => {
 		const pending = edge();
 		const admitted = admission([], [pending], { byEndpoint: new Map([
