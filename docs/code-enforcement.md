@@ -9,7 +9,7 @@ The design principles themselves are owned by [ARCHITECTURE.md](../ARCHITECTURE.
 this document covers their *enforcement*. The local code gate is:
 
 ```bash
-npm run lint && npm run lint:bot-repro && npm run build && npm test
+npm run lint && npm run lint:bot-repro && npm run build && npm run test:coverage
 ```
 
 CI (`.github/workflows/lint.yml`) runs `npm run build`, `npm run lint`,
@@ -78,15 +78,33 @@ Node/Electron APIs do not exist.
 
 ## 4. Swappable backends (Principle #2)
 
-The backend-agnostic core must not depend on a specific backend, so adding a backend
-requires no changes outside `fs/`.
+The backend-agnostic production core must not depend on a specific backend. Adding a
+backend leaves that core unchanged and uses explicit extension points: its
+implementation/provider, `fs/registry.ts`, backend-specific settings UI where
+applicable, shared contract harness/catalog/matrix, and opt-in live E2E wiring.
 
 | | |
 |---|---|
 | **Prevents** | `sync/`, `main.ts`, `store/`, `queue/`, `utils/` importing backend-specific modules (e.g. `**/googledrive/**`) |
 | **Where** | `BACKEND_SPECIFIC_IMPORTS` in `eslint.config.mts` |
 | **How** | `no-restricted-imports` (error), scoped to those directories |
-| **Exception** | Wire backends only through `fs/registry.ts`. `ui/` may render backend-specific settings |
+| **Exception** | Backend-specific production wiring belongs in `fs/registry.ts`; `ui/` may render backend-specific settings. Contract harnesses and live E2E are verification extension points, not production-core exceptions |
+
+### Remote backend completeness
+
+Supported production implementations are closed over one mechanically checked catalog
+and contract matrix; do not maintain parallel backend lists.
+
+| Guard | Ownership and enforcement |
+|---|---|
+| **Exact implementation-family catalog** | `fs/contracts/remote-backend-family.ts` owns the production filesystem families and maps exact constructors to family names. Adding or removing a production family changes this catalog explicitly |
+| **Required 4-contract matrix** | `fs/remote-backend-contracts.test.ts` is the sole remote unit composition root. Its `satisfies Record<RemoteBackendFamily, RequiredRemoteContractSet>` matrix requires every family to register `filesystem`, `caching`, `changeDetection`, and `priorityObservation`; `Object.values` registers every cell. A missing family or cell is a compile error |
+| **Registry guard** | `fs/registry.test.ts` constructs every registered provider and fails if its filesystem implementation is absent from the exact family catalog. Built-in and custom providers may converge on the same implementation family |
+| **Live E2E ownership** | The credentials-gated suites documented in `docs/e2e-testing.md` own fidelity against the real Google Drive, Dropbox, and OneDrive APIs, including filesystem and priority-observation behaviour. They backstop faithful fakes but do not replace the always-on unit matrix or enter the local/CI gate |
+
+Each backend's shared-contract adapter is a `*.contract-harness.ts` beside that backend.
+Coverage excludes those harnesses and `fs/contracts/` because they are test
+infrastructure, while the central composition root remains a discovered `*.test.ts`.
 
 ## 5. Pipeline as data (Principle #4)
 
@@ -255,6 +273,7 @@ these green when touching the pipeline:
 
 | Principle | Pinned by |
 |---|---|
+| **Remote backend completeness** — every registered provider resolves to an exact catalogued filesystem family, and every family runs all four shared contracts | `fs/registry.test.ts`, `fs/remote-backend-contracts.test.ts` |
 | **#3 delta-first** — the hot path stats only dirty paths and never calls `list()` (full scans are cold-start only) | `sync/delta-first.test.ts` |
 | **#5 crash-safe** — an interrupted action commits no baseline and re-syncs to convergence | `sync/crash-safety.test.ts`, `sync/convergence.test.ts` |
 | **Command-ID immutability** — registered command IDs are a stable, published API | `main-commands.test.ts` (snapshot — update only for a genuinely new command, never to rename a shipped ID) |

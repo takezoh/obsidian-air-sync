@@ -28,7 +28,7 @@ npm test -- --run src/sync/orchestrator.test.ts src/sync/rename-debt.test.ts
 npm run lint
 npm run lint:bot-repro
 npm run build
-npm test
+npm run test:coverage
 npm run test:e2e
 ```
 
@@ -36,8 +36,8 @@ E2E は credential-gated。各 backend の実行結果を個別に報告し、�
 
 ## 2026-09-01 results
 
-- repository gate: `npm run lint`、`npm run lint:bot-repro`、`npm run build`、`npm test` は成功。全 unit は 90 files / 1,651 tests passed。`npm run test:coverage` も threshold を満たした。
-- contract wiring: `src/fs/contracts/` は公開意味論、backend harness は faithful fake と provider route、`remote-backend-contracts.test.ts` は唯一の remote unit composition root。3 implementation families × 4 contracts の12cellを中央登録し、任意のcell削除で TypeScript required-property error になることを確認した。registry guard は全6 providerが既知の3 FS implementation familyへ収束することを検証する。
+- repository gate: `npm run lint`、`npm run lint:bot-repro`、`npm run build`、`npm run test:coverage` は成功。全 unit は 90 files / 1,651 tests passed、coverage threshold も満たした。
+- contract wiring: `src/fs/contracts/` は公開意味論、backend の `ifilesystem.contract-harness.ts` は faithful fake と provider route、`remote-backend-contracts.test.ts` は唯一の remote unit composition root。3 implementation families × 4 contracts の12cellを中央登録し、任意のcell削除で TypeScript required-property error になることを確認した。registry guard は全6 providerが既知の3 FS implementation familyへ収束することを検証する。coverage ownership は全 harness を単一の `src/**/*contract-harness.ts` glob で除外する。
 - shared priority capability contract: Google Drive、Dropbox、OneDrive が同一 runner で current/read、read 中の version 変化、missing/replacement、不完全 evidence を満たす。version-token 比較を除去する mutation では3 backendとも判別 test が失敗した。checkpoint 非干渉は Priority contract ではなく generic `CachingRemoteFs` integration contract が所有する。
 - integrated priority tests: detached provider I/O、local-edit race、whole-record CAS loss、exact pending pull supersession、normal batch call exclusionを含め成功。
 - live E2E: Google Drive、Dropbox、OneDrive の Priority fidelity 4 cases は各 backend で成功。aggregate は Google Drive / Dropbox が全件成功、OneDrive は既存 CRUD case 1件で Graph `patchMtime` が一時的に504となり 162/163、同一caseの直後の単独再実行は成功した。認証・transport・isolationを通った live semantic evidence と、provider transient を区別して記録する。

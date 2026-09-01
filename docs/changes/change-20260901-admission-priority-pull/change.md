@@ -24,6 +24,10 @@ scope:
 - docs/google-drive-backend.md Google Priority content-token responsibility
 - docs/changes/change-20260831-sync-decision-resource-components/ active verification
   references affected by harness moves
+- AGENTS.md agent operating and release gate
+- ARCHITECTURE.md swappable production-core principle and module map
+- CONTRIBUTING.md contributor gate and live E2E guidance
+- docs/code-enforcement.md remote backend completeness enforcement
 non_goals:
 - Universal execution-time Admission or action rerouting
 - Epochs, member obligations, component receipts, or EffectCommitResult

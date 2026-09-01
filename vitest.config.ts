@@ -27,7 +27,6 @@ export default defineConfig({
 				"src/__mocks__/**",
 				"src/fs/contracts/**",
 				"src/**/*contract-harness.ts",
-				"src/**/*contract.harness.ts",
 				"src/**/test-helpers.ts",
 				"src/**/types.ts",
 				"src/main.ts",

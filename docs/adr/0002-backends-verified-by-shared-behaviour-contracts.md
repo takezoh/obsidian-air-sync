@@ -2,12 +2,14 @@
 
 **Status:** Accepted · 2026-06-09
 **Context area:** testing / `fs/` backends (multi-FS foundation)
-**Related:** [ADR 0001](0001-metadata-cache-is-subordinate-to-commit-last.md) (the crash-safety contract pins it), [ADR 0003](0003-opt-in-e2e-validates-fakes-against-real-backends.md) (the opt-in e2e that backstops fake fidelity against the live APIs), [ARCHITECTURE.md](../../ARCHITECTURE.md) (principle 2: a backend changes nothing outside `fs/`), [code-enforcement.md](../code-enforcement.md)
+**Related:** [ADR 0001](0001-metadata-cache-is-subordinate-to-commit-last.md) (the crash-safety contract pins it), [ADR 0003](0003-opt-in-e2e-validates-fakes-against-real-backends.md) (the opt-in e2e that backstops fake fidelity against the live APIs), [ARCHITECTURE.md](../../ARCHITECTURE.md) (principle 2: a backend does not change the backend-agnostic production core), [code-enforcement.md](../code-enforcement.md)
 
 ## Context
 
 The sync pipeline is written against `IFileSystem` + `IBackendProvider` and **nothing
-else** (ARCHITECTURE principle 2). So "is the engine correct for backend X?" reduces to
+else** (ARCHITECTURE principle 2). Registry wiring, backend-specific settings UI,
+contract harness/catalog/matrix registration, and live E2E wiring are explicit backend
+extension points outside that production core. So "is the engine correct for backend X?" reduces to
 "does X honour the `IFileSystem` semantics the pipeline assumes?" — path normalization,
 a rename that does not clobber its destination, a moved folder that stays a folder, a
 `read()` that returns a detached copy, a `remoteChecksum` that actually tracks content.
@@ -52,8 +54,9 @@ chore bolted on afterward.
 
 1. **Every remote filesystem implementation the engine drives is verified by SHARED,
    parameterized behaviour contracts** — not an ad-hoc per-backend subset. Contract
-   assertions live under `fs/contracts/`; backend-specific faithful fakes live beside their
-   adapters. Four contract families are split by concern:
+   assertions live under `fs/contracts/`; backend-specific faithful fakes and
+   `ifilesystem.contract-harness.ts` adapters live beside their production adapters. Four
+   contract families are split by concern:
    - **`runIFileSystemContract`** (`fs/contracts/ifilesystem.contract.ts` +
      `ifilesystem-writes.contract.ts`) — the
      synchronous CRUD/rename/stat/read/list/listDir surface, path normalization, and

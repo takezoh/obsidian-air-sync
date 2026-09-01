@@ -42,7 +42,7 @@ a minified production `main.js`. No environment variables are required to build.
 Every change must pass the same gate CI enforces:
 
 ```bash
-npm run lint && npm run lint:bot-repro && npm run build && npm test
+npm run lint && npm run lint:bot-repro && npm run build && npm run test:coverage
 ```
 
 - `npm run lint` — ESLint (`--max-warnings 0`), including the `eslint-plugin-obsidianmd`
@@ -53,11 +53,13 @@ npm run lint && npm run lint:bot-repro && npm run build && npm test
   the community Dashboard source scan, which may analyse a submitted commit without
   resolving dependency declarations; a clean `npm run lint` alone is not sufficient.
 - `npm run build` — `tsc -noEmit` (strict) + esbuild bundle.
-- `npm test` — Vitest. `npm run test:coverage` enforces ratchet coverage floors; raise
+- `npm run test:coverage` — Vitest with the ratchet coverage floors enforced; raise
   them as coverage improves, never lower them.
 
 There is also an **opt-in** `npm run test:e2e` that runs the same `IFileSystem` contract
-against the **real** Google Drive / Dropbox APIs to catch drift in the in-memory fakes. It is
+against the **real** Google Drive / Dropbox / OneDrive APIs to catch drift in the in-memory
+fakes. These suites also own live fidelity for public priority-observation operations;
+the always-on shared unit contracts own fail-closed semantics and complete backend wiring. It is
 credentials-gated (warns and skips without them) and is **not** part of the gate or CI — see
 [docs/e2e-testing.md](docs/e2e-testing.md).
 

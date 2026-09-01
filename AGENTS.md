@@ -11,7 +11,7 @@ This file is the **agent operating guide** for this repo. Where to look:
 | Design principles, module map, data models, interfaces | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | The enforced rules (lint / type / design guards) and how to declare an exception | [docs/code-enforcement.md](docs/code-enforcement.md) |
 | Subsystem deep dives (sync pipeline, conflicts, Google Drive, errors) | [docs/](docs/) |
-| Running the opt-in e2e against the real Google Drive/Dropbox APIs | [docs/e2e-testing.md](docs/e2e-testing.md) |
+| Running the opt-in e2e against the real Google Drive/Dropbox/OneDrive APIs | [docs/e2e-testing.md](docs/e2e-testing.md) |
 | Architecture Decision Records (why a design is the way it is — read before "optimizing" it) | [docs/adr/](docs/adr/) |
 | Generic Obsidian-plugin conventions (cross-tool baseline) | [BASE_AGENTS.md](BASE_AGENTS.md) |
 
@@ -33,13 +33,21 @@ npm run test:e2e:onedrive # …only OneDrive
 
 ## The gate
 
-Always pass `npm run lint && npm run lint:bot-repro && npm run build && npm test` after
+Always pass `npm run lint && npm run lint:bot-repro && npm run build && npm run test:coverage` after
 making changes. `npm run lint` includes `eslint-plugin-obsidianmd`; `lint:bot-repro`
 also verifies production source when external dependency declarations are unavailable,
 matching the community Dashboard failure mode. Both must be green before pushing. The
 full set of enforced rules, the test-pinned principles, and how to declare an exception live in
 [docs/code-enforcement.md](docs/code-enforcement.md). **Fix the code rather than
 disabling a rule.**
+
+When adding or replacing a remote filesystem implementation, update the exact
+implementation-family catalog, all four shared `*.contract-harness.ts` registrations,
+the central required-contract matrix, and that backend's opt-in live E2E; then verify
+that the generic registry guard passes. Extend a registry fixture only when the backend
+needs backend-specific construction data. Contract definitions and harnesses are test
+infrastructure; remote backend harnesses are registered only by the central
+`remote-backend-contracts.test.ts` unit composition root.
 
 ## Coding conventions
 
@@ -104,7 +112,7 @@ Steps:
    - `package.json` → `version`
    - `package-lock.json` → both `version` fields (root and `packages.""`)
    - `versions.json` → add a `"x.y.z": "<minAppVersion>"` entry by hand (the `npm version` / `version-bump.mjs` script only adds it when `minAppVersion` changes, so it won't for a same-minAppVersion bump)
-2. Gate: `npm run lint && npm run lint:bot-repro && npm run build && npm test` must all pass before tagging.
+2. Gate: `npm run lint && npm run lint:bot-repro && npm run build && npm run test:coverage` must all pass before tagging.
 3. Commit as `Bump version to x.y.z`, push to `main`.
 4. Tag `x.y.z` (must match the version exactly, no `v` prefix) and push the tag — this fires the release workflow.
 5. After the run finishes (`gh run watch <id>`), attach notes: `gh release edit x.y.z --notes-file <file>`.

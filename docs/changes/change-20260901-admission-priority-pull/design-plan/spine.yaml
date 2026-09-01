@@ -82,7 +82,7 @@ contracts:
     adr_refs: [adr-20260901-admission-priority-pull]
     verification:
       - {id: verify-finalization, tier: T1, command: npm test -- --run src/sync/sync-cycle-finalization.test.ts src/sync/rename-debt.test.ts src/sync/orchestrator.test.ts}
-      - {id: verify-repository-gate, tier: T2, command: npm run lint && npm run lint:bot-repro && npm run build && npm test}
+      - {id: verify-repository-gate, tier: T2, command: npm run lint && npm run lint:bot-repro && npm run build && npm run test:coverage}
     partition: {outcomes: [determinate, unknown, inconclusive, conflicting], default_policy: Foreign invalidated failed blocked deferred or partial completion retains checkpoint and debt.}
 
 adrs:

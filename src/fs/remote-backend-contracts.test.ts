@@ -1,14 +1,14 @@
 import { describe } from "vitest";
 import type { RemoteBackendFamily } from "./contracts/remote-backend-family";
-import { registerGoogleDriveIFileSystemContract } from "./googledrive/ifilesystem-contract.harness";
+import { registerGoogleDriveIFileSystemContract } from "./googledrive/ifilesystem.contract-harness";
 import { registerGoogleDriveCachingContract } from "./googledrive/caching-remote-fs.contract-harness";
 import { registerGoogleDriveChangeDetectionContract } from "./googledrive/remote-change-detection.contract-harness";
 import { registerGoogleDrivePriorityObservationContract } from "./googledrive/priority-observation.contract-harness";
-import { registerDropboxIFileSystemContract } from "./dropbox/ifilesystem-contract.harness";
+import { registerDropboxIFileSystemContract } from "./dropbox/ifilesystem.contract-harness";
 import { registerDropboxCachingContract } from "./dropbox/caching-remote-fs.contract-harness";
 import { registerDropboxChangeDetectionContract } from "./dropbox/remote-change-detection.contract-harness";
 import { registerDropboxPriorityObservationContract } from "./dropbox/priority-observation.contract-harness";
-import { registerOneDriveIFileSystemContract } from "./onedrive/ifilesystem-contract.harness";
+import { registerOneDriveIFileSystemContract } from "./onedrive/ifilesystem.contract-harness";
 import { registerOneDriveCachingContract } from "./onedrive/caching-remote-fs.contract-harness";
 import { registerOneDriveChangeDetectionContract } from "./onedrive/remote-change-detection.contract-harness";
 import { registerOneDrivePriorityObservationContract } from "./onedrive/priority-observation.contract-harness";
