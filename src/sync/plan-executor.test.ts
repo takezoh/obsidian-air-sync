@@ -121,6 +121,48 @@ describe("executePlan", () => {
 			expect((ctx.localFs as MockFileSystem).files.has("b.md")).toBe(true);
 			expect(stateStore.records.has("b.md")).toBe(true);
 		});
+
+		it("skips provider I/O for an exact action superseded after permit acquisition", async () => {
+			const action: SyncAction = {
+				path: "b.md", action: "pull",
+				remote: { path: "b.md", isDirectory: false, size: 1, mtime: 2, hash: "" },
+			};
+			const ctx = makeCtx({
+				acquireActionPermit: () => Promise.resolve({ release: vi.fn() }),
+				beginAction: (candidate) => candidate === action ? "superseded" : "run",
+			});
+			const read = vi.spyOn(ctx.remoteFs, "read");
+
+			const result = await executePlan(makePlan([action]), ctx);
+
+			expect(result.superseded).toEqual([action]);
+			expect(result.succeeded).toEqual([]);
+			expect(read).not.toHaveBeenCalled();
+		});
+
+		it("holds the action permit through SyncRecord commit and result publication", async () => {
+			let released = false;
+			const ctx = makeCtx({
+				acquireActionPermit: () => Promise.resolve({ release: () => { released = true; } }),
+			});
+			const remoteFs = ctx.remoteFs as MockFileSystem;
+			addFile(remoteFs, "permit.md", "x");
+			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
+			const put = vi.spyOn(stateStore, "put").mockImplementation((record) => {
+				expect(released).toBe(false);
+				stateStore.records.set(record.path, record);
+				return Promise.resolve();
+			});
+
+			const result = await executePlan(makePlan([{
+				path: "permit.md", action: "pull",
+				remote: { path: "permit.md", isDirectory: false, size: 1, mtime: 2, hash: "" },
+			}]), ctx);
+
+			expect(put).toHaveBeenCalledOnce();
+			expect(result.succeeded).toHaveLength(1);
+			expect(released).toBe(true);
+		});
 	});
 
 	describe("match", () => {

@@ -13,13 +13,15 @@ export interface SyncCycleResult {
 /** Build the human-readable summary shown after a sync cycle completes. */
 export function buildNotificationMessage(result: ExecutionResult): string {
 	const counts = { pushed: 0, pulled: 0, matched: 0, deleted: 0, renamed: 0 };
-	for (const a of result.succeeded) {
-		if (a.action.action === "push") counts.pushed++;
-		else if (a.action.action === "pull") counts.pulled++;
-		else if (a.action.action === "match") counts.matched++;
-		else if (a.action.action === "delete_local" || a.action.action === "delete_remote") counts.deleted++;
-		else if (a.action.action === "rename_remote" || a.action.action === "rename_local") counts.renamed++;
-	}
+	const count = (action: ExecutionResult["succeeded"][number]["action"]) => {
+		if (action.action === "push") counts.pushed++;
+		else if (action.action === "pull") counts.pulled++;
+		else if (action.action === "match") counts.matched++;
+		else if (action.action === "delete_local" || action.action === "delete_remote") counts.deleted++;
+		else if (action.action === "rename_remote" || action.action === "rename_local") counts.renamed++;
+	};
+	for (const { action } of result.succeeded) count(action);
+	for (const action of result.superseded) count(action);
 	const parts: string[] = [];
 	if (counts.pushed > 0) parts.push(`${counts.pushed} pushed`);
 	if (counts.pulled > 0) parts.push(`${counts.pulled} pulled`);
@@ -42,7 +44,7 @@ export function buildNotificationMessage(result: ExecutionResult): string {
  */
 export class CycleSummary {
 	private readonly merged: ExecutionResult = {
-		succeeded: [], failed: [], blocked: [], conflicts: [], deferred: [],
+		succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [], deferred: [],
 	};
 
 	add(cycle: ExecutionResult): void {
@@ -50,6 +52,7 @@ export class CycleSummary {
 		// carry tens of thousands of actions, and spreading that many arguments can
 		// overflow the engine's argument limit (RangeError) on mobile.
 		for (const a of cycle.succeeded) this.merged.succeeded.push(a);
+		for (const a of cycle.superseded) this.merged.superseded.push(a);
 		for (const f of cycle.failed) this.merged.failed.push(f);
 		for (const b of cycle.blocked) this.merged.blocked.push(b);
 		for (const c of cycle.conflicts) this.merged.conflicts.push(c);

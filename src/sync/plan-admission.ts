@@ -35,6 +35,8 @@ interface AdmissionComponentDisposition {
 
 export interface AuthorizedComponent extends AdmissionComponentDisposition {
 	kind: "authorized";
+	/** Exact action object that a detached priority pull may replace in this cycle. */
+	priorityPullAction?: SyncAction;
 }
 
 export interface ResolvedNoActionComponent extends AdmissionComponentDisposition {
@@ -114,7 +116,11 @@ export function admitDestructivePlan(
 			releaseAfterSafeCheckpoint.push(...localCandidates.filter((candidate) =>
 				nonBindingCandidates.has(renameEvidenceKey(candidate)) &&
 				snapshot.replayedLocalRenameKeys.has(renameEvidenceKey(candidate))));
-			dispositions.push({ kind: "authorized", ...shared });
+			dispositions.push({
+				kind: "authorized",
+				...shared,
+				priorityPullAction: priorityPullAction(decidedComponent),
+			});
 		}
 	}
 	dispositions.sort((left, right) => left.paths.join("\0").localeCompare(right.paths.join("\0")));
@@ -132,6 +138,21 @@ export function admitDestructivePlan(
 		deferred: dispositions.filter((item): item is DeferredComponent => item.kind === "deferred"),
 		localRenameLifecycle,
 	};
+}
+
+function priorityPullAction(component: AdmissionComponent): SyncAction | undefined {
+	if (component.paths.size !== 1 || component.actions.length !== 1 ||
+		component.evidence.length > 0) return undefined;
+	const action = component.actions[0]!;
+	if (action.action !== "pull" || action.path !== [...component.paths][0] ||
+		!action.baseline || !action.local || action.local.isDirectory ||
+		!action.remote || action.remote.isDirectory ||
+		!action.baseline.remoteIdentityKey ||
+		action.remote.identityKey !== action.baseline.remoteIdentityKey) return undefined;
+	if (component.observations.some((observation) =>
+		observation.kind !== "exact" || observation.requestedPath !== action.path ||
+		observation.entity.isDirectory)) return undefined;
+	return action;
 }
 
 function compareEvidence(left: IdentityEvidence, right: IdentityEvidence): number {

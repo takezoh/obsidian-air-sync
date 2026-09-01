@@ -4,7 +4,7 @@ import type { ExecutionResult } from "./execution-result";
 
 function result(deferred = 0): ExecutionResult {
 	return {
-		succeeded: [], failed: [], blocked: [], conflicts: [],
+		succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [],
 		deferred: Array.from({ length: deferred }, (_, index) => ({
 			kind: "deferred", paths: [`path-${index}.md`], actions: [], evidence: [],
 			reasons: ["rename_mismatch"],

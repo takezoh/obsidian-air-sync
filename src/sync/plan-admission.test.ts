@@ -739,6 +739,40 @@ describe("admitDestructivePlan", () => {
 		expect(result.deferred[0]!.reasons).toEqual(["incomplete_folder_mapping"]);
 	});
 
+	it("marks only the exact singleton tracked pull as priority-substitutable", () => {
+		const baseline = {
+			path: "note.md", hash: "old", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, remoteIdentityKey: "remote-id", syncedAt: 1,
+		};
+		const local = entity("note.md");
+		const remote = entity("note.md", "remote-id");
+		const action: SyncAction = { path: "note.md", action: "pull", local, remote, baseline };
+		const result = admit([action], [], [
+			{ kind: "exact", side: "local", requestedPath: "note.md", entity: local },
+			{ kind: "exact", side: "remote", requestedPath: "note.md", entity: remote },
+		], projection({ "note.md": "included" }));
+
+		const disposition = result.dispositions.find((item) => item.kind === "authorized");
+		expect(disposition?.kind === "authorized" && disposition.priorityPullAction).toBe(action);
+	});
+
+	it("does not mark a pull connected to cross-path evidence", () => {
+		const baseline = {
+			path: "B.md", hash: "old", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, remoteIdentityKey: "X", syncedAt: 1,
+		};
+		const action: SyncAction = {
+			path: "B.md", action: "pull", local: entity("B.md"), remote: entity("B.md", "X"), baseline,
+		};
+		const result = admit([action], [remoteRename()], [
+			{ kind: "exact", side: "local", requestedPath: "B.md", entity: entity("B.md") },
+			{ kind: "exact", side: "remote", requestedPath: "B.md", entity: entity("B.md", "X") },
+		], projection({ "A.md": "included", "B.md": "included" }));
+
+		expect(result.dispositions.some((item) =>
+			item.kind === "authorized" && item.priorityPullAction !== undefined)).toBe(false);
+	});
+
 	it("does not mutate the plan, observations, evidence, or projection", () => {
 		const action: SyncAction = { path: "gone.md", action: "delete_local", local: entity("gone.md") };
 		const evidence: IdentityEvidence[] = [];

@@ -28,6 +28,8 @@ export interface ResolvedConflict {
 
 export interface ExecutionResult {
 	succeeded: CompletedAction[];
+	/** Admission-marked exact actions completed by a priority operation. */
+	superseded: SyncAction[];
 	failed: FailedAction[];
 	blocked: BlockedAction[];
 	conflicts: ResolvedConflict[];

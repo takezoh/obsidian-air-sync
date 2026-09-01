@@ -320,6 +320,13 @@ export default defineConfig(
 		rules: { "max-lines": ["error", { max: 408, skipBlankLines: true, skipComments: true }] },
 	},
 	{
+		// Exact action effects, commitAction, terminal result publication, and their
+		// priority permit form one indivisible executor boundary. Keep that ordering
+		// visible here instead of hiding it behind a result-carrier abstraction.
+		files: ["src/sync/plan-executor.ts"],
+		rules: { "max-lines": ["error", { max: 330, skipBlankLines: true, skipComments: true }] },
+	},
+	{
 		// Re-pinned from 317: replay-free post-delta snapshots must stay under the
 		// same cache mutex/cursor owner as getChangedPaths. Splitting that method
 		// would break the atomic observation boundary this class enforces.
