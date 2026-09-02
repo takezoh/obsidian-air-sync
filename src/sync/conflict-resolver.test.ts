@@ -111,7 +111,7 @@ describe("resolveConflict", () => {
 			}, "duplicate");
 
 			expect(result).toMatchObject({ action: "duplicated", duplicatePath: "new.conflict.md" });
-			expect(result.verifiedOutputs).toEqual([
+			expect(result.verifiedOutputs).toMatchObject([
 				{ role: "primary", path: "new.conflict.md", sourcePath: "old.md" },
 				{ role: "additional", path: "new.conflict-2.md", sourcePath: "new.md" },
 			]);
@@ -229,6 +229,42 @@ describe("resolveConflict", () => {
 			for (const write of writes) expect(write).not.toHaveBeenCalled();
 		});
 
+		it("preserves two stable checksum-less sources with at most two reads each", async () => {
+			const local = addFile(localFs, "new.md", "local", 2000);
+			const source = addFile(remoteFs, "old.md", "R", 0);
+			source.identityKey = "R";
+			const occupant = addFile(remoteFs, "new.md", "Y", 0);
+			occupant.identityKey = "Y";
+			for (const entity of [source, occupant]) {
+				entity.hash = "";
+				entity.remoteChecksum = undefined;
+				entity.mtime = 0;
+			}
+			const originalStat = remoteFs.stat.bind(remoteFs);
+			vi.spyOn(remoteFs, "stat").mockImplementation(async (path) => {
+				const entity = await originalStat(path);
+				return entity ? { ...entity, hash: "", remoteChecksum: undefined, mtime: 0 } : null;
+			});
+			const originalRead = remoteFs.read.bind(remoteFs);
+			const reads = new Map<string, number>();
+			vi.spyOn(remoteFs, "read").mockImplementation(async (path) => {
+				reads.set(path, (reads.get(path) ?? 0) + 1);
+				return originalRead(path);
+			});
+
+			const result = await resolveConflict({
+				path: "new.md", localPath: "new.md", remotePath: "old.md",
+				remoteIdentitySource: source, additionalRemote: occupant,
+				localFs, remoteFs, local, remote: source, freshRename: true,
+			}, "duplicate");
+
+			expect(reads.get("old.md")).toBe(2);
+			expect(reads.get("new.md")).toBe(2);
+			expect(readText(remoteFs, "new.conflict.md")).toBe("R");
+			expect(readText(remoteFs, "new.conflict-2.md")).toBe("Y");
+			expect(result.verifiedOutputs).toHaveLength(2);
+		});
+
 		it("creates a conflict copy when both files exist", async () => {
 			const local = addFile(localFs, "file.md", "local content", 2000);
 			const remote = addFile(remoteFs, "file.md", "remote content", 1000);
@@ -296,7 +332,7 @@ describe("resolveConflict", () => {
 			}, "auto_merge");
 
 			expect(result.action).toBe("merged");
-			expect(result.verifiedOutputs).toEqual([
+			expect(result.verifiedOutputs).toMatchObject([
 				{ role: "primary", path: "new.conflict.md", sourcePath: "old.md" },
 				{ role: "additional", path: "new.conflict-2.md", sourcePath: "new.md" },
 			]);

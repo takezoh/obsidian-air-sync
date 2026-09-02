@@ -550,6 +550,133 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.close();
 		});
 
+		it("auto-merges third-path R while preserving exact R and Y through runSync", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			const tracker = new LocalChangeTracker();
+			const base = "one\ntwo\nthree\nfour\nfive\n";
+			const localText = "one\nlocal\nthree\nfour\nfive\n";
+			const remoteText = "one\ntwo\nthree\nfour\nremote\n";
+			addFile(localFs, "new.md", localText, 2000);
+			const primary = addFile(remoteFs, "third.md", remoteText, 1500);
+			primary.identityKey = "R";
+			const additional = addFile(remoteFs, "new.md", "foreign Y", 1400);
+			additional.identityKey = "Y";
+			tracker.markRenamed("new.md", "old.md");
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`, lastSyncedIdentity: "test:root",
+				conflictStrategy: "auto_merge",
+			});
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
+			remoteFs.checkpoint!.getChangedPaths = vi.fn().mockResolvedValue({
+				modified: ["third.md", "new.md"], deleted: ["old.md"],
+				renamed: [{ oldPath: "old.md", newPath: "third.md" }],
+			});
+			const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+			remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
+			const deps = createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+				localTracker: tracker,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			const baseBytes = new TextEncoder().encode(base).buffer;
+			await orchestrator.state.put({
+				path: "old.md", hash: await sha256(baseBytes), localMtime: 1000, remoteMtime: 1000,
+				localSize: base.length, remoteSize: base.length,
+				remoteIdentityKey: "R", syncedAt: 900,
+			});
+			await orchestrator.state.putContent("old.md", baseBytes);
+
+			await orchestrator.runSync();
+
+			expect(readText(localFs, "new.conflict.md")).toBe(remoteText);
+			expect(readText(remoteFs, "new.conflict.md")).toBe(remoteText);
+			expect(readText(localFs, "new.conflict-2.md")).toBe("foreign Y");
+			expect(readText(remoteFs, "new.conflict-2.md")).toBe("foreign Y");
+			expect(readText(localFs, "new.md")).toContain("local");
+			expect(readText(localFs, "new.md")).toContain("remote");
+			expect(readText(remoteFs, "new.md")).toBe(readText(localFs, "new.md"));
+			expect(remoteFs.files.has("third.md")).toBe(false);
+			expect(commitCheckpoint).toHaveBeenCalledTimes(1);
+			expect(await orchestrator.state.getRenameDebts("test:root")).toEqual([]);
+			await orchestrator.close();
+		});
+
+		it("preserves foreign Y when tracked R is absent and converges through runSync", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			const tracker = new LocalChangeTracker();
+			addFile(localFs, "new.md", "local edited", 2000);
+			const foreign = addFile(remoteFs, "new.md", "foreign Y", 1400);
+			foreign.identityKey = "Y";
+			tracker.markRenamed("new.md", "old.md");
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`, lastSyncedIdentity: "test:root",
+				conflictStrategy: "duplicate",
+			});
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
+			remoteFs.checkpoint!.getChangedPaths = vi.fn().mockResolvedValue({
+				modified: ["new.md"], deleted: ["old.md"], renamed: [],
+			});
+			const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+			remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
+			const deps = createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+				localTracker: tracker,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			await orchestrator.state.put({
+				path: "old.md", hash: "baseline", localMtime: 1000, remoteMtime: 1000,
+				localSize: 8, remoteSize: 8, remoteIdentityKey: "R", syncedAt: 900,
+			});
+
+			await orchestrator.runSync();
+
+			expect(readText(localFs, "new.conflict.md")).toBe("foreign Y");
+			expect(readText(remoteFs, "new.conflict.md")).toBe("foreign Y");
+			expect(readText(remoteFs, "new.md")).toBe("local edited");
+			expect(await orchestrator.state.get("old.md")).toBeUndefined();
+			expect(await orchestrator.state.get("new.md")).toBeDefined();
+			expect(commitCheckpoint).toHaveBeenCalledTimes(1);
+			expect(await orchestrator.state.getRenameDebts("test:root")).toEqual([]);
+			await orchestrator.close();
+		});
+
+		it("converges a vacant target when tracked R is absent through runSync", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			const tracker = new LocalChangeTracker();
+			addFile(localFs, "new.md", "local edited", 2000);
+			tracker.markRenamed("new.md", "old.md");
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`, lastSyncedIdentity: "test:root",
+			});
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
+			remoteFs.checkpoint!.getChangedPaths = vi.fn().mockResolvedValue({
+				modified: [], deleted: ["old.md"], renamed: [],
+			});
+			const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+			remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
+			const deps = createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+				localTracker: tracker,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			await orchestrator.state.put({
+				path: "old.md", hash: "baseline", localMtime: 1000, remoteMtime: 1000,
+				localSize: 8, remoteSize: 8, remoteIdentityKey: "R", syncedAt: 900,
+			});
+
+			await orchestrator.runSync();
+
+			expect(readText(remoteFs, "new.md")).toBe("local edited");
+			expect(await orchestrator.state.get("old.md")).toBeUndefined();
+			expect(await orchestrator.state.get("new.md")).toBeDefined();
+			expect(commitCheckpoint).toHaveBeenCalledTimes(1);
+			expect(await orchestrator.state.getRenameDebts("test:root")).toEqual([]);
+			await orchestrator.close();
+		});
+
 		it("withholds checkpoint and debt release when fresh terminal proof is blocked", async () => {
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();

@@ -208,7 +208,11 @@ async function preserveAll(
 		if (!buffersEqual(snapshot.content, localCopy) || !buffersEqual(snapshot.content, remoteCopy)) {
 			throw new ConflictPreparationError("proof_mismatch", `Conflict output readback mismatch: ${path}`);
 		}
-		outputs.push(Object.freeze({ role, path, sourcePath: snapshot.path }));
+		outputs.push(Object.freeze({
+			role, path, sourcePath: snapshot.path,
+			sourceEntity: snapshot.entity,
+			sourceContent: snapshot.content.slice(0),
+		}));
 	}
 	return Object.freeze(outputs);
 }

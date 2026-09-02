@@ -11,7 +11,7 @@ import {
 	type AuthorizedSyncPlan,
 	type FreshRenameAction,
 } from "./plan-admission";
-import { ConflictPreparationError } from "./conflict-resolver";
+import { ConflictPreparationError, resolveConflict } from "./conflict-resolver";
 
 function makeCtx(
 	overrides: Partial<ExecutionContext> = {},
@@ -604,6 +604,50 @@ describe("executePlan", () => {
 			expect(stateStore.records.has("new.md")).toBe(false);
 		});
 
+		it("blocks when tracked R changes after preservation and before destructive effects", async () => {
+			const ctx = makeCtx({ conflictStrategy: "duplicate" });
+			const { action, remoteFs, stateStore, baseline } = await arrangeFreshConflict(ctx, true);
+			const rename = vi.spyOn(remoteFs, "rename");
+			const deleteTarget = vi.spyOn(remoteFs, "delete");
+			ctx.conflictResolver = async (resolverCtx, strategy) => {
+				const resolution = await resolveConflict(resolverCtx, strategy);
+				await remoteFs.write("old.md", new TextEncoder().encode("new R version").buffer, 3000);
+				return resolution;
+			};
+
+			const result = await executePlan(makePlan([action]), ctx);
+
+			expect(result.blocked).toHaveLength(1);
+			expect(result.failed).toEqual([]);
+			expect(rename).not.toHaveBeenCalled();
+			expect(deleteTarget).not.toHaveBeenCalled();
+			expect(stateStore.records.get("old.md")).toEqual(baseline);
+			expect(readText(remoteFs, "old.md")).toBe("new R version");
+			expect(readText(remoteFs, "new.conflict.md")).toBe("remote changed");
+		});
+
+		it("blocks when destination Y changes after preservation and before deletion", async () => {
+			const ctx = makeCtx({ conflictStrategy: "duplicate" });
+			const { action, remoteFs, stateStore, baseline } = await arrangeFreshConflict(ctx, true);
+			const rename = vi.spyOn(remoteFs, "rename");
+			const deleteTarget = vi.spyOn(remoteFs, "delete");
+			ctx.conflictResolver = async (resolverCtx, strategy) => {
+				const resolution = await resolveConflict(resolverCtx, strategy);
+				await remoteFs.write("new.md", new TextEncoder().encode("new Z version").buffer, 3000);
+				return resolution;
+			};
+
+			const result = await executePlan(makePlan([action]), ctx);
+
+			expect(result.blocked).toHaveLength(1);
+			expect(result.failed).toEqual([]);
+			expect(rename).not.toHaveBeenCalled();
+			expect(deleteTarget).not.toHaveBeenCalled();
+			expect(stateStore.records.get("old.md")).toEqual(baseline);
+			expect(readText(remoteFs, "new.md")).toBe("new Z version");
+			expect(readText(remoteFs, "new.conflict-2.md")).toBe("foreign occupant");
+		});
+
 		it("does not invent tracked identity authority for a foreign-only target", async () => {
 			const ctx = makeCtx({ conflictStrategy: "duplicate" });
 			const localFs = ctx.localFs as MockFileSystem;
@@ -696,7 +740,7 @@ describe("executePlan", () => {
 						: originalRemoteWrite(path, bytes, mtime));
 				let targetReads = 0;
 				vi.spyOn(remoteFs, "read").mockImplementation((path) =>
-					cut === "terminal_read" && path === "new.md" && ++targetReads === 2
+					cut === "terminal_read" && path === "new.md" && ++targetReads === 3
 						? Promise.reject(new Error("terminal read cut"))
 						: originalRemoteRead(path));
 
@@ -721,7 +765,10 @@ describe("executePlan", () => {
 			const { action } = await arrangeFreshConflict(ctx);
 			ctx.conflictResolver = () => Promise.resolve({
 				action: "duplicated",
-				verifiedOutputs: [{ role: "primary", path: "new.conflict.md", sourcePath: "old.md" }],
+				verifiedOutputs: [{
+					role: "primary", path: "new.conflict.md", sourcePath: "old.md",
+					sourceEntity: action.remote!, sourceContent: new ArrayBuffer(0),
+				}],
 			});
 
 			await expect(executePlan(makePlan([action]), ctx)).rejects.toThrow(

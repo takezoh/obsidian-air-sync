@@ -1,4 +1,4 @@
-/* eslint max-lines: ["error", 800] -- design requires fresh compound effects, private terminal proof, and proof-gated commit routing to remain in the executor owner. */
+/* eslint max-lines: ["error", 850] -- design keeps fresh compound effects, destructive re-observation, private terminal proof, and proof-gated commit routing in the executor owner. */
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
 import type { ConflictStrategy, SyncAction, SyncActionType } from "./types";
@@ -638,12 +638,33 @@ async function executeFreshConflictEffects(
 		throw new InternalFreshInvariantError(`Tracked fresh conflict omitted identity source: ${action.path}`);
 	}
 
+	const primaryOutput = outputs.find((output) => output.role === "primary");
+	const additionalOutput = outputs.find((output) => output.role === "additional");
+	if (source) {
+		if (!primaryOutput) {
+			throw new InternalFreshInvariantError(`Fresh conflict omitted primary snapshot: ${action.path}`);
+		}
+		await assertPreservedSourceUnchanged(ctx.remoteFs, source.path, source.identityKey, primaryOutput);
+	}
+	const expectedTargetOutput = action.additionalRemote
+		? additionalOutput
+		: !source && action.remote ? primaryOutput : undefined;
+	if ((action.additionalRemote || (!source && action.remote)) && !expectedTargetOutput) {
+		throw new InternalFreshInvariantError(`Fresh conflict omitted target snapshot: ${action.path}`);
+	}
+	if (expectedTargetOutput) {
+		const expectedIdentity = action.additionalRemote?.identityKey ?? action.remote?.identityKey;
+		await assertPreservedSourceUnchanged(
+			ctx.remoteFs, action.path, expectedIdentity, expectedTargetOutput,
+		);
+	} else if (source?.path !== action.path && await ctx.remoteFs.stat(action.path)) {
+		throw new ConflictPreparationError(
+			"proof_mismatch", `Fresh conflict destination changed: ${action.path}`,
+		);
+	}
+
 	const targetBefore = await ctx.remoteFs.stat(action.path);
 	if (rotationRequired) {
-		const sourceBefore = await ctx.remoteFs.stat(source.path);
-		if (!sourceBefore || sourceBefore.identityKey !== source.identityKey) {
-			throw new ConflictPreparationError("proof_mismatch", `Fresh conflict source changed: ${source.path}`);
-		}
 		if (targetBefore) await ctx.remoteFs.delete(action.path);
 		await ctx.remoteFs.rename(source.path, action.path);
 	} else if (!source && targetBefore) {
@@ -671,6 +692,24 @@ async function executeFreshConflictEffects(
 		action, localEntity, remoteEntity, intended, outputs,
 	);
 	return { localEntity, remoteEntity, terminalFreshProof };
+}
+
+async function assertPreservedSourceUnchanged(
+	remoteFs: IFileSystem,
+	path: string,
+	expectedIdentity: string | undefined,
+	output: VerifiedConflictOutput,
+): Promise<void> {
+	const current = await remoteFs.stat(path);
+	if (!current || output.sourcePath !== path ||
+		current.identityKey !== expectedIdentity ||
+		output.sourceEntity.identityKey !== expectedIdentity) {
+		throw new ConflictPreparationError("proof_mismatch", `Fresh conflict source changed: ${path}`);
+	}
+	const content = await remoteFs.read(path);
+	if (!buffersEqual(content, output.sourceContent)) {
+		throw new ConflictPreparationError("proof_mismatch", `Fresh conflict source bytes changed: ${path}`);
+	}
 }
 
 async function executeConflictAction(

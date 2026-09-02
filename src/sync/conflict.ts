@@ -25,9 +25,12 @@ export interface ConflictResolutionResult {
 }
 
 export interface VerifiedConflictOutput {
-	role: "primary" | "additional";
-	path: string;
-	sourcePath: string;
+	readonly role: "primary" | "additional";
+	readonly path: string;
+	readonly sourcePath: string;
+	/** Immutable resolver snapshot used by the executor's destructive precondition check. */
+	readonly sourceEntity: FileEntity;
+	readonly sourceContent: ArrayBuffer;
 }
 
 export interface ConflictContext {
