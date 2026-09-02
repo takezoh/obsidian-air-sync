@@ -218,7 +218,7 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.close();
 		});
 
-		it("defers a mismatched local rename component without I/O or checkpoint advance", async () => {
+		it("fails closed on an unprovable local rename without I/O or checkpoint advance", async () => {
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();
 			addFile(localFs, "a.md", "changed", 2000);
@@ -256,7 +256,7 @@ describe("SyncOrchestrator", () => {
 			expect(deps.onStatusChange).toHaveBeenCalledWith("partial_error");
 			expect(deps.notify).toHaveBeenCalledWith("Sync: 1 deferred");
 			expect(warn).toHaveBeenCalledWith("Sync plan component deferred", expect.objectContaining({
-				reasons: ["rename_mismatch"], paths: ["A.md", "a.md"],
+				reasons: ["unknown_observation"], paths: ["A.md", "a.md"],
 			}));
 			expect(await orchestrator.state.getRenameDebts("test:root")).toHaveLength(1);
 			expect(remoteList).toHaveBeenCalledTimes(1);
