@@ -465,7 +465,7 @@ describe("admitDestructivePlan", () => {
 		expect(result.executable.actions.map((action) => action.action)).toEqual([
 			"rename_remote", "push", "rename_local",
 		]);
-		expect(result.executable.actions[1]).toBe(ordinary);
+		expect(result.executable.actions[1]).toStrictEqual(ordinary);
 		const targets = result.executable.actions.map((action) => action.path);
 		expect(new Set(targets).size).toBe(targets.length);
 	});
@@ -757,7 +757,9 @@ describe("admitDestructivePlan", () => {
 		], projection({ "note.md": "included" }));
 
 		const disposition = result.dispositions.find((item) => item.kind === "authorized");
-		expect(disposition?.kind === "authorized" && disposition.priorityPullAction).toBe(action);
+		expect(disposition?.kind === "authorized" && disposition.priorityPullAction)
+			.toBe(result.executable.actions[0]);
+		expect(result.executable.actions[0]).toStrictEqual(action);
 	});
 
 	it("does not mark a pull connected to cross-path evidence", () => {
@@ -1012,5 +1014,55 @@ describe("admitDestructivePlan", () => {
 		expect(evidence).toEqual([]);
 		expect(observations).toEqual([]);
 		expect([...scope.byEndpoint]).toEqual([["gone.md", "included"]]);
+	});
+
+	it("captures authority-bearing cycle evidence as a runtime-immutable value", () => {
+		const action: SyncAction = {
+			path: "B.md", action: "push",
+			local: { ...entity("B.md"), backendMeta: { revision: "local-1" } },
+		};
+		const candidate = remoteRename({ side: "local", identityKey: undefined });
+		const observation: PathObservation = {
+			kind: "exact", side: "local", requestedPath: "B.md",
+			entity: { ...entity("B.md"), backendMeta: { revision: "observed-1" } },
+		};
+		const scope = projection({ "A.md": "included", "B.md": "included" });
+		const snapshot = captureCycleAdmissionSnapshot(
+			{ actions: [action] }, [candidate], [observation], scope, "backend\0root",
+			[], [renameEvidenceKey(candidate)],
+		);
+
+		action.path = "mutated.md";
+		(action.local!.backendMeta as { revision: string }).revision = "local-2";
+		observation.requestedPath = "mutated.md";
+		(observation.entity.backendMeta as { revision: string }).revision = "observed-2";
+		(scope.byEndpoint as Map<string, "included">).set("C.md", "included");
+
+		expect(snapshot.plan.actions[0]).toMatchObject({ path: "B.md" });
+		expect(snapshot.plan.actions[0]?.local?.backendMeta).toEqual({ revision: "local-1" });
+		expect(snapshot.observations[0]).toMatchObject({ requestedPath: "B.md" });
+		expect(snapshot.observations[0]?.kind === "exact" &&
+			snapshot.observations[0].entity.backendMeta).toEqual({ revision: "observed-1" });
+		expect(snapshot.scope.byEndpoint.has("C.md")).toBe(false);
+		expect(() => (snapshot.replayedLocalRenameKeys as Set<string>).add("foreign"))
+			.toThrow(TypeError);
+		expect(() => (snapshot.baselinePaths as Set<string>).add("foreign.md"))
+			.toThrow(TypeError);
+		expect(() => (snapshot.scope.byEndpoint as Map<string, "included">)
+			.set("foreign.md", "included")).toThrow(TypeError);
+	});
+
+	it("partitions local rename candidates instead of exposing a second identity-evidence view", () => {
+		const candidate = remoteRename({ side: "local", identityKey: undefined });
+		const snapshot = captureCycleAdmissionSnapshot(
+			{ actions: [] }, [candidate], [], projection({
+				"A.md": "included", "B.md": "included",
+			}), "backend\0root",
+		);
+
+		expect(snapshot.evidence).toEqual([
+			{ role: "local_rename_candidate", evidence: candidate },
+		]);
+		expect(snapshot.evidence.filter((item) => item.role === "identity")).toEqual([]);
 	});
 });

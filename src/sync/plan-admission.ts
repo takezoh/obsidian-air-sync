@@ -1,7 +1,7 @@
 /* eslint max-lines: ["error", 380] -- admission keeps fresh rename classification beside the authorization boundary it governs. */
 import { buildAdmissionComponents, type AdmissionComponent } from "./plan-admission-graph";
-import type { CycleAdmissionSnapshot } from "./cycle-admission-snapshot";
-export { captureCycleAdmissionSnapshot, type CycleAdmissionSnapshot } from "./cycle-admission-snapshot";
+import type { CycleEvidence } from "./sync-cycle-planning";
+export { captureCycleAdmissionSnapshot, type CycleEvidence } from "./sync-cycle-planning";
 import {
 	buildLocalRenameLifecycle,
 	classifyNonBindingLocalRenames,
@@ -30,7 +30,7 @@ const authorizedSyncPlanBrand: unique symbol = Symbol("AuthorizedSyncPlan");
 /** The executor input that only Admission can construct. */
 export interface AuthorizedSyncPlan {
 	readonly actions: readonly SyncAction[];
-	readonly [authorizedSyncPlanBrand]: CycleAdmissionSnapshot;
+	readonly [authorizedSyncPlanBrand]: CycleEvidence;
 }
 
 export type FreshRenameState =
@@ -80,7 +80,7 @@ export type AdmissionDisposition =
 	| DeferredComponent;
 
 export interface AdmissionResult {
-	snapshot: CycleAdmissionSnapshot;
+	snapshot: CycleEvidence;
 	executable: AuthorizedSyncPlan;
 	dispositions: AdmissionDisposition[];
 	deferred: DeferredComponent[];
@@ -93,10 +93,11 @@ export interface AdmissionResult {
  * whose cross-path identity cannot be reconciled safely.
  */
 export function admitDestructivePlan(
-	snapshot: CycleAdmissionSnapshot,
+	snapshot: CycleEvidence,
 ): AdmissionResult {
+	const identityEvidence = snapshot.evidence.map((item) => item.evidence);
 	const components = buildAdmissionComponents(
-		snapshot.plan, snapshot.identityEvidence, snapshot.observations, snapshot.scope,
+		snapshot.plan, identityEvidence, snapshot.observations, snapshot.scope,
 	);
 	const authorizedActions: SyncAction[] = [];
 	const dispositions: AdmissionDisposition[] = [];
@@ -200,7 +201,7 @@ interface FreshRenameClassification {
 
 function classifyFreshLocalRename(
 	component: AdmissionComponent,
-	scope: CycleAdmissionSnapshot["scope"],
+	scope: CycleEvidence["scope"],
 ): FreshRenameClassification | undefined {
 	const candidates = component.evidence.filter((item): item is LocalRenameEvidence =>
 		item.kind === "rename" && item.side === "local" && !item.isFolder);
