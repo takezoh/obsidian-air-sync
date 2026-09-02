@@ -527,6 +527,7 @@ async function executeConflictAction(
 				localPath: action.path,
 				remotePath: action.remotePath ?? action.remote?.path,
 				remoteIdentitySource: action.remoteIdentitySource,
+				additionalRemote: action.additionalRemote,
 				baselinePath: action.oldPath,
 			} : {}),
 		};

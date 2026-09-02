@@ -17,6 +17,17 @@ export interface ConflictResolutionResult {
 	duplicatePath?: string;
 	/** True if the merged result contains unresolved conflict markers */
 	hasConflictMarkers?: boolean;
+	/** Verified preservation outputs created before any original-path effect. */
+	verifiedOutputs?: readonly VerifiedConflictOutput[];
+	/** Exact bytes the executor must install at the target after preservation. */
+	targetContent?: ArrayBuffer;
+	targetMtime?: number;
+}
+
+export interface VerifiedConflictOutput {
+	role: "primary" | "additional";
+	path: string;
+	sourcePath: string;
 }
 
 export interface ConflictContext {
