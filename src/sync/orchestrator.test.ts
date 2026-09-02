@@ -1772,6 +1772,87 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.close();
 		});
 
+		it("converges a local folder rename with an added descendant via ordinary actions", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			const tracker = new LocalChangeTracker();
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`,
+				lastSyncedIdentity: "test:root",
+			});
+			const info = vi.fn();
+			const deps = createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+				localTracker: tracker,
+				logger: { debug: vi.fn(), info, warn: vi.fn(), error: vi.fn(), flush: vi.fn() } as unknown as Logger,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			await localFs.write("A/known.md", new TextEncoder().encode("kept").buffer, 1000);
+			await orchestrator.runSync();
+			confirmMockPath(remoteFs, "A");
+
+			await localFs.rename("A", "B");
+			await localFs.write("B/added.md", new TextEncoder().encode("new").buffer, 2000);
+			tracker.markFolderRenamed("B", "A");
+			tracker.markDirty("B/added.md");
+			await orchestrator.runSync();
+
+			expect(readText(remoteFs, "B/known.md")).toBe("kept");
+			expect(readText(remoteFs, "B/added.md")).toBe("new");
+			expect(remoteFs.files.has("A/known.md")).toBe(false);
+			expect(await orchestrator.state.getRenameDebts("test:root")).toEqual([]);
+			expect(deps.onStatusChange).toHaveBeenLastCalledWith("idle");
+			expect(info).toHaveBeenCalledWith("Sync plan created", expect.objectContaining({
+				ordinaryLocalFolderFallbacks: 1,
+			}));
+			await orchestrator.close();
+		});
+
+		it("rescan() releases only current-target local rename debt and preserves sync history", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			addFile(localFs, "B.md", "changed", 2000);
+			addFile(remoteFs, "A.md", "old", 1000);
+			confirmMockPath(remoteFs, "A.md");
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`,
+				lastSyncedIdentity: "test:root",
+			});
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
+			remoteFs.checkpoint!.resetCheckpoint = vi.fn().mockImplementation(() => {
+				remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(false);
+				return Promise.resolve();
+			});
+			const deps = createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+				backendProvider: () => mockProvider({ getIdentity: () => "test:root" }),
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			await orchestrator.state.put({
+				path: "A.md", hash: "old-hash", localMtime: 1000, remoteMtime: 1000,
+				localSize: 3, remoteSize: 3, syncedAt: 900,
+			});
+			await orchestrator.state.upsertRenameDebts([
+				{
+					namespace: "test:root", side: "local", oldPath: "A.md", newPath: "B.md",
+					isFolder: false, oldDisposition: "included", newDisposition: "included",
+				},
+				{
+					namespace: "test:other-root", side: "local", oldPath: "X.md", newPath: "Y.md",
+					isFolder: false, oldDisposition: "included", newDisposition: "included",
+				},
+			]);
+
+			await orchestrator.rescan();
+
+			expect(readText(remoteFs, "B.md")).toBe("changed");
+			expect(remoteFs.files.has("A.md")).toBe(false);
+			expect(await orchestrator.state.get("B.md")).toBeDefined();
+			expect(await orchestrator.state.getRenameDebts("test:root")).toEqual([]);
+			expect(await orchestrator.state.getRenameDebts("test:other-root")).toHaveLength(1);
+			await orchestrator.close();
+		});
+
 		/**
 		 * The cursor ("completed up to") must advance only when the whole pipeline
 		 * succeeds. A cycle with a failed action must NOT advance the committed

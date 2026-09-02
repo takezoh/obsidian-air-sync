@@ -71,7 +71,7 @@ One row per directory; see the layer diagram and per-doc references for module d
      │        ▼                           │
      │  3 Admit                           │  PlanAdmission
      │    captureCycleAdmissionSnapshot() │    immutable cycle contract
-     │      → admitDestructivePlan()      │    one component build + action shaping
+│      → admitDestructivePlan()      │    one component build + action shaping/fallback
      │      → AuthorizedSyncPlan          │    authorization, disposition, lifecycle
      │        │                           │
      │        ▼                           │

@@ -1,6 +1,6 @@
 # ADR 0008 — Logical-identity admission fails closed before sync-plan execution
 
-**Status:** Accepted · 2026-08-25 · **Revised 2026-08-31** (Admission owns identity-component action shaping and lifecycle; the standalone optimizer stage is retired)
+**Status:** Accepted · 2026-08-25 · **Revised 2026-08-31** (Admission owns identity-component action shaping and lifecycle; the standalone optimizer stage is retired) · **Revised 2026-09-03** (ADR 0009 permits a proved ordinary-action fallback for local incomplete folder mappings and target-scoped manual debt recovery)
 **Context area:** `sync/` — change evidence, scope projection, destructive admission, checkpoint/debt lifecycle
 **Related:** [ADR 0001](0001-metadata-cache-is-subordinate-to-commit-last.md), [ADR 0002](0002-backends-verified-by-shared-behaviour-contracts.md), [ADR 0006](0006-remote-rename-detection-is-order-independent.md), [Issue #43](https://github.com/takezoh/obsidian-air-sync/issues/43), [Issue #45](https://github.com/takezoh/obsidian-air-sync/issues/45), [Issue #47](https://github.com/takezoh/obsidian-air-sync/issues/47)
 
@@ -36,8 +36,10 @@ depend on that repair being complete.
 
 3. Scope is projected for both rename endpoints before entries are filtered. The
    origin-aware matrix decides whether the only safe consequence is rename, transfer,
-   deletion, no-op, or deferral. `unknown`, `mobile_deferred`, and incomplete folder
-   mappings defer the whole connected component.
+   deletion, no-op, or deferral. `unknown`, `mobile_deferred`, and incomplete remote or
+   unproved folder mappings defer the whole connected component. ADR 0009 permits an
+   incomplete local folder mapping to retain the original ordinary actions only when
+   every path-local consequence is independently authoritative.
 
 4. `admitDestructivePlan` is the sole owner of cross-path identity-component action
    shaping, destructive admissibility, disposition, and local lifecycle membership.
@@ -74,7 +76,7 @@ depend on that repair being complete.
 - The durable state remains O(U): one record per namespace-unique unresolved local
   edge, not a persistent identity graph or descendant closure.
 - Native IDs improve evidence but do not authorize cross-backend/root comparison.
-- Local and remote rename shaping helpers are private to Admission. There is no
+- Local and remote rename shaping and local ordinary-fallback helpers are private to Admission. There is no
   standalone whole-plan optimizer or second component build; a failed native
   projection defers unless another complete component outcome is independently proved.
 - Issue #46 can be fixed without changing this boundary. Better cache causality should

@@ -20,7 +20,11 @@ import type { ConflictRecord, IdentityEvidence, SyncStatus } from "./types";
 import { CycleSummary } from "./sync-notification";
 import type { SyncCycleResult } from "./sync-notification";
 import { FailedActionTracker } from "./failed-action-tracker";
-import { mergeIdentityEvidence, renameDebtEvidence, serializeLocalRenameDebts } from "./rename-debt";
+import {
+	mergeIdentityEvidence,
+	renameDebtEvidence,
+	serializeLocalRenameDebts,
+} from "./rename-debt";
 import {
 	logChangeDetection,
 	logSyncCyclePlan,
@@ -32,6 +36,7 @@ import { PriorityCoordinator } from "./priority-coordinator";
 import { LocalMutationBarrier } from "./local-mutation-barrier";
 import { PriorityBatchState } from "./priority-batch-state";
 import { syncOpenedFilePriority } from "./opened-file-priority";
+import { resetRescanState } from "./sync-rescan";
 
 export type { SyncStatus };
 
@@ -168,8 +173,24 @@ export class SyncOrchestrator {
 	 * subsequent runSync then sees no checkpoint and goes cold.
 	 */
 	async rescan(): Promise<void> {
-		await this.syncMutex.run(() => this.deps.remoteFs()?.checkpoint?.resetCheckpoint());
+		await this.syncMutex.run(async () => {
+			const remoteFs = this.deps.remoteFs();
+			if (!remoteFs) return;
+			this.pendingAdmissionEvidence = await resetRescanState({
+				checkpoint: remoteFs.checkpoint, namespace: this.debtNamespace(),
+				pendingEvidence: this.pendingAdmissionEvidence,
+				stateStore: this.stateStore, logger: this.deps.logger,
+			});
+			this.recoverViaColdScan = true;
+		});
 		await this.runSync();
+	}
+
+	private debtNamespace(): string {
+		const settings = this.deps.getSettings();
+		const provider = this.deps.backendProvider();
+		return (provider?.getIdentity?.(settings) ?? settings.lastSyncedIdentity) ||
+			`${settings.backendType}:${settings.vaultId}`;
 	}
 
 	async runSync(): Promise<void> {
@@ -409,8 +430,7 @@ export class SyncOrchestrator {
 		try {
 		const settings = this.deps.getSettings();
 		const provider = this.deps.backendProvider();
-		const debtNamespace = (provider?.getIdentity?.(settings) ?? settings.lastSyncedIdentity) ||
-			`${settings.backendType}:${settings.vaultId}`;
+		const debtNamespace = this.debtNamespace();
 		const persistedDebts = await this.stateStore.getRenameDebts(debtNamespace);
 		const carriedEvidence = mergeIdentityEvidence(
 			this.pendingAdmissionEvidence,

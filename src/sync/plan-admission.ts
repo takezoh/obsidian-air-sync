@@ -13,6 +13,10 @@ import {
 } from "./identity-component-decision";
 import { coalesceLocalFolderRenames, optimizeLocalFileRenames } from "./optimize-local-renames";
 import { coalesceRemoteFolderRenames, optimizeRemoteFileRenames } from "./optimize-remote-renames";
+import {
+	INCOMPLETE_LOCAL_FOLDER_FALLBACK,
+	ordinaryLocalFolderFallback,
+} from "./ordinary-local-folder-fallback";
 import type {
 	IdentityEvidence,
 	LocalRenameEvidence,
@@ -35,6 +39,7 @@ interface AdmissionComponentDisposition {
 
 export interface AuthorizedComponent extends AdmissionComponentDisposition {
 	kind: "authorized";
+	fallback?: typeof INCOMPLETE_LOCAL_FOLDER_FALLBACK;
 	/** Exact action object that a detached priority pull may replace in this cycle. */
 	priorityPullAction?: SyncAction;
 }
@@ -83,17 +88,24 @@ export function admitDestructivePlan(
 		const effectiveEvidence = component.evidence.filter((item) =>
 			item.kind !== "rename" || item.side !== "local" ||
 			!nonBindingCandidates.has(renameEvidenceKey(item)));
-		const decidedComponent: AdmissionComponent = {
+		let decidedComponent: AdmissionComponent = {
 			...component,
 			actions: shapeIdentityComponentActions(component.actions, effectiveEvidence),
 			evidence: effectiveEvidence,
 		};
+		let reasons = evaluateIdentityComponent(decidedComponent, snapshot.scope);
+		const fallbackActions = ordinaryLocalFolderFallback(
+			component, effectiveEvidence, reasons, snapshot.scope,
+		);
+		if (fallbackActions) {
+			decidedComponent = { ...decidedComponent, actions: fallbackActions };
+			reasons = [];
+		}
 		const shared = {
 			paths: [...component.paths].sort(),
 			actions: [...decidedComponent.actions],
 			evidence: [...component.evidence].sort(compareEvidence),
 		};
-		const reasons = evaluateIdentityComponent(decidedComponent, snapshot.scope);
 		const localCandidates = component.evidence.filter((item): item is LocalRenameEvidence =>
 			item.kind === "rename" && item.side === "local");
 		if (reasons.length > 0) {
@@ -119,6 +131,7 @@ export function admitDestructivePlan(
 			dispositions.push({
 				kind: "authorized",
 				...shared,
+				fallback: fallbackActions ? INCOMPLETE_LOCAL_FOLDER_FALLBACK : undefined,
 				priorityPullAction: priorityPullAction(decidedComponent),
 			});
 		}

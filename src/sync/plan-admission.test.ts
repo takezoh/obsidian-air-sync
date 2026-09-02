@@ -705,6 +705,91 @@ describe("admitDestructivePlan", () => {
 		expect(result.deferred[0]!.reasons).toEqual(["incomplete_folder_mapping"]);
 	});
 
+	it("degrades an incomplete local folder rename to independently proven file actions", () => {
+		const baseline = {
+			path: "A/known.md", hash: "h", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, syncedAt: 1,
+		};
+		const actions: SyncAction[] = [
+			{ path: "A/known.md", action: "delete_remote", remote: entity("A/known.md"), baseline },
+			{ path: "B/known.md", action: "push", local: entity("B/known.md") },
+			{ path: "B/added.md", action: "push", local: entity("B/added.md") },
+		];
+		const evidence = [remoteRename({
+			side: "local", identityKey: undefined, oldPath: "A", newPath: "B", isFolder: true,
+		})];
+		const observations: PathObservation[] = [
+			{ kind: "absent", side: "local", requestedPath: "A", authority: "stat" },
+			{ kind: "exact", side: "remote", requestedPath: "A", entity: entity("A") },
+			{ kind: "exact", side: "local", requestedPath: "B", entity: entity("B") },
+			{ kind: "absent", side: "remote", requestedPath: "B", authority: "stat" },
+			{ kind: "absent", side: "local", requestedPath: "A/known.md", authority: "stat" },
+			{ kind: "exact", side: "remote", requestedPath: "A/known.md", entity: entity("A/known.md") },
+			{ kind: "exact", side: "local", requestedPath: "B/known.md", entity: entity("B/known.md") },
+			{ kind: "absent", side: "remote", requestedPath: "B/known.md", authority: "stat" },
+			{ kind: "exact", side: "local", requestedPath: "B/added.md", entity: entity("B/added.md") },
+			{ kind: "absent", side: "remote", requestedPath: "B/added.md", authority: "stat" },
+		];
+		const result = admit(actions, evidence, observations, projection({
+			A: "included", B: "included", "A/known.md": "included",
+			"B/known.md": "included", "B/added.md": "included",
+		}));
+
+		expect(result.executable.actions).toEqual(actions);
+		expect(result.deferred).toEqual([]);
+		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual(evidence);
+		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual(evidence);
+	});
+
+	it("does not degrade an incomplete local folder rename without authoritative deletion proof", () => {
+		const baseline = {
+			path: "A/known.md", hash: "h", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, syncedAt: 1,
+		};
+		const actions: SyncAction[] = [
+			{ path: "A/known.md", action: "delete_remote", remote: entity("A/known.md"), baseline },
+			{ path: "B/known.md", action: "push", local: entity("B/known.md") },
+			{ path: "B/added.md", action: "push", local: entity("B/added.md") },
+		];
+		const evidence = [remoteRename({
+			side: "local", identityKey: undefined, oldPath: "A", newPath: "B", isFolder: true,
+		})];
+		const observations: PathObservation[] = [
+			{ kind: "absent", side: "local", requestedPath: "A", authority: "stat" },
+			{ kind: "exact", side: "remote", requestedPath: "A", entity: entity("A") },
+			{ kind: "exact", side: "local", requestedPath: "B", entity: entity("B") },
+			{ kind: "absent", side: "remote", requestedPath: "B", authority: "stat" },
+			{ kind: "unknown", side: "local", requestedPath: "A/known.md", reason: "not_observed" },
+			{ kind: "exact", side: "remote", requestedPath: "A/known.md", entity: entity("A/known.md") },
+			{ kind: "exact", side: "local", requestedPath: "B/known.md", entity: entity("B/known.md") },
+			{ kind: "absent", side: "remote", requestedPath: "B/known.md", authority: "stat" },
+			{ kind: "exact", side: "local", requestedPath: "B/added.md", entity: entity("B/added.md") },
+			{ kind: "absent", side: "remote", requestedPath: "B/added.md", authority: "stat" },
+		];
+		const result = admit(actions, evidence, observations, projection({
+			A: "included", B: "included", "A/known.md": "included",
+			"B/known.md": "included", "B/added.md": "included",
+		}));
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.deferred[0]!.reasons).toContain("unknown_observation");
+	});
+
+	it("does not degrade a remote-origin incomplete folder mapping", () => {
+		const action: SyncAction = {
+			path: "B", oldPath: "A", action: "rename_local", isFolder: true,
+			descendants: [{ oldPath: "A/known.md", newPath: "B/known.md" }],
+		};
+		const evidence = [remoteRename({ oldPath: "A", newPath: "B", isFolder: true })];
+		const result = admit([action], evidence, [], projection({
+			A: "included", B: "included", "A/known.md": "included",
+			"B/known.md": "included", "B/missing.md": "included",
+		}));
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.deferred[0]!.reasons).toEqual(["incomplete_folder_mapping"]);
+	});
+
 	it("defers a folder rename containing a descendant absent from scope projection", () => {
 		const action: SyncAction = {
 			path: "B", oldPath: "A", action: "rename_local", isFolder: true,

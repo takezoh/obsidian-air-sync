@@ -70,6 +70,17 @@ export function unreleasedIdentityEvidence(
 		: !released.has(item));
 }
 
+/** Drop only in-memory local rename evidence represented by explicitly cleared debt. */
+export function withoutClearedLocalRenameEvidence(
+	evidence: readonly IdentityEvidence[],
+	clearedDebts: readonly RenameDebt[],
+): IdentityEvidence[] {
+	const cleared = new Set(clearedDebts.map((debt) =>
+		renameEvidenceKey(renameDebtEvidence(debt))));
+	return evidence.filter((item) => item.kind !== "rename" || item.side !== "local" ||
+		!cleared.has(renameEvidenceKey(item)));
+}
+
 export function renameDebtEvidence(debt: RenameDebt): RenameEvidence {
 	return {
 		kind: "rename",

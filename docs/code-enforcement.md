@@ -121,7 +121,7 @@ functions — no I/O, no clock, no randomness — so every intermediate state is
 
 The identity-component implementation has a second structural guard:
 `ADMISSION_INTERNAL_IMPORTS` prevents any other production sync module from importing
-the component graph, decision, lifecycle, shaping helpers, or a revived
+the component graph, decision, lifecycle, shaping/fallback helpers, or a revived
 `rename-optimizer` stage. Only `plan-admission.ts` and its private helper modules may
 use those imports; the rest of production consumes the public Admission result or
 `AuthorizedSyncPlan`. This keeps path-local proposal and identity-component authority
@@ -164,7 +164,7 @@ ratchet: it stops *silent* growth and flags the file as split-when-convenient �
 is not a mandate to shrink the file by force.
 
 Six modules currently carry such overrides as known debt: `fs/googledrive/auth.ts`
-(337), `sync/orchestrator.ts` (444), `sync/plan-executor.ts` (334),
+(337), `sync/orchestrator.ts` (463), `sync/plan-executor.ts` (334),
 `fs/caching/remote-fs.ts` (364), `fs/dropbox/index.ts` (317), and
 `fs/backend-manager.ts` (341). Ratchet them down
 when a natural responsibility split presents itself.

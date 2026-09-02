@@ -95,6 +95,8 @@ export function logSyncCyclePlan(
 		nonBindingLocalRenameCandidates: admission.snapshot.localRenameCandidates.length -
 			admission.localRenameLifecycle.persistBeforeExecution.length,
 		releasableLocalRenameCandidates: admission.localRenameLifecycle.releaseAfterSafeCheckpoint.length,
+		ordinaryLocalFolderFallbacks: admission.dispositions.filter((item) =>
+			item.kind === "authorized" && item.fallback === "incomplete_local_folder_mapping").length,
 		...actionBreakdown,
 	});
 	for (const component of admission.deferred) {

@@ -66,6 +66,7 @@ const PURE_TRANSFORMS = [
 	"src/sync/plan-admission.ts",
 	"src/sync/plan-admission-graph.ts",
 	"src/sync/identity-component-decision.ts",
+	"src/sync/ordinary-local-folder-fallback.ts",
 	"src/sync/local-rename-admission.ts",
 	"src/sync/optimize-local-renames.ts",
 	"src/sync/optimize-remote-renames.ts",
@@ -74,6 +75,7 @@ const PURE_TRANSFORMS = [
 const ADMISSION_INTERNAL_IMPORTS = {
 	group: [
 		"**/identity-component-decision",
+		"**/ordinary-local-folder-fallback",
 		"**/plan-admission-graph",
 		"**/local-rename-admission",
 		"**/optimize-local-renames",
@@ -260,6 +262,7 @@ export default defineConfig(
 			"src/sync/**/*.test.ts",
 			"src/sync/plan-admission.ts",
 			"src/sync/identity-component-decision.ts",
+			"src/sync/ordinary-local-folder-fallback.ts",
 			"src/sync/local-rename-admission.ts",
 			"src/sync/optimize-local-renames.ts",
 			"src/sync/optimize-remote-renames.ts",
@@ -316,9 +319,10 @@ export default defineConfig(
 	{
 		// Re-pinned from 408: preparation/Admission publication, executor wiring, and
 		// finalization are the composition root's ordering contract. Priority scheduling
-		// adds coordination here while its policy and effects remain separate modules.
+		// and target-scoped Rescan coordination live here while their policy/effects remain
+		// separate modules.
 		files: ["src/sync/orchestrator.ts"],
-		rules: { "max-lines": ["error", { max: 444, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 463, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Exact action effects, commitAction, terminal result publication, and their
