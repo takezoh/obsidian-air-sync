@@ -4,7 +4,7 @@ import {
 	renameDebtsBoundToEvidence,
 	unreleasedIdentityEvidence,
 } from "./rename-debt";
-import type { AdmissionResult } from "./plan-admission";
+import { isFreshRenameAction, type AdmissionResult } from "./plan-admission";
 import type { RenameDebt, SyncStateStore } from "./state";
 import type { IdentityEvidence, SyncAction } from "./types";
 
@@ -26,10 +26,12 @@ interface SyncCycleFinalizationInput {
  * exact legacy candidate row retired only when the corresponding cursor is safe.
  */
 export async function finalizeSyncCycle(input: SyncCycleFinalizationInput): Promise<IdentityEvidence[]> {
-	const succeeded = new Set(input.result.succeeded.map(({ action }) => action));
+	const succeeded = new Map(input.result.succeeded.map((item) => [item.action, item]));
 	const superseded = new Set(input.result.superseded);
 	const terminal = (disposition: AdmissionResult["dispositions"][number], action: SyncAction) =>
-		succeeded.has(action) || (disposition.kind === "authorized" &&
+		(succeeded.has(action) && (!isFreshRenameAction(action) ||
+			succeeded.get(action)?.terminalFreshProof?.action === action)) ||
+		(disposition.kind === "authorized" &&
 			disposition.priorityPullAction === action && superseded.has(action));
 	const dispositionEvidence = input.admission.dispositions.flatMap((disposition) => {
 		if (disposition.kind === "deferred" || disposition.kind === "evidence_unknown" ||

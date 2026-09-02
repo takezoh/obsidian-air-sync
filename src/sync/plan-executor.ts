@@ -1,4 +1,4 @@
-/* eslint max-lines: ["error", 720] -- design requires fresh compound effects and private terminal proof to remain in the executor owner. */
+/* eslint max-lines: ["error", 800] -- design requires fresh compound effects, private terminal proof, and proof-gated commit routing to remain in the executor owner. */
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
 import type { ConflictStrategy, SyncAction, SyncActionType } from "./types";
@@ -15,7 +15,7 @@ import {
 } from "./conflict-resolver";
 import type { VerifiedConflictOutput } from "./conflict";
 import type { Logger } from "../logging/logger";
-import { commitAction } from "./state-committer";
+import { commitAction, commitTerminalFresh } from "./state-committer";
 import { resolveConflict } from "./conflict-resolver";
 import { AuthError, classifyHttpError } from "../fs/errors";
 import type { ErrorClassification } from "../fs/errors";
@@ -356,15 +356,33 @@ async function executeAction(
 			const entities = isFreshRenameAction(action) || ACTION_CLASS[action.action].tier === "rename"
 				? await io()
 				: await withIoRetry(io, ctx, onRateLimit);
-			await commitAction(action, entities.localEntity, entities.remoteEntity, ctx.committer);
-			return entities;
+			const terminalFreshProof = isFreshRenameAction(action)
+				? await proveFreshTerminal(action, ctx, entities, [])
+				: undefined;
+			if (terminalFreshProof) {
+				const baseline = terminalFreshProof.action.baseline;
+				if (!baseline) {
+					throw new InternalFreshInvariantError(
+						`Fresh rename baseline missing: ${terminalFreshProof.action.oldPath}`,
+					);
+				}
+				await commitTerminalFresh(terminalFreshProof, baseline, ctx.committer);
+			} else {
+				await commitAction(action, entities.localEntity, entities.remoteEntity, ctx.committer);
+			}
+			return { ...entities, terminalFreshProof };
 		};
 		const paths = localMutationPaths(action);
-		const { localEntity, remoteEntity } = ctx.mutationBarrier && paths.length > 0
+		const { localEntity, remoteEntity, terminalFreshProof } = ctx.mutationBarrier && paths.length > 0
 			? await ctx.mutationBarrier.run(paths, execute)
 			: await execute();
-		result.succeeded.push({ action, localEntity, remoteEntity });
+		result.succeeded.push({ action, localEntity, remoteEntity, terminalFreshProof });
 	} catch (err) {
+		if (err instanceof InternalFreshInvariantError) throw err;
+		if (err instanceof ConflictPreparationError && err.kind === "proof_mismatch") {
+			result.blocked.push({ action, reason: err.message });
+			return;
+		}
 		if (err instanceof AuthError) {
 			ctx.onActionFatal?.(action, err);
 			throw err;
@@ -545,6 +563,48 @@ function verifiedFreshOutputs(
 	return actual;
 }
 
+function makeTerminalFreshProof(
+	action: FreshRenameAction,
+	localEntity: FileEntity,
+	remoteEntity: FileEntity,
+	intendedContent: ArrayBuffer,
+	verifiedOutputs: readonly VerifiedConflictOutput[],
+): TerminalFreshProof {
+	return Object.freeze({
+		[terminalFreshProofBrand]: true as const,
+		action,
+		localEntity: Object.freeze({ ...localEntity }),
+		remoteEntity: Object.freeze({ ...remoteEntity }),
+		intendedContent: intendedContent.slice(0),
+		verifiedOutputs,
+	});
+}
+
+async function proveFreshTerminal(
+	action: FreshRenameAction,
+	ctx: ExecutionContext,
+	entities: { localEntity?: FileEntity; remoteEntity?: FileEntity },
+	outputs: readonly VerifiedConflictOutput[],
+): Promise<TerminalFreshProof> {
+	const [localEntity, remoteEntity, oldEntity, localBytes, remoteBytes] = await Promise.all([
+		ctx.localFs.stat(action.path), ctx.remoteFs.stat(action.path),
+		ctx.remoteFs.stat(action.oldPath), ctx.localFs.read(action.path), ctx.remoteFs.read(action.path),
+	]);
+	if (!localEntity || !remoteEntity || oldEntity ||
+		!buffersEqual(localBytes, remoteBytes)) {
+		throw new ConflictPreparationError("proof_mismatch", `Fresh rename terminal proof failed: ${action.path}`);
+	}
+	const trackedIdentity = action.baseline?.remoteIdentityKey;
+	if (trackedIdentity && remoteEntity.identityKey !== trackedIdentity) {
+		throw new ConflictPreparationError("proof_mismatch", `Fresh rename terminal identity mismatch: ${action.path}`);
+	}
+	if (entities.localEntity && entities.localEntity.path !== localEntity.path ||
+		entities.remoteEntity && entities.remoteEntity.path !== remoteEntity.path) {
+		throw new InternalFreshInvariantError(`Fresh rename execution returned wrong endpoint: ${action.path}`);
+	}
+	return makeTerminalFreshProof(action, localEntity, remoteEntity, localBytes, outputs);
+}
+
 async function executeFreshConflictEffects(
 	action: FreshRenameAction,
 	ctx: ExecutionContext,
@@ -595,14 +655,9 @@ async function executeFreshConflictEffects(
 	if (trackedIdentity && remoteEntity.identityKey !== trackedIdentity) {
 		throw new ConflictPreparationError("proof_mismatch", `Fresh conflict terminal identity mismatch: ${action.path}`);
 	}
-	const terminalFreshProof: TerminalFreshProof = Object.freeze({
-		[terminalFreshProofBrand]: true as const,
-		action,
-		localEntity: Object.freeze({ ...localEntity }),
-		remoteEntity: Object.freeze({ ...remoteEntity }),
-		intendedContent: intended.slice(0),
-		verifiedOutputs: outputs,
-	});
+	const terminalFreshProof = makeTerminalFreshProof(
+		action, localEntity, remoteEntity, intended, outputs,
+	);
 	return { localEntity, remoteEntity, terminalFreshProof };
 }
 
@@ -656,7 +711,17 @@ async function executeConflictAction(
 				: undefined;
 			const localEntity = fresh?.localEntity ?? await ctx.localFs.stat(action.path) ?? action.local;
 			const remoteEntity = fresh?.remoteEntity ?? await ctx.remoteFs.stat(action.path) ?? action.remote;
-			await commitAction(action, localEntity, remoteEntity, ctx.committer);
+			if (fresh) {
+				const baseline = fresh.terminalFreshProof.action.baseline;
+				if (!baseline) {
+					throw new InternalFreshInvariantError(
+						`Fresh conflict baseline missing: ${fresh.terminalFreshProof.action.oldPath}`,
+					);
+				}
+				await commitTerminalFresh(fresh.terminalFreshProof, baseline, ctx.committer);
+			} else {
+				await commitAction(action, localEntity, remoteEntity, ctx.committer);
+			}
 			return { resolution, localEntity, remoteEntity, terminalFreshProof: fresh?.terminalFreshProof };
 		};
 		const mutationPaths = isFreshRenameAction(action) && action.remoteIdentitySource

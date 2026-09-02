@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { commitAction, buildSyncRecord } from "./state-committer";
+import { commitAction, buildSyncRecord, commitTerminalFresh } from "./state-committer";
 import type { SyncAction } from "./types";
 import { createMockLocalFs, type MockFileSystem, createMockStateStore, makeFile } from "../__mocks__/sync-test-helpers";
 import type { SyncStateStore } from "./state";
 import type { Logger } from "../logging/logger";
+import type { TerminalFreshProof } from "./plan-executor";
 
 describe("buildSyncRecord", () => {
 	it("builds record from both sides", () => {
@@ -134,7 +135,7 @@ describe("commitAction", () => {
 		expect(stateStore.records.get("cas-race.md")).toEqual(winner);
 	});
 
-	it("fresh rename commits the old-to-new record move through one atomic CAS", async () => {
+	it("raw fresh action cannot enter the ordinary commit API", async () => {
 		const baseline = {
 			path: "old.md", hash: "old", localMtime: 1, remoteMtime: 1,
 			localSize: 3, remoteSize: 3, remoteIdentityKey: "R", syncedAt: 1,
@@ -150,15 +151,62 @@ describe("commitAction", () => {
 			freshRenameState: "converged" as const, local, remote, baseline,
 		};
 
-		await commitAction(action, local, remote, makeCtx());
-
-		expect(compareAndMove).toHaveBeenCalledWith(
-			baseline, expect.objectContaining({ path: "new.md" }),
+		// @ts-expect-error fresh actions are excluded from the ordinary commit API.
+		await expect(commitAction(action, local, remote, makeCtx())).rejects.toThrow(
+			"Fresh rename requires terminal proof",
 		);
+
+		expect(compareAndMove).not.toHaveBeenCalled();
 		expect(put).not.toHaveBeenCalled();
 		expect(remove).not.toHaveBeenCalled();
-		expect(stateStore.records.has("old.md")).toBe(false);
-		expect(stateStore.records.has("new.md")).toBe(true);
+		expect(stateStore.records.get("old.md")).toEqual(baseline);
+		expect(stateStore.records.has("new.md")).toBe(false);
+	});
+
+	it("fresh CAS requires a proof value and the exact admitted baseline object", async () => {
+		const baseline = {
+			path: "old.md", hash: "old", localMtime: 1, remoteMtime: 1,
+			localSize: 3, remoteSize: 3, remoteIdentityKey: "R", syncedAt: 1,
+		};
+		const equalButNotExact = { ...baseline };
+		const { entity: local } = makeFile("new.md", "new", 2);
+		const { entity: remote } = makeFile("new.md", "new", 2);
+		const proof = {
+			action: { path: "new.md", oldPath: "old.md", action: "match", baseline },
+			localEntity: local, remoteEntity: remote, intendedContent: new ArrayBuffer(0),
+			verifiedOutputs: [],
+		} as unknown as TerminalFreshProof;
+		const compareAndMove = vi.spyOn(stateStore, "compareAndMove");
+
+		await expect(commitTerminalFresh(
+			undefined as unknown as TerminalFreshProof, baseline, makeCtx(),
+		)).rejects.toThrow("terminal proof missing");
+		await expect(commitTerminalFresh(proof, equalButNotExact, makeCtx())).rejects.toThrow(
+			"admitted baseline mismatch",
+		);
+		expect(compareAndMove).not.toHaveBeenCalled();
+	});
+
+	it("fresh CAS mismatch preserves the winning baseline", async () => {
+		const baseline = {
+			path: "old.md", hash: "old", localMtime: 1, remoteMtime: 1,
+			localSize: 3, remoteSize: 3, remoteIdentityKey: "R", syncedAt: 1,
+		};
+		const winner = { ...baseline, hash: "winner", syncedAt: 2 };
+		stateStore.records.set("old.md", winner);
+		const { entity: local } = makeFile("new.md", "new", 2);
+		const { entity: remote } = makeFile("new.md", "new", 2);
+		const proof = {
+			action: { path: "new.md", oldPath: "old.md", action: "match", baseline },
+			localEntity: local, remoteEntity: remote, intendedContent: new ArrayBuffer(0),
+			verifiedOutputs: [],
+		} as unknown as TerminalFreshProof;
+
+		await expect(commitTerminalFresh(proof, baseline, makeCtx())).rejects.toThrow(
+			"SyncRecord changed before fresh rename commit",
+		);
+		expect(stateStore.records.get("old.md")).toEqual(winner);
+		expect(stateStore.records.has("new.md")).toBe(false);
 	});
 
 	it("delete_local: deletes SyncRecord", async () => {

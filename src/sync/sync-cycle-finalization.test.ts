@@ -38,6 +38,95 @@ function edge(side: "local" | "remote" = "remote"): IdentityEvidence {
 }
 
 describe("finalizeSyncCycle", () => {
+	it.each(["failed", "blocked", "evidence_issue", "commit_failure"] as const)(
+		"withholds checkpoint and debt release for a %s terminal outcome",
+		async (outcome) => {
+			const action: SyncAction = { path: "note.md", action: "push" };
+			const admitted = admission([action], [], {
+				byEndpoint: new Map([["note.md", "included"]]),
+			});
+			const admittedAction = admitted.executable.actions[0]!;
+			const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+			const deleteRenameDebts = vi.fn().mockResolvedValue(undefined);
+			const result: ExecutionResult = {
+				succeeded: [], superseded: [], conflicts: [], deferred: [], evidenceIssues: [],
+				failed: outcome === "failed" || outcome === "commit_failure"
+					? [{ action: admittedAction, error: new Error(outcome) }]
+					: [],
+				blocked: outcome === "blocked" ? [{ action: admittedAction, reason: "blocked" }] : [],
+			};
+			if (outcome === "evidence_issue") {
+				result.evidenceIssues.push({ kind: "evidence_unknown" } as never);
+			}
+
+			await finalizeSyncCycle({
+				admission: admitted, result, carriedEvidence: [], persistedDebts: [], localRenameDebts: [],
+				checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
+				stateStore: { deleteRenameDebts } as unknown as SyncStateStore,
+			});
+
+			expect(commitCheckpoint).not.toHaveBeenCalled();
+			expect(deleteRenameDebts).not.toHaveBeenCalled();
+		},
+	);
+
+	it("does not treat a fresh success with omitted terminal proof as clean", async () => {
+		const ordinary = {
+			path: "new.md", action: "match", freshRenameState: "converged",
+			oldPath: "old.md", normalizedRenameState: {},
+		} as unknown as SyncAction;
+		const admitted = admission([ordinary], [], {
+			byEndpoint: new Map([["new.md", "included"]]),
+		});
+		const admittedAction = admitted.executable.actions[0]!;
+		const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+		const deleteRenameDebts = vi.fn().mockResolvedValue(undefined);
+
+		await finalizeSyncCycle({
+			admission: admitted,
+			result: {
+				succeeded: [{ action: admittedAction }], superseded: [], failed: [], blocked: [],
+				conflicts: [], deferred: [], evidenceIssues: [],
+			},
+			carriedEvidence: [], persistedDebts: [], localRenameDebts: [],
+			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
+			stateStore: { deleteRenameDebts } as unknown as SyncStateStore,
+		});
+
+		expect(commitCheckpoint).not.toHaveBeenCalled();
+		expect(deleteRenameDebts).not.toHaveBeenCalled();
+	});
+
+	it("keeps disconnected proof-backed per-file progress when another component is nonclean", async () => {
+		const actions: SyncAction[] = [
+			{ path: "done.md", action: "push" },
+			{ path: "failed.md", action: "push" },
+		];
+		const admitted = admission(actions, [], { byEndpoint: new Map([
+			["done.md", "included"], ["failed.md", "included"],
+		]) });
+		const [done, failed] = admitted.executable.actions;
+		const records = new Map([["done.md", { path: "done.md", hash: "committed" }]]);
+		const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+		const deleteRenameDebts = vi.fn().mockResolvedValue(undefined);
+
+		await finalizeSyncCycle({
+			admission: admitted,
+			result: {
+				succeeded: [{ action: done! }], superseded: [],
+				failed: [{ action: failed!, error: new Error("commit failed") }], blocked: [],
+				conflicts: [], deferred: [], evidenceIssues: [],
+			},
+			carriedEvidence: [], persistedDebts: [], localRenameDebts: [],
+			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
+			stateStore: { deleteRenameDebts } as unknown as SyncStateStore,
+		});
+
+		expect(records.get("done.md")).toEqual({ path: "done.md", hash: "committed" });
+		expect(commitCheckpoint).not.toHaveBeenCalled();
+		expect(deleteRenameDebts).not.toHaveBeenCalled();
+	});
+
 	it("accepts only the Admission-marked exact singleton pull as superseded", async () => {
 		const baseline = {
 			path: "note.md", hash: "old", localMtime: 1, remoteMtime: 1,
