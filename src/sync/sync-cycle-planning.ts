@@ -234,6 +234,13 @@ export function logSyncCyclePlan(
 			})),
 		});
 	}
+	for (const component of admission.evidenceIssues) {
+		logger?.warn("Fresh rename evidence has zero action", {
+			kind: component.kind,
+			reason: component.reason,
+			paths: component.paths,
+		});
+	}
 }
 
 function localRenameCandidates(evidence: CycleEvidence): readonly LocalRenameEvidence[] {

@@ -69,6 +69,12 @@ async function arrangeFreshRename(ctx: ExecutionContext) {
 	const action: FreshRenameAction = {
 		path: "new.md", oldPath: "old.md", remotePath: "old.md",
 		action: "rename_remote", freshRenameState: "old_path_baseline", local, remote, baseline,
+		normalizedRenameState: {
+			kind: "baseline_at_old_vacant_target",
+			candidate: { kind: "rename", side: "local", oldPath: "old.md", newPath: "new.md",
+				isFolder: false, authority: "reported" },
+			baseline, local, source: { path: "old.md", entity: remote }, relation: "unchanged",
+		},
 	};
 	return { local, remoteFs, stateStore, baseline, action };
 }
@@ -149,15 +155,17 @@ describe("executePlan", () => {
 				path: "b.md", action: "pull",
 				remote: { path: "b.md", isDirectory: false, size: 1, mtime: 2, hash: "" },
 			};
+			const plan = makePlan([action]);
+			const admittedAction = plan.actions[0]!;
 			const ctx = makeCtx({
 				acquireActionPermit: () => Promise.resolve({ release: vi.fn() }),
-				beginAction: (candidate) => candidate === action ? "superseded" : "run",
+				beginAction: (candidate) => candidate === admittedAction ? "superseded" : "run",
 			});
 			const read = vi.spyOn(ctx.remoteFs, "read");
 
-			const result = await executePlan(makePlan([action]), ctx);
+			const result = await executePlan(plan, ctx);
 
-			expect(result.superseded).toEqual([action]);
+			expect(result.superseded).toEqual([admittedAction]);
 			expect(result.succeeded).toEqual([]);
 			expect(read).not.toHaveBeenCalled();
 		});
@@ -461,6 +469,12 @@ describe("executePlan", () => {
 				path: "new.md", oldPath: "old.md", action: "conflict",
 				freshRenameState: "remote_changed", local, remote: source, baseline,
 				remotePath: "old.md", remoteIdentitySource: source,
+				normalizedRenameState: {
+					kind: "baseline_at_old_vacant_target",
+					candidate: { kind: "rename", side: "local", oldPath: "old.md", newPath: "new.md",
+						isFolder: false, authority: "reported" },
+					baseline, local, source: { path: "old.md", entity: source }, relation: "changed",
+				},
 			};
 
 			const result = await executePlan(makePlan([action]), ctx);

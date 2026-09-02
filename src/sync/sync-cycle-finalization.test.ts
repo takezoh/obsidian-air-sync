@@ -50,12 +50,13 @@ describe("finalizeSyncCycle", () => {
 			{ kind: "exact", side: "local", requestedPath: "note.md", entity: local },
 			{ kind: "exact", side: "remote", requestedPath: "note.md", entity: remote },
 		]);
+		const admittedAction = admitted.executable.actions[0]!;
 		const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
 		const deleteRenameDebts = vi.fn().mockResolvedValue(undefined);
 
 		await finalizeSyncCycle({
 			admission: admitted,
-			result: { succeeded: [], superseded: [action], failed: [], blocked: [], conflicts: [], deferred: [] },
+			result: { succeeded: [], superseded: [admittedAction], failed: [], blocked: [], conflicts: [], deferred: [], evidenceIssues: [] },
 			carriedEvidence: [], persistedDebts: [], localRenameDebts: [],
 			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
 			stateStore: { deleteRenameDebts } as unknown as SyncStateStore,
@@ -66,7 +67,7 @@ describe("finalizeSyncCycle", () => {
 		commitCheckpoint.mockClear();
 		await finalizeSyncCycle({
 			admission: admitted,
-			result: { succeeded: [], superseded: [{ ...action }], failed: [], blocked: [], conflicts: [], deferred: [] },
+			result: { succeeded: [], superseded: [{ ...action }], failed: [], blocked: [], conflicts: [], deferred: [], evidenceIssues: [] },
 			carriedEvidence: [], persistedDebts: [], localRenameDebts: [],
 			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
 			stateStore: { deleteRenameDebts } as unknown as SyncStateStore,
@@ -85,7 +86,7 @@ describe("finalizeSyncCycle", () => {
 
 		const retained = await finalizeSyncCycle({
 			admission: admitted,
-			result: { succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [], deferred: [] },
+			result: { succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [], deferred: [], evidenceIssues: [] },
 			carriedEvidence: [pending], persistedDebts: [], localRenameDebts: [],
 			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
 			stateStore: { deleteRenameDebts } as unknown as SyncStateStore,
@@ -103,7 +104,7 @@ describe("finalizeSyncCycle", () => {
 			["A.md", "included"], ["a.md", "included"],
 		]) });
 		const result: ExecutionResult = {
-			succeeded: [], superseded: [], failed: [], conflicts: [], deferred: [],
+			succeeded: [], superseded: [], failed: [], conflicts: [], deferred: [], evidenceIssues: [],
 			blocked: [{ action, reason: "quarantined" }],
 		};
 		const commitCheckpoint = vi.fn<IncrementalCheckpoint["commitCheckpoint"]>()
@@ -129,7 +130,7 @@ describe("finalizeSyncCycle", () => {
 
 		await finalizeSyncCycle({
 			admission: admitted,
-			result: { succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [], deferred: [] },
+			result: { succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [], deferred: [], evidenceIssues: [] },
 			carriedEvidence: [], persistedDebts: [], localRenameDebts: [],
 			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
 			stateStore: { deleteRenameDebts } as unknown as SyncStateStore,
@@ -155,7 +156,7 @@ describe("finalizeSyncCycle", () => {
 
 		const retained = await finalizeSyncCycle({
 			admission: admitted,
-			result: { succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [], deferred: [] },
+			result: { succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [], deferred: [], evidenceIssues: [] },
 			carriedEvidence: [pending], persistedDebts: [], localRenameDebts: [],
 			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
 			stateStore: { deleteRenameDebts } as unknown as SyncStateStore,
@@ -174,7 +175,7 @@ describe("finalizeSyncCycle", () => {
 
 		await expect(finalizeSyncCycle({
 			admission: admitted,
-			result: { succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [], deferred: [] },
+			result: { succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [], deferred: [], evidenceIssues: [] },
 			carriedEvidence: [pending], persistedDebts: [], localRenameDebts: [],
 			checkpoint: checkpoint(vi.fn().mockRejectedValue(new Error("checkpoint failed"))),
 			scopeFingerprint: "scope",

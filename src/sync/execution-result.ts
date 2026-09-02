@@ -1,7 +1,7 @@
 import type { FileEntity } from "../fs/types";
 import type { ConflictRecord, ConflictStrategy, SyncAction } from "./types";
 import type { ConflictResolutionResult } from "./conflict-resolver";
-import type { DeferredComponent } from "./plan-admission";
+import type { DeferredComponent, FreshEvidenceIssue } from "./plan-admission";
 
 export interface CompletedAction {
 	action: SyncAction;
@@ -35,6 +35,8 @@ export interface ExecutionResult {
 	conflicts: ResolvedConflict[];
 	/** Invocation-local unknowns surfaced as retryable errors; never durable replay state. */
 	deferred: DeferredComponent[];
+	/** Fresh evidence states with zero action; observable but never retry authority. */
+	evidenceIssues: FreshEvidenceIssue[];
 }
 
 export function toConflictRecords(

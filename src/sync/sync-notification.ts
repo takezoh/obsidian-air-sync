@@ -35,6 +35,10 @@ export function buildNotificationMessage(result: ExecutionResult): string {
 		const label = result.deferred.length === 1 ? "retryable error" : "retryable errors";
 		parts.push(`${result.deferred.length} ${label}`);
 	}
+	if (result.evidenceIssues.length > 0) {
+		const label = result.evidenceIssues.length === 1 ? "evidence issue" : "evidence issues";
+		parts.push(`${result.evidenceIssues.length} ${label}`);
+	}
 	return parts.length === 0 ? "Everything up to date" : `Sync: ${parts.join(", ")}`;
 }
 
@@ -47,7 +51,7 @@ export function buildNotificationMessage(result: ExecutionResult): string {
  */
 export class CycleSummary {
 	private readonly merged: ExecutionResult = {
-		succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [], deferred: [],
+		succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [], deferred: [], evidenceIssues: [],
 	};
 
 	add(cycle: ExecutionResult): void {
@@ -60,6 +64,7 @@ export class CycleSummary {
 		for (const b of cycle.blocked) this.merged.blocked.push(b);
 		for (const c of cycle.conflicts) this.merged.conflicts.push(c);
 		for (const d of cycle.deferred) this.merged.deferred.push(d);
+		for (const issue of cycle.evidenceIssues) this.merged.evidenceIssues.push(issue);
 	}
 
 	get message(): string {

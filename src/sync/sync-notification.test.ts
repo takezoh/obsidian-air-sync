@@ -9,6 +9,7 @@ function result(deferred = 0): ExecutionResult {
 			kind: "deferred", paths: [`path-${index}.md`], actions: [], evidence: [],
 			reasons: ["rename_mismatch"],
 		})),
+		evidenceIssues: [],
 	};
 }
 

@@ -515,7 +515,7 @@ export class SyncOrchestrator {
 
 		try {
 			const execution = await executePlan(admission.executable, ctx);
-			const result: ExecutionResult = { ...execution, deferred: admission.deferred };
+			const result: ExecutionResult = { ...execution, deferred: admission.deferred, evidenceIssues: admission.evidenceIssues };
 			this.updateFailedActionTracker(settings.backendType, result, classifyError);
 
 			await this.priorityCoordinator.finalize(async () => {

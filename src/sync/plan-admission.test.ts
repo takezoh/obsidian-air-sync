@@ -784,7 +784,7 @@ describe("admitDestructivePlan", () => {
 		["post_rename_old_content", null, freshEntity("B.md", "H0", "R"), "push"],
 		["converged", null, freshEntity("B.md", "H1", "R"), "match"],
 		["remote_changed", freshEntity("A.md", "H2", "R"), null, "conflict"],
-		["destination_conflict", freshEntity("A.md", "H0", "R"), freshEntity("B.md", "other", "Y"), "conflict"],
+		["remote_changed", freshEntity("A.md", "H0", "R"), freshEntity("B.md", "other", "Y"), "conflict"],
 		["unknown", "unknown", null, undefined],
 	] as const)("classifies fresh local rename-edit state %s exclusively", (
 		expectedState, remoteOld, remoteNew, expectedAction,
@@ -824,9 +824,10 @@ describe("admitDestructivePlan", () => {
 		expect(result.executable.actions[0]).toMatchObject(expectedAction ? {
 			action: expectedAction, freshRenameState: expectedState, path: "B.md",
 		} : {});
-		if (expectedState === "destination_conflict") {
+		if (remoteNew?.identityKey === "Y" && remoteOld && remoteOld !== "unknown") {
 			expect(result.executable.actions[0]).toHaveProperty("remoteIdentitySource.path", "A.md");
 			expect(result.executable.actions[0]).toHaveProperty("remoteIdentitySource.identityKey", "R");
+			expect(result.executable.actions[0]).toHaveProperty("additionalRemote.identityKey", "Y");
 		}
 	});
 
@@ -917,7 +918,11 @@ describe("admitDestructivePlan", () => {
 			action: "conflict", freshRenameState: "destination_conflict",
 			remote: resolvedRemote, remotePath: "B.md",
 		});
-		expect(result.executable.actions[0]).toHaveProperty("remoteIdentitySource", undefined);
+		expect(result.executable.actions[0]).not.toHaveProperty("remoteIdentitySource");
+		expect(result.dispositions[0]).toMatchObject({
+			kind: "authorized",
+			normalizedRenameState: { kind: "baseline_absent_foreign_target" },
+		});
 	});
 
 	it("routes the tracked remote identity moved to a third path through conflict", () => {
@@ -950,7 +955,7 @@ describe("admitDestructivePlan", () => {
 		});
 	});
 
-	it("fails closed when a third-path remote change and destination occupant coexist", () => {
+	it("authorizes one primary/additional conflict when a third-path R and destination Y coexist", () => {
 		const baseline = {
 			path: "A.md", hash: "H0", localMtime: 1, remoteMtime: 1,
 			localSize: 1, remoteSize: 1, remoteIdentityKey: "R", syncedAt: 1,
@@ -973,11 +978,20 @@ describe("admitDestructivePlan", () => {
 			{ kind: "exact", side: "remote", requestedPath: "C.md", entity: movedRemote },
 		], projection({ "A.md": "included", "B.md": "included", "C.md": "included" }));
 
-		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred[0]?.reasons).toContain("unknown_observation");
+		expect(result.executable.actions).toHaveLength(1);
+		expect(result.executable.actions[0]).toMatchObject({
+			action: "conflict", freshRenameState: "remote_changed", path: "B.md",
+			remote: movedRemote, remotePath: "C.md", remoteIdentitySource: movedRemote,
+			additionalRemote: occupant,
+		});
+		expect(result.dispositions[0]).toMatchObject({
+			kind: "authorized",
+			normalizedRenameState: { kind: "baseline_at_third_foreign_target" },
+		});
+		expect(result.deferred).toEqual([]);
 	});
 
-	it("fails closed when changed old remote content and a destination occupant coexist", () => {
+	it("authorizes one primary/additional conflict when changed old R and destination Y coexist", () => {
 		const baseline = {
 			path: "A.md", hash: "H0", localMtime: 1, remoteMtime: 1,
 			localSize: 1, remoteSize: 1, remoteIdentityKey: "R", syncedAt: 1,
@@ -995,8 +1009,73 @@ describe("admitDestructivePlan", () => {
 			{ kind: "exact", side: "remote", requestedPath: "B.md", entity: occupant },
 		], projection({ "A.md": "included", "B.md": "included" }));
 
+		expect(result.executable.actions).toHaveLength(1);
+		expect(result.executable.actions[0]).toMatchObject({
+			action: "conflict", freshRenameState: "remote_changed", path: "B.md",
+			remote: changedOld, remotePath: "A.md", remoteIdentitySource: changedOld,
+			additionalRemote: occupant,
+		});
+		expect(result.dispositions[0]).toMatchObject({
+			kind: "authorized",
+			normalizedRenameState: { kind: "baseline_at_third_foreign_target" },
+		});
+		expect(result.deferred).toEqual([]);
+	});
+
+	it("returns evidence_unknown with zero action and no retryable deferred mapping", () => {
+		const baseline = {
+			path: "A.md", hash: "H0", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, syncedAt: 1,
+		};
+		const local = freshEntity("B.md", "H1");
+		const candidate = remoteRename({ side: "local", identityKey: undefined });
+		const result = admit([
+			{ path: "A.md", action: "cleanup", baseline },
+			{ path: "B.md", action: "push", local },
+		], [candidate], [
+			{ kind: "absent", side: "local", requestedPath: "A.md", authority: "stat" },
+			{ kind: "exact", side: "local", requestedPath: "B.md", entity: local },
+			{ kind: "absent", side: "remote", requestedPath: "A.md", authority: "stat" },
+			{ kind: "absent", side: "remote", requestedPath: "B.md", authority: "stat" },
+		], projection({ "A.md": "included", "B.md": "included" }));
+
 		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred[0]?.reasons).toContain("unknown_observation");
+		expect(result.deferred).toEqual([]);
+		expect(result.evidenceIssues).toMatchObject([{
+			kind: "evidence_unknown", reason: "scope_or_authority_missing",
+		}]);
+		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual([candidate]);
+		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual([]);
+	});
+
+	it("returns evidence_contradicted when tracked R occurs at multiple current paths", () => {
+		const baseline = {
+			path: "A.md", hash: "H0", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, remoteIdentityKey: "R", syncedAt: 1,
+		};
+		const local = freshEntity("B.md", "H1");
+		const oldRemote = freshEntity("A.md", "H0", "R");
+		const thirdRemote = freshEntity("C.md", "H2", "R");
+		const candidate = remoteRename({ side: "local", identityKey: undefined });
+		const result = admit([
+			{ path: "A.md", action: "delete_remote", remote: oldRemote, baseline },
+			{ path: "B.md", action: "push", local },
+			{ path: "C.md", action: "pull", remote: thirdRemote },
+		], [candidate, remoteRename({ oldPath: "A.md", newPath: "C.md", identityKey: "R" })], [
+			{ kind: "absent", side: "local", requestedPath: "A.md", authority: "stat" },
+			{ kind: "exact", side: "local", requestedPath: "B.md", entity: local },
+			{ kind: "exact", side: "remote", requestedPath: "A.md", entity: oldRemote },
+			{ kind: "absent", side: "remote", requestedPath: "B.md", authority: "stat" },
+			{ kind: "exact", side: "remote", requestedPath: "C.md", entity: thirdRemote },
+		], projection({ "A.md": "included", "B.md": "included", "C.md": "included" }));
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.deferred).toEqual([]);
+		expect(result.evidenceIssues).toMatchObject([{
+			kind: "evidence_contradicted", reason: "tracked_identity_multiple_occurrences",
+		}]);
+		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual([candidate]);
+		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual([]);
 	});
 
 	it("does not mutate the plan, observations, evidence, or projection", () => {
