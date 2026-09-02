@@ -247,20 +247,20 @@ export class SyncOrchestrator {
 				const result = await this.executeWithRetry(forceFullScan, snapshot, scopeFingerprint);
 				if (!result) return; // Fatal error already handled
 
-				const { succeeded, failed, blocked, conflicts, retryableErrors } = result;
+				const { succeeded, failed, blocked, conflicts, retryableErrors, evidenceIssues } = result;
 				// failed cycle では cursor が committed state より先に進んでいる可能性がある。
 				// ただし cold recovery を一度支払い済みの local-origin action だけが
 				// quarantine 対象なら、次 cycle の cold scan は不要。
 				this.recoverViaColdScan = this.needsColdRecovery(result.result);
-				if (failed > 0 || blocked > 0 || retryableErrors > 0) {
+				if (failed > 0 || blocked > 0 || retryableErrors > 0 || evidenceIssues > 0) {
 					this.deps.onStatusChange("partial_error");
 					this.deps.logger?.warn("Sync completed with errors", {
-						succeeded, conflicts, failed, blocked, retryableErrors,
+						succeeded, conflicts, failed, blocked, retryableErrors, evidenceIssues,
 					});
 				} else {
 					this.deps.onStatusChange("idle");
 					this.deps.logger?.info("Sync completed", {
-						succeeded, conflicts, failed, blocked, retryableErrors,
+						succeeded, conflicts, failed, blocked, retryableErrors, evidenceIssues,
 					});
 				}
 
@@ -311,7 +311,7 @@ export class SyncOrchestrator {
 					failed: lastResult.failed.length,
 					blocked: lastResult.blocked.length,
 					conflicts: lastResult.conflicts.length,
-					retryableErrors: lastResult.deferred.length,
+					retryableErrors: lastResult.deferred.length, evidenceIssues: lastResult.evidenceIssues.length,
 				};
 			} catch (err) {
 				lastError = err;

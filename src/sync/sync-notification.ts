@@ -8,6 +8,7 @@ export interface SyncCycleResult {
 	blocked: number;
 	conflicts: number;
 	retryableErrors: number;
+	evidenceIssues: number;
 }
 
 /** Build the human-readable summary shown after a sync cycle completes. */

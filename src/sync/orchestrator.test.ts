@@ -253,9 +253,11 @@ describe("SyncOrchestrator", () => {
 			expect(remoteWrite).not.toHaveBeenCalled();
 			expect(remoteDelete).not.toHaveBeenCalled();
 			expect(commitCheckpoint).not.toHaveBeenCalled();
-			expect(deps.onStatusChange).toHaveBeenLastCalledWith("idle");
+			expect(deps.onStatusChange).toHaveBeenLastCalledWith("partial_error");
 			expect(deps.notify).toHaveBeenCalledWith("Sync: 1 evidence issue");
-			expect(warn).not.toHaveBeenCalledWith("Sync completed with errors", expect.anything());
+			expect(warn).toHaveBeenCalledWith("Sync completed with errors", expect.objectContaining({
+				evidenceIssues: 1, retryableErrors: 0,
+			}));
 			expect(warn).not.toHaveBeenCalledWith("Sync plan component deferred", expect.anything());
 			expect(await orchestrator.state.getRenameDebts("test:root")).toHaveLength(1);
 			expect(remoteList).toHaveBeenCalledTimes(1);
@@ -497,6 +499,8 @@ describe("SyncOrchestrator", () => {
 
 			expect(remoteFs.files.has("old.md")).toBe(false);
 			expect(readText(remoteFs, "new.md")).toBe("local edited");
+			expect([...localFs.files.keys()].some((path) => path.includes(".conflict"))).toBe(false);
+			expect([...remoteFs.files.keys()].some((path) => path.includes(".conflict"))).toBe(false);
 			expect(await orchestrator.state.get("old.md")).toBeUndefined();
 			expect(await orchestrator.state.get("new.md")).toBeDefined();
 			expect(commitCheckpoint).toHaveBeenCalledTimes(1);
@@ -542,7 +546,10 @@ describe("SyncOrchestrator", () => {
 			expect(readText(remoteFs, "new.conflict.md")).toBe("remote R changed");
 			expect(readText(localFs, "new.conflict-2.md")).toBe("foreign Y");
 			expect(readText(remoteFs, "new.conflict-2.md")).toBe("foreign Y");
+			expect(localFs.files.has("new.conflict-3.md")).toBe(false);
 			expect(remoteFs.files.has("new.conflict-3.md")).toBe(false);
+			expect(localFs.files.has("new.conflict-4.md")).toBe(false);
+			expect(remoteFs.files.has("new.conflict-4.md")).toBe(false);
 			expect(readText(remoteFs, "new.md")).toBe("local edited");
 			expect(remoteFs.files.has("third.md")).toBe(false);
 			expect(commitCheckpoint).toHaveBeenCalledTimes(1);
@@ -593,6 +600,10 @@ describe("SyncOrchestrator", () => {
 			expect(readText(remoteFs, "new.conflict.md")).toBe(remoteText);
 			expect(readText(localFs, "new.conflict-2.md")).toBe("foreign Y");
 			expect(readText(remoteFs, "new.conflict-2.md")).toBe("foreign Y");
+			expect(localFs.files.has("new.conflict-3.md")).toBe(false);
+			expect(remoteFs.files.has("new.conflict-3.md")).toBe(false);
+			expect(localFs.files.has("new.conflict-4.md")).toBe(false);
+			expect(remoteFs.files.has("new.conflict-4.md")).toBe(false);
 			expect(readText(localFs, "new.md")).toContain("local");
 			expect(readText(localFs, "new.md")).toContain("remote");
 			expect(readText(remoteFs, "new.md")).toBe(readText(localFs, "new.md"));
@@ -750,7 +761,7 @@ describe("SyncOrchestrator", () => {
 			expect(remoteWrite).not.toHaveBeenCalled();
 			expect(remoteDelete).not.toHaveBeenCalled();
 			expect(await restarted.state.getRenameDebts("test:root")).toHaveLength(1);
-			expect(secondDeps.onStatusChange).toHaveBeenLastCalledWith("idle");
+			expect(secondDeps.onStatusChange).toHaveBeenLastCalledWith("partial_error");
 			await restarted.close();
 		});
 

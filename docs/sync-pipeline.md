@@ -224,8 +224,10 @@ old-target in-flight cycle cannot recreate debt after teardown.
 
 Admission logs executable/proposed counts and each unresolved component's reason,
 evidence kind/origin, endpoint dispositions, and paths (never content or credentials).
-Status remains `partial_error`, and the coalesced user notification exposes the count
-as retryable errors; there is no pending-operation presentation or recovery control.
+Status remains `partial_error`. Ordinary unresolved components are counted as retryable errors;
+fresh rename `evidence_unknown | evidence_contradicted` remains a distinct evidence-issue count and
+is reacquired only on the next ordinary sync. Neither outcome creates pending-operation presentation
+or recovery controls.
 Private shaping helpers expose typed skip reasons to focused tests, but do not form an
 observable pipeline stage.
 
