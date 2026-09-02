@@ -272,11 +272,16 @@ function classifyFreshLocalRename(
 			candidate, baseline, local, remote: newEntity, remotePath: candidate.newPath,
 		};
 	}
-	if (newEntity && newEntity.identityKey !== baselineId &&
-		oldEntity?.identityKey === baselineId) {
-		if (!newEntity.identityKey || !oldIsBaseline) return unknown(candidate, baseline, local);
-		return { state: "destination_conflict", candidate, baseline, local, remote: newEntity,
-			remotePath: candidate.newPath, remoteIdentitySource: oldEntity };
+	if (newEntity && newEntity.identityKey !== baselineId) {
+		if (!newEntity.identityKey) return unknown(candidate, baseline, local);
+		if (oldEntity && (oldEntity.identityKey !== baselineId || !oldIsBaseline)) {
+			return unknown(candidate, baseline, local);
+		}
+		return {
+			state: "destination_conflict", candidate, baseline, local, remote: newEntity,
+			remotePath: candidate.newPath,
+			remoteIdentitySource: oldEntity,
+		};
 	}
 	if ((oldEntity?.identityKey === baselineId && hasRemoteChanged(oldEntity, baseline)) ||
 		(newIsBaseline && newEntity)) {

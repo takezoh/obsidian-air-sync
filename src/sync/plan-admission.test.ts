@@ -893,7 +893,7 @@ describe("admitDestructivePlan", () => {
 		},
 	);
 
-	it("does not infer conflict ownership from equal content at a different destination identity", () => {
+	it("routes an equal-content foreign destination identity through conflict", () => {
 		const baseline = {
 			path: "A.md", hash: "H0", localMtime: 1, remoteMtime: 1,
 			localSize: 1, remoteSize: 1, remoteIdentityKey: "R", syncedAt: 1,
@@ -910,8 +910,12 @@ describe("admitDestructivePlan", () => {
 			{ kind: "exact", side: "remote", requestedPath: "B.md", entity: resolvedRemote },
 		], projection({ "A.md": "included", "B.md": "included" }));
 
-		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred[0]?.reasons).toContain("unknown_observation");
+		expect(result.executable.actions).toHaveLength(1);
+		expect(result.executable.actions[0]).toMatchObject({
+			action: "conflict", freshRenameState: "destination_conflict",
+			remote: resolvedRemote, remotePath: "B.md",
+		});
+		expect(result.executable.actions[0]).toHaveProperty("remoteIdentitySource", undefined);
 	});
 
 	it("routes the tracked remote identity moved to a third path through conflict", () => {
