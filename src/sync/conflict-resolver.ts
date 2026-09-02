@@ -4,6 +4,7 @@ import type { ConflictStrategy, SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
 import type { Logger } from "../logging/logger";
 import { resolveWithStrategy, type ConflictResolutionResult } from "./conflict";
+import { sameContent } from "./content-identity";
 
 export interface ConflictResolverContext {
 	path: string;
@@ -14,7 +15,7 @@ export interface ConflictResolverContext {
 	baseline?: SyncRecord;
 	localPath?: string;
 	remotePath?: string;
-	remoteCleanupPath?: string;
+	remoteIdentitySource?: FileEntity;
 	baselinePath?: string;
 	stateStore?: SyncStateStore;
 	logger?: Logger;
@@ -61,10 +62,25 @@ export async function resolveConflict(
 			);
 			break;
 	}
-	if (ctx.remotePath && ctx.remotePath !== ctx.path) await ctx.remoteFs.delete(ctx.remotePath);
-	if (ctx.remoteCleanupPath && ctx.remoteCleanupPath !== ctx.path &&
-		ctx.remoteCleanupPath !== ctx.remotePath) await ctx.remoteFs.delete(ctx.remoteCleanupPath);
+	if (ctx.remoteIdentitySource && ctx.remoteIdentitySource.path !== ctx.path) {
+		await rotateRemoteIdentityToTarget(ctx);
+	} else if (ctx.remotePath && ctx.remotePath !== ctx.path) {
+		await ctx.remoteFs.delete(ctx.remotePath);
+	}
 	return result;
+}
+
+async function rotateRemoteIdentityToTarget(ctx: ConflictResolverContext): Promise<void> {
+	const source = ctx.remoteIdentitySource!;
+	const sourceNow = await ctx.remoteFs.stat(source.path);
+	if (!sourceNow || sourceNow.identityKey !== source.identityKey || !sameContent(sourceNow, source)) {
+		throw new Error(`Remote identity source changed during conflict resolution: ${source.path}`);
+	}
+	const content = await ctx.localFs.read(ctx.path);
+	const local = await ctx.localFs.stat(ctx.path);
+	await ctx.remoteFs.delete(ctx.path);
+	await ctx.remoteFs.rename(source.path, ctx.path);
+	await ctx.remoteFs.write(ctx.path, content, local?.mtime ?? ctx.local?.mtime ?? 0);
 }
 
 async function resolveAutoMerge(

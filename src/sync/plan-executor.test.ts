@@ -444,6 +444,35 @@ describe("executePlan", () => {
 	});
 
 	describe("conflict", () => {
+		it("preserves the baseline remote identity through a fresh rename conflict", async () => {
+			const ctx = makeCtx({ conflictStrategy: "duplicate" });
+			const localFs = ctx.localFs as MockFileSystem;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
+			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
+			const local = addFile(localFs, "new.md", "local current", 2000);
+			addFile(remoteFs, "old.md", "remote changed", 1500).identityKey = "R";
+			const source = (await remoteFs.stat("old.md"))!;
+			const baseline: SyncRecord = {
+				path: "old.md", hash: "baseline", localMtime: 1000, remoteMtime: 1000,
+				localSize: 8, remoteSize: 8, remoteIdentityKey: "R", syncedAt: 900,
+			};
+			stateStore.records.set("old.md", baseline);
+			const action: FreshRenameAction = {
+				path: "new.md", oldPath: "old.md", action: "conflict",
+				freshRenameState: "remote_changed", local, remote: source, baseline,
+				remotePath: "old.md", remoteIdentitySource: source,
+			};
+
+			const result = await executePlan(makePlan([action]), ctx);
+
+			expect(result.failed).toEqual([]);
+			expect(readText(remoteFs, "new.md")).toBe("local current");
+			expect(readText(remoteFs, "new.conflict.md")).toBe("remote changed");
+			expect(remoteFs.files.has("old.md")).toBe(false);
+			expect(remoteFs.files.get("new.md")?.entity.identityKey).toBe("R");
+			expect(stateStore.records.get("new.md")?.remoteIdentityKey).toBe("R");
+		});
+
 		it("resolves conflict and records it in both succeeded and conflicts arrays", async () => {
 			const ctx = makeCtx({ conflictStrategy: "duplicate" });
 			const localFs = ctx.localFs as MockFileSystem;

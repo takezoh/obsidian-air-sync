@@ -525,7 +525,7 @@ async function executeConflictAction(
 			...(isFreshRenameAction(action) ? {
 				localPath: action.path,
 				remotePath: action.remotePath ?? action.remote?.path,
-				remoteCleanupPath: action.remoteCleanupPath,
+				remoteIdentitySource: action.remoteIdentitySource,
 				baselinePath: action.oldPath,
 			} : {}),
 		};

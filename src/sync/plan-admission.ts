@@ -45,8 +45,8 @@ export type FreshRenameAction = SyncAction & {
 	readonly freshRenameState: Exclude<FreshRenameState, "unknown">;
 	readonly oldPath: string;
 	readonly remotePath?: string;
-	/** A second stale source identity to remove only after conflict resolution succeeds. */
-	readonly remoteCleanupPath?: string;
+	/** Baseline identity source to rotate into the target after conflict resolution. */
+	readonly remoteIdentitySource?: FileEntity;
 };
 
 export function isFreshRenameAction(action: SyncAction): action is FreshRenameAction {
@@ -195,7 +195,7 @@ interface FreshRenameClassification {
 	local?: FileEntity;
 	remote?: FileEntity;
 	remotePath?: string;
-	remoteCleanupPath?: string;
+	remoteIdentitySource?: FileEntity;
 }
 
 function classifyFreshLocalRename(
@@ -247,9 +247,10 @@ function classifyFreshLocalRename(
 		if (scope.byEndpoint.get(elsewhere.requestedPath) !== "included") {
 			return unknown(candidate, baseline, local);
 		}
+		const remote = actionEntity(component, "remote", elsewhere.requestedPath) ?? elsewhere.entity;
 		return {
 			state: "remote_changed", candidate, baseline, local,
-			remote: actionEntity(component, "remote", elsewhere.requestedPath) ?? elsewhere.entity,
+			remote, remoteIdentitySource: remote,
 			remotePath: elsewhere.requestedPath,
 		};
 	}
@@ -262,11 +263,10 @@ function classifyFreshLocalRename(
 	if (oldIsBaseline && !newEntity) {
 		return { state: "old_path_baseline", candidate, baseline, local, remote: oldEntity, remotePath: candidate.oldPath };
 	}
-	if (!oldEntity && newEntity) {
+	if (!oldEntity && newIsBaseline && newEntity) {
 		if (sameContent(local, newEntity)) {
 			return { state: "converged", candidate, baseline, local, remote: newEntity, remotePath: candidate.newPath };
 		}
-		if (!newIsBaseline) return unknown(candidate, baseline, local);
 		return {
 			state: hasRemoteChanged(newEntity, baseline) ? "remote_changed" : "post_rename_old_content",
 			candidate, baseline, local, remote: newEntity, remotePath: candidate.newPath,
@@ -276,11 +276,16 @@ function classifyFreshLocalRename(
 		oldEntity?.identityKey === baselineId) {
 		if (!newEntity.identityKey || !oldIsBaseline) return unknown(candidate, baseline, local);
 		return { state: "destination_conflict", candidate, baseline, local, remote: newEntity,
-			remotePath: candidate.newPath, remoteCleanupPath: candidate.oldPath };
+			remotePath: candidate.newPath, remoteIdentitySource: oldEntity };
 	}
 	if ((oldEntity?.identityKey === baselineId && hasRemoteChanged(oldEntity, baseline)) ||
 		(newIsBaseline && newEntity)) {
-		return { state: "remote_changed", candidate, baseline, local, remote: newEntity ?? oldEntity, remotePath: newEntity ? candidate.newPath : candidate.oldPath };
+		const remote = newEntity ?? oldEntity;
+		return {
+			state: "remote_changed", candidate, baseline, local, remote,
+			remotePath: newEntity ? candidate.newPath : candidate.oldPath,
+			remoteIdentitySource: remote,
+		};
 	}
 	return unknown(candidate, baseline, local);
 }
@@ -303,11 +308,11 @@ function unknown(candidate: LocalRenameEvidence, baseline: SyncRecord, local?: F
 }
 
 function buildFreshRenameAction(classification: FreshRenameClassification): FreshRenameAction | undefined {
-	const { state, candidate, baseline, local, remote, remotePath, remoteCleanupPath } = classification;
+	const { state, candidate, baseline, local, remote, remotePath, remoteIdentitySource } = classification;
 	if (state === "unknown" || !local) return undefined;
 	const shared = {
 		path: candidate.newPath, oldPath: candidate.oldPath, local, remote, baseline,
-		freshRenameState: state, remotePath, remoteCleanupPath,
+		freshRenameState: state, remotePath, remoteIdentitySource,
 	};
 	if (state === "old_path_baseline") return { ...shared, action: "rename_remote" };
 	if (state === "post_rename_old_content") return { ...shared, action: "push" };

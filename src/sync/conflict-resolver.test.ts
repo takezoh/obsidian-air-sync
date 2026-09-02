@@ -37,11 +37,13 @@ describe("resolveConflict", () => {
 		it("removes a stale rename source only after resolving a destination conflict", async () => {
 			const local = addFile(localFs, "new.md", "local current", 2000);
 			const remote = addFile(remoteFs, "new.md", "destination occupant", 1500);
-			addFile(remoteFs, "old.md", "baseline stale source", 1000);
+			remote.identityKey = "Y";
+			addFile(remoteFs, "old.md", "baseline stale source", 1000).identityKey = "R";
+			const source = (await remoteFs.stat("old.md"))!;
 
 			const result = await resolveConflict({
 				path: "new.md", localPath: "new.md", remotePath: "new.md",
-				remoteCleanupPath: "old.md", baselinePath: "old.md",
+				remoteIdentitySource: source, baselinePath: "old.md",
 				localFs, remoteFs, local, remote,
 			}, "duplicate");
 
@@ -49,6 +51,7 @@ describe("resolveConflict", () => {
 			expect(readText(remoteFs, "new.conflict.md")).toBe("destination occupant");
 			expect(readText(remoteFs, "new.md")).toBe("local current");
 			expect(remoteFs.files.has("old.md")).toBe(false);
+			expect(remoteFs.files.get("new.md")?.entity.identityKey).toBe("R");
 		});
 
 		it("creates a conflict copy when both files exist", async () => {
