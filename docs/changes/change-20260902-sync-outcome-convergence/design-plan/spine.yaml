@@ -1,0 +1,417 @@
+artifact: design-plan-spine
+version: 2
+granularity_profile: boundary-complete
+scope_expansion_signals: []
+
+requirements:
+  - id: REQ-LOCAL-RENAME-EDIT-CONVERGENCE
+    type: functional
+    priority: must
+    statement: >-
+      An unchanged baseline remote resource renamed and edited locally converges to
+      the new remote path with current local content and is not itself a conflict.
+  - id: REQ-REMOTE-CHANGE-CONFLICT
+    type: functional
+    priority: must
+    statement: >-
+      Freshly observed remote identity/content/path or destination change enters the
+      configured existing auto_merge or duplicate behavior before rename/write.
+  - id: REQ-FRESH-STATE-CLASSIFICATION
+    type: functional
+    priority: must
+    statement: >-
+      Every invocation classifies current local, committed baseline, and fresh remote
+      state into six exhaustive states without stored phase or pending state.
+  - id: REQ-RETRYABLE-NO-PENDING
+    type: reliability
+    priority: must
+    statement: >-
+      Observation/transport failure ends the current bounded invocation, persists no
+      pending row, and is recomputed by the next ordinary sync.
+  - id: REQ-FRESH-CRASH-RECOVERY
+    type: reliability
+    priority: must
+    statement: >-
+      Crash or uncertain partial effect resumes through next-invocation fresh
+      classification without raw substep retry or rollback rename.
+  - id: REQ-COMMIT-LAST-EXISTING
+    type: safety
+    priority: must
+    statement: >-
+      New-path SyncRecord follows verified rename/write and the existing checkpoint
+      commits only on a clean cycle; no receipt protocol is added.
+  - id: REQ-DISCONNECTED-COMPONENT-PROGRESS
+    type: functional
+    priority: must
+    statement: >-
+      A failed component stops while disconnected authorized components may finish;
+      the failed cycle withholds the existing global checkpoint.
+  - id: REQ-LEGACY-DEBT-EVIDENCE-ONLY
+    type: compatibility
+    priority: must
+    statement: >-
+      Existing v6 RenameDebt is non-authoritative COLD endpoint evidence and is exact-
+      released only by existing successful consequence plus safe checkpoint.
+  - id: NFR-EXISTING-PROVIDER-BOUNDARY
+    type: architecture
+    priority: must
+    statement: >-
+      Current provider/checkpoint interfaces and shared contract families remain
+      unchanged; only backend-agnostic sync behavior tests are added.
+
+components:
+  - id: component-fresh-reconciliation-admission
+    kind: existing
+    contract_refs: [contract-fresh-state-classification]
+    paths:
+      - src/sync/sync-cycle-planning.ts
+      - src/sync/cycle-admission-snapshot.ts
+      - src/sync/plan-admission.ts
+      - src/sync/identity-component-decision.ts
+      - src/sync/plan-admission.test.ts
+  - id: component-fresh-compound-executor
+    kind: existing
+    contract_refs: [contract-fresh-compound-execution]
+    paths:
+      - src/sync/plan-executor.ts
+      - src/sync/state-committer.ts
+      - src/sync/plan-executor.test.ts
+  - id: component-rename-edit-conflict-adapter
+    kind: existing
+    contract_refs: [contract-existing-conflict-adaptation]
+    paths:
+      - src/sync/conflict-resolver.ts
+      - src/sync/conflict.ts
+      - src/sync/merge.ts
+      - src/sync/conflict-history.ts
+      - src/sync/conflict-resolver.test.ts
+  - id: component-existing-finalization
+    kind: existing
+    contract_refs: [contract-existing-recovery-finalization]
+    paths:
+      - src/sync/sync-cycle-finalization.ts
+      - src/sync/rename-debt.ts
+      - src/sync/state.ts
+      - src/sync/orchestrator.ts
+      - src/sync/orchestrator.test.ts
+
+contracts:
+  - id: contract-fresh-state-classification
+    dimension: fresh-evidence-authority
+    owner: component-fresh-reconciliation-admission
+    requirement_refs:
+      - REQ-LOCAL-RENAME-EDIT-CONVERGENCE
+      - REQ-REMOTE-CHANGE-CONFLICT
+      - REQ-FRESH-STATE-CLASSIFICATION
+      - REQ-RETRYABLE-NO-PENDING
+      - REQ-LEGACY-DEBT-EVIDENCE-ONLY
+    unit_refs: [unit-fresh-classification-admission]
+    adr_refs:
+      - adr-0008-logical-identity-admission-fails-closed
+      - adr-20260902-fresh-state-reconciliation-for-rename-edits
+    verification:
+      - id: verify-fresh-six-state-matrix
+        tier: T0
+        command: npm test -- src/sync/plan-admission.test.ts
+      - id: verify-legacy-edge-candidate-not-authority
+        tier: T1
+        command: npm test -- src/sync/orchestrator.test.ts
+      - id: verify-stale-cache-changed-remote-conflict
+        tier: T1
+        command: npm test -- src/sync/orchestrator.test.ts
+    partition:
+      outcomes: [determinate, unknown, conflicting, inconclusive]
+      default_policy: >-
+        Converged/post-rename/baseline-old are determinate; changed/destination are
+        conflicting; missing or contradictory proof is retryable unknown with zero action.
+
+  - id: contract-fresh-compound-execution
+    dimension: ordered-effect-fresh-recovery
+    owner: component-fresh-compound-executor
+    requirement_refs:
+      - REQ-LOCAL-RENAME-EDIT-CONVERGENCE
+      - REQ-FRESH-CRASH-RECOVERY
+      - REQ-COMMIT-LAST-EXISTING
+      - REQ-RETRYABLE-NO-PENDING
+    unit_refs: [unit-fresh-execution-conflict]
+    adr_refs:
+      - adr-0001-metadata-cache-is-subordinate-to-commit-last
+      - adr-20260902-fresh-state-reconciliation-for-rename-edits
+    verification:
+      - id: verify-rename-write-terminal-commit
+        tier: T0
+        command: npm test -- src/sync/plan-executor.test.ts
+      - id: verify-partial-effect-next-fresh-state
+        tier: T1
+        command: npm test -- src/sync/orchestrator.test.ts
+      - id: verify-no-rollback-or-raw-rename-retry
+        tier: T1
+        command: npm test -- src/sync/orchestrator.test.ts
+
+  - id: contract-existing-conflict-adaptation
+    dimension: existing-strategy-path-adaptation
+    owner: component-rename-edit-conflict-adapter
+    requirement_refs: [REQ-REMOTE-CHANGE-CONFLICT, REQ-FRESH-CRASH-RECOVERY]
+    unit_refs: [unit-fresh-execution-conflict]
+    adr_refs: [adr-20260902-fresh-state-reconciliation-for-rename-edits]
+    verification:
+      - id: verify-rename-aware-auto-merge-inputs
+        tier: T0
+        command: npm test -- src/sync/conflict-resolver.test.ts
+      - id: verify-rename-aware-duplicate-preserves-remote
+        tier: T1
+        command: npm test -- src/sync/conflict-resolver.test.ts
+      - id: verify-single-existing-resolver-delegation
+        tier: T1
+        command: npm test -- src/sync/conflict-resolver.test.ts
+    partition:
+      outcomes: [determinate, unknown, conflicting, inconclusive]
+      default_policy: >-
+        Complete base/local/remote path mapping invokes the configured strategy;
+        missing/contradictory content is retryable and performs no pre-conflict mutation.
+
+  - id: contract-existing-recovery-finalization
+    dimension: existing-commit-last-compatibility
+    owner: component-existing-finalization
+    requirement_refs:
+      - REQ-FRESH-CRASH-RECOVERY
+      - REQ-COMMIT-LAST-EXISTING
+      - REQ-DISCONNECTED-COMPONENT-PROGRESS
+      - REQ-LEGACY-DEBT-EVIDENCE-ONLY
+      - NFR-EXISTING-PROVIDER-BOUNDARY
+    unit_refs: [unit-existing-finalization-observability]
+    adr_refs:
+      - adr-0001-metadata-cache-is-subordinate-to-commit-last
+      - adr-20260831-admission-owned-local-rename-constraint-lifecycle
+      - adr-20260902-fresh-state-reconciliation-for-rename-edits
+    verification:
+      - id: verify-existing-checkpoint-clean-only
+        tier: T0
+        command: npm test -- src/sync/sync-cycle-finalization.test.ts
+      - id: verify-disconnected-progress-failed-checkpoint
+        tier: T1
+        command: npm test -- src/sync/orchestrator.test.ts
+      - id: verify-v6-exact-release-existing-finalization
+        tier: T1
+        command: npm test -- src/sync/orchestrator.test.ts
+      - id: verify-no-new-provider-or-store-surface
+        tier: T0
+        command: npm run lint
+
+adrs:
+  - id: adr-0001-metadata-cache-is-subordinate-to-commit-last
+    status: accepted
+    decision_input_refs: [decision-input-observation-derived-phase, DI-CONV-003]
+  - id: adr-0002-backends-verified-by-shared-behaviour-contracts
+    status: accepted
+    decision_input_refs: [decision-input-conditional-remote-mutation, DI-CONV-007]
+  - id: adr-0008-logical-identity-admission-fails-closed
+    status: accepted
+    decision_input_refs: [decision-input-remove-deferred-outcome, decision-input-accepted-deferral-adrs]
+  - id: adr-20260831-admission-owns-identity-component-decisi
+    status: accepted
+    decision_input_refs: [decision-input-remove-deferred-outcome, decision-input-accepted-deferral-adrs]
+  - id: adr-20260831-admission-owned-local-rename-constraint-lifecycle
+    status: accepted
+    decision_input_refs: [decision-input-accepted-deferral-adrs, DI-CONV-001, DI-CONV-006]
+  - id: adr-20260902-authorized-operation-journal-with-nonreplaying-attention
+    status: rejected
+    decision_input_refs:
+      - decision-input-explicit-operation-journal
+      - decision-input-separate-journal-store
+      - decision-input-pinned-content
+      - decision-input-journal-attention-authority
+      - decision-input-legacy-forward-only
+      - DI-CONV-002
+  - id: adr-20260902-compound-conflict-resolution-and-conditional-mutation
+    status: rejected
+    decision_input_refs: [decision-input-conditional-remote-mutation, DI-CONV-005, DI-CONV-007]
+  - id: adr-20260902-fresh-state-reconciliation-for-rename-edits
+    status: accepted
+    decision_input_refs:
+      - decision-input-remove-deferred-outcome
+      - decision-input-configured-conflict-resolver
+      - decision-input-observation-derived-phase
+      - decision-input-smaller-nonjournal-reconstruction
+      - decision-input-accepted-deferral-adrs
+      - DI-CONV-001
+      - DI-CONV-003
+      - DI-CONV-004
+      - DI-CONV-006
+    status_provenance:
+      source: user_consultation
+      confidence: confirmed
+      evidence_refs: [user-approve-fresh-reconciliation-20260902]
+      rationale: User explicitly rejected journal/conditional mechanisms and approved fresh reconciliation.
+      consultation_id: consultation-fresh-reconciliation-20260902
+
+units:
+  - title: unit-fresh-classification-admission
+    chunk: "1"
+    contract_refs: [contract-fresh-state-classification]
+    files:
+      - src/sync/sync-cycle-planning.ts
+      - src/sync/cycle-admission-snapshot.ts
+      - src/sync/plan-admission.ts
+      - src/sync/identity-component-decision.ts
+      - src/sync/plan-admission.test.ts
+      - src/sync/orchestrator.test.ts
+    acceptance:
+      - Six current-state rows are exclusive and complete; unknown performs zero action.
+      - Local rename-edit is one authorized compound action only when remote baseline is unchanged.
+      - Existing debt supplies candidate endpoints but never selects authority.
+    objective: Add fresh-state classification and compound Admission authority without new state or interfaces.
+    output_format: Pure TypeScript policy changes and exhaustive behavior tests.
+    tool_guidance: Reuse current ChangeSet, SyncRecord, identity evidence, and COLD acquisition seams.
+    task_boundaries: No journal, deferred/attention state, provider call from Admission, schema, or provider interface change.
+    decision_closure_reason: null
+
+  - title: unit-fresh-execution-conflict
+    chunk: "2"
+    contract_refs: [contract-fresh-compound-execution, contract-existing-conflict-adaptation]
+    files:
+      - src/sync/plan-executor.ts
+      - src/sync/state-committer.ts
+      - src/sync/conflict-resolver.ts
+      - src/sync/conflict.ts
+      - src/sync/merge.ts
+      - src/sync/conflict-history.ts
+      - src/sync/plan-executor.test.ts
+      - src/sync/conflict-resolver.test.ts
+      - src/sync/orchestrator.test.ts
+    depends_on: [unit-fresh-classification-admission]
+    acceptance:
+      - Rename then current-content write commits baseline only after terminal verification.
+      - Partial effect resumes by next fresh classification without rollback or raw retry.
+      - Remote/destination change uses existing configured strategy and preserves observed remote content.
+    objective: Execute/resume the compound outcome and adapt differing paths into existing conflict handling.
+    output_format: Executor/resolver TypeScript changes with fault and conflict behavior tests.
+    tool_guidance: Inject failures at rename, observe, write, verify, resolver delegation, and state commit boundaries.
+    task_boundaries: No durable operation/result record, conditional provider API, new conflict strategy, or checkpoint receipt.
+    decision_closure_reason: null
+
+  - title: unit-existing-finalization-observability
+    chunk: "3"
+    contract_refs: [contract-existing-recovery-finalization]
+    files:
+      - src/sync/sync-cycle-finalization.ts
+      - src/sync/rename-debt.ts
+      - src/sync/state.ts
+      - src/sync/orchestrator.ts
+      - src/sync/execution-result.ts
+      - src/sync/sync-notification.ts
+      - src/sync/types.ts
+      - src/sync/sync-cycle-finalization.test.ts
+      - src/sync/orchestrator.test.ts
+      - src/sync/sync-notification.test.ts
+      - ARCHITECTURE.md
+      - docs/sync-pipeline.md
+      - docs/error-handling.md
+      - docs/code-enforcement.md
+    depends_on: [unit-fresh-execution-conflict]
+    acceptance:
+      - Existing record/checkpoint/release ordering remains green for every fresh outcome.
+      - Deferred/pending presentation and replay authority are absent; retryable errors remain visible.
+      - No new store/provider/checkpoint interface exists and the full project gate passes.
+    objective: Integrate fresh recovery with existing finalization, legacy release, observability, docs, and guards.
+    output_format: TypeScript integration, docs, conformance guards, and full gate evidence.
+    tool_guidance: Preserve ADR 0001 same-session COLD tests and exact debt release-after-checkpoint tests.
+    task_boundaries: No migration, quarantine workflow, broad debt deletion, provider contract family, or unsupported correctness claim.
+    decision_closure_reason: null
+
+acceptance:
+  - id: acceptance-unchanged-remote-converges
+    criteria: >-
+      Baseline R@A/H0 plus local A-to-B/H1 and unchanged remote ends R@B/H1,
+      new-path record and clean checkpoint with no conflict/deferred/pending state.
+    requirement_refs: [REQ-LOCAL-RENAME-EDIT-CONVERGENCE, REQ-COMMIT-LAST-EXISTING]
+  - id: acceptance-remote-change-uses-existing-conflict
+    criteria: >-
+      Changed remote identity/content/path or destination enters configured existing
+      conflict handling before rename/write and preserves the observed version.
+    requirement_refs: [REQ-REMOTE-CHANGE-CONFLICT]
+  - id: acceptance-partial-effect-fresh-resume
+    criteria: >-
+      Every crash/timeout cut re-enters one fresh state next invocation without raw
+      substep retry, rollback rename, pending row, or operation receipt.
+    requirement_refs: [REQ-FRESH-STATE-CLASSIFICATION, REQ-FRESH-CRASH-RECOVERY]
+  - id: acceptance-retryable-has-no-row
+    criteria: >-
+      Exhausted observation/transport error commits no pending state/checkpoint and
+      the next ordinary sync reacquires fresh evidence.
+    requirement_refs: [REQ-RETRYABLE-NO-PENDING]
+  - id: acceptance-legacy-debt-safe-release
+    criteria: >-
+      A v6 row never authorizes effects and is exact-released only by existing
+      successful consequence and safe checkpoint.
+    requirement_refs: [REQ-LEGACY-DEBT-EVIDENCE-ONLY]
+  - id: acceptance-existing-boundaries-only
+    criteria: >-
+      Current IFileSystem/checkpoint/backend contracts are unchanged and no journal,
+      payload, attention, receipt, conditional capability, or new persistent store exists.
+    requirement_refs: [NFR-EXISTING-PROVIDER-BOUNDARY]
+  - id: acceptance-disconnected-progress
+    criteria: >-
+      A failed component stops while a disconnected component finishes its record;
+      the existing global checkpoint remains withheld.
+    requirement_refs: [REQ-DISCONNECTED-COMPONENT-PROGRESS]
+
+dispositions:
+  - decision_input_ref: decision-input-explicit-operation-journal
+    disposition: rejected by confirmed consultation; no durable operation carrier exists
+    adr_refs: [adr-20260902-authorized-operation-journal-with-nonreplaying-attention, adr-20260902-fresh-state-reconciliation-for-rename-edits]
+  - decision_input_ref: decision-input-remove-deferred-outcome
+    disposition: adopted as invocation-local retry/error plus fresh next-sync recomputation
+    contract_refs: [contract-fresh-state-classification, contract-existing-recovery-finalization]
+  - decision_input_ref: decision-input-configured-conflict-resolver
+    disposition: adopted through a transient path-aware adapter into existing auto_merge or duplicate
+    contract_refs: [contract-existing-conflict-adaptation]
+  - decision_input_ref: decision-input-conditional-remote-mutation
+    disposition: rejected as a required new boundary; existing interface snapshot semantics remain explicit
+    adr_refs: [adr-20260902-compound-conflict-resolution-and-conditional-mutation, adr-20260902-fresh-state-reconciliation-for-rename-edits]
+  - decision_input_ref: decision-input-separate-journal-store
+    disposition: rejected; no new store is introduced
+    adr_refs: [adr-20260902-authorized-operation-journal-with-nonreplaying-attention]
+  - decision_input_ref: decision-input-pinned-content
+    disposition: rejected; current local content is acquired within each invocation
+    contract_refs: [contract-fresh-compound-execution]
+  - decision_input_ref: decision-input-observation-derived-phase
+    disposition: adopted as wholly fresh classification with no phase field
+    contract_refs: [contract-fresh-state-classification]
+  - decision_input_ref: decision-input-smaller-nonjournal-reconstruction
+    disposition: adopted by explicit consultation as current local/baseline/remote reconciliation
+    adr_refs: [adr-20260902-fresh-state-reconciliation-for-rename-edits]
+  - decision_input_ref: decision-input-accepted-deferral-adrs
+    disposition: retain authority/commit-last/exact release and supersede deferred/replay interpretation
+    adr_refs:
+      - adr-0008-logical-identity-admission-fails-closed
+      - adr-20260831-admission-owns-identity-component-decisi
+      - adr-20260831-admission-owned-local-rename-constraint-lifecycle
+      - adr-20260902-fresh-state-reconciliation-for-rename-edits
+  - decision_input_ref: decision-input-journal-attention-authority
+    disposition: rejected; no attention workflow or explicit retry authority exists
+    adr_refs: [adr-20260902-authorized-operation-journal-with-nonreplaying-attention]
+  - decision_input_ref: decision-input-legacy-forward-only
+    disposition: rejected; unchanged v6 evidence uses existing COLD and exact release without new rollout mode
+    contract_refs: [contract-existing-recovery-finalization]
+  - decision_input_ref: DI-CONV-001
+    disposition: rejected as replay authority; retained only as candidate endpoint evidence
+    contract_refs: [contract-fresh-state-classification, contract-existing-recovery-finalization]
+  - decision_input_ref: DI-CONV-002
+    disposition: rejected; consultation selected no journal
+    adr_refs: [adr-20260902-authorized-operation-journal-with-nonreplaying-attention]
+  - decision_input_ref: DI-CONV-003
+    disposition: adopted as fresh six-state reconciliation
+    contract_refs: [contract-fresh-state-classification]
+  - decision_input_ref: DI-CONV-004
+    disposition: rejected as independently schedulable actions; one compound action owns ordering
+    contract_refs: [contract-fresh-compound-execution]
+  - decision_input_ref: DI-CONV-005
+    disposition: preflight-only atomicity claim rejected; existing snapshot boundary is stated without new guard
+    contract_refs: [contract-fresh-compound-execution]
+  - decision_input_ref: DI-CONV-006
+    disposition: adopted; SyncState v6 remains physically unchanged with no migration
+    contract_refs: [contract-existing-recovery-finalization]
+  - decision_input_ref: DI-CONV-007
+    disposition: rejected as rollout gate; current provider interfaces and shared contracts remain
+    contract_refs: [contract-existing-recovery-finalization]
