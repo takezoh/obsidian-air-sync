@@ -65,3 +65,20 @@ cannot be used to claim conditional atomicity or external-writer linearizability
 Completion requires all `AC-*` criteria, all profiles green on the exact head, a clean forbidden-
 surface inspection, and independent review of the historical three integration findings plus the
 twelve critic resolutions.
+
+## Executed evidence
+
+- Exact implementation head: `9b59ca90f0890f72d83efaa2755a89c405bd6074`.
+- `npm run lint`: passed with zero warnings.
+- `npm run lint:bot-repro`: passed; all 29 harness checks passed and the source/config hash check
+  matched.
+- `npm run build`: passed (`tsc --noEmit` and production esbuild bundle).
+- `npm run test:coverage`: passed; 90 test files and 1,723 tests passed. Coverage was 86.47%
+  statements, 81.08% branches, 86.17% functions, and 87.50% lines.
+- `dev-docs lint --conformance`: passed with 23 documents indexed and zero warnings.
+- Each unit also passed its focused test profile before its unit commit; the full suite was rerun
+  after the final proof-gated commit path was integrated.
+- Independent cross-task correctness and test-discipline lenses approved the exact final code head
+  after verifying closure of all blocker/major findings. Final finding closure specifically covers
+  post-preservation R/destination races, baseline-absent variants, public duplicate/auto-merge R+Y
+  paths, resolver-once discrimination, and evidence-issue `partial_error` observability.
