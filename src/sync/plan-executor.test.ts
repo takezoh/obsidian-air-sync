@@ -9,6 +9,7 @@ import {
 	admitDestructivePlan,
 	captureCycleAdmissionSnapshot,
 	type AuthorizedSyncPlan,
+	type FreshRenameAction,
 } from "./plan-admission";
 
 function makeCtx(
@@ -49,6 +50,27 @@ function makePlan(actions: SyncAction[]): AuthorizedSyncPlan {
 	return admitDestructivePlan(captureCycleAdmissionSnapshot(
 		{ actions }, [], observations, scope, "executor-test",
 	)).executable;
+}
+
+async function arrangeFreshRename(ctx: ExecutionContext) {
+	const localFs = ctx.localFs as MockFileSystem;
+	const remoteFs = ctx.remoteFs as MockFileSystem;
+	addFile(localFs, "new.md", "current", 2000);
+	addFile(remoteFs, "old.md", "baseline", 1000);
+	remoteFs.files.get("old.md")!.entity.identityKey = "R";
+	const local = (await localFs.stat("new.md"))!;
+	const remote = (await remoteFs.stat("old.md"))!;
+	const baseline = {
+		path: "old.md", hash: remote.hash, localMtime: 1000, remoteMtime: 1000,
+		localSize: remote.size, remoteSize: remote.size, remoteIdentityKey: "R", syncedAt: 900,
+	};
+	const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
+	stateStore.records.set("old.md", baseline);
+	const action: FreshRenameAction = {
+		path: "new.md", oldPath: "old.md", remotePath: "old.md",
+		action: "rename_remote", freshRenameState: "old_path_baseline", local, remote, baseline,
+	};
+	return { local, remoteFs, stateStore, baseline, action };
 }
 
 // Some suites spy on AdaptivePool.prototype (a global) — restore after each test
@@ -245,6 +267,65 @@ describe("executePlan", () => {
 	});
 
 	describe("rename_remote", () => {
+		it("runs an admitted fresh rename-write as one commit-last action", async () => {
+			const ctx = makeCtx();
+			const { local, remoteFs, stateStore, action } = await arrangeFreshRename(ctx);
+
+			const result = await executePlan(makePlan([action]), ctx);
+
+			expect(result.failed).toEqual([]);
+			expect(readText(remoteFs, "new.md")).toBe("current");
+			expect(remoteFs.files.has("old.md")).toBe(false);
+			expect(stateStore.records.has("old.md")).toBe(false);
+			expect(stateStore.records.get("new.md")?.hash).toBe(local.hash);
+		});
+
+		it("does not retry or commit after a partial fresh rename-write failure", async () => {
+			const ctx = makeCtx();
+			const { remoteFs, stateStore, baseline, action } = await arrangeFreshRename(ctx);
+			const write = vi.spyOn(remoteFs, "write").mockRejectedValue(new Error("write failed"));
+			const rename = vi.spyOn(remoteFs, "rename");
+
+			const result = await executePlan(makePlan([action]), ctx);
+
+			expect(result.failed).toHaveLength(1);
+			expect(rename).toHaveBeenCalledTimes(1);
+			expect(write).toHaveBeenCalledTimes(1);
+			expect(stateStore.records.get("old.md")).toEqual(baseline);
+			expect(stateStore.records.has("new.md")).toBe(false);
+		});
+
+		it.each(["observe", "verify", "commit"] as const)(
+			"leaves the old baseline after the fresh %s boundary fails",
+			async (boundary) => {
+				const ctx = makeCtx();
+				const { remoteFs, stateStore, baseline, action } = await arrangeFreshRename(ctx);
+				const rename = vi.spyOn(remoteFs, "rename");
+				if (boundary === "observe") {
+					const original = remoteFs.stat.bind(remoteFs);
+					let destinationStats = 0;
+					vi.spyOn(remoteFs, "stat").mockImplementation((path) => {
+						if (path === "new.md" && ++destinationStats === 2) {
+							return Promise.reject(new Error("observe failed"));
+						}
+						return original(path);
+					});
+				} else if (boundary === "verify") {
+					vi.spyOn(remoteFs, "read").mockRejectedValue(new Error("verify failed"));
+				} else {
+					vi.spyOn(stateStore, "put").mockRejectedValue(new Error("commit failed"));
+				}
+
+				const result = await executePlan(makePlan([action]), ctx);
+
+				expect(result.failed).toHaveLength(1);
+				expect(rename).toHaveBeenCalledTimes(1);
+				expect(stateStore.records.get("old.md")).toEqual(baseline);
+				expect(stateStore.records.has("new.md")).toBe(false);
+				expect(remoteFs.files.has("old.md")).toBe(false);
+			},
+		);
+
 		it("renames remote file and commits state at new path", async () => {
 			const ctx = makeCtx();
 			const localFs = ctx.localFs as MockFileSystem;

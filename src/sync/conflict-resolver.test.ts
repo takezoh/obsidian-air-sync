@@ -18,6 +18,22 @@ describe("resolveConflict", () => {
 	});
 
 	describe("duplicate strategy", () => {
+		it("adapts different local, remote, and baseline paths while preserving remote content", async () => {
+			const local = addFile(localFs, "new.md", "local current", 2000);
+			const remote = addFile(remoteFs, "old.md", "remote changed", 1500);
+
+			const result = await resolveConflict({
+				path: "new.md", localPath: "new.md", remotePath: "old.md", baselinePath: "old.md",
+				localFs, remoteFs, local, remote,
+			}, "duplicate");
+
+			expect(result).toMatchObject({ action: "duplicated", duplicatePath: "new.conflict.md" });
+			expect(readText(localFs, "new.conflict.md")).toBe("remote changed");
+			expect(readText(remoteFs, "new.conflict.md")).toBe("remote changed");
+			expect(readText(remoteFs, "new.md")).toBe("local current");
+			expect(remoteFs.files.has("old.md")).toBe(false);
+		});
+
 		it("creates a conflict copy when both files exist", async () => {
 			const local = addFile(localFs, "file.md", "local content", 2000);
 			const remote = addFile(remoteFs, "file.md", "remote content", 1000);
@@ -61,6 +77,30 @@ describe("resolveConflict", () => {
 	});
 
 	describe("auto_merge strategy", () => {
+		it("reads base, local, and remote from rename-aware paths", async () => {
+			const base = "one\ntwo\nthree\nfour\nfive\n";
+			const localText = "one\nlocal\nthree\nfour\nfive\n";
+			const remoteText = "one\ntwo\nthree\nfour\nremote\n";
+			const local = addFile(localFs, "new.md", localText, 2000);
+			const remote = addFile(remoteFs, "old.md", remoteText, 2000);
+			const stateStore = createMockStateStore();
+			stateStore.contents.set("old.md", new TextEncoder().encode(base).buffer.slice(0));
+			const baseline: SyncRecord = {
+				path: "old.md", hash: "", localMtime: 1000, remoteMtime: 1000,
+				localSize: base.length, remoteSize: base.length, syncedAt: 900,
+			};
+
+			const result = await resolveConflict({
+				path: "new.md", localPath: "new.md", remotePath: "old.md", baselinePath: "old.md",
+				localFs, remoteFs, local, remote, baseline, stateStore,
+			}, "auto_merge");
+
+			expect(result.action).toBe("merged");
+			expect(readText(localFs, "new.md")).toContain("local");
+			expect(readText(remoteFs, "new.md")).toContain("remote");
+			expect(remoteFs.files.has("old.md")).toBe(false);
+		});
+
 		it("performs 3-way merge when all prerequisites are met", async () => {
 			const base = "line1\nline2\nline3\nline4\nline5\n";
 			const localText = "line1\nlocal-change\nline3\nline4\nline5\n";

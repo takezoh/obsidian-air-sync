@@ -26,6 +26,9 @@ export interface ConflictContext {
 	local?: FileEntity;
 	remote?: FileEntity;
 	prevSync?: SyncRecord;
+	localPath?: string;
+	remotePath?: string;
+	baselinePath?: string;
 	stateStore?: SyncStateStore;
 	logger?: Logger;
 }
@@ -36,13 +39,15 @@ export async function resolveWithStrategy(
 	fallback?: ResolverStrategy,
 ): Promise<ConflictResolutionResult> {
 	const { path, localFs, remoteFs, local, remote } = ctx;
+	const localPath = ctx.localPath ?? path;
+	const remotePath = ctx.remotePath ?? path;
 
 	switch (strategy) {
 		case "keep_newer":
-			return keepNewer(path, localFs, remoteFs, local, remote);
+			return keepNewer(path, localPath, remotePath, localFs, remoteFs, local, remote);
 
 		case "duplicate":
-			return duplicate(path, localFs, remoteFs, local, remote);
+			return duplicate(path, localPath, remotePath, localFs, remoteFs, local, remote);
 
 		case "auto_merge":
 			return attemptThreeWayMerge(ctx, fallback ?? "keep_newer");
@@ -51,12 +56,13 @@ export async function resolveWithStrategy(
 
 async function keepLocal(
 	path: string,
+	localPath: string,
 	localFs: IFileSystem,
 	remoteFs: IFileSystem,
 	local?: FileEntity
 ): Promise<ConflictResolutionResult> {
 	if (local) {
-		const content = await localFs.read(path);
+		const content = await localFs.read(localPath);
 		await remoteFs.write(path, content, local.mtime);
 	} else {
 		await remoteFs.delete(path);
@@ -66,13 +72,15 @@ async function keepLocal(
 
 async function keepRemote(
 	path: string,
+	remotePath: string,
 	localFs: IFileSystem,
 	remoteFs: IFileSystem,
 	remote?: FileEntity
 ): Promise<ConflictResolutionResult> {
 	if (remote) {
-		const content = await remoteFs.read(path);
+		const content = await remoteFs.read(remotePath);
 		await localFs.write(path, content, remote.mtime);
+		if (remotePath !== path) await remoteFs.write(path, content, remote.mtime);
 	} else {
 		await localFs.delete(path);
 	}
@@ -81,6 +89,8 @@ async function keepRemote(
 
 async function keepNewer(
 	path: string,
+	localPath: string,
+	remotePath: string,
 	localFs: IFileSystem,
 	remoteFs: IFileSystem,
 	local?: FileEntity,
@@ -88,10 +98,10 @@ async function keepNewer(
 ): Promise<ConflictResolutionResult> {
 	// If one side is deleted, the other side wins
 	if (!local && remote) {
-		return keepRemote(path, localFs, remoteFs, remote);
+		return keepRemote(path, remotePath, localFs, remoteFs, remote);
 	}
 	if (local && !remote) {
-		return keepLocal(path, localFs, remoteFs, local);
+		return keepLocal(path, localPath, localFs, remoteFs, local);
 	}
 	if (!local && !remote) {
 		return { action: "kept_local" };
@@ -100,23 +110,25 @@ async function keepNewer(
 	// Both exist — compare mtime only when both are known (> 0)
 	if (local!.mtime > 0 && remote!.mtime > 0) {
 		if (local!.mtime > remote!.mtime) {
-			return keepLocal(path, localFs, remoteFs, local);
+			return keepLocal(path, localPath, localFs, remoteFs, local);
 		}
 		if (local!.mtime < remote!.mtime) {
-			return keepRemote(path, localFs, remoteFs, remote);
+			return keepRemote(path, remotePath, localFs, remoteFs, remote);
 		}
 	}
 	// Same mtime or unknown mtime: compare by content hash — if identical, keep local; otherwise tieBreak.
 	// Remote FileEntity.hash is "" for backends that don't compute it on list/stat (e.g. Google Drive);
 	// fall back to remoteChecksum in that case.
 	if (sameContent(local!, remote!)) {
-		return keepLocal(path, localFs, remoteFs, local); // content identical
+		return keepLocal(path, localPath, localFs, remoteFs, local); // content identical
 	}
-	return duplicate(path, localFs, remoteFs, local, remote);
+	return duplicate(path, localPath, remotePath, localFs, remoteFs, local, remote);
 }
 
 async function duplicate(
 	path: string,
+	localPath: string,
+	remotePath: string,
 	localFs: IFileSystem,
 	remoteFs: IFileSystem,
 	local?: FileEntity,
@@ -124,14 +136,14 @@ async function duplicate(
 ): Promise<ConflictResolutionResult> {
 	// Delete-vs-modify: local deleted, remote has content → restore remote version locally
 	if (!local && remote) {
-		const remoteContent = await remoteFs.read(path);
+		const remoteContent = await remoteFs.read(remotePath);
 		await localFs.write(path, remoteContent, remote.mtime);
 		return { action: "duplicated" };
 	}
 
 	// Delete-vs-modify: remote deleted, local has content → restore local version remotely
 	if (local && !remote) {
-		const localContent = await localFs.read(path);
+		const localContent = await localFs.read(localPath);
 		await remoteFs.write(path, localContent, local.mtime);
 		return { action: "duplicated" };
 	}
@@ -142,12 +154,12 @@ async function duplicate(
 	}
 
 	// Both exist: save remote as .conflict duplicate on both sides, keep local at original path
-	const remoteContent = await remoteFs.read(path);
+	const remoteContent = await remoteFs.read(remotePath);
 	const duplicatePath = await generateConflictPath(path, localFs, remoteFs);
 	await localFs.write(duplicatePath, remoteContent, remote!.mtime);
 	await remoteFs.write(duplicatePath, remoteContent, remote!.mtime);
 
-	const localContent = await localFs.read(path);
+	const localContent = await localFs.read(localPath);
 	await remoteFs.write(path, localContent, local!.mtime);
 
 	return { action: "duplicated", duplicatePath };
@@ -195,6 +207,9 @@ async function attemptThreeWayMerge(
 	fallback: ResolverStrategy = "keep_newer",
 ): Promise<ConflictResolutionResult> {
 	const { path, localFs, remoteFs, local, remote, prevSync, stateStore, logger } = ctx;
+	const localPath = ctx.localPath ?? path;
+	const remotePath = ctx.remotePath ?? path;
+	const baselinePath = ctx.baselinePath ?? path;
 	const tag = "auto_merge";
 
 	logger?.debug(`${tag}: attempting 3-way merge`, { path });
@@ -211,7 +226,7 @@ async function attemptThreeWayMerge(
 	}
 
 	// Retrieve the stored base content
-	const prevSyncContent = stateStore ? await stateStore.getContent(path) : undefined;
+	const prevSyncContent = stateStore ? await stateStore.getContent(baselinePath) : undefined;
 	if (!prevSyncContent) {
 		logger?.warn(`${tag}: falling back — no base content in state store`, {
 			path,
@@ -236,9 +251,9 @@ async function attemptThreeWayMerge(
 	const encoder = new TextEncoder();
 
 	const baseText = decoder.decode(prevSyncContent);
-	const localContent = await localFs.read(path);
+	const localContent = await localFs.read(localPath);
 	const localText = decoder.decode(localContent);
-	const remoteContent = await remoteFs.read(path);
+	const remoteContent = await remoteFs.read(remotePath);
 	const remoteText = decoder.decode(remoteContent);
 
 	let mergeResult;
@@ -274,7 +289,7 @@ async function attemptThreeWayMerge(
 				reason: mergeResult.hasConflicts ? "merge produced conflict markers" : "merged content is not valid JSON",
 				outcome: "duplicate",
 			});
-			return duplicate(path, localFs, remoteFs, local, remote);
+			return duplicate(path, localPath, remotePath, localFs, remoteFs, local, remote);
 		}
 	}
 

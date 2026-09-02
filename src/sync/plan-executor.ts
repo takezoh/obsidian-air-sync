@@ -1,7 +1,12 @@
+/* eslint max-lines: ["error", 600] -- executor owns serial fresh rename/write verification and existing phase scheduling. */
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
 import type { ConflictStrategy, SyncAction, SyncActionType } from "./types";
-import type { AuthorizedSyncPlan } from "./plan-admission";
+import {
+	isFreshRenameAction,
+	type AuthorizedSyncPlan,
+	type FreshRenameAction,
+} from "./plan-admission";
 import type { StateCommitterContext } from "./state-committer";
 import type { ConflictResolverContext } from "./conflict-resolver";
 import type { Logger } from "../logging/logger";
@@ -15,6 +20,8 @@ import { decideRetry, sleep } from "./error";
 import type { ExecutionResult } from "./execution-result";
 import type { NormalActionPermit } from "./priority-coordinator";
 import type { LocalMutationBarrier } from "./local-mutation-barrier";
+import { hasRemoteChanged } from "./change-compare";
+import { sameContent } from "./content-identity";
 export type { BlockedAction, CompletedAction, ExecutionResult, FailedAction, ResolvedConflict } from "./execution-result";
 export { toConflictRecords } from "./execution-result";
 
@@ -319,7 +326,7 @@ async function executeAction(
 		// moved → a spurious not-found failure — so renames run without the retry wrapper.
 		const io = () => runActionIO(action, ctx);
 		const execute = async () => {
-			const entities = ACTION_CLASS[action.action].tier === "rename"
+			const entities = isFreshRenameAction(action) || ACTION_CLASS[action.action].tier === "rename"
 				? await io()
 				: await withIoRetry(io, ctx, onRateLimit);
 			await commitAction(action, entities.localEntity, entities.remoteEntity, ctx.committer);
@@ -361,6 +368,7 @@ async function runActionIO(
 	action: SyncAction,
 	ctx: ExecutionContext,
 ): Promise<{ localEntity?: FileEntity; remoteEntity?: FileEntity }> {
+	if (isFreshRenameAction(action)) return runFreshRenameIO(action, ctx);
 	const { localFs, remoteFs } = ctx;
 	const { path } = action;
 
@@ -423,6 +431,71 @@ async function runActionIO(
 	}
 }
 
+async function runFreshRenameIO(
+	action: FreshRenameAction,
+	ctx: ExecutionContext,
+): Promise<{ localEntity?: FileEntity; remoteEntity?: FileEntity }> {
+	const { localFs, remoteFs } = ctx;
+	const local = await localFs.stat(action.path);
+	if (!local || !action.local || !sameContent(local, action.local)) {
+		throw new Error(`Fresh rename local content changed before execution: ${action.path}`);
+	}
+	if (action.freshRenameState === "converged") {
+		return { localEntity: local, remoteEntity: action.remote };
+	}
+	if (action.freshRenameState === "remote_changed" ||
+		action.freshRenameState === "destination_conflict") {
+		throw new Error(`Fresh rename conflict must use conflict execution: ${action.path}`);
+	}
+	const identityKey = action.baseline?.remoteIdentityKey;
+	if (!action.baseline || !identityKey) {
+		throw new Error(`Fresh rename requires an identity-aware baseline: ${action.oldPath}`);
+	}
+	const oldBefore = await remoteFs.stat(action.oldPath);
+	const newBefore = await remoteFs.stat(action.path);
+	let identityObservation: FileEntity;
+	if (action.freshRenameState === "old_path_baseline") {
+		if (!oldBefore || oldBefore.identityKey !== identityKey ||
+			hasRemoteChanged(oldBefore, action.baseline) || newBefore) {
+			throw new Error(`Fresh rename precondition changed: ${action.oldPath}`);
+		}
+		await remoteFs.rename(action.oldPath, action.path);
+		const moved = await remoteFs.stat(action.path);
+		if (!moved || moved.identityKey !== identityKey) {
+			throw new Error(`Fresh rename identity not observed at destination: ${action.path}`);
+		}
+		identityObservation = moved;
+	} else {
+		if (oldBefore || !newBefore || newBefore.identityKey !== identityKey ||
+			hasRemoteChanged(newBefore, action.baseline)) {
+			throw new Error(`Fresh rename write precondition changed: ${action.path}`);
+		}
+		identityObservation = newBefore;
+	}
+	const content = await localFs.read(action.path);
+	const written = await remoteFs.write(action.path, content, local.mtime);
+	const [oldAfter, newAfter, remoteContent] = await Promise.all([
+		remoteFs.stat(action.oldPath), remoteFs.stat(action.path), remoteFs.read(action.path),
+	]);
+	if (oldAfter || !newAfter || !buffersEqual(content, remoteContent)) {
+		throw new Error(`Fresh rename terminal verification failed: ${action.path}`);
+	}
+	return {
+		localEntity: local,
+		remoteEntity: {
+			...written, ...newAfter,
+			identityKey: newAfter.identityKey ?? written.identityKey ?? identityObservation.identityKey,
+		},
+	};
+}
+
+function buffersEqual(left: ArrayBuffer, right: ArrayBuffer): boolean {
+	if (left.byteLength !== right.byteLength) return false;
+	const a = new Uint8Array(left);
+	const b = new Uint8Array(right);
+	return a.every((value, index) => value === b[index]);
+}
+
 async function executeConflictAction(
 	action: SyncAction,
 	ctx: ExecutionContext,
@@ -449,6 +522,11 @@ async function executeConflictAction(
 			baseline: action.baseline,
 			stateStore: ctx.committer.stateStore,
 			logger: ctx.logger,
+			...(isFreshRenameAction(action) ? {
+				localPath: action.path,
+				remotePath: action.remotePath ?? action.remote?.path,
+				baselinePath: action.oldPath,
+			} : {}),
 		};
 
 		// No in-cycle retry: conflict resolution (the `duplicate` strategy) is NOT

@@ -3,6 +3,7 @@ import type { SyncAction, SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
 import type { Logger } from "../logging/logger";
 import { isMergeEligible } from "./merge";
+import { isFreshRenameAction } from "./plan-admission";
 
 export interface StateCommitterContext {
 	stateStore: SyncStateStore;
@@ -72,6 +73,17 @@ export async function commitAction(
 ): Promise<void> {
 	const { path } = action;
 	const { stateStore } = ctx;
+	if (isFreshRenameAction(action)) {
+		const current = await stateStore.get(action.oldPath);
+		if (JSON.stringify(current) !== JSON.stringify(action.baseline)) {
+			throw new Error(`SyncRecord changed before fresh rename commit: ${action.oldPath}`);
+		}
+		const record = buildSyncRecord(localEntity, remoteEntity, path);
+		await stateStore.put(record);
+		await maybeStoreMergeBase(ctx, path, localEntity, record.localSize);
+		await stateStore.delete(action.oldPath);
+		return;
+	}
 
 	switch (action.action) {
 		case "push":

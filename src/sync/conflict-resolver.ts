@@ -12,6 +12,9 @@ export interface ConflictResolverContext {
 	local?: FileEntity;
 	remote?: FileEntity;
 	baseline?: SyncRecord;
+	localPath?: string;
+	remotePath?: string;
+	baselinePath?: string;
 	stateStore?: SyncStateStore;
 	logger?: Logger;
 }
@@ -33,11 +36,13 @@ export async function resolveConflict(
 	ctx: ConflictResolverContext,
 	strategy: ConflictStrategy,
 ): Promise<ConflictResolutionResult> {
+	let result: ConflictResolutionResult;
 	switch (strategy) {
 		case "auto_merge":
-			return resolveAutoMerge(ctx);
+			result = await resolveAutoMerge(ctx);
+			break;
 		case "duplicate":
-			return resolveWithStrategy(
+			result = await resolveWithStrategy(
 				{
 					path: ctx.path,
 					localFs: ctx.localFs,
@@ -47,16 +52,23 @@ export async function resolveConflict(
 					prevSync: ctx.baseline,
 					stateStore: ctx.stateStore,
 					logger: ctx.logger,
+					localPath: ctx.localPath,
+					remotePath: ctx.remotePath,
+					baselinePath: ctx.baselinePath,
 				},
 				"duplicate",
 			);
+			break;
 	}
+	if (ctx.remotePath && ctx.remotePath !== ctx.path) await ctx.remoteFs.delete(ctx.remotePath);
+	return result;
 }
 
 async function resolveAutoMerge(
 	ctx: ConflictResolverContext,
 ): Promise<ConflictResolutionResult> {
-	const { path, localFs, remoteFs, local, remote, baseline, stateStore, logger } = ctx;
+	const { path, localFs, remoteFs, local, remote, baseline, stateStore, logger,
+		localPath, remotePath, baselinePath } = ctx;
 
 	const conflictCtx = {
 		path,
@@ -67,6 +79,9 @@ async function resolveAutoMerge(
 		prevSync: baseline,
 		stateStore,
 		logger,
+		localPath,
+		remotePath,
+		baselinePath,
 	};
 
 	// attemptThreeWayMerge already handles every missing-prerequisite case — a deleted
