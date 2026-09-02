@@ -190,6 +190,45 @@ describe("resolveConflict", () => {
 			expect(read).toHaveBeenCalledTimes(2);
 		});
 
+		it("bounds both checksum-less sources and blocks an unstable additional version", async () => {
+			const local = addFile(localFs, "new.md", "local", 2000);
+			const source = addFile(remoteFs, "old.md", "R", 0);
+			source.identityKey = "R";
+			const occupant = addFile(remoteFs, "new.md", "Y", 0);
+			occupant.identityKey = "Y";
+			for (const entity of [source, occupant]) {
+				entity.hash = "";
+				entity.remoteChecksum = undefined;
+				entity.mtime = 0;
+			}
+			const originalStat = remoteFs.stat.bind(remoteFs);
+			vi.spyOn(remoteFs, "stat").mockImplementation(async (path) => {
+				const entity = await originalStat(path);
+				return entity ? { ...entity, hash: "", remoteChecksum: undefined, mtime: 0 } : null;
+			});
+			const originalRead = remoteFs.read.bind(remoteFs);
+			const reads = new Map<string, number>();
+			vi.spyOn(remoteFs, "read").mockImplementation(async (path) => {
+				const count = (reads.get(path) ?? 0) + 1;
+				reads.set(path, count);
+				if (path === "new.md" && count === 2) {
+					return new TextEncoder().encode("Z").buffer;
+				}
+				return originalRead(path);
+			});
+			const writes = [vi.spyOn(localFs, "write"), vi.spyOn(remoteFs, "write")];
+
+			await expect(prepareConflict({
+				path: "new.md", localPath: "new.md", remotePath: "old.md",
+				remoteIdentitySource: source, additionalRemote: occupant,
+				localFs, remoteFs, local, remote: source, freshRename: true,
+			})).rejects.toMatchObject({ kind: "proof_mismatch" });
+
+			expect(reads.get("old.md")).toBe(2);
+			expect(reads.get("new.md")).toBe(2);
+			for (const write of writes) expect(write).not.toHaveBeenCalled();
+		});
+
 		it("creates a conflict copy when both files exist", async () => {
 			const local = addFile(localFs, "file.md", "local content", 2000);
 			const remote = addFile(remoteFs, "file.md", "remote content", 1000);
@@ -233,6 +272,41 @@ describe("resolveConflict", () => {
 	});
 
 	describe("auto_merge strategy", () => {
+		it("preserves exact primary R and additional Y before merging only the primary", async () => {
+			const base = "one\ntwo\nthree\nfour\nfive\n";
+			const localText = "one\nlocal\nthree\nfour\nfive\n";
+			const remoteText = "one\ntwo\nthree\nfour\nremote\n";
+			const local = addFile(localFs, "new.md", localText, 2000);
+			const source = addFile(remoteFs, "old.md", remoteText, 1500);
+			source.identityKey = "R";
+			const occupant = addFile(remoteFs, "new.md", "foreign Y", 1400);
+			occupant.identityKey = "Y";
+			const stateStore = createMockStateStore();
+			stateStore.contents.set("old.md", new TextEncoder().encode(base).buffer.slice(0));
+			const baseline: SyncRecord = {
+				path: "old.md", hash: "", localMtime: 1000, remoteMtime: 1000,
+				localSize: base.length, remoteSize: base.length,
+				remoteIdentityKey: "R", syncedAt: 900,
+			};
+
+			const result = await resolveConflict({
+				path: "new.md", localPath: "new.md", remotePath: "old.md", baselinePath: "old.md",
+				remoteIdentitySource: source, additionalRemote: occupant,
+				localFs, remoteFs, local, remote: source, baseline, stateStore, freshRename: true,
+			}, "auto_merge");
+
+			expect(result.action).toBe("merged");
+			expect(result.verifiedOutputs).toEqual([
+				{ role: "primary", path: "new.conflict.md", sourcePath: "old.md" },
+				{ role: "additional", path: "new.conflict-2.md", sourcePath: "new.md" },
+			]);
+			expect(readText(remoteFs, "new.conflict.md")).toBe(remoteText);
+			expect(readText(remoteFs, "new.conflict-2.md")).toBe("foreign Y");
+			const target = new TextDecoder().decode(result.targetContent);
+			expect(target).toContain("local");
+			expect(target).toContain("remote");
+		});
+
 		it("reads base, local, and remote from rename-aware paths", async () => {
 			const base = "one\ntwo\nthree\nfour\nfive\n";
 			const localText = "one\nlocal\nthree\nfour\nfive\n";

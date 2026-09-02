@@ -352,7 +352,8 @@ describe("executePlan", () => {
 
 			const result = await executePlan(makePlan([action]), ctx);
 
-			expect(result.failed).toHaveLength(1);
+			expect(result.blocked).toHaveLength(1);
+			expect(result.failed).toEqual([]);
 			expect(rename).not.toHaveBeenCalled();
 			expect(stateStore.records.get("old.md")).toEqual(baseline);
 			expect(stateStore.records.has("new.md")).toBe(false);
@@ -613,6 +614,7 @@ describe("executePlan", () => {
 			const baseline: SyncRecord = {
 				path: "old.md", hash: "baseline", localMtime: 1000, remoteMtime: 1000,
 				localSize: 8, remoteSize: 8, syncedAt: 900,
+				remoteIdentityKey: "R",
 			};
 			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
 			stateStore.records.set("old.md", baseline);
@@ -635,6 +637,39 @@ describe("executePlan", () => {
 			expect(readText(remoteFs, "new.conflict.md")).toBe("foreign");
 			expect(readText(remoteFs, "new.md")).toBe("local current");
 			expect(remoteFs.files.get("new.md")?.entity.identityKey).toBeUndefined();
+			expect(result.succeeded[0]?.terminalFreshProof).toBeDefined();
+		});
+
+		it("converges a vacant target when the tracked remote identity is absent", async () => {
+			const ctx = makeCtx({ conflictStrategy: "duplicate" });
+			const localFs = ctx.localFs as MockFileSystem;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
+			const local = addFile(localFs, "new.md", "local current", 2000);
+			const baseline: SyncRecord = {
+				path: "old.md", hash: "baseline", localMtime: 1000, remoteMtime: 1000,
+				localSize: 8, remoteSize: 8, remoteIdentityKey: "R", syncedAt: 900,
+			};
+			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
+			stateStore.records.set("old.md", baseline);
+			const action: FreshRenameAction = {
+				path: "new.md", oldPath: "old.md", action: "conflict",
+				freshRenameState: "remote_changed", local, baseline,
+				normalizedRenameState: {
+					kind: "baseline_absent_vacant_target",
+					candidate: { kind: "rename", side: "local", oldPath: "old.md", newPath: "new.md",
+						isFolder: false, authority: "reported" },
+					baseline, local,
+				},
+			};
+
+			const result = await executePlan(makePlan([action]), ctx);
+
+			expect(result.failed).toEqual([]);
+			expect(result.blocked).toEqual([]);
+			expect(readText(remoteFs, "new.md")).toBe("local current");
+			expect(remoteFs.files.has("old.md")).toBe(false);
+			expect(stateStore.records.has("old.md")).toBe(false);
+			expect(stateStore.records.has("new.md")).toBe(true);
 			expect(result.succeeded[0]?.terminalFreshProof).toBeDefined();
 		});
 

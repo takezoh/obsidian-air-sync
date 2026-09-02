@@ -468,6 +468,125 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.close();
 		});
 
+		it("converges a tracked local rename plus edit through runSync and releases exact debt", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			const tracker = new LocalChangeTracker();
+			addFile(localFs, "new.md", "local edited", 2000);
+			const remote = addFile(remoteFs, "old.md", "baseline", 1000);
+			remote.identityKey = "R";
+			tracker.markRenamed("new.md", "old.md");
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`, lastSyncedIdentity: "test:root",
+			});
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
+			const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+			remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
+			const deps = createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+				localTracker: tracker,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			const baselineBytes = new TextEncoder().encode("baseline").buffer;
+			await orchestrator.state.put({
+				path: "old.md", hash: await sha256(baselineBytes), localMtime: 1000, remoteMtime: 1000,
+				localSize: 8, remoteSize: 8, remoteIdentityKey: "R", syncedAt: 900,
+			});
+
+			await orchestrator.runSync();
+
+			expect(remoteFs.files.has("old.md")).toBe(false);
+			expect(readText(remoteFs, "new.md")).toBe("local edited");
+			expect(await orchestrator.state.get("old.md")).toBeUndefined();
+			expect(await orchestrator.state.get("new.md")).toBeDefined();
+			expect(commitCheckpoint).toHaveBeenCalledTimes(1);
+			expect(await orchestrator.state.getRenameDebts("test:root")).toEqual([]);
+			expect(tracker.getRenamePairs()).toEqual(new Map());
+			await orchestrator.close();
+		});
+
+		it("preserves third-path R and destination Y once through runSync", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			const tracker = new LocalChangeTracker();
+			addFile(localFs, "new.md", "local edited", 2000);
+			const primary = addFile(remoteFs, "third.md", "remote R changed", 1500);
+			primary.identityKey = "R";
+			const additional = addFile(remoteFs, "new.md", "foreign Y", 1400);
+			additional.identityKey = "Y";
+			tracker.markRenamed("new.md", "old.md");
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`, lastSyncedIdentity: "test:root",
+				conflictStrategy: "duplicate",
+			});
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
+			remoteFs.checkpoint!.getChangedPaths = vi.fn().mockResolvedValue({
+				modified: ["third.md", "new.md"], deleted: ["old.md"],
+				renamed: [{ oldPath: "old.md", newPath: "third.md" }],
+			});
+			const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+			remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
+			const deps = createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+				localTracker: tracker,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			await orchestrator.state.put({
+				path: "old.md", hash: "baseline", localMtime: 1000, remoteMtime: 1000,
+				localSize: 8, remoteSize: 8, remoteIdentityKey: "R", syncedAt: 900,
+			});
+
+			await orchestrator.runSync();
+
+			expect(readText(localFs, "new.conflict.md")).toBe("remote R changed");
+			expect(readText(remoteFs, "new.conflict.md")).toBe("remote R changed");
+			expect(readText(localFs, "new.conflict-2.md")).toBe("foreign Y");
+			expect(readText(remoteFs, "new.conflict-2.md")).toBe("foreign Y");
+			expect(remoteFs.files.has("new.conflict-3.md")).toBe(false);
+			expect(readText(remoteFs, "new.md")).toBe("local edited");
+			expect(remoteFs.files.has("third.md")).toBe(false);
+			expect(commitCheckpoint).toHaveBeenCalledTimes(1);
+			expect(await orchestrator.state.getRenameDebts("test:root")).toEqual([]);
+			await orchestrator.close();
+		});
+
+		it("withholds checkpoint and debt release when fresh terminal proof is blocked", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			const tracker = new LocalChangeTracker();
+			addFile(localFs, "new.md", "local edited", 2000);
+			const remote = addFile(remoteFs, "old.md", "baseline", 1000);
+			remote.identityKey = "R";
+			tracker.markRenamed("new.md", "old.md");
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`, lastSyncedIdentity: "test:root",
+			});
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
+			const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+			remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
+			vi.spyOn(remoteFs, "rename").mockResolvedValue(undefined);
+			const deps = createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+				localTracker: tracker,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			const baselineBytes = new TextEncoder().encode("baseline").buffer;
+			const baseline = {
+				path: "old.md", hash: await sha256(baselineBytes), localMtime: 1000, remoteMtime: 1000,
+				localSize: 8, remoteSize: 8, remoteIdentityKey: "R", syncedAt: 900,
+			};
+			await orchestrator.state.put(baseline);
+
+			await orchestrator.runSync();
+
+			expect(commitCheckpoint).not.toHaveBeenCalled();
+			expect(await orchestrator.state.get("old.md")).toEqual(baseline);
+			expect(await orchestrator.state.get("new.md")).toBeUndefined();
+			expect(await orchestrator.state.getRenameDebts("test:root")).toHaveLength(1);
+			expect(deps.onStatusChange).toHaveBeenLastCalledWith("partial_error");
+			await orchestrator.close();
+		});
+
 		it("treats a legacy row as candidate evidence after orchestrator restart", async () => {
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();

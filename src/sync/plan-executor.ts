@@ -483,7 +483,9 @@ async function runFreshRenameIO(
 	const { localFs, remoteFs } = ctx;
 	const local = await localFs.stat(action.path);
 	if (!local || !action.local || !sameContent(local, action.local)) {
-		throw new Error(`Fresh rename local content changed before execution: ${action.path}`);
+		throw new ConflictPreparationError(
+			"proof_mismatch", `Fresh rename local content changed before execution: ${action.path}`,
+		);
 	}
 	if (action.freshRenameState === "converged") {
 		return { localEntity: local, remoteEntity: action.remote };
@@ -502,18 +504,24 @@ async function runFreshRenameIO(
 	if (action.freshRenameState === "old_path_baseline") {
 		if (!oldBefore || oldBefore.identityKey !== identityKey ||
 			hasRemoteChanged(oldBefore, action.baseline) || newBefore) {
-			throw new Error(`Fresh rename precondition changed: ${action.oldPath}`);
+			throw new ConflictPreparationError(
+				"proof_mismatch", `Fresh rename precondition changed: ${action.oldPath}`,
+			);
 		}
 		await remoteFs.rename(action.oldPath, action.path);
 		const moved = await remoteFs.stat(action.path);
 		if (!moved || moved.identityKey !== identityKey) {
-			throw new Error(`Fresh rename identity not observed at destination: ${action.path}`);
+			throw new ConflictPreparationError(
+				"proof_mismatch", `Fresh rename identity not observed at destination: ${action.path}`,
+			);
 		}
 		identityObservation = moved;
 	} else {
 		if (oldBefore || !newBefore || newBefore.identityKey !== identityKey ||
 			hasRemoteChanged(newBefore, action.baseline)) {
-			throw new Error(`Fresh rename write precondition changed: ${action.path}`);
+			throw new ConflictPreparationError(
+				"proof_mismatch", `Fresh rename write precondition changed: ${action.path}`,
+			);
 		}
 		identityObservation = newBefore;
 	}
@@ -523,7 +531,9 @@ async function runFreshRenameIO(
 		remoteFs.stat(action.oldPath), remoteFs.stat(action.path), remoteFs.read(action.path),
 	]);
 	if (oldAfter || !newAfter || !buffersEqual(content, remoteContent)) {
-		throw new Error(`Fresh rename terminal verification failed: ${action.path}`);
+		throw new ConflictPreparationError(
+			"proof_mismatch", `Fresh rename terminal verification failed: ${action.path}`,
+		);
 	}
 	return {
 		localEntity: local,
@@ -621,7 +631,10 @@ async function executeFreshConflictEffects(
 	const intended = resolution.targetContent.slice(0);
 	const source = action.remoteIdentitySource;
 	const rotationRequired = !!source && source.path !== action.path;
-	if (action.baseline?.remoteIdentityKey && !source) {
+	const trackedSourceIdentity = source?.identityKey;
+	if (action.baseline?.remoteIdentityKey && !source &&
+		action.normalizedRenameState.kind !== "baseline_absent_foreign_target" &&
+		action.normalizedRenameState.kind !== "baseline_absent_vacant_target") {
 		throw new InternalFreshInvariantError(`Tracked fresh conflict omitted identity source: ${action.path}`);
 	}
 
@@ -651,8 +664,7 @@ async function executeFreshConflictEffects(
 		!buffersEqual(intended, localBytes) || !buffersEqual(intended, remoteBytes)) {
 		throw new ConflictPreparationError("proof_mismatch", `Fresh conflict terminal bytes mismatch: ${action.path}`);
 	}
-	const trackedIdentity = action.baseline?.remoteIdentityKey;
-	if (trackedIdentity && remoteEntity.identityKey !== trackedIdentity) {
+	if (trackedSourceIdentity && remoteEntity.identityKey !== trackedSourceIdentity) {
 		throw new ConflictPreparationError("proof_mismatch", `Fresh conflict terminal identity mismatch: ${action.path}`);
 	}
 	const terminalFreshProof = makeTerminalFreshProof(
