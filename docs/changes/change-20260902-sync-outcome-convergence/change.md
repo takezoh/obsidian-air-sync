@@ -2,24 +2,42 @@
 id: change-20260902-sync-outcome-convergence
 kind: change
 title: Reconcile local rename edits without deferred state
-status: draft
+status: done
 created: '2026-09-02'
 profile: sdd@1
-intent: Replace indefinite rename-mismatch replay with per-invocation fresh
-  reconciliation while preserving Admission ownership and commit-last safety.
+intent: Replace indefinite rename-mismatch replay with per-invocation fresh reconciliation
+  while preserving Admission ownership and commit-last safety.
 outcomes:
-- A synchronized regular file renamed and edited locally converges when the remote baseline is unchanged.
-- An observed remote or destination change enters the configured existing conflict behavior before rename/write.
-- Observation, transport, crash, and partial-effect recovery persist no pending operation and reclassify fresh state next invocation.
-- Existing SyncRecord, COLD recovery, checkpoint-last, and exact debt release remain the recovery boundary.
+- A synchronized regular file renamed and edited locally converges when the remote
+  baseline is unchanged.
+- An observed remote or destination change enters the configured existing conflict
+  behavior before rename/write.
+- Observation, transport, crash, and partial-effect recovery persist no pending operation
+  and reclassify fresh state next invocation.
+- Existing SyncRecord, COLD recovery, checkpoint-last, and exact debt release remain
+  the recovery boundary.
+evidence_refs:
+- type: test
+  ref: npm run test:coverage (90 files, 1665 tests passed)
+- type: command
+  ref: npm run lint
+- type: command
+  ref: npm run lint:bot-repro
+- type: command
+  ref: npm run build
 scope:
-- Admission, execution, conflict, finalization, status, and command behavior for one regular-file local rename plus edit.
-- Fresh classification of unchanged, post-rename, converged, remote-changed, destination-conflict, and unknown states.
-- Existing SyncState v6 RenameDebt as candidate endpoint evidence only, never replay authority.
+- Admission, execution, conflict, finalization, status, and command behavior for one
+  regular-file local rename plus edit.
+- Fresh classification of unchanged, post-rename, converged, remote-changed, destination-conflict,
+  and unknown states.
+- Existing SyncState v6 RenameDebt as candidate endpoint evidence only, never replay
+  authority.
 non_goals:
-- Folder renames, rename chains, interactive conflict strategy, or a general workflow engine.
+- Folder renames, rename chains, interactive conflict strategy, or a general workflow
+  engine.
 - Persisted field migration or transformation of SyncState v6.
-- New provider/checkpoint capability, durable recovery workflow, rollback rename, or atomic external-writer guarantee.
+- New provider/checkpoint capability, durable recovery workflow, rollback rename,
+  or atomic external-writer guarantee.
 change_classes:
 - behavior
 - responsibility
@@ -30,7 +48,9 @@ governance:
   reasons:
   - Changes the accepted rename-mismatch deferral and RenameDebt replay consequences.
   - Changes destructive Admission classification and partial-effect recovery behavior.
-  approval_evidence: User confirmed fresh reconciliation without journal, deferred, pending replay, attention workflow, conditional-provider boundary, or operation-bound checkpoint receipt on 2026-09-02.
+  approval_evidence: User confirmed fresh reconciliation without journal, deferred,
+    pending replay, attention workflow, conditional-provider boundary, or operation-bound
+    checkpoint receipt on 2026-09-02.
 members:
 - role: requirements
   path: changes/change-20260902-sync-outcome-convergence/requirements.md
@@ -46,7 +66,8 @@ promotion:
   section: none
   action: none
   item: {}
-  reason: The accepted fresh-state reconciliation ADR owns the durable decision; no existing top-level design document is in the authorized scaffold.
+  reason: The accepted fresh-state reconciliation ADR owns the durable decision; no
+    existing top-level design document is in the authorized scaffold.
 unresolved_decisions: []
 tags:
 - sync
@@ -73,6 +94,11 @@ source_paths:
 - src/sync/plan-admission.test.ts
 summary: Recompute rename-edit work from current local, committed baseline, and fresh
   remote evidence on every invocation, without durable deferred or pending state.
+updated: '2026-09-02'
+promotion_applied_at: '2026-09-02T11:50:30.514913+00:00'
+closure:
+  closed_at: '2026-09-02T11:50:31.924568+00:00'
+  content_hash: sha256:62fde07b6f6e8632589aec38764410c4486164809dfddde55c500d77c2c13abc
 ---
 
 ## Summary

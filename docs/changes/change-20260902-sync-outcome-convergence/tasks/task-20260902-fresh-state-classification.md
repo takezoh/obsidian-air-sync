@@ -2,7 +2,7 @@
 id: task-20260902-fresh-state-classification
 kind: task
 title: unit-fresh-classification-admission
-status: todo
+status: done
 created: '2026-09-02'
 priority: normal
 effort: medium
@@ -17,8 +17,7 @@ pr: null
 tags: []
 owners: []
 relations:
-- type: partOf
-  target: change-20260902-sync-outcome-convergence
+- {type: partOf, target: change-20260902-sync-outcome-convergence}
 source_paths: []
 change: change-20260902-sync-outcome-convergence
 summary: Add fresh-state classification and compound Admission authority without new
@@ -27,6 +26,7 @@ max_diff_loc: 300
 pinned_context:
 - docs/changes/change-20260902-sync-outcome-convergence/tasks/task-20260902-fresh-state-classification.md
 - docs/changes/change-20260902-sync-outcome-convergence/design-plan
+updated: '2026-09-02'
 ---
 
 ## Responsibility

@@ -2,7 +2,7 @@
 id: task-20260902-existing-recovery-finalization
 kind: task
 title: unit-existing-finalization-observability
-status: todo
+status: done
 created: '2026-09-02'
 priority: normal
 effort: medium
@@ -25,10 +25,8 @@ pr: null
 tags: []
 owners: []
 relations:
-- type: partOf
-  target: change-20260902-sync-outcome-convergence
-- type: dependsOn
-  target: task-20260902-unit-fresh-execution-conflict
+- {type: partOf, target: change-20260902-sync-outcome-convergence}
+- {type: dependsOn, target: task-20260902-unit-fresh-execution-conflict}
 source_paths: []
 change: change-20260902-sync-outcome-convergence
 summary: Integrate fresh recovery with existing finalization, legacy release, observability,
@@ -37,6 +35,7 @@ max_diff_loc: 300
 pinned_context:
 - docs/changes/change-20260902-sync-outcome-convergence/tasks/task-20260902-existing-recovery-finalization.md
 - docs/changes/change-20260902-sync-outcome-convergence/design-plan
+updated: '2026-09-02'
 ---
 
 ## Responsibility

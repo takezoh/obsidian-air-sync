@@ -2,7 +2,7 @@
 id: task-20260902-unit-fresh-execution-conflict
 kind: task
 title: unit-fresh-execution-conflict
-status: todo
+status: done
 created: '2026-09-02'
 priority: normal
 effort: medium
@@ -20,10 +20,8 @@ pr: null
 tags: []
 owners: []
 relations:
-- type: partOf
-  target: change-20260902-sync-outcome-convergence
-- type: dependsOn
-  target: task-20260902-fresh-state-classification
+- {type: partOf, target: change-20260902-sync-outcome-convergence}
+- {type: dependsOn, target: task-20260902-fresh-state-classification}
 source_paths: []
 change: change-20260902-sync-outcome-convergence
 summary: Execute/resume the compound outcome and adapt differing paths into existing
@@ -32,6 +30,7 @@ max_diff_loc: 300
 pinned_context:
 - docs/changes/change-20260902-sync-outcome-convergence/tasks/task-20260902-unit-fresh-execution-conflict.md
 - docs/changes/change-20260902-sync-outcome-convergence/design-plan
+updated: '2026-09-02'
 ---
 
 ## Responsibility
