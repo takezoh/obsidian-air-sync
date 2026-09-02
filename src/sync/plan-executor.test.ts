@@ -11,6 +11,7 @@ import {
 	type AuthorizedSyncPlan,
 	type FreshRenameAction,
 } from "./plan-admission";
+import { ConflictPreparationError } from "./conflict-resolver";
 
 function makeCtx(
 	overrides: Partial<ExecutionContext> = {},
@@ -77,6 +78,43 @@ async function arrangeFreshRename(ctx: ExecutionContext) {
 		},
 	};
 	return { local, remoteFs, stateStore, baseline, action };
+}
+
+async function arrangeFreshConflict(ctx: ExecutionContext, withOccupant = false) {
+	const localFs = ctx.localFs as MockFileSystem;
+	const remoteFs = ctx.remoteFs as MockFileSystem;
+	const local = addFile(localFs, "new.md", "local current", 2000);
+	addFile(remoteFs, "old.md", "remote changed", 1500).identityKey = "R";
+	const source = (await remoteFs.stat("old.md"))!;
+	const additional = withOccupant
+		? addFile(remoteFs, "new.md", "foreign occupant", 1400)
+		: undefined;
+	if (additional) additional.identityKey = "Y";
+	const baseline: SyncRecord = {
+		path: "old.md", hash: "baseline", localMtime: 1000, remoteMtime: 1000,
+		localSize: 8, remoteSize: 8, remoteIdentityKey: "R", syncedAt: 900,
+	};
+	const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
+	stateStore.records.set("old.md", baseline);
+	const action: FreshRenameAction = {
+		path: "new.md", oldPath: "old.md", action: "conflict",
+		freshRenameState: "remote_changed", local, remote: source, baseline,
+		remotePath: "old.md", remoteIdentitySource: source,
+		...(additional ? { additionalRemote: additional } : {}),
+		normalizedRenameState: withOccupant ? {
+			kind: "baseline_at_third_foreign_target",
+			candidate: { kind: "rename", side: "local", oldPath: "old.md", newPath: "new.md",
+				isFolder: false, authority: "reported" },
+			baseline, local, primary: { path: "old.md", entity: source },
+			additional: { path: "new.md", entity: additional!, identityKey: "Y" }, relation: "changed",
+		} : {
+			kind: "baseline_at_old_vacant_target",
+			candidate: { kind: "rename", side: "local", oldPath: "old.md", newPath: "new.md",
+				isFolder: false, authority: "reported" },
+			baseline, local, source: { path: "old.md", entity: source }, relation: "changed",
+		},
+	};
+	return { action, localFs, remoteFs, stateStore, baseline };
 }
 
 // Some suites spy on AdaptivePool.prototype (a global) — restore after each test
@@ -452,7 +490,7 @@ describe("executePlan", () => {
 	});
 
 	describe("conflict", () => {
-		it("does not rotate the baseline remote identity inside conflict resolution", async () => {
+		it("preserves then rotates the tracked identity and returns terminal proof", async () => {
 			const ctx = makeCtx({ conflictStrategy: "duplicate" });
 			const localFs = ctx.localFs as MockFileSystem;
 			const remoteFs = ctx.remoteFs as MockFileSystem;
@@ -480,11 +518,194 @@ describe("executePlan", () => {
 			const result = await executePlan(makePlan([action]), ctx);
 
 			expect(result.failed).toEqual([]);
+			expect(result.blocked).toEqual([]);
 			expect(readText(remoteFs, "new.md")).toBe("local current");
 			expect(readText(remoteFs, "new.conflict.md")).toBe("remote changed");
-			expect(readText(remoteFs, "old.md")).toBe("remote changed");
-			expect(remoteFs.files.get("old.md")?.entity.identityKey).toBe("R");
-			expect(stateStore.records.get("new.md")?.remoteIdentityKey).toBeUndefined();
+			expect(remoteFs.files.has("old.md")).toBe(false);
+			expect(remoteFs.files.get("new.md")?.entity.identityKey).toBe("R");
+			expect(result.succeeded[0]?.terminalFreshProof).toBeDefined();
+			expect(result.conflicts[0]?.terminalFreshProof).toBe(
+				result.succeeded[0]?.terminalFreshProof,
+			);
+			expect(stateStore.records.get("new.md")?.remoteIdentityKey).toBe("R");
+		});
+
+		it("blocks incomplete preservation coverage before any original-path effect", async () => {
+			const ctx = makeCtx({ conflictStrategy: "duplicate" });
+			const { action, localFs, remoteFs, stateStore, baseline } = await arrangeFreshConflict(ctx);
+			const localWrite = vi.spyOn(localFs, "write");
+			const remoteWrite = vi.spyOn(remoteFs, "write");
+			const remoteDelete = vi.spyOn(remoteFs, "delete");
+			const remoteRename = vi.spyOn(remoteFs, "rename");
+			ctx.conflictResolver = () => Promise.resolve({
+				action: "duplicated", targetContent: new TextEncoder().encode("local current").buffer,
+				targetMtime: 2000, verifiedOutputs: [],
+			});
+
+			const result = await executePlan(makePlan([action]), ctx);
+
+			expect(result.blocked).toHaveLength(1);
+			expect(result.failed).toEqual([]);
+			expect(localWrite).not.toHaveBeenCalled();
+			expect(remoteWrite).not.toHaveBeenCalled();
+			expect(remoteDelete).not.toHaveBeenCalled();
+			expect(remoteRename).not.toHaveBeenCalled();
+			expect(stateStore.records.get("old.md")).toEqual(baseline);
+			expect(stateStore.records.has("new.md")).toBe(false);
+		});
+
+		it("blocks when rename reports success but the source remains", async () => {
+			const ctx = makeCtx({ conflictStrategy: "duplicate" });
+			const { action, remoteFs, stateStore, baseline } = await arrangeFreshConflict(ctx);
+			vi.spyOn(remoteFs, "rename").mockResolvedValue(undefined);
+
+			const result = await executePlan(makePlan([action]), ctx);
+
+			expect(result.blocked).toHaveLength(1);
+			expect(result.failed).toEqual([]);
+			expect(remoteFs.files.has("old.md")).toBe(true);
+			expect(stateStore.records.get("old.md")).toEqual(baseline);
+			expect(stateStore.records.has("new.md")).toBe(false);
+		});
+
+		it("blocks terminal identity mismatch without committing", async () => {
+			const ctx = makeCtx({ conflictStrategy: "duplicate" });
+			const { action, remoteFs, stateStore } = await arrangeFreshConflict(ctx);
+			const originalRename = remoteFs.rename.bind(remoteFs);
+			vi.spyOn(remoteFs, "rename").mockImplementation(async (oldPath, newPath) => {
+				await originalRename(oldPath, newPath);
+				remoteFs.files.get(newPath)!.entity.identityKey = "wrong";
+			});
+
+			const result = await executePlan(makePlan([action]), ctx);
+
+			expect(result.blocked).toHaveLength(1);
+			expect(result.failed).toEqual([]);
+			expect(stateStore.records.has("new.md")).toBe(false);
+		});
+
+		it("blocks terminal byte mismatch without committing", async () => {
+			const ctx = makeCtx({ conflictStrategy: "duplicate" });
+			const { action, remoteFs, stateStore } = await arrangeFreshConflict(ctx);
+			const originalRead = remoteFs.read.bind(remoteFs);
+			let targetReads = 0;
+			vi.spyOn(remoteFs, "read").mockImplementation(async (path) => {
+				const bytes = await originalRead(path);
+				if (path === "new.md" && ++targetReads === 1) {
+					return new TextEncoder().encode("wrong bytes").buffer;
+				}
+				return bytes;
+			});
+
+			const result = await executePlan(makePlan([action]), ctx);
+
+			expect(result.blocked).toHaveLength(1);
+			expect(stateStore.records.has("new.md")).toBe(false);
+		});
+
+		it("does not invent tracked identity authority for a foreign-only target", async () => {
+			const ctx = makeCtx({ conflictStrategy: "duplicate" });
+			const localFs = ctx.localFs as MockFileSystem;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
+			const local = addFile(localFs, "new.md", "local current", 2000);
+			const foreign = addFile(remoteFs, "new.md", "foreign", 1500);
+			foreign.identityKey = "Y";
+			const baseline: SyncRecord = {
+				path: "old.md", hash: "baseline", localMtime: 1000, remoteMtime: 1000,
+				localSize: 8, remoteSize: 8, syncedAt: 900,
+			};
+			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
+			stateStore.records.set("old.md", baseline);
+			const action: FreshRenameAction = {
+				path: "new.md", oldPath: "old.md", action: "conflict",
+				freshRenameState: "destination_conflict", local, remote: foreign, baseline,
+				remotePath: "new.md",
+				normalizedRenameState: {
+					kind: "baseline_absent_foreign_target",
+					candidate: { kind: "rename", side: "local", oldPath: "old.md", newPath: "new.md",
+						isFolder: false, authority: "reported" },
+					baseline, local, additional: { path: "new.md", entity: foreign, identityKey: "Y" },
+				},
+			};
+
+			const result = await executePlan(makePlan([action]), ctx);
+
+			expect(result.failed).toEqual([]);
+			expect(result.blocked).toEqual([]);
+			expect(readText(remoteFs, "new.conflict.md")).toBe("foreign");
+			expect(readText(remoteFs, "new.md")).toBe("local current");
+			expect(remoteFs.files.get("new.md")?.entity.identityKey).toBeUndefined();
+			expect(result.succeeded[0]?.terminalFreshProof).toBeDefined();
+		});
+
+		it.each(["delete", "rename", "local_write", "remote_write", "terminal_read"] as const)(
+			"does not commit, retry, or roll back after the %s cut fails",
+			async (cut) => {
+				const ctx = makeCtx({ conflictStrategy: "duplicate" });
+				const { action, localFs, remoteFs, stateStore, baseline } =
+					await arrangeFreshConflict(ctx, true);
+				const originalLocalWrite = localFs.write.bind(localFs);
+				const originalRemoteWrite = remoteFs.write.bind(remoteFs);
+				const originalRemoteRead = remoteFs.read.bind(remoteFs);
+				const deleteSpy = vi.spyOn(remoteFs, "delete");
+				const renameSpy = vi.spyOn(remoteFs, "rename");
+				if (cut === "delete") deleteSpy.mockRejectedValue(new Error("delete cut"));
+				if (cut === "rename") renameSpy.mockRejectedValue(new Error("rename cut"));
+				const localWrite = vi.spyOn(localFs, "write").mockImplementation((path, bytes, mtime) =>
+					cut === "local_write" && path === "new.md"
+						? Promise.reject(new Error("local write cut"))
+						: originalLocalWrite(path, bytes, mtime));
+				const remoteWrite = vi.spyOn(remoteFs, "write").mockImplementation((path, bytes, mtime) =>
+					cut === "remote_write" && path === "new.md"
+						? Promise.reject(new Error("remote write cut"))
+						: originalRemoteWrite(path, bytes, mtime));
+				let targetReads = 0;
+				vi.spyOn(remoteFs, "read").mockImplementation((path) =>
+					cut === "terminal_read" && path === "new.md" && ++targetReads === 2
+						? Promise.reject(new Error("terminal read cut"))
+						: originalRemoteRead(path));
+
+				const result = await executePlan(makePlan([action]), ctx);
+
+				expect(result.failed).toHaveLength(1);
+				expect(result.succeeded).toEqual([]);
+				expect(stateStore.records.get("old.md")).toEqual(baseline);
+				expect(stateStore.records.has("new.md")).toBe(false);
+				expect(deleteSpy.mock.calls.filter(([path]) => path === "new.md")).toHaveLength(1);
+				expect(renameSpy).toHaveBeenCalledTimes(cut === "delete" ? 0 : 1);
+				expect(localWrite.mock.calls.filter(([path]) => path === "new.md").length).toBeLessThanOrEqual(1);
+				expect(remoteWrite.mock.calls.filter(([path]) => path === "new.md").length).toBeLessThanOrEqual(1);
+				if (cut === "local_write" || cut === "remote_write" || cut === "terminal_read") {
+					expect(remoteFs.files.has("old.md")).toBe(false);
+				}
+			},
+		);
+
+		it("fails fast on a resolver invariant contradiction", async () => {
+			const ctx = makeCtx({ conflictStrategy: "duplicate" });
+			const { action } = await arrangeFreshConflict(ctx);
+			ctx.conflictResolver = () => Promise.resolve({
+				action: "duplicated",
+				verifiedOutputs: [{ role: "primary", path: "new.conflict.md", sourcePath: "old.md" }],
+			});
+
+			await expect(executePlan(makePlan([action]), ctx)).rejects.toThrow(
+				"Fresh resolver omitted target content",
+			);
+		});
+
+		it("publishes and aborts through the existing auth path for typed resolver auth failure", async () => {
+			const fatal = vi.fn();
+			const ctx = makeCtx({ conflictStrategy: "duplicate", onActionFatal: fatal });
+			const { action, stateStore } = await arrangeFreshConflict(ctx);
+			const auth = new AuthError("expired", 401);
+			ctx.conflictResolver = () => Promise.reject(new ConflictPreparationError(
+				"external_auth_failure", "source unreadable", { cause: auth },
+			));
+
+			await expect(executePlan(makePlan([action]), ctx)).rejects.toBe(auth);
+			expect(fatal).toHaveBeenCalledWith(expect.anything(), auth);
+			expect(stateStore.records.has("new.md")).toBe(false);
 		});
 
 		it("resolves conflict and records it in both succeeded and conflicts arrays", async () => {
