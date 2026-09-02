@@ -80,8 +80,8 @@ export class SyncOrchestrator {
 	 * cycle cold — a full list × baseline join recovers it regardless of cursor.
 	 */
 	private recoverViaColdScan = false;
-	/** Reported edges retained until a clean checkpoint; remote edges are not durable debt. */
-	private pendingAdmissionEvidence: IdentityEvidence[] = [];
+	/** Invocation-local evidence carried until a clean checkpoint; it never authorizes replay. */
+	private carriedAdmissionEvidence: IdentityEvidence[] = [];
 	private failedActionTracker = new FailedActionTracker();
 	private readonly priorityCoordinator = new PriorityCoordinator();
 	private readonly localMutationBarrier = new LocalMutationBarrier();
@@ -118,7 +118,7 @@ export class SyncOrchestrator {
 		await this.syncMutex.run(async () => {
 			this.deps.logger?.info("Clearing sync state");
 			await this.stateStore.clear();
-			this.pendingAdmissionEvidence = [];
+			this.carriedAdmissionEvidence = [];
 			this.recoverViaColdScan = false;
 			this.syncPending = false;
 		});
@@ -247,20 +247,20 @@ export class SyncOrchestrator {
 				const result = await this.executeWithRetry(forceFullScan, snapshot, scopeFingerprint);
 				if (!result) return; // Fatal error already handled
 
-				const { succeeded, failed, blocked, conflicts, deferred } = result;
+				const { succeeded, failed, blocked, conflicts, retryableErrors } = result;
 				// failed cycle では cursor が committed state より先に進んでいる可能性がある。
 				// ただし cold recovery を一度支払い済みの local-origin action だけが
 				// quarantine 対象なら、次 cycle の cold scan は不要。
 				this.recoverViaColdScan = this.needsColdRecovery(result.result);
-				if (failed > 0 || blocked > 0 || deferred > 0) {
+				if (failed > 0 || blocked > 0 || retryableErrors > 0) {
 					this.deps.onStatusChange("partial_error");
 					this.deps.logger?.warn("Sync completed with errors", {
-						succeeded, conflicts, failed, blocked, deferred,
+						succeeded, conflicts, failed, blocked, retryableErrors,
 					});
 				} else {
 					this.deps.onStatusChange("idle");
 					this.deps.logger?.info("Sync completed", {
-						succeeded, conflicts, failed, blocked, deferred,
+						succeeded, conflicts, failed, blocked, retryableErrors,
 					});
 				}
 
@@ -311,7 +311,7 @@ export class SyncOrchestrator {
 					failed: lastResult.failed.length,
 					blocked: lastResult.blocked.length,
 					conflicts: lastResult.conflicts.length,
-					deferred: lastResult.deferred.length,
+					retryableErrors: lastResult.deferred.length,
 				};
 			} catch (err) {
 				lastError = err;
@@ -413,14 +413,14 @@ export class SyncOrchestrator {
 			`${settings.backendType}:${settings.vaultId}`;
 		const persistedDebts = await this.stateStore.getRenameDebts(debtNamespace);
 		const carriedEvidence = mergeIdentityEvidence(
-			this.pendingAdmissionEvidence,
+			this.carriedAdmissionEvidence,
 			persistedDebts.map(renameDebtEvidence),
 		);
 
 		let changeSet: ChangeSet;
 		let planning: ReturnType<typeof prepareSyncCycleSnapshot>;
 		let capturedRemoteEvidence = false;
-		const hadPendingEvidence = this.pendingAdmissionEvidence.length > 0;
+		const hadCarriedEvidence = this.carriedAdmissionEvidence.length > 0;
 		try {
 			changeSet = await collectChanges({
 				localFs,
@@ -430,8 +430,8 @@ export class SyncOrchestrator {
 				onRemoteIdentityEvidence: (evidence) => {
 					const remoteRenames = evidence.filter((item) => item.kind === "rename");
 					capturedRemoteEvidence ||= remoteRenames.length > 0;
-					this.pendingAdmissionEvidence = mergeIdentityEvidence(
-						this.pendingAdmissionEvidence,
+					this.carriedAdmissionEvidence = mergeIdentityEvidence(
+						this.carriedAdmissionEvidence,
 						remoteRenames,
 					);
 				},
@@ -448,12 +448,12 @@ export class SyncOrchestrator {
 				classifyPath: (path) => this.isExcluded(path) ? "policy_out" : "included",
 				mobileMaxBytes: isMobile ? maxBytes : undefined,
 			}, this.deps.logger);
-			this.pendingAdmissionEvidence = mergeIdentityEvidence(
-				this.pendingAdmissionEvidence,
+			this.carriedAdmissionEvidence = mergeIdentityEvidence(
+				this.carriedAdmissionEvidence,
 				changeSet.identityEvidence.filter((item) => item.kind === "rename"),
 			);
 		} catch (err) {
-			if (capturedRemoteEvidence || hadPendingEvidence) {
+			if (capturedRemoteEvidence || hadCarriedEvidence) {
 				this.recoverViaColdScan = true;
 				throw new PreAdmissionRecoveryError(err);
 			}
@@ -520,9 +520,9 @@ export class SyncOrchestrator {
 
 			await this.priorityCoordinator.finalize(async () => {
 				this.activeBatch?.setPhase("finalizing");
-				this.pendingAdmissionEvidence = await finalizeSyncCycle({
+				this.carriedAdmissionEvidence = await finalizeSyncCycle({
 					admission,
-					result, pendingEvidence: this.pendingAdmissionEvidence, persistedDebts,
+					result, carriedEvidence: this.carriedAdmissionEvidence, persistedDebts,
 					localRenameDebts,
 					checkpoint: remoteFs.checkpoint, scopeFingerprint, stateStore: this.stateStore,
 					checkpointBlocked: this.activeBatch?.isCheckpointBlocked,

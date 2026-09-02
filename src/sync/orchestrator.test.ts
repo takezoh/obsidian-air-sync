@@ -254,7 +254,10 @@ describe("SyncOrchestrator", () => {
 			expect(remoteDelete).not.toHaveBeenCalled();
 			expect(commitCheckpoint).not.toHaveBeenCalled();
 			expect(deps.onStatusChange).toHaveBeenCalledWith("partial_error");
-			expect(deps.notify).toHaveBeenCalledWith("Sync: 1 deferred");
+			expect(deps.notify).toHaveBeenCalledWith("Sync: 1 retryable error");
+			expect(warn).toHaveBeenCalledWith("Sync completed with errors", expect.objectContaining({
+				retryableErrors: 1,
+			}));
 			expect(warn).toHaveBeenCalledWith("Sync plan component deferred", expect.objectContaining({
 				reasons: ["unknown_observation"], paths: ["A.md", "a.md"],
 			}));
@@ -266,7 +269,7 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.close();
 		});
 
-		it("retains a deferred remote rename edge across the same-session forced COLD cycle", async () => {
+		it("retains remote candidate evidence across the same-session forced COLD cycle", async () => {
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();
 			addFile(localFs, "A.md", "changed", 2000);
@@ -388,11 +391,11 @@ describe("SyncOrchestrator", () => {
 			expect(remoteDelete).not.toHaveBeenCalled();
 			expect(commitCheckpoint).not.toHaveBeenCalled();
 			expect(deps.onStatusChange).toHaveBeenLastCalledWith("partial_error");
-			expect(deps.notify).toHaveBeenCalledWith("Sync: 1 deferred");
+			expect(deps.notify).toHaveBeenCalledWith("Sync: 1 retryable error");
 			await orchestrator.close();
 		});
 
-		it("retains pre-Admission evidence and defers recovery to a later COLD cycle", async () => {
+		it("retains pre-Admission evidence for a later ordinary-triggered COLD cycle", async () => {
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();
 			addFile(localFs, "A.md", "changed", 2000);
@@ -469,7 +472,7 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.close();
 		});
 
-		it("replays a deferred local rename from durable debt after orchestrator restart", async () => {
+		it("treats a legacy row as candidate evidence after orchestrator restart", async () => {
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();
 			addFile(localFs, "a.md", "changed", 2000);
@@ -509,7 +512,7 @@ describe("SyncOrchestrator", () => {
 			await restarted.close();
 		});
 
-		it("retires debt after replay proves convergence when checkpoint commit failed after rename I/O", async () => {
+		it("retires exact debt after fresh convergence when checkpoint commit previously failed", async () => {
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();
 			addFile(localFs, "a.md", "old", 1000);

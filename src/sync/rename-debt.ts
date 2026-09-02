@@ -25,7 +25,7 @@ export function mergeIdentityEvidence(
 	return [...merged.values()];
 }
 
-/** Mechanical v6 serialization for membership already selected by Admission. */
+/** Mechanical v6 serialization of candidate endpoints selected by Admission. */
 export function serializeLocalRenameDebts(
 	namespace: string,
 	evidence: readonly LocalRenameEvidence[],
@@ -45,7 +45,7 @@ export function serializeLocalRenameDebts(
 	});
 }
 
-/** Select namespace-local debts whose exact evidence membership Admission released. */
+/** Select exact namespace-local rows released by a fresh proven consequence. */
 export function renameDebtsBoundToEvidence(
 	debts: readonly RenameDebt[],
 	releasedEvidence: readonly IdentityEvidence[],
@@ -57,7 +57,7 @@ export function renameDebtsBoundToEvidence(
 		released.has(renameEvidenceKey(renameDebtEvidence(debt))));
 }
 
-/** Retain evidence not included in Admission's mechanically releasable membership. */
+/** Retain candidate evidence not released by fresh facts and a safe checkpoint. */
 export function unreleasedIdentityEvidence(
 	evidence: readonly IdentityEvidence[],
 	releasedEvidence: readonly IdentityEvidence[],

@@ -7,7 +7,7 @@ export interface SyncCycleResult {
 	failed: number;
 	blocked: number;
 	conflicts: number;
-	deferred: number;
+	retryableErrors: number;
 }
 
 /** Build the human-readable summary shown after a sync cycle completes. */
@@ -31,7 +31,10 @@ export function buildNotificationMessage(result: ExecutionResult): string {
 	if (result.conflicts.length > 0) parts.push(`${result.conflicts.length} conflicts`);
 	if (result.failed.length > 0) parts.push(`${result.failed.length} errors`);
 	if (result.blocked.length > 0) parts.push(`${result.blocked.length} blocked`);
-	if (result.deferred.length > 0) parts.push(`${result.deferred.length} deferred`);
+	if (result.deferred.length > 0) {
+		const label = result.deferred.length === 1 ? "retryable error" : "retryable errors";
+		parts.push(`${result.deferred.length} ${label}`);
+	}
 	return parts.length === 0 ? "Everything up to date" : `Sync: ${parts.join(", ")}`;
 }
 

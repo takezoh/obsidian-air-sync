@@ -12,16 +12,16 @@ function result(deferred = 0): ExecutionResult {
 	};
 }
 
-describe("sync notification deferred visibility", () => {
-	it("includes the number of deferred components", () => {
-		expect(buildNotificationMessage(result(2))).toBe("Sync: 2 deferred");
+describe("sync notification retryable error visibility", () => {
+	it("presents unresolved components as retryable errors", () => {
+		expect(buildNotificationMessage(result(2))).toBe("Sync: 2 retryable errors");
 	});
 
-	it("coalesces deferred components across cycles", () => {
+	it("coalesces retryable errors across cycles", () => {
 		const summary = new CycleSummary();
 		summary.add(result(1));
 		summary.add(result(2));
 
-		expect(summary.message).toBe("Sync: 3 deferred");
+		expect(summary.message).toBe("Sync: 3 retryable errors");
 	});
 });

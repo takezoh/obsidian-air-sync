@@ -10,14 +10,14 @@ const RENAME_DEBT_STORE_NAME = "rename-debt";
 // remoteChecksum field — cold-start drops old records so they re-baseline.
 // v5: content store now holds codec-prefixed bytes (see content-codec.ts);
 // cold-start drops old un-prefixed entries so they re-baseline compressed.
-// v6: SyncRecord gains remoteIdentityKey and the authoritative rename-debt store
-// is created. Cold-start prevents old baselines from being treated as identity-aware.
+// v6: SyncRecord gains remoteIdentityKey and the rename candidate store is created.
+// Rows constrain endpoint acquisition only; fresh observations authorize effects.
 const DB_VERSION = 6;
 
 type RenameDebtSide = "local";
 type RenameDebtDisposition = ScopeDisposition;
 
-/** One unresolved reported rename, scoped to a configured backend/root. */
+/** Legacy reported endpoints retained as non-authoritative COLD acquisition evidence. */
 export interface RenameDebt {
 	namespace: string;
 	side: RenameDebtSide;
@@ -234,7 +234,7 @@ export class SyncStateStore {
 		});
 	}
 
-	/** Clear all sync records, content, and authoritative rename debt. */
+	/** Clear all sync records, content, and legacy rename candidate evidence. */
 	async clear(): Promise<void> {
 		await this.helper.runTransaction(
 			[STORE_NAME, CONTENT_STORE_NAME, RENAME_DEBT_STORE_NAME],

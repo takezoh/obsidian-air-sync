@@ -33,6 +33,7 @@ export interface ExecutionResult {
 	failed: FailedAction[];
 	blocked: BlockedAction[];
 	conflicts: ResolvedConflict[];
+	/** Invocation-local unknowns surfaced as retryable errors; never durable replay state. */
 	deferred: DeferredComponent[];
 }
 

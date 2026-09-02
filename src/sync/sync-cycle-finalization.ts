@@ -11,7 +11,7 @@ import type { IdentityEvidence, SyncAction } from "./types";
 interface SyncCycleFinalizationInput {
 	admission: AdmissionResult;
 	result: ExecutionResult;
-	pendingEvidence: readonly IdentityEvidence[];
+	carriedEvidence: readonly IdentityEvidence[];
 	persistedDebts: readonly RenameDebt[];
 	localRenameDebts: readonly RenameDebt[];
 	checkpoint: IFileSystem["checkpoint"];
@@ -22,8 +22,8 @@ interface SyncCycleFinalizationInput {
 }
 
 /**
- * Owns the commit-last boundary: remote evidence may be forgotten and durable
- * local debt retired only when the corresponding cursor is safe to advance.
+ * Owns the commit-last boundary: invocation-local evidence may be forgotten and an
+ * exact legacy candidate row retired only when the corresponding cursor is safe.
  */
 export async function finalizeSyncCycle(input: SyncCycleFinalizationInput): Promise<IdentityEvidence[]> {
 	const succeeded = new Set(input.result.succeeded.map(({ action }) => action));
@@ -47,7 +47,7 @@ export async function finalizeSyncCycle(input: SyncCycleFinalizationInput): Prom
 			disposition.kind !== "deferred" &&
 			(disposition.kind !== "authorized" ||
 				disposition.actions.every((action) => terminal(disposition, action))));
-	if (!checkpointSafe) return [...input.pendingEvidence];
+	if (!checkpointSafe) return [...input.carriedEvidence];
 
 	await input.checkpoint?.commitCheckpoint({ scopeFingerprint: input.scopeFingerprint });
 	const resolvedDebts = renameDebtsBoundToEvidence(
@@ -56,5 +56,5 @@ export async function finalizeSyncCycle(input: SyncCycleFinalizationInput): Prom
 		input.admission.snapshot.namespace,
 	);
 	await input.stateStore.deleteRenameDebts(resolvedDebts);
-	return unreleasedIdentityEvidence(input.pendingEvidence, releasable);
+	return unreleasedIdentityEvidence(input.carriedEvidence, releasable);
 }

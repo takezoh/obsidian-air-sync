@@ -41,13 +41,13 @@ The same `isExcluded()` gates the vault-event dirty tracking (scheduler), so pus
 
 ## Crash recovery
 
-The remote delta cursor is the engine's "synced up to here" checkpoint. It lives in the backend's IndexedDB store (`META_STORE`), **co-located with the file-map cache and committed in the same transaction** (see [ADR 0001](adr/0001-metadata-cache-is-subordinate-to-commit-last.md)). `finalizeSyncCycle()` calls `remoteFs.checkpoint.commitCheckpoint()` only when there is no failed/deferred work and no unresolved remote rename evidence. A partial or interrupted cycle leaves cursor and cache at the prior committed value.
+The remote delta cursor is the engine's "synced up to here" checkpoint. It lives in the backend's IndexedDB store (`META_STORE`), **co-located with the file-map cache and committed in the same transaction** (see [ADR 0001](adr/0001-metadata-cache-is-subordinate-to-commit-last.md)). `finalizeSyncCycle()` calls `remoteFs.checkpoint.commitCheckpoint()` only when there is no failed work or retryable unknown identity component. A partial or interrupted cycle leaves cursor and cache at the prior committed value.
 
-At the start of each cycle the orchestrator asks `remoteFs.checkpoint.hasCheckpoint()` (async — it reads the store). `false` means first sync, cleared state, or manual rescan and forces COLD. COLD is also forced after a same-session failed/deferred cycle (`recoverViaColdScan`), after a scope-fingerprint change, and while local rename debt exists. A non-clean cycle after an established checkpoint does **not** erase that checkpoint: same-session recovery ignores the advanced live cursor and lists both sides, while a restart rebuilds the FS from the older committed cursor and replays the delta. This distinction is the two-path recovery contract in ADR 0001.
+At the start of each cycle the orchestrator asks `remoteFs.checkpoint.hasCheckpoint()` (async — it reads the store). `false` means first sync, cleared state, or manual rescan and forces COLD. COLD is also forced after a same-session failed/retryable cycle (`recoverViaColdScan`), after a scope-fingerprint change, and while local rename candidate evidence exists. A non-clean cycle after an established checkpoint does **not** erase that checkpoint: same-session recovery ignores the advanced live cursor and lists both sides, while a restart rebuilds the FS from the older committed cursor and freshly reacquires the current state. This distinction is the two-path recovery contract in ADR 0001.
 
 A **same-session failure** also forces at least one subsequent cold cycle. This is load-bearing (ADR 0001 convergence path 2) — `result.failed` does not capture the full recovery gap (folder-rename descendants, remote-only orphans, detect-vs-execute races), so only a full cold scan re-derives it. After that cold recovery has been paid, the orchestrator may temporarily block only the same repeated **local-origin** poison action (`push`, `delete_remote`, `rename_remote`) whose error classification is `permanent` and carries a stable `permanentCode`. The key is `(backendType, action, path, "permanent", permanentCode)`, the same action signature must fail in two consecutive cycles, and the block lasts 5 minutes or until the action/content changes, succeeds, or fails with a non-eligible classification. The two-cycle threshold means the first failure still buys one mandatory cold recovery pass; the 5 minute TTL is a short mobile-friendly cooldown that prevents repeated poison I/O without persisting across plugin reloads. Blocked actions are reported as `result.blocked` and surface as `partial_error`; they are not treated as "Everything up to date".
 
-A **deferred identity component** is different from a failed action: it never reaches the executor, even when it contains zero actions. The cycle ends `partial_error`, reports each deferred disposition exactly once, withholds the checkpoint/scope fingerprint, and marks the next normal trigger for COLD without setting `syncPending` (no tight loop). A local reported rename is first stored as namespace-scoped `RenameDebt`; a remote edge is captured immediately when `getChangedPaths()` yields it, before later `stat`/hash/planning work can throw. Local debt survives restart directly; remote evidence survives restart because its delta checkpoint remains uncommitted. See [ADR 0008](adr/0008-logical-identity-admission-fails-closed.md).
+A **retryable unknown identity component** is different from a failed action: it never reaches the executor, even when it contains zero actions. The cycle ends `partial_error`, reports a retryable error, withholds the checkpoint/scope fingerprint, and marks the next normal trigger for COLD without setting `syncPending` (no tight loop). It creates no pending operation row. A v6 `RenameDebt` row retains only candidate endpoints for COLD acquisition; fresh observations and Admission remain the sole effect authority. An exact row is deleted only after its authorized consequence succeeds (or fresh facts prove no action is needed) and the checkpoint commits. See [ADR 0008](adr/0008-logical-identity-admission-fails-closed.md).
 
 Remote-origin or ambiguous actions (`pull`, `delete_local`, `rename_local`, `conflict`) are never blocked, because advancing past them could hide remote changes. Transient and rate-limit failures are also never blocked; after the connection or provider recovers, the next sync must execute I/O again. Re-seeding failed paths for a "hot" recovery, skipping the first cold scan for "small" failure sets, or advancing the cursor while blindly ignoring remote-origin failures are **ADR 0001 prohibited patterns** (they re-open silent in-session data loss). The cost is **bounded and intentionally retained**: per-action `withIoRetry` keeps most transient/429 failures from ever reaching `result.failed`, and repeated cold scans are avoided only after the recovery debt has been paid and the remaining failure is a permanent local-origin poison action.
 
@@ -178,7 +178,7 @@ rules:
 For a local reported rename in `ChangeSet.identityEvidence`, Admission may shape `delete_remote(oldPath) + push(newPath)` → `rename_remote`. Hash verification is mandatory: `push.local.hash === del.baseline.hash` must hold, confirming content is unchanged. The private local helper enforces this rule for both file and folder renames.
 
 - **File renames** (`optimizeLocalFileRenames`): Consumes the derived file view of local `RenameEvidence`.
-- **Folder renames** (`coalesceLocalFolderRenames`): Consumes the derived folder view and coalesces all mapped descendant actions into one `rename_remote` with `isFolder: true`. Every descendant must pass hash verification; incomplete mappings are later deferred by admission.
+- **Folder renames** (`coalesceLocalFolderRenames`): Consumes the derived folder view and coalesces all mapped descendant actions into one `rename_remote` with `isFolder: true`. Every descendant must pass hash verification; an incomplete mapping becomes an invocation-local retryable unknown.
 
 ### Remote renames — trusted (`optimize-remote-renames.ts`)
 
@@ -186,7 +186,7 @@ When `getChangedPaths()` reports a rename pair, Admission may shape `delete_loca
 
 - **File renames** (`optimizeRemoteFileRenames`): Matches individual rename pairs from the backend. The match requires the old path to be a pure `delete_local` and the new path a `pull`. If a new object was created at the old path, native rename does not coalesce; Admission permits the source-recreation fallback only when stable-ID evidence proves the moved and recreated objects are distinct and the actions preserve both. The private local shaping helper is symmetric: it needs `delete_remote(old)` + `push(new)`.
 - **Folder renames** (`coalesceRemoteFolderRenames`): When a folder-level rename pair has `isFolder: true`, coalesce every `delete_local` child under the old prefix into one `rename_local` (`isFolder: true`). Rules: (1) Absorb a descendant whose matching `pull` is missing into the rename — rewrite its baseline to the new path; a genuine remote delete then propagates as `delete_local` next cycle (bias toward safe deletion). (2) Skip the whole folder (reason `destination_occupied`) if any action under the new prefix has a non-null local entity (`a.local != null`), falling back to the per-file actions. Detection is best-effort; a per-action `localFs.rename` failure is caught and recovers next cycle. See `optimize-remote-renames.ts` for rationale. Remaining file-level pairs fall through to individual file rename optimization.
-  - **Optimization opportunity (not implemented):** a destination-occupied folder rename may be decomposable into per-child mappings, but only a complete mapping whose postconditions pass admission may execute. Incomplete mappings defer; see [ADR 0006](adr/0006-remote-rename-detection-is-order-independent.md) and [ADR 0008](adr/0008-logical-identity-admission-fails-closed.md).
+  - **Optimization opportunity (not implemented):** a destination-occupied folder rename may be decomposable into per-child mappings, but only a complete mapping whose postconditions pass Admission may execute. Incomplete mappings produce retryable errors; see [ADR 0006](adr/0006-remote-rename-detection-is-order-independent.md) and [ADR 0008](adr/0008-logical-identity-admission-fails-closed.md).
 
 ## Destructive admission
 
@@ -195,20 +195,20 @@ When `getChangedPaths()` reports a rename pair, Admission may shape `delete_loca
 and backend/root namespace into one cycle snapshot. The orchestrator passes that value
 once to pure `admitDestructivePlan()`. Admission builds connected components from
 actions plus rename/alias/stable-identity evidence and path observations and emits
-exactly one `authorized`, `resolved_no_action`, or `deferred` disposition per relevant
-component, including evidence-connected components with zero actions.
+exactly one authorized, resolved-no-action, or invocation-local unknown disposition per
+relevant component, including evidence-connected components with zero actions.
 
 Admission alone proves exact deletion authority, native rename, a direction-specific
 scope transition, two-sided convergence, or the recognized source-recreation
 postcondition. Unknown, conflicting, incomplete, or otherwise unproved components
-defer as a whole, including state-only actions. Only actions from `authorized`
+fail closed as a whole, including state-only actions. Only actions from `authorized`
 dispositions are projected into the nominal `AuthorizedSyncPlan`; disconnected
 ordinary work retains proposal order, while a proved component replacement occupies
 that component's place.
 `executePlan()` cannot accept a plain proposal through the supported typed API.
 
 Endpoint dispositions are `included`, `policy_out`, `mobile_deferred`, or `unknown`.
-Any unknown/mobile endpoint and any incomplete folder descendant mapping defers. The
+Any unknown/mobile endpoint and any incomplete folder descendant mapping is retryable. The
 full local/remote direction matrix and rejected identity inferences are recorded in
 [ADR 0008](adr/0008-logical-identity-admission-fails-closed.md).
 
@@ -222,11 +222,12 @@ old-target in-flight cycle cannot recreate debt after teardown.
 
 ### Observability
 
-Admission logs executable/proposed counts and each deferred component's reason,
-evidence kind/origin, endpoint dispositions, and paths (never content or credentials);
-status and the coalesced user notification include the deferred count. Private shaping
-helpers expose typed skip reasons to their focused tests, but do not form an observable
-pipeline stage.
+Admission logs executable/proposed counts and each unresolved component's reason,
+evidence kind/origin, endpoint dispositions, and paths (never content or credentials).
+Status remains `partial_error`, and the coalesced user notification exposes the count
+as retryable errors; there is no pending-operation presentation or recovery control.
+Private shaping helpers expose typed skip reasons to focused tests, but do not form an
+observable pipeline stage.
 
 ## Execution phases (lane/tier scheduling)
 
