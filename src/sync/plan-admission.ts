@@ -240,10 +240,13 @@ function classifyFreshLocalRename(
 		item.requestedPath !== candidate.oldPath && item.requestedPath !== candidate.newPath &&
 		item.entity.identityKey === baselineId);
 	if (baselineElsewhere.length === 1) {
-		if (oldEntity?.identityKey === baselineId || newEntity?.identityKey === baselineId) {
+		if (oldEntity?.identityKey === baselineId || newEntity) {
 			return unknown(candidate, baseline, local);
 		}
 		const elsewhere = baselineElsewhere[0]!;
+		if (scope.byEndpoint.get(elsewhere.requestedPath) !== "included") {
+			return unknown(candidate, baseline, local);
+		}
 		return {
 			state: "remote_changed", candidate, baseline, local,
 			remote: actionEntity(component, "remote", elsewhere.requestedPath) ?? elsewhere.entity,
@@ -259,24 +262,25 @@ function classifyFreshLocalRename(
 	if (oldIsBaseline && !newEntity) {
 		return { state: "old_path_baseline", candidate, baseline, local, remote: oldEntity, remotePath: candidate.oldPath };
 	}
-	if (!oldEntity && newIsBaseline && newEntity) {
+	if (!oldEntity && newEntity) {
 		if (sameContent(local, newEntity)) {
 			return { state: "converged", candidate, baseline, local, remote: newEntity, remotePath: candidate.newPath };
 		}
+		if (!newIsBaseline) return unknown(candidate, baseline, local);
 		return {
 			state: hasRemoteChanged(newEntity, baseline) ? "remote_changed" : "post_rename_old_content",
 			candidate, baseline, local, remote: newEntity, remotePath: candidate.newPath,
 		};
 	}
+	if (newEntity && newEntity.identityKey !== baselineId &&
+		oldEntity?.identityKey === baselineId) {
+		if (!newEntity.identityKey || !oldIsBaseline) return unknown(candidate, baseline, local);
+		return { state: "destination_conflict", candidate, baseline, local, remote: newEntity,
+			remotePath: candidate.newPath, remoteCleanupPath: candidate.oldPath };
+	}
 	if ((oldEntity?.identityKey === baselineId && hasRemoteChanged(oldEntity, baseline)) ||
 		(newIsBaseline && newEntity)) {
 		return { state: "remote_changed", candidate, baseline, local, remote: newEntity ?? oldEntity, remotePath: newEntity ? candidate.newPath : candidate.oldPath };
-	}
-	if (newEntity?.identityKey && newEntity.identityKey !== baselineId && oldIsBaseline) {
-		return {
-			state: "destination_conflict", candidate, baseline, local, remote: newEntity,
-			remotePath: candidate.newPath, remoteCleanupPath: candidate.oldPath,
-		};
 	}
 	return unknown(candidate, baseline, local);
 }

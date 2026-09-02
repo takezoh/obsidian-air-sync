@@ -153,6 +153,30 @@ describe("SyncStateStore", () => {
 		expect(await store.get("a.md")).toEqual(next);
 	});
 
+	it("compareAndMove atomically replaces the exact old-path record and content", async () => {
+		const baseline = makeRecord("old.md", { syncedAt: 1 });
+		const next = makeRecord("new.md", { syncedAt: 2 });
+		await store.put(baseline);
+		await store.putContent("old.md", new Uint8Array([1]).buffer);
+
+		expect(await store.compareAndMove(baseline, next)).toBe(true);
+		expect(await store.get("old.md")).toBeUndefined();
+		expect(await store.getContent("old.md")).toBeUndefined();
+		expect(await store.get("new.md")).toEqual(next);
+	});
+
+	it("compareAndMove preserves both paths when the expected old record is stale", async () => {
+		const baseline = makeRecord("old.md", { syncedAt: 1 });
+		const winner = makeRecord("old.md", { syncedAt: 2 });
+		const existingNew = makeRecord("new.md", { syncedAt: 3 });
+		await store.put(winner);
+		await store.put(existingNew);
+
+		expect(await store.compareAndMove(baseline, makeRecord("new.md", { syncedAt: 4 }))).toBe(false);
+		expect(await store.get("old.md")).toEqual(winner);
+		expect(await store.get("new.md")).toEqual(existingNew);
+	});
+
 	it("delete: removes a record and its content", async () => {
 		const content = new TextEncoder().encode("hello").buffer.slice(0);
 		await store.put(makeRecord("a.md"));

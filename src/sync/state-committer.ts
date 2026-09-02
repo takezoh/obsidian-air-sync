@@ -74,14 +74,11 @@ export async function commitAction(
 	const { path } = action;
 	const { stateStore } = ctx;
 	if (isFreshRenameAction(action)) {
-		const current = await stateStore.get(action.oldPath);
-		if (JSON.stringify(current) !== JSON.stringify(action.baseline)) {
-			throw new Error(`SyncRecord changed before fresh rename commit: ${action.oldPath}`);
-		}
+		if (!action.baseline) throw new Error(`Fresh rename baseline missing: ${action.oldPath}`);
 		const record = buildSyncRecord(localEntity, remoteEntity, path);
-		await stateStore.put(record);
+		const moved = await stateStore.compareAndMove(action.baseline, record);
+		if (!moved) throw new Error(`SyncRecord changed before fresh rename commit: ${action.oldPath}`);
 		await maybeStoreMergeBase(ctx, path, localEntity, record.localSize);
-		await stateStore.delete(action.oldPath);
 		return;
 	}
 

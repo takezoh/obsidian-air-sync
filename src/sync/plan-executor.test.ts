@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { executePlan, toConflictRecords, DESKTOP_TRANSFER_POOL, MOBILE_TRANSFER_POOL } from "./plan-executor";
 import type { ExecutionContext, ResolvedConflict } from "./plan-executor";
-import type { PathObservation, SyncAction } from "./types";
+import type { PathObservation, SyncAction, SyncRecord } from "./types";
 import { createMockLocalFs, createMockRemoteFs, type MockFileSystem, createMockStateStore, addFile, readText, deferred, flush } from "../__mocks__/sync-test-helpers";
 import { AuthError, classifyHttpError } from "../fs/errors";
 import { AdaptivePool } from "../queue/async-queue";
@@ -60,7 +60,7 @@ async function arrangeFreshRename(ctx: ExecutionContext) {
 	remoteFs.files.get("old.md")!.entity.identityKey = "R";
 	const local = (await localFs.stat("new.md"))!;
 	const remote = (await remoteFs.stat("old.md"))!;
-	const baseline = {
+	const baseline: SyncRecord = {
 		path: "old.md", hash: remote.hash, localMtime: 1000, remoteMtime: 1000,
 		localSize: remote.size, remoteSize: remote.size, remoteIdentityKey: "R", syncedAt: 900,
 	};
@@ -295,6 +295,23 @@ describe("executePlan", () => {
 			expect(stateStore.records.has("new.md")).toBe(false);
 		});
 
+		it("rechecks a same-metadata remote checksum change before rename execution", async () => {
+			const ctx = makeCtx();
+			const { remoteFs, stateStore, baseline, action } = await arrangeFreshRename(ctx);
+			baseline.remoteChecksum = { algo: "md5", value: "Q0" };
+			const remote = remoteFs.files.get("old.md")!.entity;
+			remote.remoteChecksum = { algo: "md5", value: "Q1" };
+			remote.hash = "";
+			const rename = vi.spyOn(remoteFs, "rename");
+
+			const result = await executePlan(makePlan([action]), ctx);
+
+			expect(result.failed).toHaveLength(1);
+			expect(rename).not.toHaveBeenCalled();
+			expect(stateStore.records.get("old.md")).toEqual(baseline);
+			expect(stateStore.records.has("new.md")).toBe(false);
+		});
+
 		it.each(["observe", "verify", "commit"] as const)(
 			"leaves the old baseline after the fresh %s boundary fails",
 			async (boundary) => {
@@ -313,7 +330,7 @@ describe("executePlan", () => {
 				} else if (boundary === "verify") {
 					vi.spyOn(remoteFs, "read").mockRejectedValue(new Error("verify failed"));
 				} else {
-					vi.spyOn(stateStore, "put").mockRejectedValue(new Error("commit failed"));
+					vi.spyOn(stateStore, "compareAndMove").mockRejectedValue(new Error("commit failed"));
 				}
 
 				const result = await executePlan(makePlan([action]), ctx);

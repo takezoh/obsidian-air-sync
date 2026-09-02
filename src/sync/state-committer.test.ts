@@ -134,6 +134,33 @@ describe("commitAction", () => {
 		expect(stateStore.records.get("cas-race.md")).toEqual(winner);
 	});
 
+	it("fresh rename commits the old-to-new record move through one atomic CAS", async () => {
+		const baseline = {
+			path: "old.md", hash: "old", localMtime: 1, remoteMtime: 1,
+			localSize: 3, remoteSize: 3, remoteIdentityKey: "R", syncedAt: 1,
+		};
+		stateStore.records.set("old.md", baseline);
+		const compareAndMove = vi.spyOn(stateStore, "compareAndMove");
+		const put = vi.spyOn(stateStore, "put");
+		const remove = vi.spyOn(stateStore, "delete");
+		const { entity: local } = makeFile("new.md", "new", 2);
+		const { entity: remote } = makeFile("new.md", "new", 2);
+		const action = {
+			path: "new.md", oldPath: "old.md", action: "match" as const,
+			freshRenameState: "converged" as const, local, remote, baseline,
+		};
+
+		await commitAction(action, local, remote, makeCtx());
+
+		expect(compareAndMove).toHaveBeenCalledWith(
+			baseline, expect.objectContaining({ path: "new.md" }),
+		);
+		expect(put).not.toHaveBeenCalled();
+		expect(remove).not.toHaveBeenCalled();
+		expect(stateStore.records.has("old.md")).toBe(false);
+		expect(stateStore.records.has("new.md")).toBe(true);
+	});
+
 	it("delete_local: deletes SyncRecord", async () => {
 		stateStore.records.set("e.md", {
 			path: "e.md", hash: "", localMtime: 1000, remoteMtime: 1000,

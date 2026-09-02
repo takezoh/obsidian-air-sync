@@ -192,6 +192,25 @@ export class SyncStateStore {
 		});
 	}
 
+	/** Atomically replace an exact old-path baseline with its new-path record. */
+	async compareAndMove(expected: SyncRecord, record: SyncRecord): Promise<boolean> {
+		return this.helper.runTransaction([STORE_NAME, CONTENT_STORE_NAME], "readwrite", (tx) => {
+			const store = tx.objectStore(STORE_NAME);
+			const contentStore = tx.objectStore(CONTENT_STORE_NAME);
+			const request = store.get(expected.path);
+			let moved = false;
+			request.onsuccess = () => {
+				const current = request.result as SyncRecord | undefined;
+				if (JSON.stringify(current) !== JSON.stringify(expected)) return;
+				store.put(record);
+				store.delete(expected.path);
+				contentStore.delete(expected.path);
+				moved = true;
+			};
+			return () => moved;
+		});
+	}
+
 	/** Delete a sync record by path */
 	async delete(path: string): Promise<void> {
 		await this.helper.runTransaction([STORE_NAME, CONTENT_STORE_NAME], "readwrite", (tx) => {
