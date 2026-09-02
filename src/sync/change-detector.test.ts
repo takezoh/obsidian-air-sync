@@ -894,6 +894,50 @@ describe("collectChanges — temperature selection", () => {
 			}));
 		});
 
+		it("proves a completed rename write across remote checksum algorithms", async () => {
+			const entries = [entry("new.md", "")];
+			entries[0]!.remote = {
+				path: "new.md", pathAuthority: "actual_resolved", identityKey: "R",
+				isDirectory: false, size: 7, mtime: 1000, hash: "",
+				remoteChecksum: { algo: "md5", value: "9a0364b9e99bb480dd25e1f0284c8555" },
+			};
+			const pairs = new Map([["new.md", "old.md"]]);
+			addFile(localFs, "new.md", "content", 1000);
+			const origStat = localFs.stat.bind(localFs);
+			localFs.stat = async (path: string) => {
+				const value = await origStat(path);
+				return value ? { ...value, hash: "local-sha256" } : value;
+			};
+
+			await enrichHashesForRenames(entries, observations, localFs, pairs);
+
+			expect(entries[0]?.remote?.hash).toBe("local-sha256");
+			const remoteObservation = observations.find((item) =>
+				item.side === "remote" && item.requestedPath === "new.md");
+			expect(remoteObservation?.kind).toBe("exact");
+			if (remoteObservation?.kind === "exact") {
+				expect(remoteObservation.entity.hash).toBe("local-sha256");
+			}
+		});
+
+		it("proves cross-algorithm identity when the local rename hash is already present", async () => {
+			const entries = [entry("new.md", "local-sha256")];
+			entries[0]!.remote = {
+				path: "new.md", pathAuthority: "actual_resolved", identityKey: "R",
+				isDirectory: false, size: 7, mtime: 1000, hash: "",
+				remoteChecksum: { algo: "md5", value: "9a0364b9e99bb480dd25e1f0284c8555" },
+			};
+			addFile(localFs, "new.md", "content", 1000);
+			const stat = vi.spyOn(localFs, "stat");
+
+			await enrichHashesForRenames(
+				entries, observations, localFs, new Map([["new.md", "old.md"]]),
+			);
+
+			expect(stat).not.toHaveBeenCalled();
+			expect(entries[0]?.remote?.hash).toBe("local-sha256");
+		});
+
 		it("skips entries where hash is already present", async () => {
 			const entries = [entry("new.md", "existing-hash")];
 			const pairs = new Map([["new.md", "old.md"]]);

@@ -1,3 +1,4 @@
+/* eslint max-lines: ["error", 380] -- admission keeps fresh rename classification beside the authorization boundary it governs. */
 import { buildAdmissionComponents, type AdmissionComponent } from "./plan-admission-graph";
 import type { CycleAdmissionSnapshot } from "./cycle-admission-snapshot";
 export { captureCycleAdmissionSnapshot, type CycleAdmissionSnapshot } from "./cycle-admission-snapshot";
@@ -19,6 +20,7 @@ import type { FileEntity } from "../fs/types";
 import type {
 	IdentityEvidence,
 	LocalRenameEvidence,
+	PathObservation,
 	SyncRecord,
 	SyncAction,
 } from "./types";
@@ -43,6 +45,8 @@ export type FreshRenameAction = SyncAction & {
 	readonly freshRenameState: Exclude<FreshRenameState, "unknown">;
 	readonly oldPath: string;
 	readonly remotePath?: string;
+	/** A second stale source identity to remove only after conflict resolution succeeds. */
+	readonly remoteCleanupPath?: string;
 };
 
 export function isFreshRenameAction(action: SyncAction): action is FreshRenameAction {
@@ -191,6 +195,7 @@ interface FreshRenameClassification {
 	local?: FileEntity;
 	remote?: FileEntity;
 	remotePath?: string;
+	remoteCleanupPath?: string;
 }
 
 function classifyFreshLocalRename(
@@ -230,6 +235,22 @@ function classifyFreshLocalRename(
 	const newEntity = remoteNew.kind === "exact"
 		? actionEntity(component, "remote", candidate.newPath) ?? remoteNew.entity : undefined;
 	const baselineId = baseline.remoteIdentityKey;
+	const baselineElsewhere = component.observations.filter((item): item is Extract<PathObservation, { kind: "exact" }> =>
+		item.side === "remote" && item.kind === "exact" &&
+		item.requestedPath !== candidate.oldPath && item.requestedPath !== candidate.newPath &&
+		item.entity.identityKey === baselineId);
+	if (baselineElsewhere.length === 1) {
+		if (oldEntity?.identityKey === baselineId || newEntity?.identityKey === baselineId) {
+			return unknown(candidate, baseline, local);
+		}
+		const elsewhere = baselineElsewhere[0]!;
+		return {
+			state: "remote_changed", candidate, baseline, local,
+			remote: actionEntity(component, "remote", elsewhere.requestedPath) ?? elsewhere.entity,
+			remotePath: elsewhere.requestedPath,
+		};
+	}
+	if (baselineElsewhere.length > 1) return unknown(candidate, baseline, local);
 	const oldIsBaseline = oldEntity?.identityKey === baselineId && !hasRemoteChanged(oldEntity, baseline);
 	const newIsBaseline = newEntity?.identityKey === baselineId;
 	if (oldEntity?.identityKey === baselineId && newIsBaseline) {
@@ -252,7 +273,10 @@ function classifyFreshLocalRename(
 		return { state: "remote_changed", candidate, baseline, local, remote: newEntity ?? oldEntity, remotePath: newEntity ? candidate.newPath : candidate.oldPath };
 	}
 	if (newEntity?.identityKey && newEntity.identityKey !== baselineId && oldIsBaseline) {
-		return { state: "destination_conflict", candidate, baseline, local, remote: newEntity, remotePath: candidate.newPath };
+		return {
+			state: "destination_conflict", candidate, baseline, local, remote: newEntity,
+			remotePath: candidate.newPath, remoteCleanupPath: candidate.oldPath,
+		};
 	}
 	return unknown(candidate, baseline, local);
 }
@@ -275,9 +299,12 @@ function unknown(candidate: LocalRenameEvidence, baseline: SyncRecord, local?: F
 }
 
 function buildFreshRenameAction(classification: FreshRenameClassification): FreshRenameAction | undefined {
-	const { state, candidate, baseline, local, remote, remotePath } = classification;
+	const { state, candidate, baseline, local, remote, remotePath, remoteCleanupPath } = classification;
 	if (state === "unknown" || !local) return undefined;
-	const shared = { path: candidate.newPath, oldPath: candidate.oldPath, local, remote, baseline, freshRenameState: state, remotePath };
+	const shared = {
+		path: candidate.newPath, oldPath: candidate.oldPath, local, remote, baseline,
+		freshRenameState: state, remotePath, remoteCleanupPath,
+	};
 	if (state === "old_path_baseline") return { ...shared, action: "rename_remote" };
 	if (state === "post_rename_old_content") return { ...shared, action: "push" };
 	if (state === "converged") return { ...shared, action: "match" };

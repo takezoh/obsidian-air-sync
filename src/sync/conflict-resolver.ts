@@ -14,6 +14,7 @@ export interface ConflictResolverContext {
 	baseline?: SyncRecord;
 	localPath?: string;
 	remotePath?: string;
+	remoteCleanupPath?: string;
 	baselinePath?: string;
 	stateStore?: SyncStateStore;
 	logger?: Logger;
@@ -61,6 +62,8 @@ export async function resolveConflict(
 			break;
 	}
 	if (ctx.remotePath && ctx.remotePath !== ctx.path) await ctx.remoteFs.delete(ctx.remotePath);
+	if (ctx.remoteCleanupPath && ctx.remoteCleanupPath !== ctx.path &&
+		ctx.remoteCleanupPath !== ctx.remotePath) await ctx.remoteFs.delete(ctx.remoteCleanupPath);
 	return result;
 }
 

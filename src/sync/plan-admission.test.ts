@@ -821,6 +821,7 @@ describe("admitDestructivePlan", () => {
 		expect(result.executable.actions).toHaveLength(expectedAction ? 1 : 0);
 		expect(result.executable.actions[0]).toMatchObject(expectedAction ? {
 			action: expectedAction, freshRenameState: expectedState, path: "B.md",
+			...(expectedState === "destination_conflict" ? { remoteCleanupPath: "A.md" } : {}),
 		} : {});
 	});
 
@@ -851,6 +852,36 @@ describe("admitDestructivePlan", () => {
 		});
 		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual([]);
 		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual([evidence]);
+	});
+
+	it("routes the tracked remote identity moved to a third path through conflict", () => {
+		const baseline = {
+			path: "A.md", hash: "H0", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, remoteIdentityKey: "R", syncedAt: 1,
+		};
+		const local = freshEntity("B.md", "H1");
+		const movedRemote = freshEntity("C.md", "H2", "R");
+		const evidence = [
+			remoteRename({ side: "local", identityKey: undefined }),
+			remoteRename({ oldPath: "A.md", newPath: "C.md", identityKey: "R" }),
+		];
+		const result = admit([
+			{ path: "A.md", action: "cleanup", baseline },
+			{ path: "B.md", action: "push", local },
+			{ path: "C.md", action: "pull", remote: movedRemote },
+		], evidence, [
+			{ kind: "absent", side: "local", requestedPath: "A.md", authority: "stat" },
+			{ kind: "exact", side: "local", requestedPath: "B.md", entity: local },
+			{ kind: "absent", side: "remote", requestedPath: "A.md", authority: "stat" },
+			{ kind: "absent", side: "remote", requestedPath: "B.md", authority: "stat" },
+			{ kind: "exact", side: "remote", requestedPath: "C.md", entity: movedRemote },
+		], projection({ "A.md": "included", "B.md": "included", "C.md": "included" }));
+
+		expect(result.executable.actions).toHaveLength(1);
+		expect(result.executable.actions[0]).toMatchObject({
+			action: "conflict", freshRenameState: "remote_changed", path: "B.md",
+			remotePath: "C.md", remote: movedRemote,
+		});
 	});
 
 	it("does not mutate the plan, observations, evidence, or projection", () => {
