@@ -1,0 +1,516 @@
+artifact: design-plan-spine
+version: 2
+granularity_profile: boundary-complete
+
+scope_expansion_signals:
+  - id: scope-signal-immutable-cycle-evidence
+    kind: smaller_structural_alternative
+    target_ref: component-cycle-planning
+    witness: >-
+      The local rename candidate is currently exposed beside the source observations and
+      mutable nested collections. Folding candidate derivation into the planning owner and
+      emitting one deeply immutable value removes duplicate authority-bearing views.
+    requirement_refs: [REQ-IMMUTABLE-CYCLE-EVIDENCE, NFR-UNIQUE-OWNERS]
+    authority_refs: [operator-direction-20260902.txt]
+  - id: scope-signal-read-only-conflict-preparation
+    kind: shared_boundary
+    target_ref: contract-conflict-preparation
+    witness: >-
+      Checksum and mtime can both be unavailable, while destructive conflict handling must
+      preserve R and Y. A bounded read-only snapshot boundary is required before the existing
+      resolver becomes the sole artifact writer.
+    requirement_refs: [REQ-BOUNDED-VERSION-SNAPSHOT, REQ-PRESERVE-ALL-REMOTE-VERSIONS]
+    authority_refs: [operator-decision-20260903.json, recovery.json]
+  - id: scope-signal-multi-remote-policy
+    kind: post_consultation_decision
+    target_ref: adr-20260903-preserve-all-observed-remote-versions
+    witness: >-
+      The user selected preserve-all-then-resolve-tracked-identity for R at a third path and
+      foreign Y at the destination, which changes user-visible conflict outputs and therefore
+      requires an explicit accepted policy contract.
+    requirement_refs: [REQ-PRESERVE-ALL-REMOTE-VERSIONS, REQ-RESOLVER-ONCE]
+    authority_refs: [operator-decision-20260903.json]
+  - id: scope-signal-existing-commit-last-authority
+    kind: shared_boundary
+    target_ref: adr-0001-metadata-cache-is-subordinate-to-commit-last
+    witness: >-
+      Both drafts require terminal external proof before durable state and clean checkpoint
+      finalization. This existing accepted ADR is retained only as authority for that
+      commit-last invariant; it introduces no new component, contract, or behavior.
+    requirement_refs: [REQ-PER-FILE-CAS, REQ-CLEAN-FINALIZATION]
+    authority_refs: [recovery.json, adr-0001-metadata-cache-is-subordinate-to-commit-last]
+  - id: scope-signal-existing-conflict-resolver-owner
+    kind: critic_induced_contract
+    target_ref: component-conflict-resolver
+    witness: >-
+      Draft 1 assigns preparation and configured resolution to conflict-resolver.ts, while
+      draft 2 proposed a separate preparation writer. Critic findings require read-only
+      preparation and the existing resolver as the sole naming/write/verification owner, so
+      the final component normalizes existing responsibilities under one owner.
+    requirement_refs: [REQ-BOUNDED-VERSION-SNAPSHOT, REQ-PRESERVE-ALL-REMOTE-VERSIONS, REQ-RESOLVER-ONCE]
+    authority_refs:
+      - issue-d2-preparation-becomes-second-conflict-output-owner
+      - issue-d2-multi-remote-policy-is-hidden-strategy
+      - recovery.json
+  - id: scope-signal-existing-executor-owner
+    kind: critic_induced_contract
+    target_ref: component-plan-executor
+    witness: >-
+      Both drafts retain plan-executor.ts as compound mutation owner. The critic requires the
+      proposed terminal-proof component to be removed and its private proof seam returned to the
+      executor, so this target is an owner normalization rather than a new boundary.
+    requirement_refs: [REQ-EXECUTOR-TERMINAL-PROOF, REQ-PER-FILE-CAS]
+    authority_refs:
+      - issue-d2-terminal-proof-module-is-speculative-boundary
+      - issue-d1-post-admission-unknown-has-no-result-owner
+      - recovery.json
+  - id: scope-signal-state-committer-owner-split
+    kind: critic_induced_contract
+    target_ref: component-state-committer
+    witness: >-
+      Draft 1 grouped state-committer.ts and sync-cycle-finalization.ts in one composite spine
+      component, and draft 2 misassigned the shared contract owner. The final target exposes
+      the existing per-file CAS owner only, resolving the unique-owner findings without a
+      wrapper or new persistence surface.
+    requirement_refs: [REQ-PER-FILE-CAS, NFR-UNIQUE-OWNERS]
+    authority_refs:
+      - issue-d1-commit-owner-is-not-unique-in-spine
+      - issue-d2-commit-finalization-owner-mismatch
+      - recovery.json
+  - id: scope-signal-cycle-finalizer-owner-split
+    kind: critic_induced_contract
+    target_ref: component-cycle-finalizer
+    witness: >-
+      Both drafts identify sync-cycle-finalization.ts as the existing global checkpoint/debt
+      boundary, but their spines combine or misassign its contract. The final target is only
+      the normalized owner of clean checkpoint then exact debt release, separated from state
+      committer to resolve the unique-owner findings.
+    requirement_refs: [REQ-CLEAN-FINALIZATION, NFR-UNIQUE-OWNERS]
+    authority_refs:
+      - issue-d1-commit-owner-is-not-unique-in-spine
+      - issue-d2-commit-finalization-owner-mismatch
+      - recovery.json
+
+requirements:
+  - id: REQ-IMMUTABLE-CYCLE-EVIDENCE
+    type: ubiquitous
+    priority: must
+    statement: >-
+      The system shall derive each local rename candidate exactly once during planning and
+      carry the source observations and candidate in one deeply immutable cycle evidence value.
+  - id: REQ-LEGAL-NORMALIZED-STATE
+    type: ubiquitous
+    priority: must
+    statement: >-
+      The system shall expose only one normalized discriminated union of legal fresh rename
+      states, including explicit evidence_unknown and evidence_contradicted variants.
+  - id: REQ-TOTAL-ADMISSION-DECISION
+    type: event_driven
+    priority: must
+    statement: >-
+      When a normalized fresh rename state is admitted, the system shall derive exactly one
+      total disposition and its exact RenameDebt persist/release membership without I/O.
+  - id: REQ-BOUNDED-VERSION-SNAPSHOT
+    type: unwanted
+    priority: must
+    statement: >-
+      If comparable checksum and known mtime proof are unavailable, then the system shall use
+      bounded stat-read-stat/read byte snapshots and shall terminate explicitly when a stable
+      snapshot cannot be obtained.
+  - id: REQ-PRESERVE-ALL-REMOTE-VERSIONS
+    type: event_driven
+    priority: must
+    statement: >-
+      When tracked identity R is at one included third path and foreign identity Y occupies the
+      destination, the system shall create and verify user-visible exact-byte conflict outputs
+      for both observed remote versions before any destructive effect.
+  - id: REQ-RESOLVER-ONCE
+    type: ubiquitous
+    priority: must
+    statement: >-
+      The system shall use the existing configured auto_merge or duplicate resolver exactly
+      once per authorized component as the only owner of conflict output naming, writing, and
+      verification, applying the configured strategy to primary tracked R only.
+  - id: REQ-EXECUTOR-TERMINAL-PROOF
+    type: unwanted
+    priority: must
+    statement: >-
+      If resolver completion, delete, rename, write, or terminal observation is incomplete or
+      mismatched, then the system shall commit no new-path record or checkpoint and shall not
+      retry a raw mutation or roll it back.
+  - id: REQ-PER-FILE-CAS
+    type: ubiquitous
+    priority: must
+    statement: >-
+      The system shall allow the state committer to perform a per-file exact-baseline CAS only
+      from the executor's branded terminal proof.
+  - id: REQ-CLEAN-FINALIZATION
+    type: state_driven
+    priority: must
+    statement: >-
+      While a cycle is clean and every admitted component has a terminal successful result,
+      the system shall commit the checkpoint before exact RenameDebt release; otherwise it
+      shall perform neither global operation.
+  - id: NFR-NO-NEW-RECOVERY-SURFACE
+    type: architecture
+    priority: must
+    statement: >-
+      The system shall add no durable deferred/pending/journal state, provider API, conflict
+      strategy, workflow engine, rollback mode, or cross-invocation artifact deduplication claim.
+  - id: NFR-UNIQUE-OWNERS
+    type: architecture
+    priority: must
+    statement: >-
+      Planning, normalization/admission, read-only preparation, conflict output, effects and
+      terminal proof, per-file CAS, and global finalization shall each have one named owner.
+
+components:
+  - id: component-cycle-planning
+    kind: existing
+    contract_refs: [contract-cycle-evidence]
+    paths: [src/sync/sync-cycle-planning.ts, src/sync/cycle-admission-snapshot.ts]
+  - id: component-rename-admission
+    kind: existing
+    contract_refs: [contract-legal-normalization, contract-total-admission]
+    paths:
+      - src/sync/plan-admission.ts
+      - src/sync/plan-admission-graph.ts
+      - src/sync/identity-component-decision.ts
+      - src/sync/local-rename-admission.ts
+  - id: component-conflict-resolver
+    kind: existing
+    contract_refs: [contract-conflict-preparation, contract-resolver-preservation]
+    paths: [src/sync/conflict-resolver.ts, src/sync/conflict.ts, src/sync/content-identity.ts]
+  - id: component-plan-executor
+    kind: existing
+    contract_refs: [contract-executor-effects-proof]
+    paths: [src/sync/plan-executor.ts, src/sync/execution-result.ts]
+  - id: component-state-committer
+    kind: existing
+    contract_refs: [contract-per-file-cas]
+    paths: [src/sync/state-committer.ts]
+  - id: component-cycle-finalizer
+    kind: existing
+    contract_refs: [contract-clean-finalization]
+    paths: [src/sync/sync-cycle-finalization.ts]
+
+contracts:
+  - id: contract-cycle-evidence
+    dimension: data-model
+    owner: component-cycle-planning
+    requirement_refs: [REQ-IMMUTABLE-CYCLE-EVIDENCE, NFR-UNIQUE-OWNERS]
+    unit_refs: [unit-cycle-evidence]
+    verification:
+      - id: verify-candidate-derived-once
+        tier: T0
+        command: npm test -- src/sync/plan-admission.test.ts
+      - id: verify-deep-immutability
+        tier: T0
+        command: npm test -- src/sync/plan-admission.test.ts
+  - id: contract-legal-normalization
+    dimension: data-model
+    owner: component-rename-admission
+    requirement_refs: [REQ-LEGAL-NORMALIZED-STATE, NFR-UNIQUE-OWNERS]
+    unit_refs: [unit-normalization-admission]
+    adr_refs: [adr-20260831-admission-owns-identity-component-decisi]
+    verification:
+      - id: verify-legal-union-construction
+        tier: T0
+        command: npm test -- src/sync/plan-admission.test.ts
+      - id: verify-cartesian-illegal-states-unconstructible
+        tier: T0
+        command: npm run build
+    partition:
+      outcomes: [determinate, unknown, conflicting]
+      default_policy: >-
+        The normalizer alone converts raw evidence to one legal variant; missing authority is
+        evidence_unknown and duplicated or mutually inconsistent identity evidence is
+        evidence_contradicted, neither of which carries executable authority.
+  - id: contract-total-admission
+    dimension: decision-and-lifecycle
+    owner: component-rename-admission
+    requirement_refs: [REQ-TOTAL-ADMISSION-DECISION, REQ-PRESERVE-ALL-REMOTE-VERSIONS, NFR-UNIQUE-OWNERS]
+    unit_refs: [unit-normalization-admission]
+    adr_refs:
+      - adr-20260831-admission-owns-identity-component-decisi
+      - adr-20260902-fresh-state-reconciliation-for-rename-edits
+      - adr-20260903-preserve-all-observed-remote-versions
+    verification:
+      - id: verify-total-decision-matrix
+        tier: T0
+        command: npm test -- src/sync/plan-admission.test.ts
+      - id: verify-third-r-foreign-y-authority
+        tier: T0
+        command: npm test -- src/sync/plan-admission.test.ts
+      - id: verify-single-debt-membership-derivation
+        tier: T0
+        command: npm test -- src/sync/plan-admission.test.ts
+    partition:
+      outcomes: [determinate, unknown, conflicting]
+      default_policy: >-
+        Every legal normalized variant maps once to authorized, resolved_no_action,
+        evidence_unknown, or evidence_contradicted. Unknown/contradicted has zero action and
+        no release membership; no later stage reclassifies it.
+  - id: contract-conflict-preparation
+    dimension: evidence-and-resource-bound
+    owner: component-conflict-resolver
+    requirement_refs: [REQ-BOUNDED-VERSION-SNAPSHOT, REQ-PRESERVE-ALL-REMOTE-VERSIONS, NFR-NO-NEW-RECOVERY-SURFACE]
+    unit_refs: [unit-conflict-resolution]
+    adr_refs: [adr-20260903-preserve-all-observed-remote-versions]
+    verification:
+      - id: verify-bounded-stable-byte-snapshot
+        tier: T0
+        command: npm test -- src/sync/conflict-resolver.test.ts
+      - id: verify-preparation-read-only
+        tier: T0
+        command: npm test -- src/sync/conflict-resolver.test.ts
+      - id: verify-preparation-terminal-failures
+        tier: T1
+        command: npm test -- src/sync/plan-executor.test.ts
+    partition:
+      outcomes: [determinate, unknown, conflicting]
+      default_policy: >-
+        Stable exact snapshots produce a prepared_no_rotation or prepared_rotation_required
+        value. Unreadable input maps to external I/O/auth failure; changed rereads map to
+        proof_mismatch blocked. Preparation never writes an artifact or mutates an original.
+  - id: contract-resolver-preservation
+    dimension: integration-contract
+    owner: component-conflict-resolver
+    requirement_refs: [REQ-PRESERVE-ALL-REMOTE-VERSIONS, REQ-RESOLVER-ONCE, NFR-NO-NEW-RECOVERY-SURFACE]
+    unit_refs: [unit-conflict-resolution]
+    adr_refs: [adr-20260903-preserve-all-observed-remote-versions]
+    verification:
+      - id: verify-primary-additional-semantics
+        tier: T0
+        command: npm test -- src/sync/conflict-resolver.test.ts
+      - id: verify-all-output-visibility-and-bytes
+        tier: T1
+        command: npm test -- src/sync/conflict-resolver.test.ts
+      - id: verify-resolver-once-and-retry-numbering
+        tier: T1
+        command: npm test -- src/sync/plan-executor.test.ts
+    partition:
+      outcomes: [determinate, unknown, conflicting]
+      default_policy: >-
+        The resolver succeeds only with a verified output for every ordered preservation
+        obligation. Any naming, write, or readback failure returns external failure before
+        executor destructive effects; it never silently drops an additional version.
+  - id: contract-executor-effects-proof
+    dimension: operation-and-failure
+    owner: component-plan-executor
+    requirement_refs: [REQ-EXECUTOR-TERMINAL-PROOF, REQ-PER-FILE-CAS, NFR-UNIQUE-OWNERS]
+    unit_refs: [unit-executor-terminal-proof]
+    adr_refs: [adr-20260902-fresh-state-reconciliation-for-rename-edits]
+    verification:
+      - id: verify-every-partial-cut-reclassifies
+        tier: T1
+        command: npm test -- src/sync/plan-executor.test.ts
+      - id: verify-terminal-old-target-bytes-proof
+        tier: T0
+        command: npm test -- src/sync/plan-executor.test.ts
+      - id: verify-no-raw-retry-or-rollback
+        tier: T1
+        command: npm test -- src/sync/plan-executor.test.ts
+    partition:
+      outcomes: [determinate, unknown, conflicting]
+      default_policy: >-
+        Success carries a private branded terminal proof. External I/O maps to failed,
+        external auth and proof mismatch map to blocked, and a branded invariant violation
+        fails fast. All non-successes withhold commit and return next invocation to fresh evidence.
+  - id: contract-per-file-cas
+    dimension: persistence
+    owner: component-state-committer
+    requirement_refs: [REQ-PER-FILE-CAS, NFR-UNIQUE-OWNERS]
+    unit_refs: [unit-commit-finalization]
+    adr_refs: [adr-0001-metadata-cache-is-subordinate-to-commit-last]
+    verification:
+      - id: verify-branded-proof-only-cas
+        tier: T0
+        command: npm test -- src/sync/state-committer.test.ts
+      - id: verify-exact-baseline-cas
+        tier: T0
+        command: npm test -- src/sync/state-committer.test.ts
+  - id: contract-clean-finalization
+    dimension: state-lifecycle
+    owner: component-cycle-finalizer
+    requirement_refs: [REQ-CLEAN-FINALIZATION, NFR-NO-NEW-RECOVERY-SURFACE, NFR-UNIQUE-OWNERS]
+    unit_refs: [unit-commit-finalization]
+    adr_refs:
+      - adr-0001-metadata-cache-is-subordinate-to-commit-last
+      - adr-20260902-fresh-state-reconciliation-for-rename-edits
+    verification:
+      - id: verify-checkpoint-before-exact-release
+        tier: T0
+        command: npm test -- src/sync/sync-cycle-finalization.test.ts
+      - id: verify-nonclean-withholds-both
+        tier: T0
+        command: npm test -- src/sync/sync-cycle-finalization.test.ts
+      - id: verify-disconnected-per-file-progress
+        tier: T1
+        command: npm test -- src/sync/sync-cycle-finalization.test.ts
+
+adrs:
+  - id: adr-0001-metadata-cache-is-subordinate-to-commit-last
+    status: accepted
+    decision_input_refs: [decision-input-commit-last]
+  - id: adr-20260831-admission-owns-identity-component-decisi
+    status: accepted
+    decision_input_refs: [decision-input-admission-owner]
+  - id: adr-20260902-fresh-state-reconciliation-for-rename-edits
+    status: accepted
+    decision_input_refs: [decision-input-fresh-reclassification]
+  - id: adr-20260903-preserve-all-observed-remote-versions
+    status: accepted
+    decision_input_refs: [decision-input-multi-remote-preservation]
+    status_provenance:
+      source: user_consultation
+      confidence: confirmed
+      evidence_refs: [operator-decision-20260903.json]
+      rationale: >-
+        The user explicitly selected preserve_all_then_resolve_tracked_identity for R at a
+        third path plus foreign destination Y.
+      consultation_id: multi-remote-preservation-policy
+
+units:
+  - title: unit-cycle-evidence
+    chunk: immutable evidence prerequisite
+    contract_refs: [contract-cycle-evidence]
+    files:
+      - src/sync/sync-cycle-planning.ts
+      - src/sync/cycle-admission-snapshot.ts
+      - src/sync/plan-admission.test.ts
+    depends_on: []
+    acceptance: [AC-CYCLE-01]
+    objective: >-
+      Derive the local rename candidate once in planning and emit a deeply immutable cycle value.
+    output_format: TypeScript boundary refactor and mutation-attempt/candidate-count tests.
+    tool_guidance: Fold or delete the shallow carrier; do not create a replacement component.
+    task_boundaries: No classification, I/O, resolver, persistence, or provider behavior change.
+    decision_closure_reason: All boundary fields and immutability obligations are fixed; no design choice remains.
+  - title: unit-normalization-admission
+    chunk: legal evidence and total authority
+    contract_refs: [contract-legal-normalization, contract-total-admission]
+    files:
+      - src/sync/plan-admission.ts
+      - src/sync/plan-admission-graph.ts
+      - src/sync/identity-component-decision.ts
+      - src/sync/local-rename-admission.ts
+      - src/sync/plan-admission.test.ts
+    depends_on: [unit-cycle-evidence]
+    acceptance: [AC-LEGAL-02, AC-ADMISSION-03]
+    objective: >-
+      Normalize raw evidence into the sole legal union and derive one total decision plus debt membership.
+    output_format: Private discriminated unions, exhaustive switch/table tests, and no-I/O guards.
+    tool_guidance: Keep normalizer and authorizer private to Admission; compile-time exhaustiveness is required.
+    task_boundaries: No filesystem calls, conflict artifacts, executor fallback classification, or state write.
+    decision_closure_reason: Legal variants, precedence, disposition mapping, and lifecycle ownership are fixed.
+  - title: unit-conflict-resolution
+    chunk: bounded preparation and single resolver output
+    contract_refs: [contract-conflict-preparation, contract-resolver-preservation]
+    files:
+      - src/sync/conflict-resolver.ts
+      - src/sync/conflict.ts
+      - src/sync/content-identity.ts
+      - src/sync/conflict-resolver.test.ts
+    depends_on: [unit-normalization-admission]
+    acceptance: [AC-SNAPSHOT-04, AC-PRESERVE-05, AC-RESOLVER-06]
+    objective: >-
+      Build read-only exact snapshots and make one configured resolver invocation create and verify all outputs.
+    output_format: Closed prepared/result unions, resolver extension, and fault/visibility/retry tests.
+    tool_guidance: Reuse existing filesystem calls and conflict allocator; primary is R and additional is Y.
+    task_boundaries: No artifact write in preparation, provider API, new strategy, persistent receipt, or dedup claim.
+    decision_closure_reason: Snapshot bound, ordered inputs, naming, visibility, strategy scope, and retry consequence are fixed.
+  - title: unit-executor-terminal-proof
+    chunk: compound mutation and terminal proof
+    contract_refs: [contract-executor-effects-proof]
+    files:
+      - src/sync/plan-executor.ts
+      - src/sync/execution-result.ts
+      - src/sync/plan-executor.test.ts
+    depends_on: [unit-conflict-resolution]
+    acceptance: [AC-FAILURE-07, AC-PROOF-08]
+    objective: >-
+      Sequence resolver, delete/rename/write, and terminal re-observation under the executor's sole ownership.
+    output_format: Executor-private proof seam, branded success value, and every-cut fault tests.
+    tool_guidance: Keep terminal helper private in plan-executor.ts; do not add a terminal-proof component/file.
+    task_boundaries: No fresh classification, artifact policy, per-file record implementation, checkpoint, retry, or rollback.
+    decision_closure_reason: Effect order, failure union, proof fields, and owner are fixed; no design choice remains.
+  - title: unit-commit-finalization
+    chunk: durable commit boundaries
+    contract_refs: [contract-per-file-cas, contract-clean-finalization]
+    files:
+      - src/sync/state-committer.ts
+      - src/sync/state-committer.test.ts
+      - src/sync/sync-cycle-finalization.ts
+      - src/sync/sync-cycle-finalization.test.ts
+    depends_on: [unit-executor-terminal-proof]
+    acceptance: [AC-CAS-09, AC-FINALIZE-10, AC-BOUNDARY-11]
+    objective: >-
+      Gate per-file CAS on terminal proof and retain separate clean checkpoint then exact debt release ownership.
+    output_format: Type-level proof gate, finalization tests, and forbidden-surface diff inspection.
+    tool_guidance: Preserve disconnected successful per-file commits and existing checkpoint-first ordering.
+    task_boundaries: No composite commit owner, schema migration, broad debt deletion, provider change, or new store.
+    decision_closure_reason: Per-file and global durable owners and all failure conditions are fixed.
+
+acceptance:
+  - id: AC-CYCLE-01
+    criteria: >-
+      A cycle exposes one deeply immutable evidence value and the local rename candidate is derived once.
+    requirement_refs: [REQ-IMMUTABLE-CYCLE-EVIDENCE]
+  - id: AC-LEGAL-02
+    criteria: >-
+      Every permitted raw observation constructs exactly one legal union variant; Cartesian illegal states cannot compile or authorize effects.
+    requirement_refs: [REQ-LEGAL-NORMALIZED-STATE]
+  - id: AC-ADMISSION-03
+    criteria: >-
+      Every legal variant has one total disposition and one debt persist/release set; unknown and contradicted perform zero action.
+    requirement_refs: [REQ-TOTAL-ADMISSION-DECISION]
+  - id: AC-SNAPSHOT-04
+    criteria: >-
+      Missing checksum/mtime obtains stable exact bytes with at most two reads bracketed by stats; unreadable or changing input terminates failed/blocked.
+    requirement_refs: [REQ-BOUNDED-VERSION-SNAPSHOT]
+  - id: AC-PRESERVE-05
+    criteria: >-
+      R at a third path and Y at the destination produces verified exact-byte visible outputs for both before destructive effects.
+    requirement_refs: [REQ-PRESERVE-ALL-REMOTE-VERSIONS]
+  - id: AC-RESOLVER-06
+    criteria: >-
+      The configured resolver is called once, applies strategy to primary R, preserves additional Y, owns every output, and documents numbered duplicates on fresh retry.
+    requirement_refs: [REQ-RESOLVER-ONCE, NFR-NO-NEW-RECOVERY-SURFACE]
+  - id: AC-FAILURE-07
+    criteria: >-
+      Evidence unknown/contradicted is zero-action; I/O is failed, auth/proof mismatch is blocked, and branded invariant mismatch fails fast.
+    requirement_refs: [REQ-EXECUTOR-TERMINAL-PROOF]
+  - id: AC-PROOF-08
+    criteria: >-
+      Every partial cut reacquires fresh legal evidence, while success alone proves old/source absence, target identity, and intended bytes.
+    requirement_refs: [REQ-EXECUTOR-TERMINAL-PROOF]
+  - id: AC-CAS-09
+    criteria: Raw resolver or mutation results cannot call per-file CAS; only branded terminal proof with the exact admitted baseline can.
+    requirement_refs: [REQ-PER-FILE-CAS]
+  - id: AC-FINALIZE-10
+    criteria: >-
+      Only a clean cycle commits checkpoint then exact debt release; disconnected proof-backed per-file records may remain committed when global finalization is withheld.
+    requirement_refs: [REQ-CLEAN-FINALIZATION]
+  - id: AC-BOUNDARY-11
+    criteria: >-
+      The exact-head diff adds no durable recovery state, provider/checkpoint API, strategy, workflow engine, terminal-proof component, raw retry, or rollback.
+    requirement_refs: [NFR-NO-NEW-RECOVERY-SURFACE, NFR-UNIQUE-OWNERS]
+
+dispositions:
+  - decision_input_ref: decision-input-admission-owner
+    disposition: adopted; Admission remains the sole normalization, authorization, and debt-membership owner.
+    adr_refs: [adr-20260831-admission-owns-identity-component-decisi]
+    contract_refs: [contract-legal-normalization, contract-total-admission]
+  - decision_input_ref: decision-input-fresh-reclassification
+    disposition: adopted; every partial cut returns to ordinary fresh legal normalization without replay authority.
+    adr_refs: [adr-20260902-fresh-state-reconciliation-for-rename-edits]
+    contract_refs: [contract-executor-effects-proof, contract-clean-finalization]
+  - decision_input_ref: decision-input-multi-remote-preservation
+    disposition: adopted by explicit user approval; preserve all observed remote versions then resolve primary tracked R once.
+    adr_refs: [adr-20260903-preserve-all-observed-remote-versions]
+    contract_refs: [contract-conflict-preparation, contract-resolver-preservation]
+  - decision_input_ref: decision-input-commit-last
+    disposition: adopted; branded terminal proof gates per-file CAS and clean checkpoint precedes exact debt release.
+    adr_refs: [adr-0001-metadata-cache-is-subordinate-to-commit-last]
+    contract_refs: [contract-per-file-cas, contract-clean-finalization]
