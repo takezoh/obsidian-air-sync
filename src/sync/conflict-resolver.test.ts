@@ -54,6 +54,28 @@ describe("resolveConflict", () => {
 			expect(remoteFs.files.get("new.md")?.entity.identityKey).toBe("R");
 		});
 
+		it("rotates an unchanged checksum-less remote identity using its stable metadata", async () => {
+			const local = addFile(localFs, "new.md", "local current", 2000);
+			const remote = addFile(remoteFs, "new.md", "destination occupant", 1500);
+			remote.identityKey = "Y";
+			const sourceEntity = addFile(remoteFs, "old.md", "baseline stale source", 1000);
+			sourceEntity.identityKey = "R";
+			sourceEntity.hash = "";
+			sourceEntity.remoteChecksum = undefined;
+			const source = (await remoteFs.stat("old.md"))!;
+
+			await resolveConflict({
+				path: "new.md", localPath: "new.md", remotePath: "new.md",
+				remoteIdentitySource: source, baselinePath: "old.md",
+				localFs, remoteFs, local, remote,
+			}, "duplicate");
+
+			expect(readText(remoteFs, "new.conflict.md")).toBe("destination occupant");
+			expect(readText(remoteFs, "new.md")).toBe("local current");
+			expect(remoteFs.files.has("old.md")).toBe(false);
+			expect(remoteFs.files.get("new.md")?.entity.identityKey).toBe("R");
+		});
+
 		it("creates a conflict copy when both files exist", async () => {
 			const local = addFile(localFs, "file.md", "local content", 2000);
 			const remote = addFile(remoteFs, "file.md", "remote content", 1000);

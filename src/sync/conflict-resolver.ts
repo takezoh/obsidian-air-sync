@@ -4,7 +4,7 @@ import type { ConflictStrategy, SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
 import type { Logger } from "../logging/logger";
 import { resolveWithStrategy, type ConflictResolutionResult } from "./conflict";
-import { sameContent } from "./content-identity";
+import { contentKey, sameContent } from "./content-identity";
 
 export interface ConflictResolverContext {
 	path: string;
@@ -73,7 +73,8 @@ export async function resolveConflict(
 async function rotateRemoteIdentityToTarget(ctx: ConflictResolverContext): Promise<void> {
 	const source = ctx.remoteIdentitySource!;
 	const sourceNow = await ctx.remoteFs.stat(source.path);
-	if (!sourceNow || sourceNow.identityKey !== source.identityKey || !sameContent(sourceNow, source)) {
+	if (!sourceNow || sourceNow.identityKey !== source.identityKey ||
+		!sameRemoteVersion(sourceNow, source)) {
 		throw new Error(`Remote identity source changed during conflict resolution: ${source.path}`);
 	}
 	const content = await ctx.localFs.read(ctx.path);
@@ -81,6 +82,13 @@ async function rotateRemoteIdentityToTarget(ctx: ConflictResolverContext): Promi
 	await ctx.remoteFs.delete(ctx.path);
 	await ctx.remoteFs.rename(source.path, ctx.path);
 	await ctx.remoteFs.write(ctx.path, content, local?.mtime ?? ctx.local?.mtime ?? 0);
+}
+
+function sameRemoteVersion(current: FileEntity, observed: FileEntity): boolean {
+	const currentKey = contentKey(current);
+	const observedKey = contentKey(observed);
+	if (currentKey || observedKey) return sameContent(current, observed);
+	return current.size === observed.size && current.mtime > 0 && current.mtime === observed.mtime;
 }
 
 async function resolveAutoMerge(
