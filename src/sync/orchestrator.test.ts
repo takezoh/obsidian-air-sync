@@ -254,11 +254,13 @@ describe("SyncOrchestrator", () => {
 			expect(remoteDelete).not.toHaveBeenCalled();
 			expect(commitCheckpoint).not.toHaveBeenCalled();
 			expect(deps.onStatusChange).toHaveBeenLastCalledWith("partial_error");
-			expect(deps.notify).toHaveBeenCalledWith("Sync: 1 evidence issue");
+			expect(deps.notify).toHaveBeenCalledWith("Sync: 1 error");
 			expect(warn).toHaveBeenCalledWith("Sync completed with errors", expect.objectContaining({
-				evidenceIssues: 1, retryableErrors: 0,
+				failed: 1,
 			}));
-			expect(warn).not.toHaveBeenCalledWith("Sync plan component deferred", expect.anything());
+			expect(warn).toHaveBeenCalledWith("Sync plan component failed Admission", expect.objectContaining({
+				reasons: ["scope_or_authority_missing"],
+			}));
 			expect(await orchestrator.state.getRenameDebts("test:root")).toHaveLength(1);
 			expect(remoteList).toHaveBeenCalledTimes(1);
 
@@ -389,7 +391,7 @@ describe("SyncOrchestrator", () => {
 			expect(remoteDelete).not.toHaveBeenCalled();
 			expect(commitCheckpoint).not.toHaveBeenCalled();
 			expect(deps.onStatusChange).toHaveBeenLastCalledWith("partial_error");
-			expect(deps.notify).toHaveBeenCalledWith("Sync: 1 retryable error");
+			expect(deps.notify).toHaveBeenCalledWith("Sync: 1 error");
 			await orchestrator.close();
 		});
 

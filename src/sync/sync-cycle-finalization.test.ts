@@ -38,7 +38,7 @@ function edge(side: "local" | "remote" = "remote"): IdentityEvidence {
 }
 
 describe("finalizeSyncCycle", () => {
-	it.each(["failed", "blocked", "evidence_issue", "commit_failure"] as const)(
+	it.each(["failed", "blocked", "commit_failure"] as const)(
 		"withholds checkpoint and debt release for a %s terminal outcome",
 		async (outcome) => {
 			const action: SyncAction = { path: "note.md", action: "push" };
@@ -49,16 +49,12 @@ describe("finalizeSyncCycle", () => {
 			const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
 			const deleteRenameDebts = vi.fn().mockResolvedValue(undefined);
 			const result: ExecutionResult = {
-				succeeded: [], superseded: [], conflicts: [], deferred: [], evidenceIssues: [],
+				succeeded: [], superseded: [], conflicts: [],
 				failed: outcome === "failed" || outcome === "commit_failure"
 					? [{ action: admittedAction, error: new Error(outcome) }]
 					: [],
 				blocked: outcome === "blocked" ? [{ action: admittedAction, reason: "blocked" }] : [],
 			};
-			if (outcome === "evidence_issue") {
-				result.evidenceIssues.push({ kind: "evidence_unknown" } as never);
-			}
-
 			await finalizeSyncCycle({
 				admission: admitted, result, carriedEvidence: [], persistedDebts: [], localRenameDebts: [],
 				checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
@@ -69,6 +65,29 @@ describe("finalizeSyncCycle", () => {
 			expect(deleteRenameDebts).not.toHaveBeenCalled();
 		},
 	);
+
+	it("withholds checkpoint and debt release for an Admission failure", async () => {
+		const failedAdmission = admission(
+			[{ path: "note.md", action: "delete_remote" }],
+			[],
+			{ byEndpoint: new Map([["note.md", "included"]]) },
+			[{ kind: "unknown", side: "local", requestedPath: "note.md", reason: "not_observed" }],
+		);
+		const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+		const deleteRenameDebts = vi.fn().mockResolvedValue(undefined);
+
+		expect(failedAdmission.failures).toHaveLength(1);
+		await finalizeSyncCycle({
+			admission: failedAdmission,
+			result: { succeeded: [], superseded: [], conflicts: [], failed: [], blocked: [] },
+			carriedEvidence: [], persistedDebts: [], localRenameDebts: [],
+			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
+			stateStore: { deleteRenameDebts } as unknown as SyncStateStore,
+		});
+
+		expect(commitCheckpoint).not.toHaveBeenCalled();
+		expect(deleteRenameDebts).not.toHaveBeenCalled();
+	});
 
 	it("does not treat a fresh success with omitted terminal proof as clean", async () => {
 		const ordinary = {
@@ -86,7 +105,7 @@ describe("finalizeSyncCycle", () => {
 			admission: admitted,
 			result: {
 				succeeded: [{ action: admittedAction }], superseded: [], failed: [], blocked: [],
-				conflicts: [], deferred: [], evidenceIssues: [],
+				conflicts: [],
 			},
 			carriedEvidence: [], persistedDebts: [], localRenameDebts: [],
 			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
@@ -115,7 +134,7 @@ describe("finalizeSyncCycle", () => {
 			result: {
 				succeeded: [{ action: done! }], superseded: [],
 				failed: [{ action: failed!, error: new Error("commit failed") }], blocked: [],
-				conflicts: [], deferred: [], evidenceIssues: [],
+				conflicts: [],
 			},
 			carriedEvidence: [], persistedDebts: [], localRenameDebts: [],
 			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
@@ -145,7 +164,7 @@ describe("finalizeSyncCycle", () => {
 
 		await finalizeSyncCycle({
 			admission: admitted,
-			result: { succeeded: [], superseded: [admittedAction], failed: [], blocked: [], conflicts: [], deferred: [], evidenceIssues: [] },
+			result: { succeeded: [], superseded: [admittedAction], failed: [], blocked: [], conflicts: [] },
 			carriedEvidence: [], persistedDebts: [], localRenameDebts: [],
 			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
 			stateStore: { deleteRenameDebts } as unknown as SyncStateStore,
@@ -156,7 +175,7 @@ describe("finalizeSyncCycle", () => {
 		commitCheckpoint.mockClear();
 		await finalizeSyncCycle({
 			admission: admitted,
-			result: { succeeded: [], superseded: [{ ...action }], failed: [], blocked: [], conflicts: [], deferred: [], evidenceIssues: [] },
+			result: { succeeded: [], superseded: [{ ...action }], failed: [], blocked: [], conflicts: [] },
 			carriedEvidence: [], persistedDebts: [], localRenameDebts: [],
 			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
 			stateStore: { deleteRenameDebts } as unknown as SyncStateStore,
@@ -175,7 +194,7 @@ describe("finalizeSyncCycle", () => {
 
 		const retained = await finalizeSyncCycle({
 			admission: admitted,
-			result: { succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [], deferred: [], evidenceIssues: [] },
+			result: { succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [] },
 			carriedEvidence: [pending], persistedDebts: [], localRenameDebts: [],
 			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
 			stateStore: { deleteRenameDebts } as unknown as SyncStateStore,
@@ -193,7 +212,7 @@ describe("finalizeSyncCycle", () => {
 			["A.md", "included"], ["a.md", "included"],
 		]) });
 		const result: ExecutionResult = {
-			succeeded: [], superseded: [], failed: [], conflicts: [], deferred: [], evidenceIssues: [],
+			succeeded: [], superseded: [], failed: [], conflicts: [],
 			blocked: [{ action, reason: "quarantined" }],
 		};
 		const commitCheckpoint = vi.fn<IncrementalCheckpoint["commitCheckpoint"]>()
@@ -219,7 +238,7 @@ describe("finalizeSyncCycle", () => {
 
 		await finalizeSyncCycle({
 			admission: admitted,
-			result: { succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [], deferred: [], evidenceIssues: [] },
+			result: { succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [] },
 			carriedEvidence: [], persistedDebts: [], localRenameDebts: [],
 			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
 			stateStore: { deleteRenameDebts } as unknown as SyncStateStore,
@@ -245,7 +264,7 @@ describe("finalizeSyncCycle", () => {
 
 		const retained = await finalizeSyncCycle({
 			admission: admitted,
-			result: { succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [], deferred: [], evidenceIssues: [] },
+			result: { succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [] },
 			carriedEvidence: [pending], persistedDebts: [], localRenameDebts: [],
 			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
 			stateStore: { deleteRenameDebts } as unknown as SyncStateStore,
@@ -264,7 +283,7 @@ describe("finalizeSyncCycle", () => {
 
 		await expect(finalizeSyncCycle({
 			admission: admitted,
-			result: { succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [], deferred: [], evidenceIssues: [] },
+			result: { succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [] },
 			carriedEvidence: [pending], persistedDebts: [], localRenameDebts: [],
 			checkpoint: checkpoint(vi.fn().mockRejectedValue(new Error("checkpoint failed"))),
 			scopeFingerprint: "scope",

@@ -219,8 +219,8 @@ export function logSyncCyclePlan(
 		releasableLocalRenameCandidates: admission.localRenameLifecycle.releaseAfterSafeCheckpoint.length,
 		...actionBreakdown,
 	});
-	for (const component of admission.deferred) {
-		logger?.warn("Sync plan component deferred", {
+	for (const component of admission.failures) {
+		logger?.warn("Sync plan component failed Admission", {
 			reasons: component.reasons,
 			paths: component.paths,
 			evidence: component.evidence.map((item) => ({
@@ -232,13 +232,6 @@ export function logSyncCyclePlan(
 				path,
 				disposition: admission.snapshot.scope.byEndpoint.get(path) ?? "unknown",
 			})),
-		});
-	}
-	for (const component of admission.evidenceIssues) {
-		logger?.warn("Fresh rename evidence has zero action", {
-			kind: component.kind,
-			reason: component.reason,
-			paths: component.paths,
 		});
 	}
 }

@@ -17,8 +17,7 @@ import { classifyHttpError } from "../fs/errors";
 import type { ErrorClassification } from "../fs/errors";
 import { decideRetry, sleep } from "./error";
 import type { ConflictRecord, IdentityEvidence, SyncStatus } from "./types";
-import { CycleSummary } from "./sync-notification";
-import type { SyncCycleResult } from "./sync-notification";
+import { CycleSummary, type SyncCycleOutcome, type SyncCycleResult } from "./sync-notification";
 import { FailedActionTracker } from "./failed-action-tracker";
 import { mergeIdentityEvidence, renameDebtEvidence, serializeLocalRenameDebts } from "./rename-debt";
 import {
@@ -247,24 +246,24 @@ export class SyncOrchestrator {
 				const result = await this.executeWithRetry(forceFullScan, snapshot, scopeFingerprint);
 				if (!result) return; // Fatal error already handled
 
-				const { succeeded, failed, blocked, conflicts, retryableErrors, evidenceIssues } = result;
+				const { succeeded, failed, blocked, conflicts } = result;
 				// failed cycle では cursor が committed state より先に進んでいる可能性がある。
 				// ただし cold recovery を一度支払い済みの local-origin action だけが
 				// quarantine 対象なら、次 cycle の cold scan は不要。
-				this.recoverViaColdScan = this.needsColdRecovery(result.result);
-				if (failed > 0 || blocked > 0 || retryableErrors > 0 || evidenceIssues > 0) {
+				this.recoverViaColdScan = this.needsColdRecovery(result.outcome);
+				if (failed > 0 || blocked > 0) {
 					this.deps.onStatusChange("partial_error");
 					this.deps.logger?.warn("Sync completed with errors", {
-						succeeded, conflicts, failed, blocked, retryableErrors, evidenceIssues,
+						succeeded, conflicts, failed, blocked,
 					});
 				} else {
 					this.deps.onStatusChange("idle");
 					this.deps.logger?.info("Sync completed", {
-						succeeded, conflicts, failed, blocked, retryableErrors, evidenceIssues,
+						succeeded, conflicts, failed, blocked,
 					});
 				}
 
-				summary.add(result.result);
+				summary.add(result.outcome);
 
 				// Record this cycle's resolved conflicts to the audit history — once per
 				// cycle, and only when there were any. Writing stays separate from
@@ -272,7 +271,7 @@ export class SyncOrchestrator {
 				// Best-effort: the audit write is supplementary, so a failure here must not
 				// turn an otherwise-clean cycle into a reported error nor skip the dirty-path
 				// acknowledgment below — log it and carry on.
-				const conflictRecords = result.result.conflicts;
+				const conflictRecords = result.outcome.execution.conflicts;
 				if (conflictRecords.length > 0) {
 					await this.deps.recordConflicts?.(toConflictRecords(conflictRecords,
 						this.deps.getSettings().conflictStrategy, this.sessionId, new Date().toISOString()))
@@ -300,18 +299,18 @@ export class SyncOrchestrator {
 		scopeFingerprint: string,
 	): Promise<SyncCycleResult | null> {
 		let lastError: unknown = null;
-		let lastResult: ExecutionResult | null = null;
+		let lastOutcome: SyncCycleOutcome | null = null;
 
 		for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
 			try {
-				lastResult = await this.executeSyncOnce(forceFullScan, snapshot, scopeFingerprint);
+				lastOutcome = await this.executeSyncOnce(forceFullScan, snapshot, scopeFingerprint);
+				const { execution, admissionFailures } = lastOutcome;
 				return {
-					result: lastResult,
-					succeeded: lastResult.succeeded.length + lastResult.superseded.length,
-					failed: lastResult.failed.length,
-					blocked: lastResult.blocked.length,
-					conflicts: lastResult.conflicts.length,
-					retryableErrors: lastResult.deferred.length, evidenceIssues: lastResult.evidenceIssues.length,
+					outcome: lastOutcome,
+					succeeded: execution.succeeded.length + execution.superseded.length,
+					failed: execution.failed.length + admissionFailures.length,
+					blocked: execution.blocked.length,
+					conflicts: execution.conflicts.length,
 				};
 			} catch (err) {
 				lastError = err;
@@ -515,14 +514,14 @@ export class SyncOrchestrator {
 
 		try {
 			const execution = await executePlan(admission.executable, ctx);
-			const result: ExecutionResult = { ...execution, deferred: admission.deferred, evidenceIssues: admission.evidenceIssues };
-			this.updateFailedActionTracker(settings.backendType, result, classifyError);
+			const outcome: SyncCycleOutcome = { execution, admissionFailures: admission.failures };
+			this.updateFailedActionTracker(settings.backendType, execution, classifyError);
 
 			await this.priorityCoordinator.finalize(async () => {
 				this.activeBatch?.setPhase("finalizing");
 				this.carriedAdmissionEvidence = await finalizeSyncCycle({
 					admission,
-					result, carriedEvidence: this.carriedAdmissionEvidence, persistedDebts,
+					result: execution, carriedEvidence: this.carriedAdmissionEvidence, persistedDebts,
 					localRenameDebts,
 					checkpoint: remoteFs.checkpoint, scopeFingerprint, stateStore: this.stateStore,
 					checkpointBlocked: this.activeBatch?.isCheckpointBlocked,
@@ -535,7 +534,7 @@ export class SyncOrchestrator {
 				}
 				await this.deps.saveSettings();
 			});
-			return result;
+			return outcome;
 		} finally {
 			this.activeBatch = null;
 		}
@@ -561,11 +560,11 @@ export class SyncOrchestrator {
 		}
 	}
 
-	private needsColdRecovery(result: ExecutionResult): boolean {
+	private needsColdRecovery(outcome: SyncCycleOutcome): boolean {
 		const settings = this.deps.getSettings();
 		const provider = this.deps.backendProvider();
 		const classifyError = (err: unknown) => provider?.classifyError?.(err) ?? classifyHttpError(err);
-		return result.deferred.length > 0 || result.failed.some((failed) =>
+		return outcome.admissionFailures.length > 0 || outcome.execution.failed.some((failed) =>
 			!this.failedActionTracker.isBlockingFailure(
 				settings.backendType,
 				failed,

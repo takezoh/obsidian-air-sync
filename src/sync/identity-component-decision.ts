@@ -8,7 +8,7 @@ import type {
 	SyncAction,
 } from "./types";
 
-export type AdmissionDeferralReason =
+export type AdmissionFailureReason =
 	| "alias_target_mutation"
 	| "conflicting_identity"
 	| "identity_postcondition_unproven"
@@ -22,8 +22,8 @@ export type AdmissionDeferralReason =
 export function evaluateIdentityComponent(
 	component: AdmissionComponent,
 	scope: ScopeProjection,
-): AdmissionDeferralReason[] {
-	const reasons = new Set<AdmissionDeferralReason>();
+): AdmissionFailureReason[] {
+	const reasons = new Set<AdmissionFailureReason>();
 	if (component.observations.some((item) => item.kind === "present_unresolved")) {
 		reasons.add("present_unresolved");
 	}
@@ -60,7 +60,7 @@ function evaluateRenames(
 	renames: RenameEvidence[],
 	scope: ScopeProjection,
 	resolvedNoAction: boolean,
-): AdmissionDeferralReason | undefined {
+): AdmissionFailureReason | undefined {
 	const rules = renames.map((rename) => ({ rename, rule: projectRenameScope(rename, scope) }));
 	if (rules.some(({ rename, rule }) => rename.isFolder && rule.consequence === "defer")) {
 		return "incomplete_folder_mapping";

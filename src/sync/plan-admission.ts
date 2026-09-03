@@ -21,7 +21,7 @@ export type {
 import { renameEvidenceKey, renameOptimizerView } from "./identity-evidence";
 import {
 	evaluateIdentityComponent,
-	type AdmissionDeferralReason,
+	type AdmissionFailureReason as IdentityAdmissionFailureReason,
 } from "./identity-component-decision";
 import { coalesceLocalFolderRenames, optimizeLocalFileRenames } from "./optimize-local-renames";
 import { coalesceRemoteFolderRenames, optimizeRemoteFileRenames } from "./optimize-remote-renames";
@@ -78,37 +78,29 @@ export interface ResolvedNoActionComponent extends AdmissionComponentDisposition
 	kind: "resolved_no_action";
 }
 
-export interface DeferredComponent extends AdmissionComponentDisposition {
-	kind: "deferred";
-	reasons: AdmissionDeferralReason[];
-}
+export type AdmissionFailureReason =
+	| IdentityAdmissionFailureReason
+	| EvidenceUnknownReason
+	| EvidenceContradictionReason;
 
-export interface EvidenceUnknownComponent extends AdmissionComponentDisposition {
-	kind: "evidence_unknown";
-	reason: EvidenceUnknownReason;
-	normalizedRenameState: Extract<NormalizedRenameState, { kind: "evidence_unknown" }>;
+export interface AdmissionFailureComponent extends AdmissionComponentDisposition {
+	kind: "failed";
+	reasons: AdmissionFailureReason[];
+	normalizedRenameState?:
+		| Extract<NormalizedRenameState, { kind: "evidence_unknown" }>
+		| Extract<NormalizedRenameState, { kind: "evidence_contradicted" }>;
 }
-
-export interface EvidenceContradictedComponent extends AdmissionComponentDisposition {
-	kind: "evidence_contradicted";
-	reason: EvidenceContradictionReason;
-	normalizedRenameState: Extract<NormalizedRenameState, { kind: "evidence_contradicted" }>;
-}
-
-export type FreshEvidenceIssue = EvidenceUnknownComponent | EvidenceContradictedComponent;
 
 export type AdmissionDisposition =
 	| AuthorizedComponent
 	| ResolvedNoActionComponent
-	| DeferredComponent
-	| FreshEvidenceIssue;
+	| AdmissionFailureComponent;
 
 export interface AdmissionResult {
 	snapshot: CycleEvidence;
 	executable: AuthorizedSyncPlan;
 	dispositions: AdmissionDisposition[];
-	deferred: DeferredComponent[];
-	evidenceIssues: FreshEvidenceIssue[];
+	failures: AdmissionFailureComponent[];
 	localRenameLifecycle: LocalRenameLifecycle;
 }
 
@@ -151,12 +143,14 @@ export function admitDestructivePlan(
 				dispositions.push({ kind: "resolved_no_action", ...shared });
 			} else if (decision.kind === "evidence_unknown" &&
 				normalizedRenameState.kind === "evidence_unknown") {
-				dispositions.push({ kind: decision.kind, ...shared, reason: decision.reason,
-					normalizedRenameState });
+				dispositions.push({
+					kind: "failed", ...shared, reasons: [decision.reason], normalizedRenameState,
+				});
 			} else if (decision.kind === "evidence_contradicted" &&
 				normalizedRenameState.kind === "evidence_contradicted") {
-				dispositions.push({ kind: decision.kind, ...shared, reason: decision.reason,
-					normalizedRenameState });
+				dispositions.push({
+					kind: "failed", ...shared, reasons: [decision.reason], normalizedRenameState,
+				});
 			} else {
 				throw new Error("Fresh rename decision/state invariant violated");
 			}
@@ -184,7 +178,7 @@ export function admitDestructivePlan(
 		if (reasons.length > 0) {
 			persistBeforeExecution.push(...localCandidates);
 			dispositions.push({
-				kind: "deferred",
+				kind: "failed",
 				...shared,
 				reasons,
 			});
@@ -220,9 +214,7 @@ export function admitDestructivePlan(
 		snapshot,
 		executable,
 		dispositions,
-		deferred: dispositions.filter((item): item is DeferredComponent => item.kind === "deferred"),
-		evidenceIssues: dispositions.filter((item): item is FreshEvidenceIssue =>
-			item.kind === "evidence_unknown" || item.kind === "evidence_contradicted"),
+		failures: dispositions.filter((item): item is AdmissionFailureComponent => item.kind === "failed"),
 		localRenameLifecycle,
 	};
 }

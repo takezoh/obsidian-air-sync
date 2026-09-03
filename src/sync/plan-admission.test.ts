@@ -55,7 +55,7 @@ describe("admitDestructivePlan", () => {
 		}]);
 
 		expect(result.executable.actions).toEqual([action]);
-		expect(result.deferred).toEqual([]);
+		expect(result.failures).toEqual([]);
 		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual([]);
 		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual([]);
 	});
@@ -75,7 +75,7 @@ describe("admitDestructivePlan", () => {
 		}));
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred[0]?.reasons).toContain("unknown_observation");
+		expect(result.failures[0]?.reasons).toContain("unknown_observation");
 		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual(evidence);
 		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual([]);
 	});
@@ -151,8 +151,8 @@ describe("admitDestructivePlan", () => {
 		const result = admit(actions);
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred).toHaveLength(2);
-		expect(result.deferred.map((item) => item.reasons)).toEqual([
+		expect(result.failures).toHaveLength(2);
+		expect(result.failures.map((item) => item.reasons)).toEqual([
 			["unknown_observation"], ["unknown_observation"],
 		]);
 	});
@@ -172,7 +172,7 @@ describe("admitDestructivePlan", () => {
 		const result = admit(actions, evidence);
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred[0]).toMatchObject({
+		expect(result.failures[0]).toMatchObject({
 			paths: ["A.md", "a.md"], reasons: ["opposing_deletes"], actions,
 		});
 	});
@@ -189,7 +189,7 @@ describe("admitDestructivePlan", () => {
 		const result = admit([action], evidence);
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred[0]!.reasons).toEqual(["identity_postcondition_unproven"]);
+		expect(result.failures[0]!.reasons).toEqual(["identity_postcondition_unproven"]);
 	});
 
 	it("does not let unrelated stable identity replace authoritative delete absence", () => {
@@ -203,7 +203,7 @@ describe("admitDestructivePlan", () => {
 		const result = admit([action], evidence);
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred[0]?.reasons).toEqual(["unknown_observation"]);
+		expect(result.failures[0]?.reasons).toEqual(["unknown_observation"]);
 	});
 
 	it("defers every action touching a requested-echo observation", () => {
@@ -220,7 +220,7 @@ describe("admitDestructivePlan", () => {
 		const result = admit(actions, [], observations);
 
 		expect(result.executable.actions).toEqual([actions[2]]);
-		expect(result.deferred[0]).toMatchObject({
+		expect(result.failures[0]).toMatchObject({
 			paths: ["A.md", "B.md"], reasons: ["present_unresolved"], actions: actions.slice(0, 2),
 		});
 	});
@@ -234,8 +234,8 @@ describe("admitDestructivePlan", () => {
 		const result = admit([], [remoteRename()], observations);
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred).toHaveLength(1);
-		expect(result.deferred[0]).toMatchObject({
+		expect(result.failures).toHaveLength(1);
+		expect(result.failures[0]).toMatchObject({
 			paths: ["A.md", "B.md"], reasons: ["present_unresolved"], actions: [],
 		});
 	});
@@ -251,7 +251,7 @@ describe("admitDestructivePlan", () => {
 		}));
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred).toEqual([]);
+		expect(result.failures).toEqual([]);
 		expect(result.dispositions).toEqual([expect.objectContaining({
 			kind: "resolved_no_action", paths: ["A.md", "B.md"], actions: [],
 		})]);
@@ -291,7 +291,7 @@ describe("admitDestructivePlan", () => {
 		}));
 
 		expect(result.executable.actions).toEqual([action]);
-		expect(result.deferred).toEqual([]);
+		expect(result.failures).toEqual([]);
 		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual([]);
 		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual([]);
 	});
@@ -356,7 +356,7 @@ describe("admitDestructivePlan", () => {
 		const result = admit(actions, evidence);
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred[0]).toMatchObject({ reasons: ["alias_target_mutation"], actions });
+		expect(result.failures[0]).toMatchObject({ reasons: ["alias_target_mutation"], actions });
 	});
 
 	it("defers an opposite-side delete that treats an alias request as independently absent", () => {
@@ -368,7 +368,7 @@ describe("admitDestructivePlan", () => {
 		const result = admit([action], evidence);
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred[0]!.reasons).toEqual(["alias_target_mutation"]);
+		expect(result.failures[0]!.reasons).toEqual(["alias_target_mutation"]);
 	});
 
 	it("admits an exact native rename matching reported movement", () => {
@@ -381,7 +381,7 @@ describe("admitDestructivePlan", () => {
 		const result = admit([action], [remoteRename()], [], scope);
 
 		expect(result.executable.actions).toEqual([action]);
-		expect(result.deferred).toEqual([]);
+		expect(result.failures).toEqual([]);
 	});
 
 	it("shapes a proved local rename and its lifecycle from the base component", () => {
@@ -404,7 +404,7 @@ describe("admitDestructivePlan", () => {
 			path: "B.md", oldPath: "A.md", action: "rename_remote",
 			local: push.local, remote: deletion.remote, baseline: deletion.baseline,
 		}]);
-		expect(result.deferred).toEqual([]);
+		expect(result.failures).toEqual([]);
 		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual(evidence);
 		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual(evidence);
 	});
@@ -427,7 +427,7 @@ describe("admitDestructivePlan", () => {
 			path: "B.md", oldPath: "A.md", action: "rename_local",
 			local: deletion.local, remote: pull.remote, baseline,
 		}]);
-		expect(result.deferred).toEqual([]);
+		expect(result.failures).toEqual([]);
 	});
 
 	it("shapes disconnected local and remote renames without disturbing ordinary order", () => {
@@ -485,7 +485,7 @@ describe("admitDestructivePlan", () => {
 		}));
 
 		expect(result.executable.actions).toEqual([action]);
-		expect(result.deferred).toEqual([]);
+		expect(result.failures).toEqual([]);
 	});
 
 	it("admits a local case-only rename when the remote destination aliases its source", () => {
@@ -506,7 +506,7 @@ describe("admitDestructivePlan", () => {
 		}));
 
 		expect(result.executable.actions).toEqual([action]);
-		expect(result.deferred).toEqual([]);
+		expect(result.failures).toEqual([]);
 	});
 
 	it("defers a native rename whose current destination identity contradicts the report", () => {
@@ -519,7 +519,7 @@ describe("admitDestructivePlan", () => {
 		const result = admit([action], [remoteRename()], [], scope);
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred[0]!.reasons).toEqual(["conflicting_identity"]);
+		expect(result.failures[0]!.reasons).toEqual(["conflicting_identity"]);
 	});
 
 	it("defers a reported rename that contradicts stable baseline identity", () => {
@@ -538,7 +538,7 @@ describe("admitDestructivePlan", () => {
 		const result = admit([action], evidence, [], scope);
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred[0]!.reasons).toEqual(["conflicting_identity"]);
+		expect(result.failures[0]!.reasons).toEqual(["conflicting_identity"]);
 	});
 
 	it("admits a native rename when alias evidence is on the source side", () => {
@@ -555,7 +555,7 @@ describe("admitDestructivePlan", () => {
 		const result = admit([action], evidence, [], scope);
 
 		expect(result.executable.actions).toEqual([action]);
-		expect(result.deferred).toEqual([]);
+		expect(result.failures).toEqual([]);
 	});
 
 	it("defers a native rename when its target side already occupies the destination", () => {
@@ -572,7 +572,7 @@ describe("admitDestructivePlan", () => {
 		const result = admit([action], evidence, observations, scope);
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred[0]!.reasons).toEqual(["rename_mismatch"]);
+		expect(result.failures[0]!.reasons).toEqual(["rename_mismatch"]);
 	});
 
 	it("defers a reported rename whose refined actions do not prove a safe postcondition", () => {
@@ -585,7 +585,7 @@ describe("admitDestructivePlan", () => {
 		const result = admit(actions, [remoteRename()], [], scope);
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred[0]!.reasons).toEqual(["opposing_deletes"]);
+		expect(result.failures[0]!.reasons).toEqual(["opposing_deletes"]);
 	});
 
 	it("admits the exact in-scope to policy-out consequence", () => {
@@ -595,7 +595,7 @@ describe("admitDestructivePlan", () => {
 		const result = admit([action], [remoteRename()], [], scope);
 
 		expect(result.executable.actions).toEqual([action]);
-		expect(result.deferred).toEqual([]);
+		expect(result.failures).toEqual([]);
 	});
 
 	it("defers a rename crossing an unknown scope endpoint", () => {
@@ -605,7 +605,7 @@ describe("admitDestructivePlan", () => {
 		const result = admit([action], [remoteRename()], [], scope);
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred[0]!.reasons).toEqual(["unknown_scope"]);
+		expect(result.failures[0]!.reasons).toEqual(["unknown_scope"]);
 	});
 
 	it("admits source recreation when unequal remote identities prove both resources", () => {
@@ -622,7 +622,7 @@ describe("admitDestructivePlan", () => {
 		const result = admit(actions, [remoteRename()], observations, scope);
 
 		expect(result.executable.actions).toEqual(actions);
-		expect(result.deferred).toEqual([]);
+		expect(result.failures).toEqual([]);
 	});
 
 	it("defers an unrecognized extra action in a source-recreation component", () => {
@@ -639,7 +639,7 @@ describe("admitDestructivePlan", () => {
 		const result = admit(actions, [remoteRename()], observations, scope);
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred[0]!.reasons).toEqual(["rename_mismatch"]);
+		expect(result.failures[0]!.reasons).toEqual(["rename_mismatch"]);
 	});
 
 	it("defers a source-recreation component containing an action outside both endpoints", () => {
@@ -657,7 +657,7 @@ describe("admitDestructivePlan", () => {
 		const result = admit(actions, [remoteRename()], observations, scope);
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred[0]!.reasons).toEqual(["rename_mismatch"]);
+		expect(result.failures[0]!.reasons).toEqual(["rename_mismatch"]);
 	});
 
 	it("defers a conflict because its strategy cannot prove source-recreation survival", () => {
@@ -674,7 +674,7 @@ describe("admitDestructivePlan", () => {
 		const result = admit(actions, [remoteRename()], observations, scope);
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred[0]!.reasons).toEqual(["rename_mismatch"]);
+		expect(result.failures[0]!.reasons).toEqual(["rename_mismatch"]);
 	});
 
 	it("defers an out-to-in transfer when the destination side is occupied", () => {
@@ -687,7 +687,7 @@ describe("admitDestructivePlan", () => {
 		const result = admit([action], [remoteRename()], observations, scope);
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred[0]!.reasons).toEqual(["rename_mismatch"]);
+		expect(result.failures[0]!.reasons).toEqual(["rename_mismatch"]);
 	});
 
 	it("defers a folder rename when a projected descendant is not mapped", () => {
@@ -705,8 +705,8 @@ describe("admitDestructivePlan", () => {
 		const result = admit([action, descendantAction], evidence, [], scope);
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred[0]!.actions).toEqual([action, descendantAction]);
-		expect(result.deferred[0]!.reasons).toEqual(["incomplete_folder_mapping"]);
+		expect(result.failures[0]!.actions).toEqual([action, descendantAction]);
+		expect(result.failures[0]!.reasons).toEqual(["incomplete_folder_mapping"]);
 	});
 
 	it("defers a folder rename containing a descendant absent from scope projection", () => {
@@ -720,7 +720,7 @@ describe("admitDestructivePlan", () => {
 		const result = admit([action], evidence, [], scope);
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred[0]!.reasons).toEqual(["incomplete_folder_mapping"]);
+		expect(result.failures[0]!.reasons).toEqual(["incomplete_folder_mapping"]);
 	});
 
 	it("defers a folder rename whose descendant relative paths are crossed", () => {
@@ -740,7 +740,7 @@ describe("admitDestructivePlan", () => {
 		const result = admit([action], evidence, [], scope);
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred[0]!.reasons).toEqual(["incomplete_folder_mapping"]);
+		expect(result.failures[0]!.reasons).toEqual(["incomplete_folder_mapping"]);
 	});
 
 	it("marks only the exact singleton tracked pull as priority-substitutable", () => {
@@ -988,7 +988,7 @@ describe("admitDestructivePlan", () => {
 			kind: "authorized",
 			normalizedRenameState: { kind: "baseline_at_third_foreign_target" },
 		});
-		expect(result.deferred).toEqual([]);
+		expect(result.failures).toEqual([]);
 	});
 
 	it("authorizes one primary/additional conflict when changed old R and destination Y coexist", () => {
@@ -1019,10 +1019,10 @@ describe("admitDestructivePlan", () => {
 			kind: "authorized",
 			normalizedRenameState: { kind: "baseline_at_third_foreign_target" },
 		});
-		expect(result.deferred).toEqual([]);
+		expect(result.failures).toEqual([]);
 	});
 
-	it("returns evidence_unknown with zero action and no retryable deferred mapping", () => {
+	it("returns a failed disposition when fresh evidence is unknown", () => {
 		const baseline = {
 			path: "A.md", hash: "H0", localMtime: 1, remoteMtime: 1,
 			localSize: 1, remoteSize: 1, syncedAt: 1,
@@ -1040,9 +1040,9 @@ describe("admitDestructivePlan", () => {
 		], projection({ "A.md": "included", "B.md": "included" }));
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred).toEqual([]);
-		expect(result.evidenceIssues).toMatchObject([{
-			kind: "evidence_unknown", reason: "scope_or_authority_missing",
+		expect(result.failures).toMatchObject([{
+			kind: "failed", reasons: ["scope_or_authority_missing"],
+			normalizedRenameState: { kind: "evidence_unknown" },
 		}]);
 		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual([candidate]);
 		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual([]);
@@ -1070,9 +1070,9 @@ describe("admitDestructivePlan", () => {
 		], projection({ "A.md": "included", "B.md": "included", "C.md": "included" }));
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.deferred).toEqual([]);
-		expect(result.evidenceIssues).toMatchObject([{
-			kind: "evidence_contradicted", reason: "tracked_identity_multiple_occurrences",
+		expect(result.failures).toMatchObject([{
+			kind: "failed", reasons: ["tracked_identity_multiple_occurrences"],
+			normalizedRenameState: { kind: "evidence_contradicted" },
 		}]);
 		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual([candidate]);
 		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual([]);

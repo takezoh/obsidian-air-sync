@@ -48,13 +48,14 @@ There are **two independent retry layers** (they do not multiply):
 
 Worst case for a single action is `MAX_ACTION_RETRIES` (3) I/O attempts; it never compounds with `MAX_RETRIES`.
 
-### Retryable unknown observations
+### Admission failures
 
 If fresh rename reconciliation cannot prove one terminal state, Admission emits no
 executable action for that identity component. The cycle remains visible as
-`partial_error` and the notification counts a retryable error, but it writes no
-pending operation, phase, or checkpoint. A later ordinary scheduler trigger performs
-fresh acquisition (COLD in the same session when required); legacy v6 rename rows can
+`partial_error` and the notification counts an ordinary error, but it writes no pending
+operation, phase, or checkpoint. A later ordinary scheduler trigger performs fresh
+acquisition (COLD in the same session when required); this is re-observation, not a
+promise that unchanged contradictory evidence will converge. Legacy v6 rename rows can
 only supply candidate endpoints and never authorize a replayed effect.
 
 ### Non-retryable errors
