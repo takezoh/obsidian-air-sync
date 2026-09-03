@@ -161,7 +161,7 @@ There is no volume-based abort gate. Deletion safety rests on four independent l
 1. **Decision rules** -- an ambiguous case (a file gone on one side while the surviving side changed since baseline) is routed to `conflict` (keep both), never to a deletion; a missing baseline never yields a deletion.
 2. **layoutReady gate** -- sync does not run before the Obsidian vault index is loaded. `SyncScheduler` defers its event wiring, and `runSync()` is gated on `app.workspace.layoutReady`, so a `list()` that under-reports during startup cannot be mistaken for mass local deletions.
 3. **Authoritative observation** -- listing absence is re-`stat()`'d before it can authorize deletion. `LocalFs.stat()` falls back to the vault adapter on an index miss. `actual_resolved` proves an exact/alias path; `requested_echo` proves presence only; `null` proves absence; a thrown stat aborts the cycle. HOT checkpoint tombstones remain authoritative remote absence (Issue #44).
-4. **Whole-component admission** -- rename, alias, unresolved-presence, and stable-ID edges connect related paths. If the component decision cannot prove that every known resource survives under the direction-aware scope matrix, `admitDestructivePlan()` defers the entire component before execution. Deletions are additionally soft (trash), but recoverability is not used as authorization.
+4. **Whole-component admission** -- rename, alias, unresolved-presence, and stable-ID edges connect related paths. If the component decision cannot prove that every known resource survives under the direction-aware scope matrix, `admitDestructivePlan()` fails the entire component before execution. A mixed-scope folder edge is first partitioned only when every included descendant has aligned child rename evidence; excluded descendants remain outside sync authority and untouched. Deletions are additionally soft (trash), but recoverability is not used as authorization.
 
 ## Identity-component action shaping
 
@@ -176,7 +176,7 @@ rules:
 For a local reported rename in `ChangeSet.identityEvidence`, Admission may shape `delete_remote(oldPath) + push(newPath)` → `rename_remote`. Hash verification is mandatory: `push.local.hash === del.baseline.hash` must hold, confirming content is unchanged. The private local helper enforces this rule for both file and folder renames.
 
 - **File renames** (`optimizeLocalFileRenames`): Consumes the derived file view of local `RenameEvidence`.
-- **Folder renames** (`coalesceLocalFolderRenames`): Consumes the derived folder view and coalesces all mapped descendant actions into one `rename_remote` with `isFolder: true`. Every descendant must pass hash verification; an incomplete mapping fails Admission for that invocation.
+- **Folder renames** (`coalesceLocalFolderRenames`): Consumes the derived folder view and coalesces all mapped descendant actions into one `rename_remote` with `isFolder: true`. Every descendant must pass hash verification. When descendants have mixed included/policy-excluded scope, Admission does not coalesce the folder: it uses independently proven included child renames and leaves excluded paths untouched. Missing included mappings still fail Admission.
 
 ### Remote renames — trusted (`optimize-remote-renames.ts`)
 

@@ -1,6 +1,6 @@
 # ADR 0008 — Logical-identity admission fails closed before sync-plan execution
 
-**Status:** Accepted · 2026-08-25 · **Revised 2026-08-31** (Admission owns identity-component action shaping and lifecycle; the standalone optimizer stage is retired)
+**Status:** Accepted · 2026-08-25 · **Revised 2026-09-03** (mixed-scope folder evidence is partitioned before action shaping)
 **Context area:** `sync/` — change evidence, scope projection, destructive admission, checkpoint/debt lifecycle
 **Related:** [ADR 0001](0001-metadata-cache-is-subordinate-to-commit-last.md), [ADR 0002](0002-backends-verified-by-shared-behaviour-contracts.md), [ADR 0006](0006-remote-rename-detection-is-order-independent.md), [Issue #43](https://github.com/takezoh/obsidian-air-sync/issues/43), [Issue #45](https://github.com/takezoh/obsidian-air-sync/issues/45), [Issue #47](https://github.com/takezoh/obsidian-air-sync/issues/47)
 
@@ -36,20 +36,23 @@ depend on that repair being complete.
 
 3. Scope is projected for both rename endpoints before entries are filtered. The
    origin-aware matrix decides whether the only safe consequence is rename, transfer,
-   deletion, no-op, or deferral. `unknown`, `mobile_deferred`, and incomplete folder
-   mappings defer the whole connected component.
+   deletion, no-op, or failure. `unknown`, `mobile_deferred`, and incomplete included
+   folder mappings fail the whole connected component. A folder edge spanning included
+   and policy-excluded descendants is not an executable unit: Admission may partition
+   it into child units only when every included descendant has aligned, determinate
+   child rename evidence. Policy-excluded descendants remain untouched.
 
 4. `admitDestructivePlan` is the sole owner of cross-path identity-component action
    shaping, destructive admissibility, disposition, and local lifecycle membership.
    It is pure and cycle-local, consumes one immutable cycle snapshot, builds the
    exhaustive component partition once, and emits exactly one `authorized`,
-   `resolved_no_action`, or `deferred` result for every relevant component, including
+   `resolved_no_action`, or `failed` result for every relevant component, including
    zero-action evidence components. Only Admission can issue the nominal
    `AuthorizedSyncPlan` accepted by `executePlan`; disconnected authorized actions
    retain proposal order.
 
-5. Deferral is visible and non-clean: status is `partial_error`, notifications count
-   deferred components, structured logs identify reasons/evidence/scope/paths, the
+5. Admission failure is visible and non-clean: status is `partial_error`, notifications
+   count failed components, structured logs identify reasons/evidence/scope/paths, the
    checkpoint and scope fingerprint do not advance, and the next normal trigger uses a
    COLD reevaluation without a tight retry loop.
 
@@ -69,14 +72,16 @@ depend on that repair being complete.
 
 ## Consequences
 
-- A suspicious rename may defer and require a later trigger or user intervention, but
+- A suspicious rename may fail and require a later trigger or user intervention, but
   it does not execute a partial destructive interpretation.
 - The durable state remains O(U): one record per namespace-unique unresolved local
   edge, not a persistent identity graph or descendant closure.
 - Native IDs improve evidence but do not authorize cross-backend/root comparison.
 - Local and remote rename shaping helpers are private to Admission. There is no
   standalone whole-plan optimizer or second component build; a failed native
-  projection defers unless another complete component outcome is independently proved.
+  projection fails unless another complete component outcome is independently proved.
+  Mixed-scope folder partitioning is that proof only when all included descendants have
+  aligned child evidence and all remaining descendants are explicitly policy-excluded.
 - Issue #46 can be fixed without changing this boundary. Better cache causality should
   reduce ambiguity, while this admission policy remains the safety net.
 

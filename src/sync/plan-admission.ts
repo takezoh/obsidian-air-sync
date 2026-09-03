@@ -29,6 +29,7 @@ import {
 } from "./identity-component-decision";
 import { coalesceLocalFolderRenames, optimizeLocalFileRenames } from "./optimize-local-renames";
 import { coalesceRemoteFolderRenames, optimizeRemoteFileRenames } from "./optimize-remote-renames";
+import { partitionMixedScopeFolderEvidence } from "./scope-normalization";
 import type { FileEntity } from "../fs/types";
 import type {
 	IdentityEvidence,
@@ -210,10 +211,11 @@ export function admitDestructivePlan(
 		const effectiveEvidence = component.evidence.filter((item) =>
 			item.kind !== "rename" || item.side !== "local" ||
 			!nonBindingCandidates.has(renameEvidenceKey(item)));
+		const scopedEvidence = partitionMixedScopeFolderEvidence(effectiveEvidence, snapshot.scope);
 		const decidedComponent: AdmissionComponent = {
 			...component,
-			actions: shapeIdentityComponentActions(component.actions, effectiveEvidence),
-			evidence: effectiveEvidence,
+			actions: shapeIdentityComponentActions(component.actions, scopedEvidence),
+			evidence: scopedEvidence,
 		};
 		const shared = {
 			paths: [...component.paths].sort(),

@@ -781,6 +781,142 @@ describe("admitDestructivePlan", () => {
 		expect(result.failures[0]!.reasons).toEqual(["incomplete_folder_mapping"]);
 	});
 
+	it("admits included descendants when a local folder rename also contains an excluded file", () => {
+		const previous = (path: string): SyncRecord => ({
+			path, hash: "h", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, syncedAt: 1,
+		});
+		const actions: SyncAction[] = [
+			{
+				path: "Templates/a.md", action: "delete_remote",
+				remote: entity("Templates/a.md"), baseline: previous("Templates/a.md"),
+			},
+			{ path: "TemplateS/a.md", action: "push", local: entity("TemplateS/a.md") },
+		];
+		const evidence: IdentityEvidence[] = [
+			{
+				kind: "alias", side: "local",
+				requestedPath: "TemplateS", resolvedPath: "Templates",
+			},
+			remoteRename({
+				side: "local", identityKey: undefined, oldPath: "Templates",
+				newPath: "TemplateS", isFolder: true,
+			}),
+			remoteRename({
+				side: "local", identityKey: undefined, oldPath: "Templates/a.md",
+				newPath: "TemplateS/a.md",
+			}),
+		];
+
+		const result = admit(actions, evidence, [], projection({
+			Templates: "included", TemplateS: "included",
+			"Templates/a.md": "included", "TemplateS/a.md": "included",
+			"Templates/desktop.ini": "policy_out",
+		}));
+
+		expect(result.failures).toEqual([]);
+		expect(result.executable.actions).toMatchObject([{
+			action: "rename_remote", oldPath: "Templates/a.md", path: "TemplateS/a.md",
+		}]);
+	});
+
+	it("admits included descendants when a remote folder rename also contains an excluded file", () => {
+		const actions: SyncAction[] = [
+			{ path: "Templates/a.md", action: "delete_local", local: entity("Templates/a.md") },
+			{ path: "TemplateS/a.md", action: "pull", remote: entity("TemplateS/a.md") },
+		];
+		const evidence: IdentityEvidence[] = [
+			remoteRename({ oldPath: "Templates", newPath: "TemplateS", isFolder: true }),
+			remoteRename({ oldPath: "Templates/a.md", newPath: "TemplateS/a.md" }),
+		];
+
+		const result = admit(actions, evidence, [], projection({
+			Templates: "included", TemplateS: "included",
+			"Templates/a.md": "included", "TemplateS/a.md": "included",
+			"Templates/desktop.ini": "policy_out",
+		}));
+
+		expect(result.failures).toEqual([]);
+		expect(result.executable.actions).toMatchObject([{
+			action: "rename_local", oldPath: "Templates/a.md", path: "TemplateS/a.md",
+		}]);
+	});
+
+	it("deduplicates replayed mixed-scope child evidence before deciding actions", () => {
+		const previous: SyncRecord = {
+			path: "Templates/a.md", hash: "h", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, syncedAt: 1,
+		};
+		const actions: SyncAction[] = [
+			{
+				path: "Templates/a.md", action: "delete_remote",
+				remote: entity("Templates/a.md"), baseline: previous,
+			},
+			{ path: "TemplateS/a.md", action: "push", local: entity("TemplateS/a.md") },
+		];
+		const folder = remoteRename({
+			side: "local", identityKey: undefined, oldPath: "Templates",
+			newPath: "TemplateS", isFolder: true,
+		});
+		const child = remoteRename({
+			side: "local", identityKey: undefined, oldPath: "Templates/a.md",
+			newPath: "TemplateS/a.md",
+		});
+
+		const result = admit(actions, [folder, child, { ...folder }, { ...child }], [], projection({
+			Templates: "included", TemplateS: "included",
+			"Templates/a.md": "included", "TemplateS/a.md": "included",
+			"Templates/desktop.ini": "policy_out",
+		}));
+
+		expect(result.failures).toEqual([]);
+		expect(result.executable.actions).toHaveLength(1);
+		expect(result.executable.actions[0]).toMatchObject({
+			action: "rename_remote", oldPath: "Templates/a.md", path: "TemplateS/a.md",
+		});
+	});
+
+	it("rejects mixed-scope folder partitioning when an included descendant lacks child evidence", () => {
+		const actions: SyncAction[] = [
+			{ path: "A/a.md", action: "delete_local", local: entity("A/a.md") },
+			{ path: "B/a.md", action: "pull", remote: entity("B/a.md") },
+		];
+		const evidence = [
+			remoteRename({ oldPath: "A", newPath: "B", isFolder: true }),
+			remoteRename({ oldPath: "A/a.md", newPath: "B/a.md" }),
+		];
+
+		const result = admit(actions, evidence, [], projection({
+			A: "included", B: "included",
+			"A/a.md": "included", "B/a.md": "included",
+			"A/unmapped.md": "included", "B/unmapped.md": "included",
+			"A/desktop.ini": "policy_out",
+		}));
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.failures[0]!.reasons).toEqual(["incomplete_folder_mapping"]);
+	});
+
+	it("rejects mixed-scope folder partitioning when descendant scope is unknown", () => {
+		const actions: SyncAction[] = [
+			{ path: "A/a.md", action: "delete_local", local: entity("A/a.md") },
+			{ path: "B/a.md", action: "pull", remote: entity("B/a.md") },
+		];
+		const evidence = [
+			remoteRename({ oldPath: "A", newPath: "B", isFolder: true }),
+			remoteRename({ oldPath: "A/a.md", newPath: "B/a.md" }),
+		];
+
+		const result = admit(actions, evidence, [], projection({
+			A: "included", B: "included",
+			"A/a.md": "included", "B/a.md": "included",
+			"A/unseen.md": "unknown", "A/desktop.ini": "policy_out",
+		}));
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.failures[0]!.reasons).toEqual(["incomplete_folder_mapping"]);
+	});
+
 	it("marks only the exact singleton tracked pull as priority-substitutable", () => {
 		const baseline = {
 			path: "note.md", hash: "old", localMtime: 1, remoteMtime: 1,
