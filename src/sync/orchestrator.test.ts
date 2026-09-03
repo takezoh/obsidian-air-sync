@@ -472,7 +472,7 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.close();
 		});
 
-		it("converges a tracked local rename plus edit through runSync and releases exact debt", async () => {
+		it("converges a synchronized local rename plus edit and reaches a fixed point", async () => {
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();
 			const tracker = new LocalChangeTracker();
@@ -486,6 +486,8 @@ describe("SyncOrchestrator", () => {
 			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
 			const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
 			remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
+			const remoteRename = vi.spyOn(remoteFs, "rename");
+			const remoteWrite = vi.spyOn(remoteFs, "write");
 			const deps = createDeps({
 				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
 				localTracker: tracker,
@@ -508,6 +510,15 @@ describe("SyncOrchestrator", () => {
 			expect(commitCheckpoint).toHaveBeenCalledTimes(1);
 			expect(await orchestrator.state.getRenameDebts("test:root")).toEqual([]);
 			expect(tracker.getRenamePairs()).toEqual(new Map());
+			const renameCallsAfterConvergence = remoteRename.mock.calls.length;
+			const writeCallsAfterConvergence = remoteWrite.mock.calls.length;
+
+			await orchestrator.runSync();
+
+			expect(remoteRename).toHaveBeenCalledTimes(renameCallsAfterConvergence);
+			expect(remoteWrite).toHaveBeenCalledTimes(writeCallsAfterConvergence);
+			expect(commitCheckpoint).toHaveBeenCalledTimes(2);
+			expect(deps.onStatusChange).toHaveBeenLastCalledWith("idle");
 			await orchestrator.close();
 		});
 
