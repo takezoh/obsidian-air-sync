@@ -7,22 +7,28 @@ created: '2026-09-03'
 scope_type: area
 responsibilities:
 - id: RESP-001
-  statement: Observation acquires and freezes local, remote, baseline, scope, and namespace facts without constructing actions.
+  statement: Observation acquires and freezes local, remote, baseline, scope, and
+    namespace facts without constructing actions.
 - id: RESP-002
-  statement: Admission alone constructs exact actions, resolves identity topology and conflict policy, and authorizes a plan.
+  statement: Admission alone constructs exact actions, resolves identity topology
+    and conflict policy, and authorizes a plan.
 - id: RESP-003
-  statement: Execution performs only authorized effects and reports exact outcomes without rerouting.
+  statement: Execution performs only authorized effects and reports exact outcomes
+    without rerouting.
 - id: RESP-004
-  statement: Commit and finalization persist only proven terminal outcomes and advance checkpoint state last.
+  statement: Commit and finalization persist only proven terminal outcomes and advance
+    checkpoint state last.
 invariants:
 - id: INV-001
   statement: No executable action exists before Admission.
   enforcement: conformance
 - id: INV-002
-  statement: Every executed action belongs to the exact AuthorizedSyncPlan for the cycle.
+  statement: Every executed action belongs to the exact AuthorizedSyncPlan for the
+    cycle.
   enforcement: contract
 - id: INV-003
-  statement: A checkpoint advances only after all admitted actions are terminal under finalization policy.
+  statement: A checkpoint advances only after all admitted actions are terminal under
+    finalization policy.
   enforcement: test
 boundaries:
   provides:
@@ -30,7 +36,8 @@ boundaries:
     statement: Fact-only BatchObservation input and exact AuthorizedSyncPlan output.
   consumes:
   - id: BOUNDARY-002
-    statement: Change detection facts, identity evidence, observations, scope, namespace, and persisted rename debt.
+    statement: Change detection facts, identity evidence, observations, scope, namespace,
+      and persisted rename debt.
   forbidden:
   - id: BOUNDARY-003
     statement: Observation importing or invoking action decision helpers.
@@ -43,10 +50,12 @@ variability:
   - id: FIXED-001
     statement: The four top-level responsibility owners and their dependency direction.
   - id: FIXED-002
-    statement: Admission ownership of identity topology, conflict, and destructive action selection.
+    statement: Admission ownership of identity topology, conflict, and destructive
+      action selection.
   free:
   - id: FREE-001
-    statement: Private helper layout inside a layer when dependency direction remains unchanged.
+    statement: Private helper layout inside a layer when dependency direction remains
+      unchanged.
 capabilities:
 - id: cap:batch-observation
   uniqueness: per-boundary
@@ -67,10 +76,12 @@ failure_responsibilities:
   statement: Finalization retains checkpoint and rename debt for nonterminal outcomes.
 trust_boundaries:
 - id: TRUST-001
-  statement: Remote and local filesystem observations are untrusted facts until Admission binds them into an authorized plan.
+  statement: Remote and local filesystem observations are untrusted facts until Admission
+    binds them into an authorized plan.
 compatibility_policies:
 - id: COMPAT-001
-  statement: Preserve provider calls, checkpoint schema, conflict policy, priority semantics, and user-visible sync outcomes.
+  statement: Preserve provider calls, checkpoint schema, conflict policy, priority
+    semantics, and user-visible sync outcomes.
 tags: []
 owners: []
 relations: []

@@ -119,9 +119,9 @@ functions — no I/O, no clock, no randomness — so every intermediate state is
 | **How** | `no-restricted-imports` + `no-restricted-syntax` (error), scoped to those files |
 | **Exception** | Pass timestamps/variation in as data. To add a new pure transform, list its file in `PURE_TRANSFORMS` |
 
-The identity-component implementation has a second structural guard:
+The Admission implementation has a second structural guard:
 `ADMISSION_INTERNAL_IMPORTS` prevents any other production sync module from importing
-the component graph, decision, lifecycle, shaping helpers, or a revived
+the path-local decision engine, component graph, lifecycle, shaping helpers, or a revived
 `rename-optimizer` stage. Only `plan-admission.ts` and its private helper modules may
 use those imports; the rest of production consumes the public Admission result or
 `AuthorizedSyncPlan`. This keeps path-local proposal and identity-component authority

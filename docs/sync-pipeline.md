@@ -2,27 +2,25 @@
 
 ## Pipeline overview
 
-Each sync cycle has five top-level responsibility stages:
+Each sync cycle has exactly four top-level responsibility stages:
 
-1. **Observe** -- `collectChanges()` returns exact `entries`, path `observations`, and normative `identityEvidence`.
-2. **Propose** -- scope is projected before filtering, then `planSync()` produces the plain path-local action proposal.
-3. **Admit** -- the proposal and its evidence are captured in one `CycleAdmissionSnapshot`; `admitDestructivePlan()` builds components once, shapes identity-connected actions, assigns every relevant component one disposition and lifecycle membership, and issues the only `AuthorizedSyncPlan`.
-4. **Execute** -- `executePlan()` accepts that nominal plan only and successful actions commit their per-path state.
-5. **Finalize** -- `finalizeSyncCycle()` mechanically folds the same dispositions with execution completion, commits a safe checkpoint, and only then retires released evidence and debt.
+1. **Observation** -- `collectChanges()` acquires exact entries, path observations, and normative identity evidence; scope projection and `captureBatchObservation()` freeze those facts without constructing actions.
+2. **Admission** -- `admitBatchObservation()` privately constructs the path-local proposal, builds identity-connected components once, applies conflict and destructive-action policy, assigns every relevant component one disposition and lifecycle membership, and issues the only `AuthorizedSyncPlan`.
+3. **Execution** -- `executePlan()` accepts that authorized plan only, performs its exact effects, and reports exact outcomes without inventing or rerouting actions.
+4. **Commit/finalization** -- per-action state publication records proven successes; `finalizeSyncCycle()` mechanically folds those outcomes with the Admission dispositions, commits a safe checkpoint, and only then retires released evidence and debt.
 
-These stages describe responsibility boundaries, not one separately scheduled pass per helper function. Evidence completion is part of **Observe**; scope projection is internal to **Propose**; snapshot capture, the single component build, and component-local rename shaping are internal to **Admit**. They add no extra network scan merely by being named.
+These stages describe responsibility owners, not one separately scheduled pass per helper function. Evidence completion, scope projection, and immutable fact capture belong to **Observation**. The path-local decision table, component build, conflict policy, and component-local rename shaping are private to **Admission**. They add no extra network scan merely by being named.
 
 The lower-level cycle sequence within those boundaries is:
 
 1. `collectChanges()` selects HOT/WARM/COLD collection, records authoritative path observations and identity evidence, confirms uncertain absences, and completes required hashes/identity facts.
 2. `projectScope()` classifies every evidence endpoint before exact entries are filtered.
-3. `planSync()` produces ordinary per-path actions without consuming identity evidence.
-4. `captureCycleAdmissionSnapshot()` fixes the proposal, evidence, observations, scope, and namespace for this cycle.
-5. `admitDestructivePlan()` builds evidence-connected components once, shapes and decides each component, and projects the `AuthorizedSyncPlan` while preserving disconnected ordinary proposal order.
-6. `executePlan()` runs only that authorized projection; each successful action calls `commitAction()` for per-path state.
-7. `finalizeSyncCycle()` folds disposition membership with execution completion, commits the checkpoint when safe, then retires released evidence and debt.
+3. `captureBatchObservation()` fixes entries, evidence, observations, scope, and namespace without an action carrier.
+4. `admitBatchObservation()` invokes the private path-local `planSync()` helper, then builds evidence-connected components once, shapes and decides each component, and projects the `AuthorizedSyncPlan` while preserving disconnected ordinary proposal order.
+5. `executePlan()` runs only that authorized projection and reports exact completion; each successful action is published through `commitAction()`.
+6. `finalizeSyncCycle()` folds disposition membership with execution completion, commits the checkpoint when safe, then retires released evidence and debt.
 
-The orchestrator (`SyncOrchestrator.executeSyncOnce()`) drives the I/O boundaries. `prepareSyncCycleSnapshot()` projects scope, creates the plain proposal, and captures the input at the **Admit** boundary. The orchestrator then invokes Admission once at an explicit cut point; proposal output is never executable permission.
+The orchestrator (`SyncOrchestrator.executeSyncOnce()`) only sequences the boundaries. `prepareSyncCycleSnapshot()` projects scope and produces a fact-only `BatchObservation`. The orchestrator passes it once to `admitBatchObservation()` at the authorization cut point; no executable action exists before that call.
 
 File-open priority does not add another set of these stages. It reuses the stored baseline and Admission's exact action projection, while a provider capability supplies only a detached current observation/read. The normal cycle is not re-decided at execution time and does not issue per-component targeted API calls.
 
@@ -190,10 +188,10 @@ When `getChangedPaths()` reports a rename pair, Admission may shape `delete_loca
 
 ## Destructive admission
 
-`prepareSyncCycleSnapshot()` projects scope before filtering, creates the plain
-`SyncPlan` proposal, and freezes the proposal, normative evidence, observations, scope,
-and backend/root namespace into one cycle snapshot. The orchestrator passes that value
-once to pure `admitDestructivePlan()`. Admission builds connected components from
+`prepareSyncCycleSnapshot()` projects scope before filtering and freezes entries,
+normative evidence, observations, scope, and backend/root namespace into one fact-only
+`BatchObservation`. The orchestrator passes that value once to
+`admitBatchObservation()`. Admission privately constructs the path-local proposal, then builds connected components from
 actions plus rename/alias/stable-identity evidence and path observations and emits
 exactly one `authorized`, `resolved_no_action`, or `failed` disposition per
 relevant component, including evidence-connected components with zero actions.

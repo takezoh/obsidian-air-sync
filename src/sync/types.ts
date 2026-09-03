@@ -76,7 +76,7 @@ export type LocalRenameEvidence = RenameEvidence & { side: "local" };
 export type IdentityEvidence =
 	| RenameEvidence
 	| { kind: "alias"; side: SyncSide; requestedPath: string; resolvedPath: string }
-	| { kind: "stable_identity"; side: "remote"; identityKey: string; occurrences: EntityOccurrence[] };
+	| { kind: "stable_identity"; side: "remote"; identityKey: string; occurrences: readonly EntityOccurrence[] };
 
 /** User-facing strategy for resolving conflicts */
 export type ConflictStrategy = "auto_merge" | "duplicate";

@@ -89,7 +89,7 @@ source_paths:
 - docs/changes/change-20260831-issue51-rename-evidence-lifecycle/change.md
 summary: Replace plan-then-optimize-then-revalidate with one component decision boundary
   while preserving crash and destructive-safety invariants.
-updated: '2026-08-31'
+updated: '2026-09-03'
 ---
 
 ## Summary
@@ -98,6 +98,10 @@ Keep the existing path-local decision table and executor/finalizer contracts, bu
 PlanAdmission the single owner of identity-connected action shaping and authorization.
 The accepted plan removes standalone `refinePlan`, constructs components once, and
 uses an exhaustive fail-closed outcome table with exact v6 debt membership.
+
+The 2026-09-03 four-stage normalization completes this ownership direction by making
+the path-local decision table private to Admission as well. Component construction,
+action shaping, disposition, execution, and finalization contracts remain unchanged.
 
 ## Closure Notes
 

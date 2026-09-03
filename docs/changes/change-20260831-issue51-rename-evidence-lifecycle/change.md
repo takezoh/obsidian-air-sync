@@ -101,7 +101,7 @@ source_paths:
 - src/sync/rename-debt.test.ts
 - eslint.config.mts
 - docs/code-enforcement.md
-updated: '2026-09-01'
+updated: '2026-09-03'
 ---
 
 ## Summary
@@ -123,6 +123,10 @@ The follow-on identity-component decision redesign keeps this exact debt lifecyc
 contract. It removes the separate whole-plan optimizer and makes the same Admission
 outcome select action shaping, disposition, and lifecycle membership together; it does
 not broaden retirement or change the persisted v6 representation.
+
+The 2026-09-03 four-stage normalization was reviewed against this lifecycle. It moves
+path-local action construction behind the same Admission boundary while leaving debt
+promotion, pre-I/O persistence, exact release membership, and checkpoint-last unchanged.
 
 ## Closure Notes
 

@@ -1,7 +1,11 @@
-/* eslint max-lines: ["error", 380] -- admission keeps fresh rename classification beside the authorization boundary it governs. */
+/* eslint max-lines: ["error", 420] -- admission keeps proposal binding, authorization, and fresh rename classification inside its sole policy boundary. */
 import { buildAdmissionComponents, type AdmissionComponent } from "./plan-admission-graph";
-import type { CycleEvidence } from "./sync-cycle-planning";
-export { captureCycleAdmissionSnapshot, type CycleEvidence } from "./sync-cycle-planning";
+import { planSync } from "./decision-engine";
+import {
+	captureBatchObservation,
+	immutableSnapshot,
+	type BatchObservation,
+} from "./sync-cycle-planning";
 import {
 	buildLocalRenameLifecycle,
 	classifyNonBindingLocalRenames,
@@ -29,10 +33,49 @@ import type { FileEntity } from "../fs/types";
 import type {
 	IdentityEvidence,
 	LocalRenameEvidence,
+	PathObservation,
+	ScopeProjection,
 	SyncAction,
+	SyncPlan,
 } from "./types";
 
 const authorizedSyncPlanBrand: unique symbol = Symbol("AuthorizedSyncPlan");
+
+/** Admission's immutable decision snapshot: observed facts plus proposed actions. */
+export interface AdmissionSnapshot extends BatchObservation {
+	readonly plan: { readonly actions: readonly SyncAction[] };
+}
+
+/** Compatibility name for consumers of the immutable Admission snapshot. */
+export type CycleEvidence = AdmissionSnapshot;
+
+function bindAdmissionPlan(
+	observation: BatchObservation,
+	plan: SyncPlan,
+): AdmissionSnapshot {
+	return immutableSnapshot({
+		...observation,
+		plan: { actions: [...plan.actions] },
+	});
+}
+
+/** Admission-owned test seam for evaluating an explicitly supplied proposal. */
+export function captureCycleAdmissionSnapshot(
+	plan: SyncPlan,
+	identityEvidence: readonly IdentityEvidence[],
+	observations: readonly PathObservation[],
+	scope: ScopeProjection,
+	namespace: string,
+	baselinePaths: readonly string[] = plan.actions.flatMap((action) =>
+		action.baseline ? [action.baseline.path] : []),
+	replayedLocalRenameKeys: readonly string[] = [],
+): AdmissionSnapshot {
+	const observation = captureBatchObservation(
+		[], identityEvidence, observations, scope, namespace,
+		baselinePaths, replayedLocalRenameKeys,
+	);
+	return bindAdmissionPlan(observation, plan);
+}
 
 /** The executor input that only Admission can construct. */
 export interface AuthorizedSyncPlan {
@@ -97,11 +140,16 @@ export type AdmissionDisposition =
 	| AdmissionFailureComponent;
 
 export interface AdmissionResult {
-	snapshot: CycleEvidence;
+	snapshot: AdmissionSnapshot;
 	executable: AuthorizedSyncPlan;
 	dispositions: AdmissionDisposition[];
 	failures: AdmissionFailureComponent[];
 	localRenameLifecycle: LocalRenameLifecycle;
+}
+
+/** Sole production entry: construct, validate, and authorize actions from observed facts. */
+export function admitBatchObservation(observation: BatchObservation): AdmissionResult {
+	return admitDestructivePlan(bindAdmissionPlan(observation, planSync([...observation.entries])));
 }
 
 /**
@@ -110,7 +158,7 @@ export interface AdmissionResult {
  * whose cross-path identity cannot be reconciled safely.
  */
 export function admitDestructivePlan(
-	snapshot: CycleEvidence,
+	snapshot: AdmissionSnapshot,
 ): AdmissionResult {
 	const identityEvidence = snapshot.evidence.map((item) => item.evidence);
 	const components = buildAdmissionComponents(

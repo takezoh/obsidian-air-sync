@@ -26,7 +26,7 @@ import {
 	prepareSyncCycleSnapshot,
 } from "./sync-cycle-planning";
 import { finalizeSyncCycle } from "./sync-cycle-finalization";
-import { admitDestructivePlan } from "./plan-admission";
+import { admitBatchObservation } from "./plan-admission";
 import { PriorityCoordinator } from "./priority-coordinator";
 import { LocalMutationBarrier } from "./local-mutation-barrier";
 import { PriorityBatchState } from "./priority-batch-state";
@@ -461,7 +461,7 @@ export class SyncOrchestrator {
 
 		// This call is the authorization cut point. Exceptions from this line onward
 		// are not reclassified as evidence-acquisition recovery.
-		const admission = admitDestructivePlan(planning.snapshot);
+		const admission = admitBatchObservation(planning.snapshot);
 		logSyncCyclePlan(this.deps.logger, admission);
 		const localRenameDebts = serializeLocalRenameDebts(debtNamespace,
 			admission.localRenameLifecycle.persistBeforeExecution, admission.snapshot.scope);

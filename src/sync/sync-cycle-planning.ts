@@ -1,6 +1,5 @@
 import type { Logger } from "../logging/logger";
 import type { ChangeSet } from "./change-detector";
-import { planSync } from "./decision-engine";
 import type { AdmissionResult } from "./plan-admission";
 import { mergeRenameDebtEvidence, renameDebtEvidence } from "./rename-debt";
 import { renameEvidenceKey } from "./identity-evidence";
@@ -9,44 +8,53 @@ import type { RenameDebt } from "./state";
 import type {
 	IdentityEvidence,
 	LocalRenameEvidence,
+	MixedEntity,
 	PathObservation,
 	ScopeProjection,
-	SyncAction,
-	SyncPlan,
 } from "./types";
 
 export type CycleEvidenceItem =
 	| { readonly role: "local_rename_candidate"; readonly evidence: LocalRenameEvidence }
 	| { readonly role: "identity"; readonly evidence: IdentityEvidence };
 
-/** Planning's single, runtime-immutable handoff to Admission. */
-export interface CycleEvidence {
-	readonly plan: { readonly actions: readonly SyncAction[] };
-	readonly evidence: readonly CycleEvidenceItem[];
+export type DeepReadonly<T> =
+	T extends (...args: never[]) => unknown ? T
+		: T extends ArrayBuffer ? T
+			: T extends ReadonlyMap<infer K, infer V>
+				? ReadonlyMap<DeepReadonly<K>, DeepReadonly<V>>
+				: T extends ReadonlySet<infer V> ? ReadonlySet<DeepReadonly<V>>
+					: T extends readonly (infer V)[] ? readonly DeepReadonly<V>[]
+						: T extends object ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
+							: T;
+
+/** Observation's runtime-immutable, fact-only handoff to Admission. */
+export interface BatchObservation {
+	readonly entries: DeepReadonly<readonly MixedEntity[]>;
+	readonly evidence: DeepReadonly<readonly CycleEvidenceItem[]>;
 	readonly replayedLocalRenameKeys: ReadonlySet<string>;
 	readonly baselinePaths: ReadonlySet<string>;
-	readonly observations: readonly PathObservation[];
-	readonly scope: ScopeProjection;
+	readonly observations: DeepReadonly<readonly PathObservation[]>;
+	readonly scope: DeepReadonly<ScopeProjection>;
 	readonly namespace: string;
 }
 
-/** Capture and classify each evidence item once at the planning boundary. */
-export function captureCycleAdmissionSnapshot(
-	plan: SyncPlan,
+/** Capture observed facts without constructing or authorizing actions. */
+export function captureBatchObservation(
+	entries: readonly MixedEntity[],
 	identityEvidence: readonly IdentityEvidence[],
 	observations: readonly PathObservation[],
 	scope: ScopeProjection,
 	namespace: string,
-	baselinePaths: readonly string[] = plan.actions.flatMap((action) =>
-		action.baseline ? [action.baseline.path] : []),
+	baselinePaths: readonly string[] = entries.flatMap((entry) =>
+		entry.prevSync ? [entry.path] : []),
 	replayedLocalRenameKeys: readonly string[] = [],
-): CycleEvidence {
+): BatchObservation {
 	const evidence = identityEvidence.map((item): CycleEvidenceItem =>
 		isLocalRenameEvidence(item)
 			? { role: "local_rename_candidate", evidence: item }
 			: { role: "identity", evidence: item });
-	return immutableClone({
-		plan: { actions: [...plan.actions] },
+	return immutableSnapshot({
+		entries: [...entries],
 		evidence,
 		replayedLocalRenameKeys: new Set(replayedLocalRenameKeys),
 		baselinePaths: new Set(baselinePaths),
@@ -60,7 +68,7 @@ function isLocalRenameEvidence(evidence: IdentityEvidence): evidence is LocalRen
 	return evidence.kind === "rename" && evidence.side === "local";
 }
 
-function immutableClone<T>(value: T): T {
+export function immutableSnapshot<T>(value: T): T {
 	return cloneValue(value, new WeakMap<object, unknown>()) as T;
 }
 
@@ -162,7 +170,7 @@ export function logChangeDetection(
 	});
 }
 
-/** Pure cycle planning plus structured diagnostics; no state or filesystem writes. */
+/** Pure batch observation plus structured diagnostics; no action construction or I/O. */
 export function prepareSyncCycleSnapshot(
 	changeSet: ChangeSet,
 	persistedDebts: readonly RenameDebt[],
@@ -184,9 +192,8 @@ export function prepareSyncCycleSnapshot(
 			excluded: completeChangeSet.entries.length - filtered.length,
 		});
 	}
-	const plan = planSync(filtered);
-	const snapshot = captureCycleAdmissionSnapshot(
-		plan,
+	const snapshot = captureBatchObservation(
+		filtered,
 		completeChangeSet.identityEvidence,
 		completeChangeSet.observations,
 		scopeProjection,
@@ -236,7 +243,7 @@ export function logSyncCyclePlan(
 	}
 }
 
-function localRenameCandidates(evidence: CycleEvidence): readonly LocalRenameEvidence[] {
+function localRenameCandidates(evidence: AdmissionResult["snapshot"]): readonly LocalRenameEvidence[] {
 	return evidence.evidence.flatMap((item) =>
 		item.role === "local_rename_candidate" ? [item.evidence] : []);
 }

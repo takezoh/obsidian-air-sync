@@ -2,16 +2,19 @@ import { describe, expect, it } from "vitest";
 import type { FileEntity } from "../fs/types";
 import { renameEvidenceKey } from "./identity-evidence";
 import {
+	admitBatchObservation,
 	admitDestructivePlan,
 	captureCycleAdmissionSnapshot,
 	type AuthorizedSyncPlan,
 } from "./plan-admission";
+import { captureBatchObservation } from "./sync-cycle-planning";
 import type {
 	IdentityEvidence,
 	PathObservation,
 	ScopeDisposition,
 	ScopeProjection,
 	SyncAction,
+	SyncRecord,
 } from "./types";
 
 function entity(path: string, identityKey?: string): FileEntity {
@@ -47,6 +50,41 @@ function remoteRename(
 }
 
 describe("admitDestructivePlan", () => {
+	it("constructs and authorizes exact actions from a fact-only batch observation", () => {
+		const previous: SyncRecord = {
+			path: "conflict.md", hash: "base", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, syncedAt: 1,
+		};
+		const localOnly = entity("local.md");
+		const localChanged = freshEntity("conflict.md", "local");
+		const remoteChanged = freshEntity("conflict.md", "remote", "R");
+		const result = admitBatchObservation(captureBatchObservation(
+			[
+				{ path: "local.md", local: localOnly },
+				{
+					path: "conflict.md", local: localChanged,
+					remote: remoteChanged, prevSync: previous,
+				},
+			],
+			[],
+			[
+				{ kind: "exact", side: "local", requestedPath: "local.md", entity: localOnly },
+				{ kind: "absent", side: "remote", requestedPath: "local.md", authority: "stat" },
+				{ kind: "exact", side: "local", requestedPath: "conflict.md", entity: localChanged },
+				{ kind: "exact", side: "remote", requestedPath: "conflict.md", entity: remoteChanged },
+			],
+			projection({ "local.md": "included", "conflict.md": "included" }),
+			"backend\0root",
+		));
+
+		expect(result.executable.actions.map(({ path, action }) => ({ path, action }))).toEqual([
+			{ path: "local.md", action: "push" },
+			{ path: "conflict.md", action: "conflict" },
+		]);
+		expect(result.dispositions.map(({ kind }) => kind)).toEqual(["authorized", "authorized"]);
+		expect(result.failures).toEqual([]);
+	});
+
 	it("admits a genuine exact-path remote deletion without identity evidence", () => {
 		const action: SyncAction = { path: "gone.md", action: "delete_local", local: entity("gone.md") };
 

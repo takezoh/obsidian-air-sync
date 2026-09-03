@@ -2,7 +2,7 @@ import type { MixedEntity, SyncAction, SyncPlan } from "./types";
 import { hasChanged, hasRemoteChanged } from "./change-compare";
 import { sameContent } from "./content-identity";
 
-export function planSync(entries: MixedEntity[]): SyncPlan {
+export function planSync(entries: readonly Readonly<MixedEntity>[]): SyncPlan {
 	const actions: SyncAction[] = [];
 
 	for (const entry of entries) {
@@ -15,7 +15,7 @@ export function planSync(entries: MixedEntity[]): SyncPlan {
 	return { actions };
 }
 
-function decideAction(entry: MixedEntity): SyncAction | null {
+function decideAction(entry: Readonly<MixedEntity>): SyncAction | null {
 	const { path, local, remote, prevSync } = entry;
 	const base = { path, local, remote, baseline: prevSync };
 

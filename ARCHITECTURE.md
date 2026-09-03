@@ -59,32 +59,28 @@ One row per directory; see the layer diagram and per-doc references for module d
      ┌───────────────▼────────────────────┐
      │            Pipeline                │
      │                                    │
-     │  1 Observe                         │  ChangeDetector
+     │  1 Observation                     │  ChangeDetector / ScopeProjection
      │    collectChanges()                │    hot / warm / cold
-     │    observations + identity         │    evidence completion
+     │      → captureBatchObservation()   │    immutable facts only
      │        │                           │
      │        ▼                           │
-     │  2 Propose                         │  ScopeProjection / DecisionEngine
-     │    projectScope()                  │    classify evidence endpoints
-     │      → planSync()                  │    plain path-local proposal
-     │        │                           │
-     │        ▼                           │
-     │  3 Admit                           │  PlanAdmission
-     │    captureCycleAdmissionSnapshot() │    immutable cycle contract
-     │      → admitDestructivePlan()      │    one component build + action shaping
+     │  2 Admission                       │  PlanAdmission / DecisionEngine
+     │    admitBatchObservation()         │    private path-local proposal
+     │      → admitDestructivePlan()      │    component build + policy
      │      → AuthorizedSyncPlan          │    authorization, disposition, lifecycle
      │        │                           │
      │        ▼                           │
-     │  4 Execute                         │  PlanExecutor / StateCommitter
+     │  3 Execution                       │  PlanExecutor
      │    executePlan()  (3 phases)       │
      │    1 transfers: push/pull          │    AdaptivePool (AIMD); match/cleanup inline
      │    2 conflict (serial)             │    own phase (sibling-path safe)
      │    3 structural: 2 lanes ||        │    remote & local, concurrent
      │      per lane: rename then del     │    rename serial; delete pooled
-     │    commitAction() per success      │    per-path state
+     │    exact outcomes only             │    no action invention or rerouting
      │        │                           │
      │        ▼                           │
-     │  5 Finalize                        │  cycle-level commit boundary
+     │  4 Commit / finalization           │  StateCommitter / cycle boundary
+     │    commitAction() per success      │    per-path state publication
      │    finalizeSyncCycle()             │    mechanical completion fold
      │    checkpoint, then retirement     │    no safety re-decision
      └───────────────┬────────────────────┘
@@ -97,7 +93,7 @@ One row per directory; see the layer diagram and per-doc references for module d
 
 `runSync` early-returns when no remote backend is present, the backend is connecting, or layout is not ready; it serializes via an `AsyncMutex`. A sync arriving while one runs sets a `syncPending` flag and the running cycle re-runs via a `do/while` loop (coalescing). Each cycle retries up to `MAX_RETRIES = 3`: `AuthError` (status 401) and a non-rate-limit HTTP 403 abort the whole sync immediately; HTTP 404 breaks the retry loop without special handling. For 429 or a rate-limit 403 carrying a `Retry-After` header, delay = `retryAfter * 1000` ms; otherwise exponential backoff with jitter = `2^(attempt-1) * 1000 * (0.5 + Math.random())` ms. See [docs/error-handling.md](docs/error-handling.md) for the full classification/recovery table.
 
-File-open priority is a narrow side entrance to this pipeline, not a second decision engine. The scheduler only forwards the opened path. `IFileSystem.priority` obtains a detached identity/path/version observation without consuming or mutating the batch delta cache. `PriorityCoordinator` admits it only between complete normal actions; after a whole-record `SyncRecord` CAS it may replace the exact still-pending singleton pull projected by Admission. Any missing authority, local race, CAS loss, or closed phase defers to the normal lifecycle. Normal batch actions still use the same `AuthorizedSyncPlan`, provider calls, and global phase barriers.
+File-open priority is a narrow side entrance to this pipeline, not a second decision engine. The scheduler only forwards the opened path. `IFileSystem.priority` obtains a detached identity/path/version observation without consuming or mutating the batch delta cache. `PriorityCoordinator` admits it only between complete normal actions; after a whole-record `SyncRecord` CAS it may replace the exact still-pending singleton pull projected by Admission. Any missing authority, local race, CAS loss, or closed phase falls back to the normal lifecycle. Normal batch actions still use the same `AuthorizedSyncPlan`, provider calls, and global phase barriers.
 
 ## Core data models
 

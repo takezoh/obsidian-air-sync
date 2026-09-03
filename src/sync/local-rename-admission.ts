@@ -4,7 +4,6 @@ import { renameEvidenceKey } from "./identity-evidence";
 import { hasRemoteChanged } from "./change-compare";
 import { contentKey, sameContent } from "./content-identity";
 import type { FileEntity } from "../fs/types";
-import type { CycleEvidence } from "./sync-cycle-planning";
 import type {
 	LocalRenameEvidence,
 	ScopeProjection,
@@ -118,7 +117,7 @@ function hasOnlyObservation(
 /** Sole legal-state producer for one fresh local file rename candidate. */
 export function normalizeFreshLocalRename(
 	component: AdmissionComponent,
-	scope: CycleEvidence["scope"],
+	scope: ScopeProjection,
 ): NormalizedRenameState | undefined {
 	const candidates = component.evidence.filter((item): item is LocalRenameEvidence =>
 		item.kind === "rename" && item.side === "local" && !item.isFolder);
