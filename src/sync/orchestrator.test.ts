@@ -1092,6 +1092,8 @@ describe("SyncOrchestrator", () => {
 			expect(await orchestrator.state.get("Templates/Zettelkasten.md")).toBeUndefined();
 			expect(await orchestrator.state.get("TemplateS/Zettelkasten.md"))
 				.toMatchObject({ path: "TemplateS/Zettelkasten.md" });
+
+			await orchestrator.runSync();
 			expect(deps.onStatusChange).toHaveBeenLastCalledWith("idle");
 			await orchestrator.close();
 		});

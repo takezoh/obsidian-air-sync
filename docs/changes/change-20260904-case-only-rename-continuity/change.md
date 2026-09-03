@@ -12,10 +12,17 @@ outcomes:
 - Existing affected vaults cold-start only derived metadata and retain SyncRecords.
 - The closed authority set and reviewed SyncOrchestrator field inventory are mechanically guarded.
 scope:
-- Complete cache snapshot at clean checkpoint
-- Removal of touchedPaths and pendingFullPersist
-- Metadata cache version 3 to 4 cold-start
-- Two-authority documentation and source enforcement
+- src/fs/caching/remote-fs.ts — complete cache snapshot at clean checkpoint
+- src/store/metadata-store.ts — metadata cache version 3 to 4 cold-start
+- src/fs/googledrive/index.test.ts — case-only rename restart regression
+- src/store/metadata-store.test.ts — complete replace and version-upgrade contracts
+- src/sync/orchestrator.test.ts — per-file SyncRecord and second-cycle convergence
+- sync-state-ownership-guard.test.mjs — closed state-owner inventory
+- package.json — required guard wiring
+- eslint.config.mts — guard lint admission
+- AGENTS.md — repository operating rule
+- docs/adr/0001-metadata-cache-is-subordinate-to-commit-last.md — governing decision
+- docs/code-enforcement.md — mechanical enforcement contract
 non_goals:
 - New Admission or identity algorithm
 - COLD relation reconstruction or additional recovery state

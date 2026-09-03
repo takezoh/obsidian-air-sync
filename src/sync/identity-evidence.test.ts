@@ -78,5 +78,4 @@ describe("identity evidence", () => {
 
 		expect(completed).toEqual([]);
 	});
-
 });
