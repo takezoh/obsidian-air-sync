@@ -339,6 +339,83 @@ describe("GoogleDriveFs.rename stale-cache guard for the destination", () => {
 });
 
 describe("GoogleDriveFs.commitCheckpoint persistence-failure safety", () => {
+	it("persists a successful folder rename before a restart replays its Google change", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const { MetadataStore, METADATA_CACHE_VERSION } = await import("../../store/metadata-store");
+
+		let folder: GoogleDriveFile = {
+			id: "folder-1", name: "Templates", mimeType: "application/vnd.google-apps.folder",
+			parents: ["root"], version: "1",
+		};
+		const child: GoogleDriveFile = {
+			id: "child-1", name: "note.md", mimeType: "text/plain",
+			parents: [folder.id], version: "1", size: "4", md5Checksum: "same",
+		};
+		const changes: Array<{
+			type: "file"; fileId: string; removed: false; file: GoogleDriveFile;
+		}> = [];
+		const client = {
+			listAllFiles: vi.fn(() => Promise.resolve([folder, child])),
+			getChangesStartToken: vi.fn(() => Promise.resolve(`c${changes.length}`)),
+			listChanges: vi.fn((cursor: string) => {
+				const from = Number(cursor.slice(1));
+				return Promise.resolve({
+					changes: changes.slice(from), newStartPageToken: `c${changes.length}`,
+				});
+			}),
+			updateFileMetadata: vi.fn((_id: string, metadata: { name?: string }) => {
+				folder = { ...folder, ...metadata, version: "2" };
+				changes.push({ type: "file", fileId: folder.id, removed: false, file: folder });
+				return Promise.resolve(folder);
+			}),
+		} as never;
+		const store = new MetadataStore<GoogleDriveFile>(`rename-restart-${Math.random()}`, {
+			dbNamePrefix: "air-sync-googledrive-test", version: METADATA_CACHE_VERSION,
+		});
+
+		const first = new GoogleDriveFs(client, "root", undefined, store);
+		expect((await first.list()).map((entry) => entry.path).sort()).toEqual([
+			"Templates", "Templates/note.md",
+		]);
+		await first.commitCheckpoint();
+		await first.rename("Templates", "TemplateS");
+		expect((await first.listCurrentSnapshot()).map((entry) => entry.path).sort()).toEqual([
+			"TemplateS", "TemplateS/note.md",
+		]);
+		await first.commitCheckpoint();
+		const persistedAfterRename = (await store.loadAll()).files.map((record) => record.path).sort();
+		await first.close();
+
+		// A restart restores the committed cursor and file map, then the real Google
+		// incremental adapter applies the self-change through applyIdDeltaPage.
+		const restarted = new GoogleDriveFs(client, "root", undefined, store);
+		const replay = await restarted.getChangedPaths();
+		expect(replay?.renamed).toEqual([{
+			oldPath: "Templates", newPath: "TemplateS", isFolder: true,
+		}]);
+		expect((await restarted.listCurrentSnapshot()).map((entry) => entry.path).sort()).toEqual([
+			"TemplateS", "TemplateS/note.md",
+		]);
+		await restarted.close(); // no checkpoint commit: model a failed Admission cycle
+
+		// The unadvanced persisted cursor repeats the rename after another restart.
+		const replayedAgain = new GoogleDriveFs(client, "root", undefined, store);
+		expect((await replayedAgain.getChangedPaths())?.renamed).toEqual([{
+			oldPath: "Templates", newPath: "TemplateS", isFolder: true,
+		}]);
+
+		// resetCheckpoint/full scan reads provider current state and loses the delta edge.
+		await replayedAgain.resetCheckpoint();
+		expect((await replayedAgain.list()).map((entry) => entry.path).sort()).toEqual([
+			"TemplateS", "TemplateS/note.md",
+		]);
+		await replayedAgain.close();
+
+		// RED: a clean checkpoint after the executor mutation must persist the same
+		// new path as the live cache. Today rename() never marks either path touched.
+		expect(persistedAfterRename).toEqual(["TemplateS", "TemplateS/note.md"]);
+	});
+
 	it("propagates a failed flush and keeps the buffer so the cursor is not committed ahead of the cache", async () => {
 		const { GoogleDriveFs } = await import("./index");
 		type Store = import("../../store/metadata-store").MetadataStore<GoogleDriveFile>;
