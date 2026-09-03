@@ -219,15 +219,49 @@ describe("SyncOrchestrator", () => {
 			expect(remoteFs.files.has("A/known.md")).toBe(false);
 			expect(remoteFs.files.has("B/ignored.tmp")).toBe(false);
 			expect(deps.onStatusChange).toHaveBeenLastCalledWith("idle");
+			expect(tracker.getFolderRenamePairs().size).toBe(0);
 			const writesAfterConvergence = remoteWrite.mock.calls.length;
 			const deletesAfterConvergence = remoteDelete.mock.calls.length;
 			const renamesAfterConvergence = remoteRename.mock.calls.length;
+			const localWrite = vi.spyOn(localFs, "write");
+			const localDelete = vi.spyOn(localFs, "delete");
+			const localRename = vi.spyOn(localFs, "rename");
 
 			await orchestrator.runSync();
 
 			expect(remoteWrite).toHaveBeenCalledTimes(writesAfterConvergence);
 			expect(remoteDelete).toHaveBeenCalledTimes(deletesAfterConvergence);
 			expect(remoteRename).toHaveBeenCalledTimes(renamesAfterConvergence);
+			expect(localWrite).not.toHaveBeenCalled();
+			expect(localDelete).not.toHaveBeenCalled();
+			expect(localRename).not.toHaveBeenCalled();
+			await orchestrator.close();
+		});
+
+		it("consumes a fully excluded folder rename after a clean cycle", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			const tracker = new LocalChangeTracker();
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`,
+				lastSyncedIdentity: "test:root", ignorePatterns: ["private/**"],
+			});
+			const deps = createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+				localTracker: tracker,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			await localFs.write("private/A/secret.md", new TextEncoder().encode("private").buffer, 1000);
+			await orchestrator.runSync();
+
+			await localFs.rename("private/A", "private/B");
+			tracker.markFolderRenamed("private/B", "private/A");
+			await orchestrator.runSync();
+
+			expect(remoteFs.files.has("private/A/secret.md")).toBe(false);
+			expect(remoteFs.files.has("private/B/secret.md")).toBe(false);
+			expect(deps.onStatusChange).toHaveBeenLastCalledWith("idle");
+			expect(tracker.getFolderRenamePairs().size).toBe(0);
 			await orchestrator.close();
 		});
 
@@ -297,8 +331,12 @@ describe("SyncOrchestrator", () => {
 			expect(remoteFs.files.has("A/known.md")).toBe(true);
 			expect(commitCheckpoint).not.toHaveBeenCalled();
 			expect(deps.onStatusChange).toHaveBeenLastCalledWith("partial_error");
+			expect(tracker.getFolderRenamePairs().size).toBe(1);
 
 			failedDelete.mockRestore();
+			// Remove cycle-local rename evidence before retry. Recovery must use the
+			// committed baseline and fresh endpoint state, not stored intent.
+			tracker.acknowledge(tracker.snapshot());
 			confirmMockPath(remoteFs, "B");
 			await orchestrator.runSync();
 
@@ -307,6 +345,7 @@ describe("SyncOrchestrator", () => {
 			expect(readText(remoteFs, "B/known.md")).toBe("kept");
 			expect(readText(remoteFs, "B/added.md")).toBe("new");
 			expect(commitCheckpoint).toHaveBeenCalledTimes(1);
+			expect(tracker.getFolderRenamePairs().size).toBe(0);
 			await orchestrator.close();
 		});
 

@@ -469,28 +469,10 @@ export class SyncOrchestrator {
 
 		try {
 			const execution = await executePlan(admission.executable, ctx);
-			const unsettledFolderRename = [...snapshot.folderRenamePairs].some(([newPath, oldPath]) => {
-				const renamed = execution.succeeded.some(({ action }) =>
-					action.action === "rename_remote" &&
-					action.oldPath === oldPath && action.path === newPath);
-				const admittedAsOrdinary = admission.dispositions.some((disposition) =>
-					disposition.kind === "authorized" && disposition.evidence.some((evidence) =>
-						evidence.kind === "rename" && evidence.side === "local" && evidence.isFolder &&
-						evidence.oldPath === oldPath && evidence.newPath === newPath));
-				const remoteAtNew = admission.snapshot.observations.some((observation) =>
-					observation.side === "remote" && observation.requestedPath === newPath &&
-					observation.kind === "exact");
-				const remoteLeftOld = admission.snapshot.observations.some((observation) =>
-					observation.side === "remote" && observation.requestedPath === oldPath &&
-					(observation.kind === "absent" ||
-						(observation.kind === "alias" && observation.resolvedPath === newPath)));
-				return !renamed && !admittedAsOrdinary && !(remoteAtNew && remoteLeftOld);
-			});
 			const outcome: SyncCycleOutcome = {
 				execution,
 				admissionFailures: admission.failures,
-				unsettledLocalRenameInput:
-					admission.unsettledLocalRenameInput || unsettledFolderRename,
+				unsettledLocalRenameInput: admission.unsettledLocalRenameInput,
 			};
 			await this.priorityCoordinator.finalize(async () => {
 				this.activeBatch?.setPhase("finalizing");
