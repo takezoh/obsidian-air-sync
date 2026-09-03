@@ -38,9 +38,11 @@ depend on that repair being complete.
    origin-aware matrix decides whether the only safe consequence is rename, transfer,
    deletion, no-op, or failure. `unknown`, `mobile_deferred`, and incomplete included
    folder mappings fail the whole connected component. A folder edge spanning included
-   and policy-excluded descendants is not an executable unit: Admission may partition
-   it into child units only when every included descendant has aligned, determinate
-   child rename evidence. Policy-excluded descendants remain untouched.
+   and policy-excluded descendants is not an executable unit. Before graph construction,
+   Admission partitions managed identity evidence from operation-footprint constraints.
+   It may form child units only when every included descendant has aligned, determinate
+   child rename evidence. Policy-excluded descendants—regardless of the policy rule
+   that excluded them—never enter managed identity components and remain untouched.
    On a case-insensitive local filesystem, COLD replay may expose the requested new
    spelling only as an alias of the old spelling. Admission may reconstruct an
    otherwise actionless child rename only from a complete same-content baseline, an

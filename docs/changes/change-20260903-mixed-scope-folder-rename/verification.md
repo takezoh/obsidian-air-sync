@@ -18,7 +18,10 @@ role: verification
   unknown descendant scope.
 - The live post-failure shape is covered: COLD replay, duplicate debt evidence, zero
   ordinary proposal actions, and local destination aliasing the old case spelling.
+- Topology tests use arbitrary user-ignore, hidden, and reserved-path representatives
+  and prove that all `policy_out` sources become footprint constraints rather than
+  managed identity evidence. `unknown` and `mobile_deferred` remain fail-closed.
 - `npm run lint`: passed.
 - `npm run lint:bot-repro`: passed (29 tests).
 - `npm run build`: passed.
-- `npm run test:coverage`: passed (91 files, 1733 tests).
+- `npm run test:coverage`: passed (92 files, 1736 tests).

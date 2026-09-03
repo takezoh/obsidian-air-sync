@@ -16,14 +16,26 @@ import type {
  * executable operation: the included child edges are the complete authorized
  * units and excluded paths remain outside sync authority.
  */
-export function partitionMixedScopeFolderEvidence(
+export interface FolderFootprintConstraint {
+	rename: RenameEvidence;
+	excludedPaths: readonly string[];
+}
+
+export interface AdmissionTopology {
+	identityEvidence: IdentityEvidence[];
+	footprintConstraints: FolderFootprintConstraint[];
+}
+
+export function partitionAdmissionTopology(
 	evidence: readonly IdentityEvidence[],
 	scope: ScopeProjection,
-): IdentityEvidence[] {
+): AdmissionTopology {
 	const partitioned = evidence.filter((item): item is RenameEvidence =>
 		item.kind === "rename" && item.isFolder &&
 		isCompletelyRepresentedByIncludedChildren(item, evidence, scope));
-	if (partitioned.length === 0) return [...evidence];
+	if (partitioned.length === 0) {
+		return { identityEvidence: [...evidence], footprintConstraints: [] };
+	}
 
 	const retained = evidence.filter((item) => {
 		if (partitioned.includes(item as RenameEvidence)) return false;
@@ -32,7 +44,21 @@ export function partitionMixedScopeFolderEvidence(
 			((item.requestedPath === folder.oldPath && item.resolvedPath === folder.newPath) ||
 				(item.requestedPath === folder.newPath && item.resolvedPath === folder.oldPath)));
 	});
-	return deduplicateRenameEvidence(retained);
+	return {
+		identityEvidence: deduplicateRenameEvidence(retained),
+		footprintConstraints: deduplicateRenameEvidence(partitioned)
+			.filter((item): item is RenameEvidence => item.kind === "rename")
+			.map((rename) => ({ rename, excludedPaths: excludedDescendantPaths(rename, scope) })),
+	};
+}
+
+function excludedDescendantPaths(rename: RenameEvidence, scope: ScopeProjection): string[] {
+	const prefixes = [`${rename.oldPath}/`, `${rename.newPath}/`];
+	return [...scope.byEndpoint]
+		.filter(([path, disposition]) => disposition === "policy_out" &&
+			prefixes.some((prefix) => path.startsWith(prefix)))
+		.map(([path]) => path)
+		.sort();
 }
 
 /**

@@ -9,6 +9,7 @@ import {
 import {
 	buildLocalRenameLifecycle,
 	classifyNonBindingLocalRenames,
+	footprintRenameLifecycle,
 	normalizeFreshLocalRename,
 	type DeterminateNormalizedRenameState,
 	type EvidenceContradictionReason,
@@ -30,9 +31,9 @@ import {
 import { coalesceLocalFolderRenames, optimizeLocalFileRenames } from "./optimize-local-renames";
 import { coalesceRemoteFolderRenames, optimizeRemoteFileRenames } from "./optimize-remote-renames";
 import {
-	partitionMixedScopeFolderEvidence,
+	partitionAdmissionTopology,
 	reconstructCaseAliasChildRenames,
-} from "./scope-normalization";
+} from "./admission-topology";
 import type { FileEntity } from "../fs/types";
 import type {
 	IdentityEvidence,
@@ -174,9 +175,10 @@ export function admitBatchObservation(observation: BatchObservation): AdmissionR
 export function admitDestructivePlan(
 	snapshot: AdmissionSnapshot,
 ): AdmissionResult {
-	const identityEvidence = snapshot.evidence.map((item) => item.evidence);
+	const observedEvidence = snapshot.evidence.map((item) => item.evidence);
+	const topology = partitionAdmissionTopology(observedEvidence, snapshot.scope);
 	const components = buildAdmissionComponents(
-		snapshot.plan, identityEvidence, snapshot.observations, snapshot.scope,
+		snapshot.plan, topology.identityEvidence, snapshot.observations, snapshot.scope,
 	);
 	const authorizedActions: SyncAction[] = [];
 	const dispositions: AdmissionDisposition[] = [];
@@ -224,11 +226,10 @@ export function admitDestructivePlan(
 		const effectiveEvidence = component.evidence.filter((item) =>
 			item.kind !== "rename" || item.side !== "local" ||
 			!nonBindingCandidates.has(renameEvidenceKey(item)));
-		const scopedEvidence = partitionMixedScopeFolderEvidence(effectiveEvidence, snapshot.scope);
 		const decidedComponent: AdmissionComponent = {
 			...component,
-			actions: shapeIdentityComponentActions(component.actions, scopedEvidence),
-			evidence: scopedEvidence,
+			actions: shapeIdentityComponentActions(component.actions, effectiveEvidence),
+			evidence: effectiveEvidence,
 		};
 		const shared = {
 			paths: [...component.paths].sort(),
@@ -265,6 +266,9 @@ export function admitDestructivePlan(
 			});
 		}
 	}
+	const footprintLifecycle = footprintRenameLifecycle(topology.footprintConstraints, dispositions);
+	persistBeforeExecution.push(...footprintLifecycle.persistBeforeExecution);
+	releaseAfterSafeCheckpoint.push(...footprintLifecycle.releaseAfterSafeCheckpoint);
 	dispositions.sort((left, right) => left.paths.join("\0").localeCompare(right.paths.join("\0")));
 	const executable = Object.freeze({
 		actions: Object.freeze(authorizedActions),

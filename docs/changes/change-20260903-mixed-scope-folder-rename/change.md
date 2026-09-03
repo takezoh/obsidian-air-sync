@@ -14,8 +14,9 @@ outcomes:
 - Unknown or incompletely mapped included descendants still fail Admission before
   execution.
 scope:
-- Admission scope normalization for local and remote folder rename evidence
 - Focused mixed-scope folder rename tests and active sync design documentation
+- Admission topology partition and operation-footprint constraints for local and remote
+  folder rename evidence
 non_goals:
 - Changing provider APIs, conflict strategy, executor behavior, or checkpoint storage
 change_classes:
@@ -41,11 +42,13 @@ tags: []
 owners: []
 relations: []
 source_paths:
-- src/sync/scope-normalization.ts
 - src/sync/plan-admission.ts
 - src/sync/plan-admission.test.ts
 - docs/sync-pipeline.md
 - docs/adr/0008-logical-identity-admission-fails-closed.md
+- src/sync/admission-topology.ts
+- src/sync/plan-admission-graph.ts
+- src/sync/local-rename-admission.ts
 summary: Partition a folder rename at the Admission boundary when every included descendant
   has an independently proven rename and excluded descendants remain untouched.
 updated: '2026-09-03'
@@ -53,15 +56,16 @@ updated: '2026-09-03'
 
 ## Summary
 
-An excluded descendant such as `desktop.ini` made a local folder rename fail
-Admission even though every included Markdown descendant had exact file-level rename
-evidence. Admission had coalesced those independently safe actions into one native
-folder rename before applying scope, so the excluded path accidentally controlled an
-operation outside its authority.
+An excluded descendant made a local folder rename fail Admission even though every
+included descendant had exact file-level rename evidence. The same defect applies to
+every path rejected by the existing `isExcluded()` policy—system junk, user ignore
+patterns, dot-path scope, Config Sync exclusions, and reserved plugin data. Admission
+had connected these policy-out paths to managed resource identity and allowed them to
+control an operation outside sync authority.
 
-Normalize the component by scope before action shaping. The folder edge remains
-identity and lifecycle evidence, but it is not an executable unit when included and
-policy-excluded descendants have different consequences. Included descendants execute
+Partition Admission topology before graph construction. Included paths form managed
+identity components; policy-out descendants are retained only as operation-footprint
+constraints that prohibit native whole-folder execution. Included descendants execute
 only when their individual mappings are complete; excluded descendants are untouched.
 
 ## Closure Notes

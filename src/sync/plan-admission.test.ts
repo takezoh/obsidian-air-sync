@@ -793,15 +793,16 @@ describe("admitDestructivePlan", () => {
 			},
 			{ path: "TemplateS/a.md", action: "push", local: entity("TemplateS/a.md") },
 		];
+		const folderEvidence = remoteRename({
+			side: "local", identityKey: undefined, oldPath: "Templates",
+			newPath: "TemplateS", isFolder: true,
+		});
 		const evidence: IdentityEvidence[] = [
 			{
 				kind: "alias", side: "local",
 				requestedPath: "TemplateS", resolvedPath: "Templates",
 			},
-			remoteRename({
-				side: "local", identityKey: undefined, oldPath: "Templates",
-				newPath: "TemplateS", isFolder: true,
-			}),
+			folderEvidence,
 			remoteRename({
 				side: "local", identityKey: undefined, oldPath: "Templates/a.md",
 				newPath: "TemplateS/a.md",
@@ -818,6 +819,13 @@ describe("admitDestructivePlan", () => {
 		expect(result.executable.actions).toMatchObject([{
 			action: "rename_remote", oldPath: "Templates/a.md", path: "TemplateS/a.md",
 		}]);
+		expect(result.dispositions[0]!.paths).not.toContain("Templates/desktop.ini");
+		expect(result.localRenameLifecycle.persistBeforeExecution.map(renameEvidenceKey)).toContain(
+			renameEvidenceKey(folderEvidence),
+		);
+		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint.map(renameEvidenceKey)).toContain(
+			renameEvidenceKey(folderEvidence),
+		);
 	});
 
 	it("admits included descendants when a remote folder rename also contains an excluded file", () => {
@@ -833,13 +841,14 @@ describe("admitDestructivePlan", () => {
 		const result = admit(actions, evidence, [], projection({
 			Templates: "included", TemplateS: "included",
 			"Templates/a.md": "included", "TemplateS/a.md": "included",
-			"Templates/desktop.ini": "policy_out",
+			"Templates/excluded-by-user.tmp": "policy_out",
 		}));
 
 		expect(result.failures).toEqual([]);
 		expect(result.executable.actions).toMatchObject([{
 			action: "rename_local", oldPath: "Templates/a.md", path: "TemplateS/a.md",
 		}]);
+		expect(result.dispositions[0]!.paths).not.toContain("Templates/excluded-by-user.tmp");
 	});
 
 	it("deduplicates replayed mixed-scope child evidence before deciding actions", () => {

@@ -3,9 +3,11 @@ import type { AdmissionComponent } from "./plan-admission-graph";
 import { renameEvidenceKey } from "./identity-evidence";
 import { hasRemoteChanged } from "./change-compare";
 import { contentKey, sameContent } from "./content-identity";
+import type { FolderFootprintConstraint } from "./admission-topology";
 import type { FileEntity } from "../fs/types";
 import type {
 	LocalRenameEvidence,
+	RenameEvidence,
 	ScopeProjection,
 	SyncRecord,
 } from "./types";
@@ -73,6 +75,30 @@ export function buildLocalRenameLifecycle(
 		persistBeforeExecution: Object.freeze([...persistBeforeExecution]),
 		releaseAfterSafeCheckpoint: Object.freeze([...releaseAfterSafeCheckpoint]),
 	};
+}
+
+export function footprintRenameLifecycle(
+	constraints: readonly FolderFootprintConstraint[],
+	dispositions: readonly {
+		kind: "authorized" | "resolved_no_action" | "failed";
+		paths: readonly string[];
+	}[],
+): LocalRenameLifecycle {
+	const persist: LocalRenameEvidence[] = [];
+	const release: LocalRenameEvidence[] = [];
+	for (const { rename } of constraints) {
+		if (!isLocalRename(rename)) continue;
+		const prefixes = [`${rename.oldPath}/`, `${rename.newPath}/`];
+		const related = dispositions.filter((item) => item.paths.some((path) =>
+			prefixes.some((prefix) => path.startsWith(prefix))));
+		persist.push(rename);
+		if (related.length > 0 && related.every((item) => item.kind !== "failed")) release.push(rename);
+	}
+	return buildLocalRenameLifecycle(persist, release);
+}
+
+function isLocalRename(rename: RenameEvidence): rename is LocalRenameEvidence {
+	return rename.side === "local";
 }
 
 function isNonBindingComponent(
