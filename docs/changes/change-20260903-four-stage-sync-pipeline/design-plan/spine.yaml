@@ -1,0 +1,121 @@
+artifact: design-plan-spine
+version: 2
+granularity_profile: boundary-complete
+
+scope_expansion_signals:
+  - id: scope-signal-action-authority
+    kind: shared_boundary
+    target_ref: component-admission
+    witness: Observation currently constructs a SyncPlan before Admission despite Admission being the sole action authority.
+    requirement_refs: [FR-FOUR-002, FR-FOUR-003, NFR-FOUR-001]
+    authority_refs: [adr-20260903-four-stage-sync-pipeline]
+
+requirements:
+  - {id: FR-FOUR-001, type: ubiquitous, priority: must, statement: The system shall represent normal sync as exactly four responsibility owners.}
+  - {id: FR-FOUR-002, type: state_driven, priority: must, statement: While acquiring observations the system shall emit facts without executable actions.}
+  - {id: FR-FOUR-003, type: event_driven, priority: must, statement: When Admission receives an observation the system shall construct and authorize the exact plan.}
+  - {id: FR-FOUR-004, type: unwanted, priority: must, statement: If topology or concurrent evidence is ambiguous then the system shall authorize no destructive effect.}
+  - {id: FR-FOUR-005, type: state_driven, priority: must, statement: While executing the system shall perform only exact authorized actions without rerouting.}
+  - {id: FR-FOUR-006, type: unwanted, priority: must, statement: If completion is nonterminal then the system shall retain checkpoint and applicable debt.}
+  - {id: NFR-FOUR-001, type: ubiquitous, priority: must, statement: Production imports shall mechanically restrict the decision helper to Admission.}
+  - {id: NFR-FOUR-002, type: ubiquitous, priority: must, statement: Provider checkpoint priority conflict and outcome compatibility shall remain unchanged.}
+
+components:
+  - {id: component-observation, kind: existing, contract_refs: [contract-observation-facts], paths: [src/sync/sync-cycle-planning.ts]}
+  - {id: component-admission, kind: existing, contract_refs: [contract-admission-authority], paths: [src/sync/plan-admission.ts, src/sync/decision-engine.ts]}
+  - {id: component-execution, kind: existing, contract_refs: [contract-exact-execution], paths: [src/sync/orchestrator.ts, src/sync/plan-executor.ts]}
+  - {id: component-finalization, kind: existing, contract_refs: [contract-terminal-commit], paths: [src/sync/sync-cycle-finalization.ts, ARCHITECTURE.md, docs/sync-pipeline.md, eslint.config.mts]}
+
+contracts:
+  - id: contract-observation-facts
+    dimension: integration_contract
+    owner: component-observation
+    requirement_refs: [FR-FOUR-001, FR-FOUR-002]
+    unit_refs: [unit-observation-carriers]
+    adr_refs: [adr-20260903-four-stage-sync-pipeline]
+    verification: [{id: verify-observation, tier: T1, command: npm test -- --run src/sync/plan-admission.test.ts}]
+    partition: {outcomes: [determinate, unknown, inconclusive, conflicting], default_policy: Observation uncertainty remains fact evidence and never becomes an action.}
+  - id: contract-admission-authority
+    dimension: security_boundary
+    owner: component-admission
+    requirement_refs: [FR-FOUR-003, FR-FOUR-004, NFR-FOUR-001]
+    unit_refs: [unit-admission-authority]
+    adr_refs: [adr-20260903-four-stage-sync-pipeline]
+    verification: [{id: verify-admission, tier: T1, command: npm test -- --run src/sync/plan-admission.test.ts src/sync/decision-engine.test.ts}]
+    partition: {outcomes: [determinate, unknown, inconclusive, conflicting], default_policy: Ambiguous identity or topology authorizes no destructive effect.}
+  - id: contract-exact-execution
+    dimension: integration_contract
+    owner: component-execution
+    requirement_refs: [FR-FOUR-005, NFR-FOUR-002]
+    unit_refs: [unit-execution-integration]
+    adr_refs: [adr-20260903-four-stage-sync-pipeline]
+    verification: [{id: verify-execution, tier: T1, command: npm test -- --run src/sync/plan-executor.test.ts src/sync/convergence.test.ts}]
+    partition: {outcomes: [determinate, unknown, inconclusive, conflicting], default_policy: Executor records exact outcomes and never substitutes an action.}
+  - id: contract-terminal-commit
+    dimension: state_lifecycle
+    owner: component-finalization
+    requirement_refs: [FR-FOUR-006, NFR-FOUR-002]
+    unit_refs: [unit-finalization-docs]
+    adr_refs: [adr-20260903-four-stage-sync-pipeline]
+    verification:
+      - {id: verify-finalization, tier: T1, command: npm test -- --run src/sync/sync-cycle-finalization.test.ts src/sync/convergence.test.ts}
+      - {id: verify-repository-gate, tier: T2, command: npm run lint && npm run lint:bot-repro && npm run build && npm run test:coverage}
+    partition: {outcomes: [determinate, unknown, inconclusive, conflicting], default_policy: Nonterminal completion retains checkpoint and applicable debt.}
+
+adrs:
+  - {id: adr-20260903-four-stage-sync-pipeline, status: accepted, decision_input_refs: [decision-input-four-stage, decision-input-single-authority]}
+
+units:
+  - title: unit-observation-carriers
+    chunk: observation
+    contract_refs: [contract-observation-facts]
+    files: [src/sync/sync-cycle-planning.ts, src/sync/plan-admission.test.ts]
+    acceptance: [The cycle carrier contains observed entries and no SyncPlan., Observation imports no action decision helper.]
+    objective: Make the pre-Admission boundary fact-only.
+    output_format: TypeScript carrier changes and focused tests.
+    tool_guidance: Preserve existing copied evidence scope namespace and replay metadata.
+    task_boundaries: Do not construct actions or change provider observation.
+    decision_closure_reason: Fact-only input and existing evidence fields are fixed.
+  - title: unit-admission-authority
+    chunk: admission
+    contract_refs: [contract-admission-authority]
+    files: [src/sync/plan-admission.ts, src/sync/decision-engine.ts, eslint.config.mts, src/sync/plan-admission.test.ts, src/sync/decision-engine.test.ts]
+    depends_on: [unit-observation-carriers]
+    acceptance: [Admission alone invokes planSync in production., Exact actions and dispositions remain behavior-compatible., Lint rejects foreign production imports.]
+    objective: Make Admission the sole action-construction authority.
+    output_format: TypeScript boundary changes lint guard and tests.
+    tool_guidance: Keep the pure decision table as an Admission-private helper.
+    task_boundaries: Do not change conflict policy action algebra or identity component rules.
+    decision_closure_reason: Sole authority and compatibility requirements are fixed.
+  - title: unit-execution-integration
+    chunk: execution
+    contract_refs: [contract-exact-execution]
+    files: [src/sync/orchestrator.ts, src/sync/plan-executor.ts, src/sync/plan-executor.test.ts, src/sync/convergence.test.ts]
+    depends_on: [unit-admission-authority]
+    acceptance: [The orchestrator passes facts to Admission then exact authorization to Executor., Executor performs no replanning., Rename plus edit convergence and Remote conflict cases remain green.]
+    objective: Integrate the four-stage boundary without changing effects.
+    output_format: TypeScript wiring and regression tests.
+    tool_guidance: Preserve exact AuthorizedSyncPlan object identity and priority coordination.
+    task_boundaries: Do not change phase order provider calls or execution outcomes.
+    decision_closure_reason: Execution-only semantics are fixed.
+  - title: unit-finalization-docs
+    chunk: finalization-and-design
+    contract_refs: [contract-terminal-commit]
+    files: [src/sync/sync-cycle-finalization.ts, src/sync/sync-cycle-finalization.test.ts, ARCHITECTURE.md, docs/sync-pipeline.md, docs/adr/adr-20260903-four-stage-sync-pipeline.md, docs/design/design-four-stage-sync-pipeline.md, docs/changes/change-20260903-four-stage-sync-pipeline]
+    depends_on: [unit-execution-integration]
+    acceptance: [Checkpoint and debt terminality remain unchanged., Durable docs describe exactly four stages., The full repository gate passes.]
+    objective: Verify commit semantics and publish the governing four-stage design.
+    output_format: Tests documentation and verification evidence.
+    tool_guidance: Document mechanisms inside their owner rather than inventing stages.
+    task_boundaries: Do not change checkpoint or debt policy without a new decision.
+    decision_closure_reason: Commit-last semantics and documentation contract are fixed.
+
+acceptance:
+  - {id: acceptance-fact-only, criteria: Observation exposes facts and Admission constructs the exact plan., requirement_refs: [FR-FOUR-002, FR-FOUR-003]}
+  - {id: acceptance-conflict, criteria: Rename plus edit converges while incompatible concurrent Remote change remains a conflict., requirement_refs: [FR-FOUR-004, NFR-FOUR-002]}
+  - {id: acceptance-exact, criteria: Execution and finalization consume exact authorized actions and retain state on nonterminal completion., requirement_refs: [FR-FOUR-005, FR-FOUR-006]}
+  - {id: acceptance-boundary, criteria: Lint and durable documentation enforce exactly four responsibility owners., requirement_refs: [FR-FOUR-001, NFR-FOUR-001]}
+
+dispositions:
+  - {decision_input_ref: decision-input-four-stage, disposition: adopted — Use exactly four top-level responsibility owners., adr_refs: [adr-20260903-four-stage-sync-pipeline], contract_refs: [contract-observation-facts, contract-admission-authority, contract-exact-execution, contract-terminal-commit]}
+  - {decision_input_ref: decision-input-single-authority, disposition: adopted — Move path-local action construction behind Admission without adding late-bound machinery., adr_refs: [adr-20260903-four-stage-sync-pipeline], contract_refs: [contract-admission-authority]}
