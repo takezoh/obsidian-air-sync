@@ -64,9 +64,12 @@ central `tests/fs/remote-backend-contracts.test.ts` unit composition root.
   only after a wholly clean cycle, and each file's `SyncRecord` commits only after its
   admitted I/O succeeds. The remote metadata cache is a derived projection, written as
   a complete final snapshot atomically with the cursor; it is never an authority or a
-  mutation ledger. Keep `sync-state-ownership-guard.test.mjs` green. Any intentional
-  new cursor/`SyncStateStore` writer or `SyncOrchestrator` private field requires the
-  guard fixture plus ADR 0001 and enforcement-document updates in the same change.
+  mutation ledger. Keep `sync-state-ownership-guard.test.mjs` green. Its TypeScript AST
+  inventory covers every `SyncOrchestrator` instance field and the production import,
+  reference, constructor, and mutation ownership of `SyncStateStore`/`IDBHelper`. Any
+  intentional new cursor/`SyncStateStore` writer, persistent-store owner, or orchestrator
+  field requires the guard fixture plus ADR 0001 and enforcement-document updates in the
+  same change.
 - No migration code — on IndexedDB schema changes, cold-start (drop all stores and
   recreate). Settings schema changes use sensible defaults for missing fields via
   `Object.assign({}, DEFAULT_SETTINGS, stored)`.
