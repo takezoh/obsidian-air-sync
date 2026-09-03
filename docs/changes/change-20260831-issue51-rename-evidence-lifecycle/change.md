@@ -4,7 +4,7 @@ kind: change
 title: Repair rename evidence ownership and lifecycle
 summary: Move local rename durability decisions into Admission and safely converge
   existing false v6 debt without weakening fail-closed sync.
-status: active
+status: done
 created: '2026-08-31'
 profile: sdd@1
 intent: Restore convergence for never-synchronized local renames by moving durable
@@ -101,7 +101,18 @@ source_paths:
 - src/sync/rename-debt.test.ts
 - eslint.config.mts
 - docs/code-enforcement.md
-updated: '2026-09-01'
+evidence_refs:
+- type: test
+  ref: focused lifecycle suite (187 tests passed)
+- type: command
+  ref: repository gate (95 files, 1604 tests passed)
+- type: command
+  ref: dev-docs lint --conformance
+updated: '2026-09-03'
+promotion_applied_at: '2026-09-03T10:11:44.022358+00:00'
+closure:
+  closed_at: '2026-09-03T10:14:35.269814+00:00'
+  content_hash: sha256:ac92e6ef14891125d1571863d9cb069e90abec01c514b5f0f0c50db0002beb08
 ---
 
 ## Summary
@@ -123,6 +134,10 @@ The follow-on identity-component decision redesign keeps this exact debt lifecyc
 contract. It removes the separate whole-plan optimizer and makes the same Admission
 outcome select action shaping, disposition, and lifecycle membership together; it does
 not broaden retirement or change the persisted v6 representation.
+
+The 2026-09-03 four-stage normalization was reviewed against this lifecycle. It moves
+path-local action construction behind the same Admission boundary while leaving debt
+promotion, pre-I/O persistence, exact release membership, and checkpoint-last unchanged.
 
 ## Closure Notes
 

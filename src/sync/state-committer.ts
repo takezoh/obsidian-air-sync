@@ -3,6 +3,8 @@ import type { SyncAction, SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
 import type { Logger } from "../logging/logger";
 import { isMergeEligible } from "./merge";
+import { isFreshRenameAction } from "./plan-admission";
+import type { TerminalFreshProof } from "./plan-executor";
 
 export interface StateCommitterContext {
 	stateStore: SyncStateStore;
@@ -10,6 +12,8 @@ export interface StateCommitterContext {
 	enableThreeWayMerge?: boolean;
 	logger?: Logger;
 }
+
+type OrdinaryCommitAction = SyncAction & { readonly freshRenameState?: never };
 
 /**
  * Build a SyncRecord from a local and remote FileEntity.
@@ -65,13 +69,16 @@ async function maybeStoreMergeBase(
  * Failed actions are skipped by the caller; they will be re-detected on the next sync cycle.
  */
 export async function commitAction(
-	action: SyncAction,
+	action: OrdinaryCommitAction,
 	localEntity: FileEntity | undefined,
 	remoteEntity: FileEntity | undefined,
 	ctx: StateCommitterContext,
 ): Promise<void> {
 	const { path } = action;
 	const { stateStore } = ctx;
+	if (isFreshRenameAction(action)) {
+		throw new Error("Fresh rename requires terminal proof");
+	}
 
 	switch (action.action) {
 		case "push":
@@ -115,4 +122,20 @@ export async function commitAction(
 			break;
 		}
 	}
+}
+
+/** Fresh-only per-file CAS. The executor brand and exact admitted baseline are mandatory. */
+export async function commitTerminalFresh(
+	proof: TerminalFreshProof,
+	exactBaseline: SyncRecord,
+	ctx: StateCommitterContext,
+): Promise<void> {
+	if (!proof) throw new Error("Fresh rename terminal proof missing");
+	if (proof.action.baseline !== exactBaseline) {
+		throw new Error(`Fresh rename admitted baseline mismatch: ${proof.action.oldPath}`);
+	}
+	const record = buildSyncRecord(proof.localEntity, proof.remoteEntity, proof.action.path);
+	const moved = await ctx.stateStore.compareAndMove(exactBaseline, record);
+	if (!moved) throw new Error(`SyncRecord changed before fresh rename commit: ${proof.action.oldPath}`);
+	await maybeStoreMergeBase(ctx, proof.action.path, proof.localEntity, record.localSize);
 }

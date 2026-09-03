@@ -54,14 +54,25 @@ export async function enrichHashesForRenames(
 	const newPaths = new Set(renamePairs.keys());
 	const newFolderPrefixes = [...folderRenamePairs.keys()].map((path) => path + "/");
 	const candidates = entries.filter(
-		(entry) => entry.local && !entry.local.isDirectory && !entry.local.hash &&
+		(entry) => entry.local && !entry.local.isDirectory &&
 			(newPaths.has(entry.path) || newFolderPrefixes.some((prefix) => entry.path.startsWith(prefix))),
 	);
 	const pool = new AsyncPool(10);
 	await Promise.all(candidates.map((entry) => pool.run(async () => {
-		const observation = observePath("local", entry.path, await localFs.stat(entry.path));
-		replaceObservation(observations, observation);
-		const statEntity = exactEntity(observation);
-		entry.local = statEntity ? { ...entry.local!, hash: statEntity.hash } : undefined;
+		let statEntity = entry.local;
+		if (!statEntity) return;
+		if (!statEntity.hash) {
+			const observation = observePath("local", entry.path, await localFs.stat(entry.path));
+			replaceObservation(observations, observation);
+			statEntity = exactEntity(observation);
+			entry.local = statEntity ? { ...entry.local!, hash: statEntity.hash } : undefined;
+		}
+		const remoteChecksum = entry.remote?.remoteChecksum;
+		if (!statEntity?.hash || !entry.remote || entry.remote.hash || !remoteChecksum ||
+			!isLocallyComputable(remoteChecksum.algo)) return;
+		const content = await localFs.read(entry.path);
+		if (await digest(content, remoteChecksum.algo) !== remoteChecksum.value) return;
+		entry.remote = { ...entry.remote, hash: statEntity.hash };
+		replaceObservation(observations, observePath("remote", entry.path, entry.remote));
 	})));
 }

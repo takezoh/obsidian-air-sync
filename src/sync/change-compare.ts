@@ -47,8 +47,8 @@ export function hasChanged(file: FileEntity, record: SyncRecord): boolean {
  *
  * The remote's content fingerprint is `remoteChecksum` (server-provided, free in listing
  * metadata), never the local-style `hash` — which is always "" for cached remote entries.
- * Signal order: mtime+size agree ⇒ unchanged; if they differ, trust the checksum when
- * both sides expose the SAME algo, else conservatively assume changed. The `hash`
+ * Signal order: a comparable checksum is authoritative; otherwise mtime+size agree ⇒
+ * unchanged, and differing metadata is conservatively changed. The `hash`
  * comparison is kept only as defensive symmetry for a caller that supplies one (in
  * practice it never fires, since remote `hash` is "").
  *
@@ -66,6 +66,7 @@ export function hasRemoteChanged(file: FileEntity, record: SyncRecord): boolean 
 		fc !== undefined && rc !== undefined && fc.algo === rc.algo
 			? !checksumsEqual(fc, rc)
 			: undefined;
+	if (checksumChanged !== undefined) return checksumChanged;
 
 	if (file.mtime > 0 && record.remoteMtime > 0) {
 		if (file.mtime === record.remoteMtime && file.size === record.remoteSize) {
@@ -74,12 +75,10 @@ export function hasRemoteChanged(file: FileEntity, record: SyncRecord): boolean 
 			if (file.hash && record.hash) return file.hash !== record.hash;
 			return false;
 		}
-		// mtime/size differ → the free checksum decides when comparable, else conservative.
-		return checksumChanged ?? true;
+		return true;
 	}
 
 	// No usable mtime → fall back to the checksum, then a supplied hash, then conservative.
-	if (checksumChanged !== undefined) return checksumChanged;
 	if (file.hash && record.hash) return file.hash !== record.hash;
 	return true;
 }

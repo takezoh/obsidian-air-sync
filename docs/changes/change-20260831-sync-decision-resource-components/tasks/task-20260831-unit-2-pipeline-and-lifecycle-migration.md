@@ -2,7 +2,7 @@
 id: task-20260831-unit-2-pipeline-and-lifecycle-migration
 kind: task
 title: unit-2-pipeline-and-lifecycle-migration
-status: todo
+status: done
 created: '2026-08-31'
 priority: normal
 effort: medium
@@ -21,10 +21,8 @@ pr: null
 tags: []
 owners: []
 relations:
-- type: partOf
-  target: change-20260831-sync-decision-resource-components
-- type: dependsOn
-  target: task-20260831-unit-1-single-identity-component-owner
+- {type: partOf, target: change-20260831-sync-decision-resource-components}
+- {type: dependsOn, target: task-20260831-unit-1-single-identity-component-owner}
 source_paths: []
 change: change-20260831-sync-decision-resource-components
 summary: Remove the refinement stage and migrate consumers/tests to Admission over
@@ -33,6 +31,7 @@ max_diff_loc: 300
 pinned_context:
 - docs/changes/change-20260831-sync-decision-resource-components/tasks/task-20260831-unit-2-pipeline-and-lifecycle-migration.md
 - docs/changes/change-20260831-sync-decision-resource-components/design-plan
+updated: '2026-09-03'
 ---
 
 ## Responsibility
@@ -51,3 +50,13 @@ Remove the refinement stage and migrate consumers/tests to Admission over the im
 - AC-SD-004
 - AC-SD-005
 - AC-SD-008
+
+
+{% transition from="todo" to="in_progress" date="2026-09-03" %}
+reconcile-completed-delivery-history
+{% /transition %}
+
+
+{% transition from="in_progress" to="done" date="2026-09-03" %}
+implemented-and-verified-in-pr-57
+{% /transition %}

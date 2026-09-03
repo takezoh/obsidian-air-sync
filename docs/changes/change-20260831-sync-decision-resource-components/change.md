@@ -2,7 +2,7 @@
 id: change-20260831-sync-decision-resource-components
 kind: change
 title: Unify sync decision around resource components
-status: active
+status: done
 created: '2026-08-31'
 profile: sdd@1
 intent: Replace the plan-then-optimize-then-revalidate pipeline with one explicit
@@ -59,7 +59,10 @@ members:
 - role: verification
   path: changes/change-20260831-sync-decision-resource-components/verification.md
   required: true
-promotion: []
+promotion:
+- action: none
+  reason: The accepted Admission ownership ADR and the later four-stage sync design
+    own the durable boundary.
 unresolved_decisions: []
 tags:
 - sync
@@ -87,9 +90,21 @@ source_paths:
 - docs/code-enforcement.md
 - docs/error-handling.md
 - docs/changes/change-20260831-issue51-rename-evidence-lifecycle/change.md
+evidence_refs:
+- type: command
+  ref: npm run lint; npm run lint:bot-repro; npm run build; npm run test:coverage
+    (90 files, 1712 tests)
+- type: test
+  ref: live Google Drive, Dropbox, and OneDrive E2E (163 tests passed)
+- type: command
+  ref: dev-docs lint --conformance
 summary: Replace plan-then-optimize-then-revalidate with one component decision boundary
   while preserving crash and destructive-safety invariants.
-updated: '2026-08-31'
+updated: '2026-09-03'
+promotion_applied_at: '2026-09-03T10:12:55.197475+00:00'
+closure:
+  closed_at: '2026-09-03T10:14:35.940794+00:00'
+  content_hash: sha256:33a7adedfa77380a1efa0e9c7f0ca806015b0d7939428b705d80f42f9694ebc9
 ---
 
 ## Summary
@@ -98,6 +113,10 @@ Keep the existing path-local decision table and executor/finalizer contracts, bu
 PlanAdmission the single owner of identity-connected action shaping and authorization.
 The accepted plan removes standalone `refinePlan`, constructs components once, and
 uses an exhaustive fail-closed outcome table with exact v6 debt membership.
+
+The 2026-09-03 four-stage normalization completes this ownership direction by making
+the path-local decision table private to Admission as well. Component construction,
+action shaping, disposition, execution, and finalization contracts remain unchanged.
 
 ## Closure Notes
 
@@ -114,4 +133,9 @@ design-plan-approved
 
 {% transition from="ready" to="active" date="2026-08-31" %}
 unit-delivery-started
+{% /transition %}
+
+
+{% transition from="closing" to="active" date="2026-09-03" %}
+complete-task-status-before-closure
 {% /transition %}

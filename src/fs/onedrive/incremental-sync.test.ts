@@ -134,9 +134,9 @@ describe("applyOneDriveDelta", () => {
 		const withoutProducerEdge = admit([]);
 
 		expect(withProducerEdge.executable.actions).toEqual([]);
-		expect(withProducerEdge.deferred[0]?.reasons).toEqual(["opposing_deletes"]);
+		expect(withProducerEdge.failures[0]?.reasons).toEqual(["opposing_deletes"]);
 		expect(withoutProducerEdge.executable.actions).toEqual(actions);
-		expect(withoutProducerEdge.deferred).toEqual([]);
+		expect(withoutProducerEdge.failures).toEqual([]);
 	});
 
 	it("rewrites child paths when a folder is renamed via the same id", async () => {

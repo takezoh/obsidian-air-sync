@@ -5,22 +5,37 @@ import type { LocalChangeTracker } from "./local-tracker";
 
 const DEBOUNCE_MS = 5000;
 
-function folderDescendantTouchesScope(
+function trackScopedFolderRename(
 	folder: TFolder,
 	oldRoot: string,
 	isExcluded: (path: string) => boolean,
+	localTracker: LocalChangeTracker,
 ): boolean {
 	const newPrefix = `${folder.path}/`;
 	const pending = [...folder.children];
+	let tracked = false;
 	while (pending.length > 0) {
 		const child = pending.pop()!;
-		if (!child.path.startsWith(newPrefix)) return true;
+		if (child instanceof TFolder) {
+			pending.push(...child.children);
+			continue;
+		}
+		if (!child.path.startsWith(newPrefix)) continue;
 		const relative = child.path.substring(newPrefix.length);
 		const oldPath = relative ? `${oldRoot}/${relative}` : oldRoot;
-		if (!isExcluded(child.path) || !isExcluded(oldPath)) return true;
-		if (child instanceof TFolder) pending.push(...child.children);
+		const newExcluded = isExcluded(child.path);
+		const oldExcluded = isExcluded(oldPath);
+		if (newExcluded && oldExcluded) continue;
+		if (!newExcluded && !oldExcluded) {
+			localTracker.markRenamed(child.path, oldPath);
+		} else if (!newExcluded) {
+			localTracker.markDirty(child.path);
+		} else {
+			localTracker.markDirty(oldPath);
+		}
+		tracked = true;
 	}
-	return false;
+	return tracked;
 }
 
 export interface SyncOrchestrator {
@@ -154,18 +169,28 @@ export class SyncScheduler {
 		const onRename = (file: TAbstractFile, oldPath: string) => {
 			const newExcluded = isExcluded(file.path);
 			const oldExcluded = isExcluded(oldPath);
-			// Preserve one normative rename edge whenever either endpoint participates
-			// in sync. Scope projection owns the direction-specific consequence; losing
-			// the edge here would turn a cross-scope move into unrelated create/delete.
-			if (!newExcluded || !oldExcluded ||
-				(file instanceof TFolder && folderDescendantTouchesScope(file, oldPath, isExcluded))) {
-				if (file instanceof TFolder) {
+			let tracked = false;
+			if (file instanceof TFolder) {
+				if (!newExcluded && !oldExcluded) {
 					localTracker.markFolderRenamed(file.path, oldPath);
+					tracked = true;
 				} else {
-					localTracker.markRenamed(file.path, oldPath);
+					// A cross-scope folder edge must not carry an excluded root into the
+					// sync engine. Expand it at this boundary and retain only included
+					// file endpoints; excluded descendants disappear completely.
+					tracked = trackScopedFolderRename(file, oldPath, isExcluded, localTracker);
 				}
-				this.debouncedSync();
+			} else if (!newExcluded && !oldExcluded) {
+				localTracker.markRenamed(file.path, oldPath);
+				tracked = true;
+			} else if (!newExcluded) {
+				localTracker.markDirty(file.path);
+				tracked = true;
+			} else if (!oldExcluded) {
+				localTracker.markDirty(oldPath);
+				tracked = true;
 			}
+			if (tracked) this.debouncedSync();
 		};
 
 		this.deps.registerEvent(vault.on("create", onVaultChange));

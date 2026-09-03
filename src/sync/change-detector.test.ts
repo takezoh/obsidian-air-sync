@@ -9,7 +9,7 @@ import type { FileEntity, RemoteChecksum } from "../fs/types";
 import type { MixedEntity, PathObservation, SyncRecord } from "./types";
 import { md5 } from "../utils/md5";
 import { sha256, sha1 } from "../utils/hash";
-import { projectRenameScope, projectScope } from "./scope-projection";
+import { applyScope } from "./scope-projection";
 
 function makeRecord(path: string, overrides: Partial<SyncRecord> = {}): SyncRecord {
 	return {
@@ -669,6 +669,37 @@ describe("collectChanges — temperature selection", () => {
 			expect(result.identityEvidence).toEqual([]);
 		});
 
+		it("infers a case-only local rename from current state without a tracker event", async () => {
+			addFile(localFs, "case.md", "local edit", 2000);
+			const remote = addFile(remoteFs, "Case.md", "baseline", 1000);
+			remote.identityKey = "R";
+			await stateStore.put(makeRecord("Case.md", {
+				remoteIdentityKey: "R", localSize: 8, remoteSize: 8,
+			}));
+
+			const result = await collectChanges(makeDeps(), { forceFullScan: true });
+
+			expect(result.identityEvidence).toContainEqual({
+				kind: "rename", side: "local", oldPath: "Case.md", newPath: "case.md",
+				isFolder: false, authority: "current_state",
+			});
+		});
+
+		it("does not infer a case-only local rename when the baseline remote changed", async () => {
+			addFile(localFs, "case.md", "local edit", 2000);
+			const remote = addFile(remoteFs, "Case.md", "remote edit", 2000);
+			remote.identityKey = "R";
+			await stateStore.put(makeRecord("Case.md", {
+				remoteIdentityKey: "R", localSize: 8, remoteSize: 8,
+			}));
+
+			const result = await collectChanges(makeDeps(), { forceFullScan: true });
+
+			expect(result.identityEvidence).not.toContainEqual(expect.objectContaining({
+				kind: "rename", side: "local", oldPath: "Case.md", newPath: "case.md",
+			}));
+		});
+
 		it("authoritatively observes otherwise-unseen folder rename roots", async () => {
 			await localFs.mkdir("new");
 			localTracker.markFolderRenamed("new", "old");
@@ -721,17 +752,16 @@ describe("collectChanges — temperature selection", () => {
 				expect(folderEvidence?.kind).toBe("rename");
 				if (!folderEvidence || folderEvidence.kind !== "rename") return;
 
-				const rootsOut = projectScope(result, {
-					classifyPath: (path) => path === "old" || path === "new"
-						? "policy_out"
-						: "included",
+				const rootsOut = applyScope(result, {
+					isExcluded: (path) => path === "old" || path === "new",
 				});
-				expect(projectRenameScope(folderEvidence, rootsOut).consequence).toBe("defer");
+				expect(rootsOut.changeSet.identityEvidence).not.toContain(folderEvidence);
 
-				const mixedChild = projectScope(result, {
-					classifyPath: (path) => path === "new/a.md" ? "policy_out" : "included",
+				const mixedChild = applyScope(result, {
+					isExcluded: (path) => path === "new/a.md",
 				});
-				expect(projectRenameScope(folderEvidence, mixedChild).consequence).toBe("defer");
+				expect(mixedChild.changeSet.identityEvidence).not.toContain(folderEvidence);
+				expect([...mixedChild.projection.byEndpoint.keys()]).not.toContain("new/a.md");
 			},
 		);
 
@@ -762,10 +792,11 @@ describe("collectChanges — temperature selection", () => {
 			expect(folderEvidence?.kind).toBe("rename");
 			if (!folderEvidence || folderEvidence.kind !== "rename") return;
 
-			const mixedChild = projectScope(result, {
-				classifyPath: (path) => path === "new/a.md" ? "policy_out" : "included",
+			const mixedChild = applyScope(result, {
+				isExcluded: (path) => path === "new/a.md",
 			});
-			expect(projectRenameScope(folderEvidence, mixedChild).consequence).toBe("defer");
+			expect(mixedChild.changeSet.identityEvidence).not.toContain(folderEvidence);
+			expect([...mixedChild.projection.byEndpoint.keys()]).not.toContain("new/a.md");
 			},
 		);
 
@@ -892,6 +923,50 @@ describe("collectChanges — temperature selection", () => {
 			expect(observations).toContainEqual(expect.objectContaining({
 				kind: "exact", side: "local", requestedPath: "new.md",
 			}));
+		});
+
+		it("proves a completed rename write across remote checksum algorithms", async () => {
+			const entries = [entry("new.md", "")];
+			entries[0]!.remote = {
+				path: "new.md", pathAuthority: "actual_resolved", identityKey: "R",
+				isDirectory: false, size: 7, mtime: 1000, hash: "",
+				remoteChecksum: { algo: "md5", value: "9a0364b9e99bb480dd25e1f0284c8555" },
+			};
+			const pairs = new Map([["new.md", "old.md"]]);
+			addFile(localFs, "new.md", "content", 1000);
+			const origStat = localFs.stat.bind(localFs);
+			localFs.stat = async (path: string) => {
+				const value = await origStat(path);
+				return value ? { ...value, hash: "local-sha256" } : value;
+			};
+
+			await enrichHashesForRenames(entries, observations, localFs, pairs);
+
+			expect(entries[0]?.remote?.hash).toBe("local-sha256");
+			const remoteObservation = observations.find((item) =>
+				item.side === "remote" && item.requestedPath === "new.md");
+			expect(remoteObservation?.kind).toBe("exact");
+			if (remoteObservation?.kind === "exact") {
+				expect(remoteObservation.entity.hash).toBe("local-sha256");
+			}
+		});
+
+		it("proves cross-algorithm identity when the local rename hash is already present", async () => {
+			const entries = [entry("new.md", "local-sha256")];
+			entries[0]!.remote = {
+				path: "new.md", pathAuthority: "actual_resolved", identityKey: "R",
+				isDirectory: false, size: 7, mtime: 1000, hash: "",
+				remoteChecksum: { algo: "md5", value: "9a0364b9e99bb480dd25e1f0284c8555" },
+			};
+			addFile(localFs, "new.md", "content", 1000);
+			const stat = vi.spyOn(localFs, "stat");
+
+			await enrichHashesForRenames(
+				entries, observations, localFs, new Map([["new.md", "old.md"]]),
+			);
+
+			expect(stat).not.toHaveBeenCalled();
+			expect(entries[0]?.remote?.hash).toBe("local-sha256");
 		});
 
 		it("skips entries where hash is already present", async () => {

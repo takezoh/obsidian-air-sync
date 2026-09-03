@@ -133,6 +133,10 @@ export function coalesceLocalFolderRenames(
 		for (const [newFile, oldFile] of descendantPairs) {
 			const del = byPath.get(oldFile);
 			const push = byPath.get(newFile);
+			if (push?.action === "rename_remote" && push.oldPath === oldFile) {
+				descendants.push({ oldPath: oldFile, newPath: newFile });
+				continue;
+			}
 			if (!del || !push || !isValidLocalRename(del, push)) {
 				skipReason = classifySkipReason(del, push);
 				logger?.debug("Folder rename: validation failed", {

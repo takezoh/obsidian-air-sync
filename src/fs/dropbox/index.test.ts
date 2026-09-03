@@ -4,7 +4,7 @@ import { spyRequestUrl, mockRes, dbxFile, dbxFolder, untagged } from "./test-hel
 import type { DropboxFsInternal } from "./test-helpers";
 import type { DropboxEntry } from "./types";
 import "fake-indexeddb/auto";
-import { METADATA_CACHE_VERSION, MetadataStore } from "../../store/metadata-store";
+import type { MetadataStore } from "../../store/metadata-store";
 
 vi.mock("obsidian");
 
@@ -236,12 +236,14 @@ describe("DropboxFs.rename", () => {
 	type CacheView = {
 		setEntry(path: string, entry: DropboxEntry): void;
 		getFile(path: string): DropboxEntry | undefined;
+		setRootPath(path: string): void;
 	};
 
 	async function caseRenameFs() {
 		const fs = await makeFs();
 		(fs as unknown as DropboxFsInternal).initialized = true;
 		const cache = (fs as unknown as { cache: CacheView }).cache;
+		cache.setRootPath("/root");
 		cache.setEntry("Case.md", dbxFile("case", "/root/Case.md"));
 		return { fs, cache };
 	}
@@ -274,38 +276,73 @@ describe("DropboxFs.rename", () => {
 		expect((await fs.stat("case.md"))?.identityKey).toBe("id:case");
 	});
 
-	it("persists case-only rename intent before the first remote move", async () => {
-		const events: string[] = [];
-		const store = {
-			getMeta: () => Promise.resolve(undefined),
-			setMeta: () => { events.push("persist"); return Promise.resolve(); },
-			deleteMeta: () => Promise.resolve(),
-		} as unknown as MetadataStore<DropboxEntry>;
-		const { DropboxFs } = await import("./index");
-		const { DropboxClient } = await import("./client");
-		const fs = new DropboxFs(
-			new DropboxClient(() => Promise.resolve("AT")), "id:root", undefined, store,
-		);
-		(fs as unknown as DropboxFsInternal).initialized = true;
-		(fs as unknown as { cache: CacheView }).cache.setEntry(
-			"Case.md", dbxFile("case", "/root/Case.md"),
-		);
+	it("continues in the same invocation when the first move response is lost", async () => {
+		const { fs } = await caseRenameFs();
+		const moves: Array<{ from_path: string; to_path: string }> = [];
+		let currentPath = "Case.md";
 		(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
 			const request = opts as RequestUrlParam;
-			if (request.url.includes("get_metadata")) return Promise.resolve(notFound());
+			if (request.url.includes("get_metadata")) {
+				const requested = (JSON.parse(request.body as string) as { path: string }).path
+					.replace("id:root/", "");
+				return Promise.resolve(requested === currentPath
+					? mockRes(dbxFile("case", `/root/${currentPath}`))
+					: notFound());
+			}
 			if (request.url.includes("move_v2")) {
-				events.push("move");
-				return Promise.resolve(mockRes({ metadata: untagged(dbxFile("case", "/root/case.md")) }));
+				const move = JSON.parse(request.body as string) as { from_path: string; to_path: string };
+				moves.push(move);
+				currentPath = move.to_path.replace("id:root/", "");
+				if (moves.length === 1) {
+					return Promise.resolve(mockRes({ error_summary: "response/lost" }, { status: 500 }));
+				}
+				return Promise.resolve(mockRes({
+					metadata: untagged(dbxFile("case", "/root/case.md")),
+				}));
 			}
 			return Promise.resolve(mockRes({}));
 		});
 
-		await fs.rename("Case.md", "case.md");
+		await expect(fs.rename("Case.md", "case.md")).resolves.toBeUndefined();
 
-		expect(events).toEqual(["persist", "move", "move"]);
+		expect(moves).toHaveLength(2);
+		expect(currentPath).toBe("case.md");
 	});
 
-	it("resumes the second leg when the deterministic intermediate already holds the source id", async () => {
+	it("accepts exact-new settlement when the second move response is lost", async () => {
+		const { fs } = await caseRenameFs();
+		const moves: Array<{ from_path: string; to_path: string }> = [];
+		let currentPath = "Case.md";
+		(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
+			const request = opts as RequestUrlParam;
+			if (request.url.includes("get_metadata")) {
+				const requested = (JSON.parse(request.body as string) as { path: string }).path
+					.replace("id:root/", "");
+				return Promise.resolve(requested === currentPath
+					? mockRes(dbxFile("case", `/root/${currentPath}`))
+					: notFound());
+			}
+			if (request.url.includes("move_v2")) {
+				const move = JSON.parse(request.body as string) as { from_path: string; to_path: string };
+				moves.push(move);
+				currentPath = move.to_path.replace("id:root/", "");
+				if (moves.length === 2) {
+					return Promise.resolve(mockRes({ error_summary: "response/lost" }, { status: 500 }));
+				}
+				return Promise.resolve(mockRes({
+					metadata: untagged(dbxFile("case", `/root/${currentPath}`)),
+				}));
+			}
+			return Promise.resolve(mockRes({}));
+		});
+
+		await expect(fs.rename("Case.md", "case.md")).resolves.toBeUndefined();
+
+		expect(moves).toHaveLength(2);
+		expect(currentPath).toBe("case.md");
+	});
+
+	it("does not adopt a temporary entry left by a prior invocation", async () => {
 		const { fs } = await caseRenameFs();
 		const moves: Array<{ from_path: string; to_path: string }> = [];
 		(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
@@ -320,11 +357,9 @@ describe("DropboxFs.rename", () => {
 			return Promise.resolve(mockRes({}));
 		});
 
-		await fs.rename("Case.md", "case.md");
+		await expect(fs.rename("Case.md", "case.md")).rejects.toThrow("temporary path is occupied");
 
-		expect(moves).toHaveLength(1);
-		expect(moves[0]!.from_path).toMatch(/^id:root\/\.airsync-case-rename-[0-9a-f]{8}$/);
-		expect(moves[0]!.to_path).toBe("id:root/case.md");
+		expect(moves).toHaveLength(0);
 	});
 
 	it("fails before moving when the deterministic intermediate is occupied by another id", async () => {
@@ -346,17 +381,26 @@ describe("DropboxFs.rename", () => {
 	it("rolls the first leg back when the final move fails", async () => {
 		const { fs, cache } = await caseRenameFs();
 		const moves: Array<{ from_path: string; to_path: string }> = [];
+		let currentPath = "Case.md";
 		(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
 			const request = opts as RequestUrlParam;
-			if (request.url.includes("get_metadata")) return Promise.resolve(notFound());
+			if (request.url.includes("get_metadata")) {
+				const requested = (JSON.parse(request.body as string) as { path: string }).path
+					.replace("id:root/", "");
+				return Promise.resolve(requested === currentPath
+					? mockRes(dbxFile("case", `/root/${currentPath}`))
+					: notFound());
+			}
 			if (request.url.includes("move_v2")) {
-				moves.push(JSON.parse(request.body as string) as { from_path: string; to_path: string });
+				const move = JSON.parse(request.body as string) as { from_path: string; to_path: string };
+				moves.push(move);
 				if (moves.length === 2) {
 					return Promise.resolve(mockRes(
 						{ error_summary: "to/conflict/file/", error: { ".tag": "to" } },
 						{ status: 409 },
 					));
 				}
+				currentPath = move.to_path.replace("id:root/", "");
 				return Promise.resolve(mockRes({ metadata: untagged(dbxFile("case", "/root/Case.md")) }));
 			}
 			return Promise.resolve(mockRes({}));
@@ -368,59 +412,6 @@ describe("DropboxFs.rename", () => {
 		expect(moves[2]).toMatchObject({ from_path: moves[0]!.to_path, to_path: "id:root/Case.md" });
 		expect(cache.getFile("Case.md")?.id).toBe("id:case");
 		expect(cache.getFile("case.md")).toBeUndefined();
-	});
-
-	it("recovers a persisted case-only rename from its temporary path after restart", async () => {
-		const store = new MetadataStore<DropboxEntry>(crypto.randomUUID(), {
-			dbNamePrefix: "air-sync-dropbox-case-rename", version: METADATA_CACHE_VERSION,
-		});
-		await store.setMeta("dropboxCaseRenamePending", JSON.stringify({
-			oldPath: "Case.md",
-			newPath: "case.md",
-			tempPath: ".airsync-case-rename-35544a52",
-			expectedId: "id:case",
-		}));
-		let moved = false;
-		const moves: Array<{ from_path: string; to_path: string }> = [];
-		(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
-			const request = opts as RequestUrlParam;
-			if (request.url.includes("get_metadata")) {
-				const path = (JSON.parse(request.body as string) as { path: string }).path;
-				if (path === "id:root") return Promise.resolve(metaRes());
-				if (path.endsWith("/.airsync-case-rename-35544a52") && !moved) {
-					return Promise.resolve(mockRes(dbxFile("case", "/root/.airsync-case-rename-35544a52")));
-				}
-				if (path.endsWith("/case.md") && moved) {
-					return Promise.resolve(mockRes(dbxFile("case", "/root/case.md")));
-				}
-				return Promise.resolve(notFound());
-			}
-			if (request.url.includes("move_v2")) {
-				moves.push(JSON.parse(request.body as string) as { from_path: string; to_path: string });
-				moved = true;
-				return Promise.resolve(mockRes({ metadata: untagged(dbxFile("case", "/root/case.md")) }));
-			}
-			if (request.url.includes("get_latest_cursor")) return Promise.resolve(mockRes({ cursor: "C0" }));
-			if (request.url.endsWith(PLAIN_LIST)) {
-				const entries = moved ? [dbxFile("case", "/root/case.md")] : [];
-				return Promise.resolve(mockRes({ entries, cursor: "C1", has_more: false }));
-			}
-			return Promise.resolve(mockRes({}));
-		});
-		const { DropboxFs } = await import("./index");
-		const { DropboxClient } = await import("./client");
-		const fs = new DropboxFs(
-			new DropboxClient(() => Promise.resolve("AT")), "id:root", undefined, store,
-		);
-
-		expect((await fs.list()).map((item) => item.path)).toEqual(["case.md"]);
-		expect(moves).toHaveLength(1);
-		expect(moves[0]).toMatchObject({
-			from_path: "id:root/.airsync-case-rename-35544a52",
-			to_path: "id:root/case.md",
-		});
-		expect(await store.getMeta("dropboxCaseRenamePending")).toBeUndefined();
-		await store.close();
 	});
 
 	it("keeps a moved folder classified as a folder even when move_v2 returns it untagged", async () => {

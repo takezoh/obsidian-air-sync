@@ -37,7 +37,7 @@ The retry **policy** is one pure function — `decideRetry(classification, attem
 - **Classify**: `provider.classifyError?.(err) ?? classifyHttpError(err)` — the backend override (e.g. Google's 403-means-rate-limit) when present, else the neutral classifier.
 - **Decide**: `decideRetry(classification, attempt, MAX_RETRIES = 3, Math.random)` — `abort`/`stop` end the loop early (no backoff); `retry` sleeps `delayMs` then re-runs; `exhausted` falls through to the generic failure tail.
 
-Only a *thrown* error from `executeSyncOnce()` triggers a *cycle-level* retry. Per-file failures are caught inside `executePlan` (in `executeAction`/`executeConflictAction`) and recorded in `result.failed` without throwing, so they never cause a cycle-level retry — a sync with failed or blocked actions returns a normal result reported as `"partial_error"`. The only error that propagates out of action execution is `AuthError` (re-thrown to abort the whole sync). Errors thrown *outside* per-action try/catch — change detection (`collectChanges`), plain proposal/snapshot preparation (`planSync`/`prepareSyncCycleSnapshot`), Admission, or `saveSettings` — do reach the retry loop.
+Only a *thrown* error from `executeSyncOnce()` triggers a *cycle-level* retry. Per-file failures are caught inside `executePlan` (in `executeAction`/`executeConflictAction`) and recorded in `result.failed` without throwing, so they never cause a cycle-level retry — a sync with failed or blocked actions returns a normal result reported as `"partial_error"`. The only error that propagates out of action execution is `AuthError` (re-thrown to abort the whole sync). Errors thrown *outside* per-action try/catch — Observation (`collectChanges`/`prepareSyncCycleSnapshot`), Admission (`admitBatchObservation`), Commit/finalization, or `saveSettings` — do reach the retry loop.
 
 ### Two retry layers
 
@@ -47,6 +47,16 @@ There are **two independent retry layers** (they do not multiply):
 2. **Cycle-level** (`MAX_RETRIES = 3`, above): only a *thrown* error (effectively `AuthError`, or an error outside per-action try/catch) re-runs the whole cycle.
 
 Worst case for a single action is `MAX_ACTION_RETRIES` (3) I/O attempts; it never compounds with `MAX_RETRIES`.
+
+### Admission failures
+
+If fresh rename reconciliation cannot prove one terminal state, Admission emits no
+executable action for that identity component. The cycle remains visible as
+`partial_error` and the notification counts an ordinary error, but it writes no pending
+operation, phase, or checkpoint. A later ordinary scheduler trigger performs fresh
+acquisition (COLD in the same session when required); this is re-observation, not a
+promise that unchanged contradictory evidence will converge. Legacy v6 rename rows can
+only supply candidate endpoints and never authorize a replayed effect.
 
 ### Non-retryable errors
 

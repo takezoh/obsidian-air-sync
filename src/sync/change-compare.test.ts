@@ -120,6 +120,17 @@ describe("hasRemoteChanged", () => {
 		expect(hasRemoteChanged(file, record)).toBe(false);
 	});
 
+	it("returns true when comparable checksum differs despite matching mtime and size", () => {
+		const file = makeFile({
+			mtime: 1000, size: 100, hash: "", remoteChecksum: { algo: "md5", value: "new" },
+		});
+		const record = makeRecord({
+			remoteMtime: 1000, remoteSize: 100, hash: "",
+			remoteChecksum: { algo: "md5", value: "old" },
+		});
+		expect(hasRemoteChanged(file, record)).toBe(true);
+	});
+
 	it("returns true when mtime+size match but hash differs (same-size edit)", () => {
 		const file = makeFile({ mtime: 1000, size: 100, hash: "new-hash" });
 		const record = makeRecord({ remoteMtime: 1000, remoteSize: 100, hash: "old-hash" });

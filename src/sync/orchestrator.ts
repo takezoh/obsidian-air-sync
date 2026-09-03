@@ -12,22 +12,18 @@ import { LocalChangeTracker, type TrackerSnapshot } from "./local-tracker";
 import { collectChanges, type ChangeSet } from "./change-detector";
 import { computeScopeFingerprint } from "./scope-fingerprint";
 import { executePlan, toConflictRecords, DESKTOP_TRANSFER_POOL, MOBILE_TRANSFER_POOL } from "./plan-executor";
-import type { ExecutionContext, ExecutionResult } from "./plan-executor";
+import type { ExecutionContext } from "./plan-executor";
 import { classifyHttpError } from "../fs/errors";
-import type { ErrorClassification } from "../fs/errors";
 import { decideRetry, sleep } from "./error";
-import type { ConflictRecord, IdentityEvidence, SyncStatus } from "./types";
-import { CycleSummary } from "./sync-notification";
-import type { SyncCycleResult } from "./sync-notification";
-import { FailedActionTracker } from "./failed-action-tracker";
-import { mergeIdentityEvidence, renameDebtEvidence, serializeLocalRenameDebts } from "./rename-debt";
+import type { ConflictRecord, SyncStatus } from "./types";
+import { CycleSummary, type SyncCycleOutcome, type SyncCycleResult } from "./sync-notification";
 import {
 	logChangeDetection,
 	logSyncCyclePlan,
 	prepareSyncCycleSnapshot,
 } from "./sync-cycle-planning";
 import { finalizeSyncCycle } from "./sync-cycle-finalization";
-import { admitDestructivePlan } from "./plan-admission";
+import { admitBatchObservation } from "./plan-admission";
 import { PriorityCoordinator } from "./priority-coordinator";
 import { LocalMutationBarrier } from "./local-mutation-barrier";
 import { PriorityBatchState } from "./priority-batch-state";
@@ -62,13 +58,6 @@ export interface SyncOrchestratorDeps {
 
 const MAX_RETRIES = 3;
 
-class PreAdmissionRecoveryError extends Error {
-	constructor(cause: unknown) {
-		super(cause instanceof Error ? cause.message : String(cause));
-		this.name = "PreAdmissionRecoveryError";
-	}
-}
-
 export class SyncOrchestrator {
 	private syncMutex = new AsyncMutex();
 	private stateStore: SyncStateStore;
@@ -80,9 +69,6 @@ export class SyncOrchestrator {
 	 * cycle cold — a full list × baseline join recovers it regardless of cursor.
 	 */
 	private recoverViaColdScan = false;
-	/** Reported edges retained until a clean checkpoint; remote edges are not durable debt. */
-	private pendingAdmissionEvidence: IdentityEvidence[] = [];
-	private failedActionTracker = new FailedActionTracker();
 	private readonly priorityCoordinator = new PriorityCoordinator();
 	private readonly localMutationBarrier = new LocalMutationBarrier();
 	private activeBatch: PriorityBatchState | null = null;
@@ -113,12 +99,10 @@ export class SyncOrchestrator {
 	}
 
 	async clearSyncState(): Promise<void> {
-		// Serialize target teardown with execution. Otherwise an old-target cycle can
-		// recreate debt after disconnect/switch has cleared its namespace.
+		// Serialize target teardown with execution.
 		await this.syncMutex.run(async () => {
 			this.deps.logger?.info("Clearing sync state");
 			await this.stateStore.clear();
-			this.pendingAdmissionEvidence = [];
 			this.recoverViaColdScan = false;
 			this.syncPending = false;
 		});
@@ -247,24 +231,24 @@ export class SyncOrchestrator {
 				const result = await this.executeWithRetry(forceFullScan, snapshot, scopeFingerprint);
 				if (!result) return; // Fatal error already handled
 
-				const { succeeded, failed, blocked, conflicts, deferred } = result;
+				const { succeeded, failed, blocked, conflicts } = result;
 				// failed cycle では cursor が committed state より先に進んでいる可能性がある。
 				// ただし cold recovery を一度支払い済みの local-origin action だけが
 				// quarantine 対象なら、次 cycle の cold scan は不要。
-				this.recoverViaColdScan = this.needsColdRecovery(result.result);
-				if (failed > 0 || blocked > 0 || deferred > 0) {
+				this.recoverViaColdScan = this.needsColdRecovery(result.outcome);
+				if (failed > 0 || blocked > 0) {
 					this.deps.onStatusChange("partial_error");
 					this.deps.logger?.warn("Sync completed with errors", {
-						succeeded, conflicts, failed, blocked, deferred,
+						succeeded, conflicts, failed, blocked,
 					});
 				} else {
 					this.deps.onStatusChange("idle");
 					this.deps.logger?.info("Sync completed", {
-						succeeded, conflicts, failed, blocked, deferred,
+						succeeded, conflicts, failed, blocked,
 					});
 				}
 
-				summary.add(result.result);
+				summary.add(result.outcome);
 
 				// Record this cycle's resolved conflicts to the audit history — once per
 				// cycle, and only when there were any. Writing stays separate from
@@ -272,7 +256,7 @@ export class SyncOrchestrator {
 				// Best-effort: the audit write is supplementary, so a failure here must not
 				// turn an otherwise-clean cycle into a reported error nor skip the dirty-path
 				// acknowledgment below — log it and carry on.
-				const conflictRecords = result.result.conflicts;
+				const conflictRecords = result.outcome.execution.conflicts;
 				if (conflictRecords.length > 0) {
 					await this.deps.recordConflicts?.(toConflictRecords(conflictRecords,
 						this.deps.getSettings().conflictStrategy, this.sessionId, new Date().toISOString()))
@@ -280,7 +264,13 @@ export class SyncOrchestrator {
 				}
 				await this.deps.logger?.flush();
 
-				this.deps.localTracker.acknowledge(snapshot);
+				// The tracker is an input buffer, not durable sync state. Consume its
+				// snapshot only after the whole cycle reached a terminal success; a
+				// failed cycle must be repeatable from the same observed local event.
+				if (failed === 0 && blocked === 0 &&
+					!result.outcome.unsettledLocalRenameInput) {
+					this.deps.localTracker.acknowledge(snapshot);
+				}
 			} while (this.syncPending);
 
 			// One notice per burst, gated on its OWN setting (`enableLogging` controls
@@ -300,27 +290,21 @@ export class SyncOrchestrator {
 		scopeFingerprint: string,
 	): Promise<SyncCycleResult | null> {
 		let lastError: unknown = null;
-		let lastResult: ExecutionResult | null = null;
+		let lastOutcome: SyncCycleOutcome | null = null;
 
 		for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
 			try {
-				lastResult = await this.executeSyncOnce(forceFullScan, snapshot, scopeFingerprint);
+				lastOutcome = await this.executeSyncOnce(forceFullScan, snapshot, scopeFingerprint);
+				const { execution, admissionFailures } = lastOutcome;
 				return {
-					result: lastResult,
-					succeeded: lastResult.succeeded.length + lastResult.superseded.length,
-					failed: lastResult.failed.length,
-					blocked: lastResult.blocked.length,
-					conflicts: lastResult.conflicts.length,
-					deferred: lastResult.deferred.length,
+					outcome: lastOutcome,
+					succeeded: execution.succeeded.length + execution.superseded.length,
+					failed: execution.failed.length + admissionFailures.length,
+					blocked: execution.blocked.length,
+					conflicts: execution.conflicts.length,
 				};
 			} catch (err) {
 				lastError = err;
-				if (err instanceof PreAdmissionRecoveryError) {
-					this.deps.logger?.error("Sync error before Admission; COLD recovery requested", {
-						message: err.message,
-					});
-					break;
-				}
 				// Classification is the backend's job (it knows its own error shapes,
 				// e.g. that Google 403 can mean rate-limit); the retry POLICY is the
 				// engine's and stays backend-neutral. Fall back to the generic HTTP
@@ -409,63 +393,39 @@ export class SyncOrchestrator {
 		try {
 		const settings = this.deps.getSettings();
 		const provider = this.deps.backendProvider();
-		const debtNamespace = (provider?.getIdentity?.(settings) ?? settings.lastSyncedIdentity) ||
+		const namespace = (provider?.getIdentity?.(settings) ?? settings.lastSyncedIdentity) ||
 			`${settings.backendType}:${settings.vaultId}`;
-		const persistedDebts = await this.stateStore.getRenameDebts(debtNamespace);
-		const carriedEvidence = mergeIdentityEvidence(
-			this.pendingAdmissionEvidence,
-			persistedDebts.map(renameDebtEvidence),
-		);
 
 		let changeSet: ChangeSet;
 		let planning: ReturnType<typeof prepareSyncCycleSnapshot>;
-		let capturedRemoteEvidence = false;
-		const hadPendingEvidence = this.pendingAdmissionEvidence.length > 0;
 		try {
 			changeSet = await collectChanges({
 				localFs,
 				remoteFs,
 				stateStore: this.stateStore,
 				changes: snapshot,
-				onRemoteIdentityEvidence: (evidence) => {
-					const remoteRenames = evidence.filter((item) => item.kind === "rename");
-					capturedRemoteEvidence ||= remoteRenames.length > 0;
-					this.pendingAdmissionEvidence = mergeIdentityEvidence(
-						this.pendingAdmissionEvidence,
-						remoteRenames,
-					);
-				},
 			}, {
-				forceFullScan: forceFullScan || persistedDebts.length > 0,
-				carriedIdentityEvidence: carriedEvidence,
+				forceFullScan,
 			});
 			const { renamePairs } = snapshot;
-			logChangeDetection(changeSet, renamePairs, this.deps.logger);
 
 			const isMobile = this.deps.isMobile();
 			const maxBytes = settings.mobileMaxFileSizeMB * 1024 * 1024;
-			planning = prepareSyncCycleSnapshot(changeSet, persistedDebts, debtNamespace, {
-				classifyPath: (path) => this.isExcluded(path) ? "policy_out" : "included",
+			planning = prepareSyncCycleSnapshot(changeSet, namespace, {
+				isExcluded: (path) => this.isExcluded(path),
 				mobileMaxBytes: isMobile ? maxBytes : undefined,
 			}, this.deps.logger);
-			this.pendingAdmissionEvidence = mergeIdentityEvidence(
-				this.pendingAdmissionEvidence,
-				changeSet.identityEvidence.filter((item) => item.kind === "rename"),
-			);
+			const visiblePaths = new Set(planning.snapshot.scope.byEndpoint.keys());
+			logChangeDetection(changeSet, renamePairs, this.deps.logger, visiblePaths);
 		} catch (err) {
-			if (capturedRemoteEvidence || hadPendingEvidence) {
-				this.recoverViaColdScan = true;
-				throw new PreAdmissionRecoveryError(err);
-			}
+			this.recoverViaColdScan = true;
 			throw err;
 		}
 
 		// This call is the authorization cut point. Exceptions from this line onward
 		// are not reclassified as evidence-acquisition recovery.
-		const admission = admitDestructivePlan(planning.snapshot);
+		const admission = admitBatchObservation(planning.snapshot);
 		logSyncCyclePlan(this.deps.logger, admission);
-		const localRenameDebts = serializeLocalRenameDebts(debtNamespace,
-			admission.localRenameLifecycle.persistBeforeExecution, admission.snapshot.scope);
 		const { folderRenamePairs } = snapshot;
 
 		if (folderRenamePairs.size > 0) {
@@ -474,17 +434,13 @@ export class SyncOrchestrator {
 				pairs: [...folderRenamePairs.entries()].map(([n, o]) => `${o} → ${n}`),
 			});
 		}
-		// Persist Admission-selected constraints before execution so tracker evidence cannot be lost.
-		await this.stateStore.upsertRenameDebts(localRenameDebts).catch((cause: unknown) => {
-			throw new Error("Local rename constraint persistence failed", { cause });
-		});
 		this.activeBatch = new PriorityBatchState(admission);
-		return { settings, provider, admission, persistedDebts, localRenameDebts };
+		return { settings, provider, admission };
 		} finally {
 			preparationPermit.release();
 		}
 		})();
-		const { settings, provider, admission, persistedDebts, localRenameDebts } = prepared;
+		const { settings, provider, admission } = prepared;
 		const total = admission.executable.actions.length;
 
 		const classifyError = (err: unknown) => provider?.classifyError?.(err) ?? classifyHttpError(err);
@@ -503,11 +459,9 @@ export class SyncOrchestrator {
 			},
 			logger: this.deps.logger,
 			classifyError,
-			isActionBlocked: (action) => this.failedActionTracker.isBlocked(settings.backendType, action),
 			transferPool: this.deps.isMobile() ? MOBILE_TRANSFER_POOL : DESKTOP_TRANSFER_POOL,
 			acquireActionPermit: () => this.priorityCoordinator.acquireNormalPermit(),
 			beginAction: (action) => this.activeBatch?.beginAction(action) ?? "invalidated",
-			onActionBlocked: (action) => this.activeBatch?.removeBlocked(action),
 			onActionFatal: () => this.activeBatch?.abort(),
 			mutationBarrier: this.localMutationBarrier,
 			onPhaseChange: (phase) => this.activeBatch?.setPhase(phase),
@@ -515,16 +469,31 @@ export class SyncOrchestrator {
 
 		try {
 			const execution = await executePlan(admission.executable, ctx);
-			const result: ExecutionResult = { ...execution, deferred: admission.deferred };
-			this.updateFailedActionTracker(settings.backendType, result, classifyError);
-
+			const unsettledFolderRename = [...snapshot.folderRenamePairs].some(([newPath, oldPath]) => {
+				const renamed = execution.succeeded.some(({ action }) =>
+					action.action === "rename_remote" &&
+					action.oldPath === oldPath && action.path === newPath);
+				const remoteAtNew = admission.snapshot.observations.some((observation) =>
+					observation.side === "remote" && observation.requestedPath === newPath &&
+					observation.kind === "exact");
+				const remoteLeftOld = admission.snapshot.observations.some((observation) =>
+					observation.side === "remote" && observation.requestedPath === oldPath &&
+					(observation.kind === "absent" ||
+						(observation.kind === "alias" && observation.resolvedPath === newPath)));
+				return !renamed && !(remoteAtNew && remoteLeftOld);
+			});
+			const outcome: SyncCycleOutcome = {
+				execution,
+				admissionFailures: admission.failures,
+				unsettledLocalRenameInput:
+					admission.unsettledLocalRenameInput || unsettledFolderRename,
+			};
 			await this.priorityCoordinator.finalize(async () => {
 				this.activeBatch?.setPhase("finalizing");
-				this.pendingAdmissionEvidence = await finalizeSyncCycle({
+				await finalizeSyncCycle({
 					admission,
-					result, pendingEvidence: this.pendingAdmissionEvidence, persistedDebts,
-					localRenameDebts,
-					checkpoint: remoteFs.checkpoint, scopeFingerprint, stateStore: this.stateStore,
+					result: execution,
+					checkpoint: remoteFs.checkpoint, scopeFingerprint,
 					checkpointBlocked: this.activeBatch?.isCheckpointBlocked,
 				});
 				if (provider?.readBackendState) {
@@ -535,42 +504,14 @@ export class SyncOrchestrator {
 				}
 				await this.deps.saveSettings();
 			});
-			return result;
+			return outcome;
 		} finally {
 			this.activeBatch = null;
 		}
 	}
 
-	private updateFailedActionTracker(
-		backendType: string,
-		result: ExecutionResult,
-		classifyError: (err: unknown) => ErrorClassification,
-	): void {
-		for (const succeeded of result.succeeded) {
-			this.failedActionTracker.recordSuccess(backendType, succeeded.action);
-		}
-		for (const action of result.superseded) {
-			this.failedActionTracker.recordSuccess(backendType, action);
-		}
-		for (const failed of result.failed) {
-			this.failedActionTracker.recordFailure(
-				backendType,
-				failed,
-				classifyError(failed.error),
-			);
-		}
-	}
-
-	private needsColdRecovery(result: ExecutionResult): boolean {
-		const settings = this.deps.getSettings();
-		const provider = this.deps.backendProvider();
-		const classifyError = (err: unknown) => provider?.classifyError?.(err) ?? classifyHttpError(err);
-		return result.deferred.length > 0 || result.failed.some((failed) =>
-			!this.failedActionTracker.isBlockingFailure(
-				settings.backendType,
-				failed,
-				classifyError(failed.error),
-			)
-		);
+	private needsColdRecovery(outcome: SyncCycleOutcome): boolean {
+		return outcome.admissionFailures.length > 0 || outcome.execution.failed.length > 0 ||
+			outcome.execution.blocked.length > 0;
 	}
 }

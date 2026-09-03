@@ -73,6 +73,7 @@ const PURE_TRANSFORMS = [
 
 const ADMISSION_INTERNAL_IMPORTS = {
 	group: [
+		"**/decision-engine",
 		"**/identity-component-decision",
 		"**/plan-admission-graph",
 		"**/local-rename-admission",
@@ -81,7 +82,7 @@ const ADMISSION_INTERNAL_IMPORTS = {
 		"**/rename-optimizer",
 	],
 	message:
-		"Identity-component shaping and policy are private to PlanAdmission; other production modules consume AuthorizedSyncPlan or the public Admission result.",
+		"Action construction, identity-component shaping, and policy are private to PlanAdmission; other production modules consume AuthorizedSyncPlan or the public Admission result.",
 };
 
 // no-restricted-syntax selectors -------------------------------------------

@@ -100,7 +100,8 @@ export function createMockFs(
 		},
 		async write(path: string, content: ArrayBuffer, mtime: number) {
 			path = normalizeSyncPath(path);
-			if (files.get(path)?.entity.isDirectory) {
+			const existing = files.get(path)?.entity;
+			if (existing?.isDirectory) {
 				throw new Error(
 					`Cannot write file: "${path}" is an existing directory`,
 				);
@@ -113,6 +114,8 @@ export function createMockFs(
 				size: content.byteLength,
 				mtime,
 				hash: "",
+				identityKey: existing?.identityKey,
+				backendMeta: existing?.backendMeta,
 			};
 			// Copy on store: real backends persist their own bytes, so a later
 			// mutation of the caller's buffer must not change stored content.
@@ -257,6 +260,15 @@ export function createMockStateStore(): {
 				return Promise.resolve(false);
 			}
 			records.set(record.path, record);
+			return Promise.resolve(true);
+		},
+		compareAndMove(expected: SyncRecord, record: SyncRecord) {
+			if (JSON.stringify(records.get(expected.path)) !== JSON.stringify(expected)) {
+				return Promise.resolve(false);
+			}
+			records.set(record.path, record);
+			records.delete(expected.path);
+			contents.delete(expected.path);
 			return Promise.resolve(true);
 		},
 		delete(path: string) {

@@ -2,7 +2,7 @@
 id: task-20260831-fs-evidence-conformance
 kind: task
 title: unit-0-provider-evidence-preverification
-status: todo
+status: done
 created: '2026-08-31'
 priority: normal
 effort: medium
@@ -17,8 +17,7 @@ pr: null
 tags: []
 owners: []
 relations:
-- type: partOf
-  target: change-20260831-sync-decision-resource-components
+- {type: partOf, target: change-20260831-sync-decision-resource-components}
 source_paths: []
 change: change-20260831-sync-decision-resource-components
 summary: Prove Google Drive, Dropbox, and OneDrive against mandatory shared faithful-fake/interface
@@ -28,6 +27,7 @@ max_diff_loc: 300
 pinned_context:
 - docs/changes/change-20260831-sync-decision-resource-components/tasks/task-20260831-fs-evidence-conformance.md
 - docs/changes/change-20260831-sync-decision-resource-components/design-plan
+updated: '2026-09-03'
 ---
 
 ## Responsibility
@@ -43,3 +43,13 @@ Prove Google Drive, Dropbox, and OneDrive against mandatory shared faithful-fake
 ## Acceptance
 
 - AC-SD-006
+
+
+{% transition from="todo" to="in_progress" date="2026-09-03" %}
+reconcile-completed-delivery-history
+{% /transition %}
+
+
+{% transition from="in_progress" to="done" date="2026-09-03" %}
+implemented-and-verified-in-pr-57
+{% /transition %}

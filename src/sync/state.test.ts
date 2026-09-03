@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import "fake-indexeddb/auto";
 import { SyncStateStore } from "./state";
-import type { RenameDebt } from "./state";
 import type { SyncRecord } from "./types";
 import { sanitizeDbName } from "../store/idb-helper";
 
@@ -18,29 +17,22 @@ function makeRecord(path: string, overrides: Partial<SyncRecord> = {}): SyncReco
 	};
 }
 
-function makeDebt(overrides: Partial<RenameDebt> = {}): RenameDebt {
-	return {
-		namespace: "onedrive:vault-1",
-		side: "local",
-		oldPath: "A.md",
-		newPath: "a.md",
-		isFolder: false,
-		oldDisposition: "included",
-		newDisposition: "included",
-		...overrides,
-	};
-}
-
-async function seedVersion5Database(vaultId: string): Promise<void> {
+async function seedVersion6Database(vaultId: string): Promise<void> {
 	const dbName = `air-sync-${sanitizeDbName(vaultId)}`;
 	await new Promise<void>((resolve, reject) => {
-		const request = indexedDB.open(dbName, 5);
+		const request = indexedDB.open(dbName, 6);
 		request.onupgradeneeded = () => {
 			const db = request.result;
 			const records = db.createObjectStore("sync-records", { keyPath: "path" });
 			records.put(makeRecord("legacy.md"));
 			const contents = db.createObjectStore("sync-content", { keyPath: "path" });
 			contents.put({ path: "legacy.md", content: new Uint8Array([1, 2, 3]).buffer });
+			const debts = db.createObjectStore("rename-debt", { keyPath: "key" });
+			debts.put({
+				key: "legacy", namespace: "dropbox:root", side: "local",
+				oldPath: "Case.md", newPath: "case.md", isFolder: false,
+				oldDisposition: "included", newDisposition: "included",
+			});
 		};
 		request.onerror = () => reject(request.error ?? new Error("Failed to seed version 5 database"));
 		request.onsuccess = () => {
@@ -153,6 +145,30 @@ describe("SyncStateStore", () => {
 		expect(await store.get("a.md")).toEqual(next);
 	});
 
+	it("compareAndMove atomically replaces the exact old-path record and content", async () => {
+		const baseline = makeRecord("old.md", { syncedAt: 1 });
+		const next = makeRecord("new.md", { syncedAt: 2 });
+		await store.put(baseline);
+		await store.putContent("old.md", new Uint8Array([1]).buffer);
+
+		expect(await store.compareAndMove(baseline, next)).toBe(true);
+		expect(await store.get("old.md")).toBeUndefined();
+		expect(await store.getContent("old.md")).toBeUndefined();
+		expect(await store.get("new.md")).toEqual(next);
+	});
+
+	it("compareAndMove preserves both paths when the expected old record is stale", async () => {
+		const baseline = makeRecord("old.md", { syncedAt: 1 });
+		const winner = makeRecord("old.md", { syncedAt: 2 });
+		const existingNew = makeRecord("new.md", { syncedAt: 3 });
+		await store.put(winner);
+		await store.put(existingNew);
+
+		expect(await store.compareAndMove(baseline, makeRecord("new.md", { syncedAt: 4 }))).toBe(false);
+		expect(await store.get("old.md")).toEqual(winner);
+		expect(await store.get("new.md")).toEqual(existingNew);
+	});
+
 	it("delete: removes a record and its content", async () => {
 		const content = new TextEncoder().encode("hello").buffer.slice(0);
 		await store.put(makeRecord("a.md"));
@@ -180,72 +196,30 @@ describe("SyncStateStore", () => {
 		expect(await store.getContent("a.md")).toBeUndefined();
 	});
 
-	it("schema upgrade cold-starts legacy records and merge bases", async () => {
+	it("schema upgrade removes v6 operation debt and cold-starts terminal state", async () => {
 		await store.close();
 		const vaultId = `upgrade-vault-${Math.random()}`;
-		await seedVersion5Database(vaultId);
+		await seedVersion6Database(vaultId);
 		store = new SyncStateStore(vaultId);
 
 		await store.open();
 
 		expect(await store.getAll()).toEqual([]);
 		expect(await store.getContent("legacy.md")).toBeUndefined();
-		expect(await store.getRenameDebts("onedrive:vault-1")).toEqual([]);
+		expect(store).not.toHaveProperty("getRenameDebts");
+		expect(store).not.toHaveProperty("upsertRenameDebts");
+		expect(store).not.toHaveProperty("deleteRenameDebts");
+		expect(store).not.toHaveProperty("clearRenameDebts");
 	});
 
-	it("rename debt upsert replaces the same edge and retains distinct unresolved edges", async () => {
-		await store.upsertRenameDebts([makeDebt({ oldDisposition: "unknown" })]);
-		await store.upsertRenameDebts([
-			makeDebt({ oldDisposition: "included" }),
-			makeDebt({ oldPath: "B.md", newPath: "b.md" }),
-		]);
-
-		const debts = await store.getRenameDebts("onedrive:vault-1");
-		expect(debts).toHaveLength(2);
-		expect(debts).toContainEqual(makeDebt({ oldDisposition: "included" }));
-		expect(debts).toContainEqual(makeDebt({ oldPath: "B.md", newPath: "b.md" }));
-	});
-
-	it("rename debt grows by unique unresolved edges across cycles and decreases on resolution", async () => {
-		await store.upsertRenameDebts([makeDebt()]);
-		await store.upsertRenameDebts([
-			makeDebt({ oldPath: "B.md", newPath: "b.md" }),
-			makeDebt({ oldPath: "C.md", newPath: "c.md" }),
-		]);
-		expect(await store.getRenameDebts("onedrive:vault-1")).toHaveLength(3);
-
-		await store.deleteRenameDebts([makeDebt({ oldPath: "B.md", newPath: "b.md" })]);
-		expect(await store.getRenameDebts("onedrive:vault-1")).toEqual([
-			makeDebt(),
-			makeDebt({ oldPath: "C.md", newPath: "c.md" }),
-		]);
-	});
-
-	it("clearRenameDebts removes only the selected backend/root namespace", async () => {
-		await store.upsertRenameDebts([
-			makeDebt(),
-			makeDebt({ namespace: "dropbox:vault-2" }),
-		]);
-
-		await store.clearRenameDebts("onedrive:vault-1");
-
-		expect(await store.getRenameDebts("onedrive:vault-1")).toEqual([]);
-		expect(await store.getRenameDebts("dropbox:vault-2")).toEqual([
-			makeDebt({ namespace: "dropbox:vault-2" }),
-		]);
-	});
-
-	it("clear removes authoritative rename debt with records and content", async () => {
+	it("clear removes terminal records and content", async () => {
 		const content = new TextEncoder().encode("merge base").buffer.slice(0);
 		await store.put(makeRecord("A.md"));
 		await store.putContent("A.md", content);
-		await store.upsertRenameDebts([makeDebt()]);
-
 		await store.clear();
 
 		expect(await store.getAll()).toEqual([]);
 		expect(await store.getContent("A.md")).toBeUndefined();
-		expect(await store.getRenameDebts("onedrive:vault-1")).toEqual([]);
 	});
 
 	it("putContent + getContent: round-trips content", async () => {

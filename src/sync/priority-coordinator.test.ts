@@ -61,7 +61,7 @@ describe("PriorityCoordinator", () => {
 		resumed.release();
 	});
 
-	it("does not run priority queued while finalization is between checkpoint and debt release", async () => {
+	it("does not run priority queued while checkpoint finalization holds the permit", async () => {
 		const coordinator = new PriorityCoordinator();
 		const checkpointCommitted = deferred();
 		const releaseDebt = deferred();

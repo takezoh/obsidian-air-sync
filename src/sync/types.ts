@@ -34,7 +34,7 @@ export interface MixedEntity {
 
 export type SyncSide = "local" | "remote";
 
-export type ScopeDisposition = "included" | "policy_out" | "mobile_deferred" | "unknown";
+export type ScopeDisposition = "included" | "mobile_deferred" | "unknown";
 
 export interface ScopeProjection {
 	byEndpoint: ReadonlyMap<string, ScopeDisposition>;
@@ -67,7 +67,7 @@ export interface RenameEvidence {
 	oldPath: string;
 	newPath: string;
 	isFolder: boolean;
-	authority: "reported";
+	authority: "reported" | "current_state";
 	identityKey?: string;
 }
 
@@ -76,7 +76,7 @@ export type LocalRenameEvidence = RenameEvidence & { side: "local" };
 export type IdentityEvidence =
 	| RenameEvidence
 	| { kind: "alias"; side: SyncSide; requestedPath: string; resolvedPath: string }
-	| { kind: "stable_identity"; side: "remote"; identityKey: string; occurrences: EntityOccurrence[] };
+	| { kind: "stable_identity"; side: "remote"; identityKey: string; occurrences: readonly EntityOccurrence[] };
 
 /** User-facing strategy for resolving conflicts */
 export type ConflictStrategy = "auto_merge" | "duplicate";

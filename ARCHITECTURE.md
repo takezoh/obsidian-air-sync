@@ -4,9 +4,9 @@
 
 1. **3-state sync** -- Compare local, remote, and last-sync-record to detect changes. Text conflicts use 3-way merge.
 2. **Swappable production core** -- All remote I/O in the backend-agnostic production core goes through `IFileSystem` + `IBackendProvider`. Adding a backend leaves that core unchanged and extends explicit integration and verification points: its implementation/provider, `fs/registry.ts`, backend-specific settings UI where applicable, the shared contract catalog/matrix, and opt-in live E2E.
-3. **Delta-first** -- Only process files that changed. O(n) full scans are allowed on cold start, same-session recovery, scope change, manual rescan, and unresolved local rename debt.
+3. **Delta-first** -- Only process files that changed. O(n) full scans are allowed on cold start, same-session recovery, scope change, and manual rescan.
 4. **Pipeline as data** -- Each sync phase is a pure transformation: `ChangeSet → plain SyncPlan proposal → AuthorizedSyncPlan → Result`. I/O is isolated at boundaries; all intermediate states are testable.
-5. **Crash-safe by construction** -- State is committed only *after* success: per-file baselines after each admitted action, and the remote delta checkpoint only when no failure/deferral or unresolved remote identity edge remains. An interrupted sync converges by checkpoint replay or COLD reconcile; unresolved local rename edges additionally survive as bounded namespace debt.
+5. **Crash-safe by construction** -- State is committed only *after* success: per-file baselines after each admitted action, and the remote delta checkpoint only when no action or Admission failure remains. An interrupted sync is freshly reclassified on the next invocation, using a same-session COLD reconcile when required. Operation intent, rename evidence, and cross-cycle failure quarantine are never persisted.
 6. **Duplicate over delete** -- When in doubt, keep the file. Deleting an unwanted copy is easy; recovering a lost file is impossible.
 7. **Single responsibility per module** -- Each file owns one concept. Target 200-300 lines; split when exceeded.
 
@@ -59,32 +59,28 @@ One row per directory; see the layer diagram and per-doc references for module d
      ┌───────────────▼────────────────────┐
      │            Pipeline                │
      │                                    │
-     │  1 Observe                         │  ChangeDetector
+     │  1 Observation                     │  ChangeDetector / ScopeProjection
      │    collectChanges()                │    hot / warm / cold
-     │    observations + identity         │    evidence completion
+     │      → captureBatchObservation()   │    immutable facts only
      │        │                           │
      │        ▼                           │
-     │  2 Propose                         │  ScopeProjection / DecisionEngine
-     │    projectScope()                  │    classify evidence endpoints
-     │      → planSync()                  │    plain path-local proposal
-     │        │                           │
-     │        ▼                           │
-     │  3 Admit                           │  PlanAdmission
-     │    captureCycleAdmissionSnapshot() │    immutable cycle contract
-     │      → admitDestructivePlan()      │    one component build + action shaping
+     │  2 Admission                       │  PlanAdmission / DecisionEngine
+     │    admitBatchObservation()         │    private path-local proposal
+     │      → admitDestructivePlan()      │    component build + policy
      │      → AuthorizedSyncPlan          │    authorization, disposition, lifecycle
      │        │                           │
      │        ▼                           │
-     │  4 Execute                         │  PlanExecutor / StateCommitter
+     │  3 Execution                       │  PlanExecutor
      │    executePlan()  (3 phases)       │
      │    1 transfers: push/pull          │    AdaptivePool (AIMD); match/cleanup inline
      │    2 conflict (serial)             │    own phase (sibling-path safe)
      │    3 structural: 2 lanes ||        │    remote & local, concurrent
      │      per lane: rename then del     │    rename serial; delete pooled
-     │    commitAction() per success      │    per-path state
+     │    exact outcomes only             │    no action invention or rerouting
      │        │                           │
      │        ▼                           │
-     │  5 Finalize                        │  cycle-level commit boundary
+     │  4 Commit / finalization           │  StateCommitter / cycle boundary
+     │    commitAction() per success      │    per-path state publication
      │    finalizeSyncCycle()             │    mechanical completion fold
      │    checkpoint, then retirement     │    no safety re-decision
      └───────────────┬────────────────────┘
@@ -97,7 +93,7 @@ One row per directory; see the layer diagram and per-doc references for module d
 
 `runSync` early-returns when no remote backend is present, the backend is connecting, or layout is not ready; it serializes via an `AsyncMutex`. A sync arriving while one runs sets a `syncPending` flag and the running cycle re-runs via a `do/while` loop (coalescing). Each cycle retries up to `MAX_RETRIES = 3`: `AuthError` (status 401) and a non-rate-limit HTTP 403 abort the whole sync immediately; HTTP 404 breaks the retry loop without special handling. For 429 or a rate-limit 403 carrying a `Retry-After` header, delay = `retryAfter * 1000` ms; otherwise exponential backoff with jitter = `2^(attempt-1) * 1000 * (0.5 + Math.random())` ms. See [docs/error-handling.md](docs/error-handling.md) for the full classification/recovery table.
 
-File-open priority is a narrow side entrance to this pipeline, not a second decision engine. The scheduler only forwards the opened path. `IFileSystem.priority` obtains a detached identity/path/version observation without consuming or mutating the batch delta cache. `PriorityCoordinator` admits it only between complete normal actions; after a whole-record `SyncRecord` CAS it may replace the exact still-pending singleton pull projected by Admission. Any missing authority, local race, CAS loss, or closed phase defers to the normal lifecycle. Normal batch actions still use the same `AuthorizedSyncPlan`, provider calls, and global phase barriers.
+File-open priority is a narrow side entrance to this pipeline, not a second decision engine. The scheduler only forwards the opened path. `IFileSystem.priority` obtains a detached identity/path/version observation without consuming or mutating the batch delta cache. `PriorityCoordinator` admits it only between complete normal actions; after a whole-record `SyncRecord` CAS it may replace the exact still-pending singleton pull projected by Admission. Any missing authority, local race, CAS loss, or closed phase falls back to the normal lifecycle. Normal batch actions still use the same `AuthorizedSyncPlan`, provider calls, and global phase barriers.
 
 ## Core data models
 
@@ -314,7 +310,7 @@ interface WebFolderPicker {
 }
 ```
 
-The remote delta cursor is crash-safe at the **filesystem** layer, not the provider (it moved there with ADR 0001): `IFileSystem.checkpoint` commits the cursor plus its derived cache to the backend's own IndexedDB store atomically, and only after a cycle has no failed/deferred work and no unresolved remote identity edge. A missing checkpoint (first sync, cleared state, manual rescan) forces COLD. After a non-clean cycle with an older checkpoint still committed, same-session recovery forces COLD despite the advanced live cursor; restart instead reloads that older cursor and replays its delta. Scope changes and persisted local rename debt also force COLD. Local reported renames persist as bounded, namespace-scoped `RenameDebt` before plan I/O; remote evidence replays from the withheld checkpoint. `readBackendState()` persists only non-secret provider/auth state (e.g. token expiry) to `settings.backendData`; it no longer carries the cursor, so it takes no FS argument.
+The remote delta cursor is crash-safe at the **filesystem** layer, not the provider (it moved there with ADR 0001): `IFileSystem.checkpoint` commits the cursor plus its derived cache to the backend's own IndexedDB store atomically, and only after a cycle has no failed action or Admission failure. A missing checkpoint (first sync, cleared state, manual rescan) forces COLD. After a non-clean cycle with an older checkpoint still committed, same-session recovery forces COLD despite the advanced live cursor; restart reloads that older committed cursor and reacquires current facts. Scope changes also force COLD. `readBackendState()` persists only non-secret provider/auth state (e.g. token expiry) to `settings.backendData`; it no longer carries the cursor, so it takes no FS argument.
 
 `settings.backendData` is a single flat bag holding **only the active backend's** parameters (tokens live in `SecretStorage`, keyed per backend — never in `backendData`). Switching backends hard-resets it: all params are wiped and every registered backend's plugin-owned secrets are swept (`clearPluginSecrets`), so the new backend starts disconnected and can't reuse another's token under the wrong OAuth client.
 

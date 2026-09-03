@@ -2,7 +2,7 @@
 id: task-20260831-unit-1-single-identity-component-owner
 kind: task
 title: unit-1-single-identity-component-owner
-status: todo
+status: done
 created: '2026-08-31'
 priority: normal
 effort: medium
@@ -18,10 +18,8 @@ pr: null
 tags: []
 owners: []
 relations:
-- type: partOf
-  target: change-20260831-sync-decision-resource-components
-- type: dependsOn
-  target: task-20260831-fs-evidence-conformance
+- {type: partOf, target: change-20260831-sync-decision-resource-components}
+- {type: dependsOn, target: task-20260831-fs-evidence-conformance}
 source_paths: []
 change: change-20260831-sync-decision-resource-components
 summary: Build components once and decide exact actions, authority, disposition, and
@@ -30,6 +28,7 @@ max_diff_loc: 300
 pinned_context:
 - docs/changes/change-20260831-sync-decision-resource-components/tasks/task-20260831-unit-1-single-identity-component-owner.md
 - docs/changes/change-20260831-sync-decision-resource-components/design-plan
+updated: '2026-09-03'
 ---
 
 ## Responsibility
@@ -49,3 +48,13 @@ Build components once and decide exact actions, authority, disposition, and life
 - AC-SD-003
 - AC-SD-004
 - AC-SD-007
+
+
+{% transition from="todo" to="in_progress" date="2026-09-03" %}
+reconcile-completed-delivery-history
+{% /transition %}
+
+
+{% transition from="in_progress" to="done" date="2026-09-03" %}
+implemented-and-verified-in-pr-57
+{% /transition %}

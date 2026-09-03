@@ -8,7 +8,7 @@ import type {
 	SyncAction,
 } from "./types";
 
-export type AdmissionDeferralReason =
+export type AdmissionFailureReason =
 	| "alias_target_mutation"
 	| "conflicting_identity"
 	| "identity_postcondition_unproven"
@@ -22,8 +22,8 @@ export type AdmissionDeferralReason =
 export function evaluateIdentityComponent(
 	component: AdmissionComponent,
 	scope: ScopeProjection,
-): AdmissionDeferralReason[] {
-	const reasons = new Set<AdmissionDeferralReason>();
+): AdmissionFailureReason[] {
+	const reasons = new Set<AdmissionFailureReason>();
 	if (component.observations.some((item) => item.kind === "present_unresolved")) {
 		reasons.add("present_unresolved");
 	}
@@ -36,8 +36,7 @@ export function evaluateIdentityComponent(
 
 	const renames = component.evidence.filter((item): item is RenameEvidence => item.kind === "rename");
 	const resolvedNoAction = component.actions.length === 0 && renames.length > 0 &&
-		renames.every((rename) => projectRenameScope(rename, scope).consequence === "none" ||
-			resolvedAtBothSides(rename, component.observations));
+		renames.every((rename) => resolvedAtBothSides(rename, component.observations));
 	if (renames.length > 0 && reasons.size === 0) {
 		const renameReason = evaluateRenames(component, renames, scope, resolvedNoAction);
 		if (renameReason) reasons.add(renameReason);
@@ -54,13 +53,12 @@ export function evaluateIdentityComponent(
 	}
 	return [...reasons].sort();
 }
-
 function evaluateRenames(
 	component: AdmissionComponent,
 	renames: RenameEvidence[],
 	scope: ScopeProjection,
 	resolvedNoAction: boolean,
-): AdmissionDeferralReason | undefined {
+): AdmissionFailureReason | undefined {
 	const rules = renames.map((rename) => ({ rename, rule: projectRenameScope(rename, scope) }));
 	if (rules.some(({ rename, rule }) => rename.isFolder && rule.consequence === "defer")) {
 		return "incomplete_folder_mapping";
@@ -72,15 +70,11 @@ function evaluateRenames(
 	}
 	if (resolvedNoAction) return undefined;
 	if (matchesNativeRenames(component, consequences, scope)) return undefined;
-	if (rules.length === 1 && matchesScopeTransition(
-		component, rules[0]!.rename, rules[0]!.rule.consequence,
-	)) return undefined;
 	if (rules.length === 1 && preservesRecreatedRemoteSource(component, rules[0]!.rename)) {
 		return undefined;
 	}
 	return "rename_mismatch";
 }
-
 function resolvedAtBothSides(
 	rename: RenameEvidence,
 	observations: readonly PathObservation[],
@@ -117,18 +111,22 @@ function matchesNativeRenames(
 	rules: readonly { rename: RenameEvidence; consequence: RenameScopeConsequence }[],
 	scope: ScopeProjection,
 ): boolean {
-	if (component.actions.length !== rules.length) return false;
 	return rules.every(({ rename, consequence }) => {
 		const expected = consequence === "rename_local" || consequence === "rename_remote"
 			? consequence : undefined;
 		if (!expected) return false;
-		const action = component.actions.find((candidate) =>
+		const exactAction = component.actions.find((candidate) =>
 			candidate.action === expected && candidate.oldPath === rename.oldPath &&
 			candidate.path === rename.newPath);
-		if (!action || action.action !== expected || nativeDestinationOccupied(component, rename, expected)) {
-			return false;
+		if (exactAction?.action === expected) {
+			if (nativeDestinationOccupied(component, rename, expected)) return false;
+			return !rename.isFolder || folderMappingComplete(exactAction, rename, scope);
 		}
-		return !rename.isFolder || folderMappingComplete(action, rename, scope);
+		if (rename.isFolder) return false;
+		return component.actions.some((candidate) =>
+			candidate.action === expected && candidate.isFolder === true &&
+			candidate.descendants?.some((pair) => pair.oldPath === rename.oldPath &&
+				pair.newPath === rename.newPath));
 	});
 }
 
@@ -160,25 +158,6 @@ function nativeDestinationOccupied(
 		if (observation.kind === "alias") return observation.resolvedPath === rename.newPath;
 		return observation.kind === "present_unresolved" && observation.returnedPath === rename.newPath;
 	});
-}
-
-function matchesScopeTransition(
-	component: AdmissionComponent,
-	rename: RenameEvidence,
-	consequence: RenameScopeConsequence,
-): boolean {
-	const actions = component.actions;
-	if (consequence === "none") return actions.length === 0;
-	if (consequence === "defer" || consequence === "rename_local" || consequence === "rename_remote") {
-		return false;
-	}
-	if (actions.length !== 1) return false;
-	const expectedPath = consequence === "delete_local" || consequence === "delete_remote"
-		? rename.oldPath : rename.newPath;
-	if (actions[0]!.action !== consequence || actions[0]!.path !== expectedPath) return false;
-	if (consequence === "push") return !isOccupied(component, "remote", rename.newPath);
-	if (consequence === "pull") return !isOccupied(component, "local", rename.newPath);
-	return true;
 }
 
 function preservesRecreatedRemoteSource(component: AdmissionComponent, rename: RenameEvidence): boolean {
@@ -230,19 +209,22 @@ function hasOpposingDeletes(actions: readonly SyncAction[]): boolean {
 
 function hasAliasTargetMutation(component: AdmissionComponent): boolean {
 	return component.evidence.some((evidence) => evidence.kind === "alias" &&
-		component.actions.some((action) => !isMatchingAliasRename(component, action, evidence)));
+		!component.actions.some((action) => isMatchingAliasRename(component, action, evidence)));
 }
 
 function isMatchingAliasRename(
-	component: AdmissionComponent,
-	action: SyncAction,
-	alias: Extract<IdentityEvidence, { kind: "alias" }>,
-): boolean {
+	component: AdmissionComponent, action: SyncAction,
+	alias: Extract<IdentityEvidence, { kind: "alias" }>,): boolean {
 	if (action.action !== "rename_local" && action.action !== "rename_remote") return false;
-	if (!((alias.requestedPath === action.oldPath && alias.resolvedPath === action.path) ||
-		(alias.requestedPath === action.path && alias.resolvedPath === action.oldPath))) return false;
+	const matchingPaths = (oldPath: string, newPath: string) => (
+		alias.requestedPath === oldPath && alias.resolvedPath === newPath) || (
+		alias.requestedPath === newPath && alias.resolvedPath === oldPath);
+	const pair = matchingPaths(action.oldPath, action.path)
+		? { oldPath: action.oldPath, newPath: action.path }
+		: action.descendants?.find((candidate) => matchingPaths(candidate.oldPath, candidate.newPath));
+	if (!pair) return false;
 	return component.evidence.some((evidence) => evidence.kind === "rename" &&
-		evidence.oldPath === action.oldPath && evidence.newPath === action.path &&
+		evidence.oldPath === pair.oldPath && evidence.newPath === pair.newPath &&
 		action.action === (evidence.side === "local" ? "rename_remote" : "rename_local"));
 }
 
@@ -302,11 +284,4 @@ function currentRemoteIdentityByPath(component: AdmissionComponent): Map<string,
 		if (action.remote?.identityKey) result.set(action.remote.path, action.remote.identityKey);
 	}
 	return result;
-}
-
-function isOccupied(component: AdmissionComponent, side: "local" | "remote", path: string): boolean {
-	return component.observations.some((observation) => observation.side === side &&
-		((observation.kind === "exact" && observation.requestedPath === path) ||
-			(observation.kind === "alias" && observation.resolvedPath === path) ||
-			(observation.kind === "present_unresolved" && observation.returnedPath === path)));
 }

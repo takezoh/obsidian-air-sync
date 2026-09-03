@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import { collectChanges } from "./change-detector";
-import { planSync } from "./decision-engine";
 import { executePlan } from "./plan-executor";
 import { LocalChangeTracker } from "./local-tracker";
 import {
@@ -10,8 +9,9 @@ import {
 	readText,
 } from "../__mocks__/sync-test-helpers";
 import type { RenamePair, SyncPlan } from "./types";
-import { admitDestructivePlan, captureCycleAdmissionSnapshot } from "./plan-admission";
+import { admitBatchObservation } from "./plan-admission";
 import { projectScope } from "./scope-projection";
+import { captureBatchObservation } from "./sync-cycle-planning";
 
 /**
  * Convergence (fixed-point) contract — the emergent property the whole engine
@@ -26,7 +26,7 @@ import { projectScope } from "./scope-projection";
  *
  * Each test drives the real pipeline composition — the core of
  * `SyncOrchestrator.executeSyncOnce()`:
- *   collectChanges → planSync → PlanAdmission → executePlan (+ per-action commit)
+ *   collectChanges → BatchObservation → PlanAdmission → executePlan (+ per-action commit)
  * — then runs it a SECOND time and asserts the plan is empty (the fixed point).
  */
 
@@ -65,10 +65,9 @@ async function runCycle(env: Env): Promise<SyncPlan> {
 		stateStore,
 		changes: snapshot,
 	});
-	const proposal = planSync(changeSet.entries);
-	const scope = projectScope(changeSet, { classifyPath: () => "included" });
-	const admission = admitDestructivePlan(captureCycleAdmissionSnapshot(
-		proposal, changeSet.identityEvidence, changeSet.observations, scope, "convergence-test",
+	const scope = projectScope(changeSet);
+	const admission = admitBatchObservation(captureBatchObservation(
+		changeSet.entries, changeSet.identityEvidence, changeSet.observations, scope, "convergence-test",
 	));
 	await executePlan(admission.executable, {
 		localFs,

@@ -2,33 +2,31 @@
 
 ## Pipeline overview
 
-Each sync cycle has five top-level responsibility stages:
+Each sync cycle has exactly four top-level responsibility stages:
 
-1. **Observe** -- `collectChanges()` returns exact `entries`, path `observations`, and normative `identityEvidence`.
-2. **Propose** -- scope is projected before filtering, then `planSync()` produces the plain path-local action proposal.
-3. **Admit** -- the proposal and its evidence are captured in one `CycleAdmissionSnapshot`; `admitDestructivePlan()` builds components once, shapes identity-connected actions, assigns every relevant component one disposition and lifecycle membership, and issues the only `AuthorizedSyncPlan`.
-4. **Execute** -- `executePlan()` accepts that nominal plan only and successful actions commit their per-path state.
-5. **Finalize** -- `finalizeSyncCycle()` mechanically folds the same dispositions with execution completion, commits a safe checkpoint, and only then retires released evidence and debt.
+1. **Observation** -- `collectChanges()` acquires exact entries, path observations, and normative identity evidence; scope projection and `captureBatchObservation()` freeze those facts without constructing actions.
+2. **Admission** -- `admitBatchObservation()` privately constructs the path-local proposal, builds identity-connected components once, applies conflict and destructive-action policy, assigns every relevant component one disposition and lifecycle membership, and issues the only `AuthorizedSyncPlan`.
+3. **Execution** -- `executePlan()` accepts that authorized plan only, performs its exact effects, and reports exact outcomes without inventing or rerouting actions.
+4. **Commit/finalization** -- per-action state publication records proven successes; `finalizeSyncCycle()` mechanically folds those outcomes with the Admission dispositions, commits a safe checkpoint, and only then retires released evidence and debt.
 
-These stages describe responsibility boundaries, not one separately scheduled pass per helper function. Evidence completion is part of **Observe**; scope projection is internal to **Propose**; snapshot capture, the single component build, and component-local rename shaping are internal to **Admit**. They add no extra network scan merely by being named.
+These stages describe responsibility owners, not one separately scheduled pass per helper function. Evidence completion, scope projection, and immutable fact capture belong to **Observation**. The path-local decision table, component build, conflict policy, and component-local rename shaping are private to **Admission**. They add no extra network scan merely by being named.
 
 The lower-level cycle sequence within those boundaries is:
 
 1. `collectChanges()` selects HOT/WARM/COLD collection, records authoritative path observations and identity evidence, confirms uncertain absences, and completes required hashes/identity facts.
-2. `projectScope()` classifies every evidence endpoint before exact entries are filtered.
-3. `planSync()` produces ordinary per-path actions without consuming identity evidence.
-4. `captureCycleAdmissionSnapshot()` fixes the proposal, evidence, observations, scope, and namespace for this cycle.
-5. `admitDestructivePlan()` builds evidence-connected components once, shapes and decides each component, and projects the `AuthorizedSyncPlan` while preserving disconnected ordinary proposal order.
-6. `executePlan()` runs only that authorized projection; each successful action calls `commitAction()` for per-path state.
-7. `finalizeSyncCycle()` folds disposition membership with execution completion, commits the checkpoint when safe, then retires released evidence and debt.
+2. `applyScope()` removes excluded paths and cross-scope identity edges, then projects mobile and observation completeness over the remaining facts.
+3. `captureBatchObservation()` fixes included entries, evidence, observations, scope, and namespace without an action carrier.
+4. `admitBatchObservation()` invokes the private path-local `planSync()` helper, then builds evidence-connected components once, shapes and decides each component, and projects the `AuthorizedSyncPlan` while preserving disconnected ordinary proposal order.
+5. `executePlan()` runs only that authorized projection and reports exact completion; each successful action is published through `commitAction()`.
+6. `finalizeSyncCycle()` folds disposition membership with execution completion, commits the checkpoint when safe, then retires released evidence and debt.
 
-The orchestrator (`SyncOrchestrator.executeSyncOnce()`) drives the I/O boundaries. `prepareSyncCycleSnapshot()` projects scope, creates the plain proposal, and captures the input at the **Admit** boundary. The orchestrator then invokes Admission once at an explicit cut point; proposal output is never executable permission.
+The orchestrator (`SyncOrchestrator.executeSyncOnce()`) only sequences the boundaries. `prepareSyncCycleSnapshot()` projects scope and produces a fact-only `BatchObservation`. The orchestrator passes it once to `admitBatchObservation()` at the authorization cut point; no executable action exists before that call.
 
 File-open priority does not add another set of these stages. It reuses the stored baseline and Admission's exact action projection, while a provider capability supplies only a detached current observation/read. The normal cycle is not re-decided at execution time and does not issue per-component targeted API calls.
 
 **Scope filter (`SyncOrchestrator.isExcluded()`)** — a path is synced only if it passes **both** gates:
 
-1. **Dot-path scope** (`isDotPathOutOfScope`): a dot-prefixed/hidden path (`.airsync`, `.obsidian`, `.git`, …) is in scope only when it sits under a configured `syncDotPaths` root — `settings.syncDotPaths` augmented with the vault's config directory when `enableConfigSync` is on (`getEffectiveSyncDotPaths`, `config-sync.ts`). Normal paths always pass. This is applied symmetrically to local and remote evidence. Both rename endpoints are classified before exact entries are filtered, so filtering cannot erase a constraint and leave its destructive half executable.
+1. **Dot-path scope** (`isDotPathOutOfScope`): a dot-prefixed/hidden path (`.airsync`, `.obsidian`, `.git`, …) is in scope only when it sits under a configured `syncDotPaths` root — `settings.syncDotPaths` augmented with the vault's config directory when `enableConfigSync` is on (`getEffectiveSyncDotPaths`, `config-sync.ts`). Normal paths always pass. This is applied symmetrically to local and remote facts before `BatchObservation`; excluded endpoints and identity edges that cross the boundary are discarded.
 2. **Ignore patterns** (`isIgnored`): gitignore-style `ignorePatterns` — likewise augmented with a built-in pattern set (`getEffectiveIgnorePatterns`) prepended when `enableConfigSync` is on while excluding device-specific workspace state. The `syncConfigJsonFiles`, `syncConfigPlugins`, `syncConfigSnippets`, `syncConfigThemes`, and `syncConfigIcons` settings independently add root `*.json`, `plugins/`, `snippets/`, `themes/`, and `icons/`. `community-plugins.json` is classified with `plugins/`, not with generic root JSON, because it is the active community plugin list; it therefore follows `syncConfigPlugins` even when `syncConfigJsonFiles` differs. Root JSON and plugins stay on by default solely for backward compatibility with the pre-toggle Config Sync behavior; all newly introduced subtree scopes default to off and require explicit opt-in. These settings are part of the scope fingerprint, so changing one forces a single cold reconcile and surfaces remote-only files that predate the delta cursor.
 
 `isExcluded()` also reserves two paths unconditionally, ahead of both gates, so neither `syncDotPaths` nor `ignorePatterns` can ever pull them back into scope:
@@ -37,19 +35,19 @@ File-open priority does not add another set of these stages. It reuses the store
 
 The same `isExcluded()` gates the vault-event dirty tracking (scheduler), so push and pull use one scope rule across hot and cold paths.
 
-`runSync()` is gated on a connected remote (`remoteFs` present), layout-ready, and not-connecting; it serializes via an `AsyncMutex`. A call arriving while a sync runs sets `syncPending` and returns; the lock holder re-runs in a `do/while (syncPending)` loop, acknowledging each cycle's start-of-cycle snapshot at the end of each non-fatal cycle (coalescing). Each cycle (`executeSyncOnce`) is wrapped by `executeWithRetry`, which normally retries up to `MAX_RETRIES = 3` with exponential backoff plus jitter (`2^(attempt-1) * 1000 * (0.5 + Math.random())` ms), honoring `Retry-After` (×1000) on 429/403. `AuthError`, a non-rate-limit 403, and 404 abort without retry. An exception after remote rename evidence was yielded but strictly before Admission also does not tight-retry: the evidence is retained, the run reports an error, and the next normal trigger is forced COLD. A fatal abort leaves the dirty set un-acknowledged so it is retried next run.
+`runSync()` is gated on a connected remote (`remoteFs` present), layout-ready, and not-connecting; it serializes via an `AsyncMutex`. A call arriving while a sync runs sets `syncPending` and returns; the lock holder re-runs in a `do/while (syncPending)` loop. A tracker snapshot is acknowledged only after a clean, terminal cycle; an unresolved rename input remains in that in-memory input buffer for the next invocation. Each cycle (`executeSyncOnce`) is wrapped by `executeWithRetry`, which normally retries up to `MAX_RETRIES = 3` with exponential backoff plus jitter (`2^(attempt-1) * 1000 * (0.5 + Math.random())` ms), honoring `Retry-After` (×1000) on 429/403. `AuthError`, a non-rate-limit 403, and 404 abort without retry. A pre-Admission failure reports an error and causes the next normal trigger to use COLD observation; no evidence or recovery instruction is persisted.
 
 ## Crash recovery
 
-The remote delta cursor is the engine's "synced up to here" checkpoint. It lives in the backend's IndexedDB store (`META_STORE`), **co-located with the file-map cache and committed in the same transaction** (see [ADR 0001](adr/0001-metadata-cache-is-subordinate-to-commit-last.md)). `finalizeSyncCycle()` calls `remoteFs.checkpoint.commitCheckpoint()` only when there is no failed/deferred work and no unresolved remote rename evidence. A partial or interrupted cycle leaves cursor and cache at the prior committed value.
+The remote delta cursor is the engine's "synced up to here" checkpoint. It lives in the backend's IndexedDB store (`META_STORE`), **co-located with the file-map cache and committed in the same transaction** (see [ADR 0001](adr/0001-metadata-cache-is-subordinate-to-commit-last.md)). `finalizeSyncCycle()` calls `remoteFs.checkpoint.commitCheckpoint()` only when there is no failed action or Admission failure. A partial or interrupted cycle leaves cursor and cache at the prior committed value.
 
-At the start of each cycle the orchestrator asks `remoteFs.checkpoint.hasCheckpoint()` (async — it reads the store). `false` means first sync, cleared state, or manual rescan and forces COLD. COLD is also forced after a same-session failed/deferred cycle (`recoverViaColdScan`), after a scope-fingerprint change, and while local rename debt exists. A non-clean cycle after an established checkpoint does **not** erase that checkpoint: same-session recovery ignores the advanced live cursor and lists both sides, while a restart rebuilds the FS from the older committed cursor and replays the delta. This distinction is the two-path recovery contract in ADR 0001.
+At the start of each cycle the orchestrator asks `remoteFs.checkpoint.hasCheckpoint()` (async — it reads the store). `false` means first sync, cleared state, or manual rescan and forces COLD. COLD is also forced after a same-session failed cycle (`recoverViaColdScan`) and after a scope-fingerprint change. A non-clean cycle after an established checkpoint does **not** erase that checkpoint: same-session recovery ignores the advanced live cursor and lists both sides, while a restart rebuilds the FS from the older committed cursor and freshly reacquires the current state. This distinction is the two-path recovery contract in ADR 0001.
 
-A **same-session failure** also forces at least one subsequent cold cycle. This is load-bearing (ADR 0001 convergence path 2) — `result.failed` does not capture the full recovery gap (folder-rename descendants, remote-only orphans, detect-vs-execute races), so only a full cold scan re-derives it. After that cold recovery has been paid, the orchestrator may temporarily block only the same repeated **local-origin** poison action (`push`, `delete_remote`, `rename_remote`) whose error classification is `permanent` and carries a stable `permanentCode`. The key is `(backendType, action, path, "permanent", permanentCode)`, the same action signature must fail in two consecutive cycles, and the block lasts 5 minutes or until the action/content changes, succeeds, or fails with a non-eligible classification. The two-cycle threshold means the first failure still buys one mandatory cold recovery pass; the 5 minute TTL is a short mobile-friendly cooldown that prevents repeated poison I/O without persisting across plugin reloads. Blocked actions are reported as `result.blocked` and surface as `partial_error`; they are not treated as "Everything up to date".
+A **same-session failure** also forces the next cycle to be cold. This is load-bearing (ADR 0001 convergence path 2) — `result.failed` does not capture the full recovery gap (folder-rename descendants, remote-only orphans, detect-vs-execute races), so only a full cold scan re-derives it. No previous failure suppresses an action in a later explicit sync: each cycle authorizes and executes solely from its current snapshot.
 
-A **deferred identity component** is different from a failed action: it never reaches the executor, even when it contains zero actions. The cycle ends `partial_error`, reports each deferred disposition exactly once, withholds the checkpoint/scope fingerprint, and marks the next normal trigger for COLD without setting `syncPending` (no tight loop). A local reported rename is first stored as namespace-scoped `RenameDebt`; a remote edge is captured immediately when `getChangedPaths()` yields it, before later `stat`/hash/planning work can throw. Local debt survives restart directly; remote evidence survives restart because its delta checkpoint remains uncommitted. See [ADR 0008](adr/0008-logical-identity-admission-fails-closed.md).
+An **Admission failure** is different from a failed action: the rejected component never reaches the executor, even when it contains zero actions. The cycle ends `partial_error`, reports an ordinary error, withholds the checkpoint/scope fingerprint, and marks the next normal trigger for COLD re-observation without setting `syncPending` (no tight loop). It creates no pending operation row. Case-only local rename evidence may be reconstructed from an unambiguous case-folded baseline/current pair when the remote baseline identity and version remain unchanged; general rename identity is never guessed.
 
-Remote-origin or ambiguous actions (`pull`, `delete_local`, `rename_local`, `conflict`) are never blocked, because advancing past them could hide remote changes. Transient and rate-limit failures are also never blocked; after the connection or provider recovers, the next sync must execute I/O again. Re-seeding failed paths for a "hot" recovery, skipping the first cold scan for "small" failure sets, or advancing the cursor while blindly ignoring remote-origin failures are **ADR 0001 prohibited patterns** (they re-open silent in-session data loss). The cost is **bounded and intentionally retained**: per-action `withIoRetry` keeps most transient/429 failures from ever reaching `result.failed`, and repeated cold scans are avoided only after the recovery debt has been paid and the remaining failure is a permanent local-origin poison action.
+Re-seeding failed paths for a "hot" recovery, skipping the first cold scan for "small" failure sets, or advancing the cursor while blindly ignoring remote-origin failures are **ADR 0001 prohibited patterns** (they re-open silent in-session data loss). Per-action `withIoRetry` keeps most transient/429 failures from ever reaching `result.failed`; after a terminal failure, the next explicit sync invokes the provider again.
 
 The **Rescan vault** action (settings → Advanced) discards the committed checkpoint via the live FS (`remoteFs.checkpoint.resetCheckpoint()` — clears the cursor and cache) and triggers a sync, forcing one cold reconcile against the remote — a manual recovery for a vault that looks stuck or incomplete. It diffs against baselines (it does not re-download) and keeps sync history.
 
@@ -82,7 +80,7 @@ Selected when the hot condition fails (tracker uninitialized, or initialized but
 
 ### Cold -- O(n)
 
-Selected when `stateStore.getAll()` returns an empty array (first sync or after state clear), or forced via `forceFullScan` for a missing checkpoint, same-session recovery, scope change, or persisted local rename debt.
+Selected when `stateStore.getAll()` returns an empty array (first sync or after state clear), or forced via `forceFullScan` for a missing checkpoint, same-session recovery, or scope change.
 
 - Calls both `localFs.list()` and `remoteFs.list()`
 - Full outer join on path to build `MixedEntity[]` for every file on either side
@@ -163,7 +161,7 @@ There is no volume-based abort gate. Deletion safety rests on four independent l
 1. **Decision rules** -- an ambiguous case (a file gone on one side while the surviving side changed since baseline) is routed to `conflict` (keep both), never to a deletion; a missing baseline never yields a deletion.
 2. **layoutReady gate** -- sync does not run before the Obsidian vault index is loaded. `SyncScheduler` defers its event wiring, and `runSync()` is gated on `app.workspace.layoutReady`, so a `list()` that under-reports during startup cannot be mistaken for mass local deletions.
 3. **Authoritative observation** -- listing absence is re-`stat()`'d before it can authorize deletion. `LocalFs.stat()` falls back to the vault adapter on an index miss. `actual_resolved` proves an exact/alias path; `requested_echo` proves presence only; `null` proves absence; a thrown stat aborts the cycle. HOT checkpoint tombstones remain authoritative remote absence (Issue #44).
-4. **Whole-component admission** -- rename, alias, unresolved-presence, and stable-ID edges connect related paths. If the component decision cannot prove that every known resource survives under the direction-aware scope matrix, `admitDestructivePlan()` defers the entire component before execution. Deletions are additionally soft (trash), but recoverability is not used as authorization.
+4. **Whole-component admission** -- rename, alias, unresolved-presence, and stable-ID edges connect related managed paths. Paths excluded by system-junk rules, user ignore patterns, dot-path scope, Config Sync policy, or reserved-path policy are absent from the Admission snapshot. An included-to-included folder rename is one opaque folder operation; excluded physical entries are not identity nodes and do not participate in mapping completeness. If the component decision cannot prove that every managed resource survives, `admitDestructivePlan()` fails it before execution. Deletions are additionally soft (trash), but recoverability is not used as authorization.
 
 ## Identity-component action shaping
 
@@ -178,7 +176,9 @@ rules:
 For a local reported rename in `ChangeSet.identityEvidence`, Admission may shape `delete_remote(oldPath) + push(newPath)` → `rename_remote`. Hash verification is mandatory: `push.local.hash === del.baseline.hash` must hold, confirming content is unchanged. The private local helper enforces this rule for both file and folder renames.
 
 - **File renames** (`optimizeLocalFileRenames`): Consumes the derived file view of local `RenameEvidence`.
-- **Folder renames** (`coalesceLocalFolderRenames`): Consumes the derived folder view and coalesces all mapped descendant actions into one `rename_remote` with `isFolder: true`. Every descendant must pass hash verification; incomplete mappings are later deferred by admission.
+- **Folder renames** (`coalesceLocalFolderRenames`): Consumes the derived folder view and coalesces all mapped managed-descendant actions into one `rename_remote` with `isFolder: true`. Every managed descendant must pass hash verification. Excluded listing entries are absent from this view and do not prevent the opaque folder rename. Missing managed mappings still fail Admission.
+
+On case-insensitive local filesystems, a COLD replay can resolve the requested new spelling back to the old spelling and therefore produce no ordinary path-local action. Admission reconstructs a managed child `rename_remote` only when the local alias is exact, the stored baseline content matches local content, the exact remote source is unchanged, and remote destination absence is authoritative. Reconstructed child actions can be coalesced back into the reported opaque folder rename. This lets persisted evidence converge without weakening changed-content or ambiguous-identity handling.
 
 ### Remote renames — trusted (`optimize-remote-renames.ts`)
 
@@ -186,29 +186,29 @@ When `getChangedPaths()` reports a rename pair, Admission may shape `delete_loca
 
 - **File renames** (`optimizeRemoteFileRenames`): Matches individual rename pairs from the backend. The match requires the old path to be a pure `delete_local` and the new path a `pull`. If a new object was created at the old path, native rename does not coalesce; Admission permits the source-recreation fallback only when stable-ID evidence proves the moved and recreated objects are distinct and the actions preserve both. The private local shaping helper is symmetric: it needs `delete_remote(old)` + `push(new)`.
 - **Folder renames** (`coalesceRemoteFolderRenames`): When a folder-level rename pair has `isFolder: true`, coalesce every `delete_local` child under the old prefix into one `rename_local` (`isFolder: true`). Rules: (1) Absorb a descendant whose matching `pull` is missing into the rename — rewrite its baseline to the new path; a genuine remote delete then propagates as `delete_local` next cycle (bias toward safe deletion). (2) Skip the whole folder (reason `destination_occupied`) if any action under the new prefix has a non-null local entity (`a.local != null`), falling back to the per-file actions. Detection is best-effort; a per-action `localFs.rename` failure is caught and recovers next cycle. See `optimize-remote-renames.ts` for rationale. Remaining file-level pairs fall through to individual file rename optimization.
-  - **Optimization opportunity (not implemented):** a destination-occupied folder rename may be decomposable into per-child mappings, but only a complete mapping whose postconditions pass admission may execute. Incomplete mappings defer; see [ADR 0006](adr/0006-remote-rename-detection-is-order-independent.md) and [ADR 0008](adr/0008-logical-identity-admission-fails-closed.md).
+  - **Optimization opportunity (not implemented):** a destination-occupied folder rename may be decomposable into per-child mappings, but only a complete mapping whose postconditions pass Admission may execute. Incomplete mappings fail Admission; see [ADR 0006](adr/0006-remote-rename-detection-is-order-independent.md) and [ADR 0008](adr/0008-logical-identity-admission-fails-closed.md).
 
 ## Destructive admission
 
-`prepareSyncCycleSnapshot()` projects scope before filtering, creates the plain
-`SyncPlan` proposal, and freezes the proposal, normative evidence, observations, scope,
-and backend/root namespace into one cycle snapshot. The orchestrator passes that value
-once to pure `admitDestructivePlan()`. Admission builds connected components from
+`prepareSyncCycleSnapshot()` applies scope before freezing included entries,
+normative evidence, observations, scope, and backend/root namespace into one fact-only
+`BatchObservation`. The orchestrator passes that value once to
+`admitBatchObservation()`. Admission privately constructs the path-local proposal, then builds connected components from
 actions plus rename/alias/stable-identity evidence and path observations and emits
-exactly one `authorized`, `resolved_no_action`, or `deferred` disposition per relevant
-component, including evidence-connected components with zero actions.
+exactly one `authorized`, `resolved_no_action`, or `failed` disposition per
+relevant component, including evidence-connected components with zero actions.
 
-Admission alone proves exact deletion authority, native rename, a direction-specific
-scope transition, two-sided convergence, or the recognized source-recreation
+Admission alone proves exact deletion authority, native rename, two-sided convergence,
+or the recognized source-recreation
 postcondition. Unknown, conflicting, incomplete, or otherwise unproved components
-defer as a whole, including state-only actions. Only actions from `authorized`
+fail closed as a whole, including state-only actions. Only actions from `authorized`
 dispositions are projected into the nominal `AuthorizedSyncPlan`; disconnected
 ordinary work retains proposal order, while a proved component replacement occupies
 that component's place.
 `executePlan()` cannot accept a plain proposal through the supported typed API.
 
-Endpoint dispositions are `included`, `policy_out`, `mobile_deferred`, or `unknown`.
-Any unknown/mobile endpoint and any incomplete folder descendant mapping defers. The
+Endpoint dispositions are `included`, `mobile_deferred`, or `unknown`.
+Any unknown/mobile endpoint and any incomplete folder descendant mapping fails Admission. The
 full local/remote direction matrix and rejected identity inferences are recorded in
 [ADR 0008](adr/0008-logical-identity-admission-fails-closed.md).
 
@@ -222,11 +222,13 @@ old-target in-flight cycle cannot recreate debt after teardown.
 
 ### Observability
 
-Admission logs executable/proposed counts and each deferred component's reason,
-evidence kind/origin, endpoint dispositions, and paths (never content or credentials);
-status and the coalesced user notification include the deferred count. Private shaping
-helpers expose typed skip reasons to their focused tests, but do not form an observable
-pipeline stage.
+Admission logs executable/proposed counts and each failed component's reason,
+evidence kind/origin, endpoint dispositions, and paths (never content or credentials).
+Status remains `partial_error`, and Admission failures join failed actions in the ordinary error
+count. Their detailed reason remains diagnostic only. A later ordinary sync may reacquire current
+facts, but the failure is neither pending work nor a convergence guarantee.
+Private shaping helpers expose typed skip reasons to focused tests, but do not form an
+observable pipeline stage.
 
 ## Execution phases (lane/tier scheduling)
 
@@ -241,9 +243,9 @@ pipeline stage.
 
 The phases run behind **sequential barriers** (Phase 1 fully drains before Phase 2 before Phase 3). This preserves two safety properties: no content write (Phase 1) runs concurrently with a same-subtree structural rename/delete (Phase 3), and conflict (Phase 2, which touches both sides + a sibling path) never overlaps either. Renames stay serial so Admission's destination-occupancy proof is not deliberately invalidated by another rename in the same lane; pooled deletes are safe even for the legitimate folder+descendant overlap via the inline delete CAS guard (the folder's `removeTree` evicts the child entry, so the child delete short-circuits) — see [ADR 0001 → T7](adr/0001-metadata-cache-is-subordinate-to-commit-last.md).
 
-Phases 1 and 3 use `executeAction()`, which runs `runActionIO()` followed by `commitAction()` and records success in `result.succeeded`. Phase 2 (conflict) uses `executeConflictAction()` instead: it runs `resolveConflict()` per the configured strategy (`auto_merge` / `duplicate`), re-stats both local and remote sides, commits, and records the action in both `result.conflicts` and `result.succeeded`. In both paths, `AuthError` is re-thrown to abort the entire cycle (it rejects the phase's pool/lane and propagates); all other errors are caught per-action and recorded in `result.failed`. Known repeated local-origin poison actions can be skipped before I/O and recorded in `result.blocked`; they are visible in notifications and status but do not commit per-file state.
+Phases 1 and 3 use `executeAction()`, which runs `runActionIO()` followed by `commitAction()` and records success in `result.succeeded`. Phase 2 (conflict) uses `executeConflictAction()` instead: it runs `resolveConflict()` per the configured strategy (`auto_merge` / `duplicate`), re-stats both local and remote sides, commits, and records the action in both `result.conflicts` and `result.succeeded`. In both paths, `AuthError` is re-thrown to abort the entire cycle (it rejects the phase's pool/lane and propagates); all other errors are caught per-action and recorded in `result.failed`.
 
-Each normal action holds a `PriorityCoordinator` permit from immediately before its exact effect through `commitAction()` and terminal result publication. Queued file-open work therefore runs only at a safe point where no normal action is half-applied. Preparation through Admission/debt persistence and finalization through checkpoint/debt release are exclusive. The existing phase barriers remain authoritative; priority is allowed to replace only an unstarted Admission-projected singleton pull during the transfer phase.
+Each normal action holds a `PriorityCoordinator` permit from immediately before its exact effect through `commitAction()` and terminal result publication. Queued file-open work therefore runs only at a safe point where no normal action is half-applied. Preparation through Admission and finalization through checkpoint commit are exclusive. The existing phase barriers remain authoritative; priority is allowed to replace only an unstarted Admission-projected singleton pull during the transfer phase.
 
 **Adaptive transfer concurrency + in-cycle retry.** Phase 1's `AdaptivePool` ramps its in-flight ceiling up on sustained success and halves it on a rate-limit signal, so a large initial/bulk sync discovers the provider's sustainable throughput instead of a fixed `5`. Admission has a **second dimension besides the count limit: a byte budget** (sum of in-flight transfer sizes ≤ desktop 1 GB / mobile 512 MB) — because each transfer holds the whole file as an `ArrayBuffer` (`requestUrl` is buffered, no streaming), the budget caps peak memory by *bytes* rather than letting it scale with file *count*, so small files run highly concurrent while large ones self-throttle. A single file larger than the budget still runs (it is admitted only when the pool is otherwise empty, so it transfers alone). Each action's network I/O is additionally wrapped in `withIoRetry`: a `rateLimit`/`transient` error is retried in-cycle (up to `MAX_ACTION_RETRIES = 3`, honoring `Retry-After`), and on a rate-limit the task signals the pool (`noteRateLimit`, before the backoff sleep) so the ceiling drops immediately while the rate-limited task holds its slot (a natural throttle). A rate-limited transfer therefore no longer defers to the next (forced-cold) cycle, so the cycle completes clean more often. See [error-handling.md → Two retry layers](error-handling.md#two-retry-layers). Conflict and deletes also get `withIoRetry`, but only transfers feed the `AdaptivePool` (conflict is serial; deletes use a fixed pool).
 

@@ -25,7 +25,8 @@ function admittedPull(path = "note.md") {
 		{ actions: [action] }, [], observations,
 		{ byEndpoint: new Map([[path, "included"]]) }, "priority-batch-test",
 	);
-	return { action, admission: admitDestructivePlan(snapshot) };
+	const admission = admitDestructivePlan(snapshot);
+	return { action: admission.executable.actions[0]!, admission };
 }
 
 describe("PriorityBatchState", () => {
