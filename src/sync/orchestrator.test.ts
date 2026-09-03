@@ -186,6 +186,130 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.close();
 		});
 
+		it("converges a local folder rename with a newly added descendant", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			const tracker = new LocalChangeTracker();
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`,
+				lastSyncedIdentity: "test:root", ignorePatterns: ["*.tmp"],
+			});
+			const deps = createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+				localTracker: tracker,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			await localFs.write("A/known.md", new TextEncoder().encode("kept").buffer, 1000);
+			await orchestrator.runSync();
+			confirmMockPath(remoteFs, "A");
+			const remoteWrite = vi.spyOn(remoteFs, "write");
+			const remoteDelete = vi.spyOn(remoteFs, "delete");
+			const remoteRename = vi.spyOn(remoteFs, "rename");
+
+			await localFs.rename("A", "B");
+			await localFs.write("B/added.md", new TextEncoder().encode("new").buffer, 2000);
+			await localFs.write("B/ignored.tmp", new TextEncoder().encode("private").buffer, 2000);
+			tracker.markFolderRenamed("B", "A");
+			tracker.markDirty("B/added.md");
+			tracker.markDirty("B/ignored.tmp");
+			await orchestrator.runSync();
+
+			expect(readText(remoteFs, "B/known.md")).toBe("kept");
+			expect(readText(remoteFs, "B/added.md")).toBe("new");
+			expect(remoteFs.files.has("A/known.md")).toBe(false);
+			expect(remoteFs.files.has("B/ignored.tmp")).toBe(false);
+			expect(deps.onStatusChange).toHaveBeenLastCalledWith("idle");
+			const writesAfterConvergence = remoteWrite.mock.calls.length;
+			const deletesAfterConvergence = remoteDelete.mock.calls.length;
+			const renamesAfterConvergence = remoteRename.mock.calls.length;
+
+			await orchestrator.runSync();
+
+			expect(remoteWrite).toHaveBeenCalledTimes(writesAfterConvergence);
+			expect(remoteDelete).toHaveBeenCalledTimes(deletesAfterConvergence);
+			expect(remoteRename).toHaveBeenCalledTimes(renamesAfterConvergence);
+			await orchestrator.close();
+		});
+
+		it("routes a concurrent remote change through the configured conflict strategy", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			const tracker = new LocalChangeTracker();
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`,
+				lastSyncedIdentity: "test:root", conflictStrategy: "duplicate",
+			});
+			const recordConflicts = vi.fn().mockResolvedValue(undefined);
+			const deps = createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+				localTracker: tracker, recordConflicts,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			await localFs.write("A/known.md", new TextEncoder().encode("baseline").buffer, 1000);
+			await orchestrator.runSync();
+			confirmMockPath(remoteFs, "A");
+
+			await remoteFs.write("A/known.md", new TextEncoder().encode("remote changed").buffer, 3000);
+			confirmMockPath(remoteFs, "A");
+			await localFs.rename("A", "B");
+			await localFs.write("B/added.md", new TextEncoder().encode("new").buffer, 2000);
+			tracker.markFolderRenamed("B", "A");
+			tracker.markDirty("B/added.md");
+			await orchestrator.runSync();
+
+			expect(readText(remoteFs, "A/known.md")).toBe("remote changed");
+			expect(readText(remoteFs, "B/known.md")).toBe("baseline");
+			expect(readText(remoteFs, "B/added.md")).toBe("new");
+			expect(recordConflicts).toHaveBeenCalledTimes(1);
+			expect(deps.onStatusChange).toHaveBeenLastCalledWith("idle");
+			await orchestrator.close();
+		});
+
+		it("replans an ordinary retry after a partial folder-rename effect failure", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			const tracker = new LocalChangeTracker();
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`,
+				lastSyncedIdentity: "test:root",
+			});
+			const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+			remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
+			const deps = createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+				localTracker: tracker,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			await localFs.write("A/known.md", new TextEncoder().encode("kept").buffer, 1000);
+			await orchestrator.runSync();
+			confirmMockPath(remoteFs, "A");
+			commitCheckpoint.mockClear();
+
+			await localFs.rename("A", "B");
+			await localFs.write("B/added.md", new TextEncoder().encode("new").buffer, 2000);
+			tracker.markFolderRenamed("B", "A");
+			tracker.markDirty("B/added.md");
+			const failedDelete = vi.spyOn(remoteFs, "delete").mockRejectedValue(new Error("delete failed"));
+			await orchestrator.runSync();
+
+			expect(readText(remoteFs, "B/known.md")).toBe("kept");
+			expect(readText(remoteFs, "B/added.md")).toBe("new");
+			expect(remoteFs.files.has("A/known.md")).toBe(true);
+			expect(commitCheckpoint).not.toHaveBeenCalled();
+			expect(deps.onStatusChange).toHaveBeenLastCalledWith("partial_error");
+
+			failedDelete.mockRestore();
+			confirmMockPath(remoteFs, "B");
+			await orchestrator.runSync();
+
+			expect(deps.onStatusChange).toHaveBeenLastCalledWith("idle");
+			expect(remoteFs.files.has("A/known.md")).toBe(false);
+			expect(readText(remoteFs, "B/known.md")).toBe("kept");
+			expect(readText(remoteFs, "B/added.md")).toBe("new");
+			expect(commitCheckpoint).toHaveBeenCalledTimes(1);
+			await orchestrator.close();
+		});
+
 		it("fails closed on an unprovable local rename without I/O or checkpoint advance", async () => {
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();

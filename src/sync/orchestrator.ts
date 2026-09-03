@@ -473,6 +473,10 @@ export class SyncOrchestrator {
 				const renamed = execution.succeeded.some(({ action }) =>
 					action.action === "rename_remote" &&
 					action.oldPath === oldPath && action.path === newPath);
+				const admittedAsOrdinary = admission.dispositions.some((disposition) =>
+					disposition.kind === "authorized" && disposition.evidence.some((evidence) =>
+						evidence.kind === "rename" && evidence.side === "local" && evidence.isFolder &&
+						evidence.oldPath === oldPath && evidence.newPath === newPath));
 				const remoteAtNew = admission.snapshot.observations.some((observation) =>
 					observation.side === "remote" && observation.requestedPath === newPath &&
 					observation.kind === "exact");
@@ -480,7 +484,7 @@ export class SyncOrchestrator {
 					observation.side === "remote" && observation.requestedPath === oldPath &&
 					(observation.kind === "absent" ||
 						(observation.kind === "alias" && observation.resolvedPath === newPath)));
-				return !renamed && !(remoteAtNew && remoteLeftOld);
+				return !renamed && !admittedAsOrdinary && !(remoteAtNew && remoteLeftOld);
 			});
 			const outcome: SyncCycleOutcome = {
 				execution,

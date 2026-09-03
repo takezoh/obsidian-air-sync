@@ -670,6 +670,93 @@ describe("admitDestructivePlan", () => {
 		expect(result.failures[0]!.reasons).toEqual(["incomplete_folder_mapping"]);
 	});
 
+	it("uses independently proven ordinary actions for an incomplete local folder mapping", () => {
+		const baseline: SyncRecord = {
+			path: "A/known.md", hash: "h", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, syncedAt: 1,
+		};
+		const actions: SyncAction[] = [
+			{ path: "A/known.md", action: "delete_remote", remote: entity("A/known.md"), baseline },
+			{ path: "B/known.md", action: "push", local: entity("B/known.md") },
+			{ path: "B/added.md", action: "push", local: entity("B/added.md") },
+		];
+		const evidence = [remoteRename({
+			side: "local", identityKey: undefined, oldPath: "A", newPath: "B", isFolder: true,
+		})];
+		const observations: PathObservation[] = [
+			{ kind: "absent", side: "local", requestedPath: "A/known.md", authority: "stat" },
+			{ kind: "exact", side: "remote", requestedPath: "A/known.md", entity: entity("A/known.md") },
+			{ kind: "exact", side: "local", requestedPath: "B/known.md", entity: entity("B/known.md") },
+			{ kind: "absent", side: "remote", requestedPath: "B/known.md", authority: "stat" },
+			{ kind: "exact", side: "local", requestedPath: "B/added.md", entity: entity("B/added.md") },
+			{ kind: "absent", side: "remote", requestedPath: "B/added.md", authority: "stat" },
+		];
+		const result = admit(actions, evidence, observations, projection({
+			A: "included", B: "included", "A/known.md": "included",
+			"B/known.md": "included", "B/added.md": "included",
+		}));
+
+		expect(result.failures).toEqual([]);
+		expect(result.executable.actions).toEqual(actions);
+		expect(result.unsettledLocalRenameInput).toBe(false);
+	});
+
+	it("keeps an incomplete local folder mapping blocked without deletion authority", () => {
+		const baseline: SyncRecord = {
+			path: "A/known.md", hash: "h", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, syncedAt: 1,
+		};
+		const actions: SyncAction[] = [
+			{ path: "A/known.md", action: "delete_remote", remote: entity("A/known.md"), baseline },
+			{ path: "B/known.md", action: "push", local: entity("B/known.md") },
+			{ path: "B/added.md", action: "push", local: entity("B/added.md") },
+		];
+		const evidence = [remoteRename({
+			side: "local", identityKey: undefined, oldPath: "A", newPath: "B", isFolder: true,
+		})];
+		const observations: PathObservation[] = [
+			{ kind: "unknown", side: "local", requestedPath: "A/known.md", reason: "not_observed" },
+			{ kind: "exact", side: "remote", requestedPath: "A/known.md", entity: entity("A/known.md") },
+			{ kind: "exact", side: "local", requestedPath: "B/known.md", entity: entity("B/known.md") },
+			{ kind: "absent", side: "remote", requestedPath: "B/known.md", authority: "stat" },
+			{ kind: "exact", side: "local", requestedPath: "B/added.md", entity: entity("B/added.md") },
+			{ kind: "absent", side: "remote", requestedPath: "B/added.md", authority: "stat" },
+		];
+		const result = admit(actions, evidence, observations, projection({
+			A: "included", B: "included", "A/known.md": "included",
+			"B/known.md": "included", "B/added.md": "included",
+		}));
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.failures[0]!.reasons).toContain("unknown_observation");
+	});
+
+	it("admits a concurrent remote change as an ordinary conflict", () => {
+		const baseline: SyncRecord = {
+			path: "A/known.md", hash: "h", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, syncedAt: 1,
+		};
+		const changedRemote = freshEntity("A/known.md", "changed");
+		const conflict: SyncAction = {
+			path: "A/known.md", action: "conflict", remote: changedRemote, baseline,
+		};
+		const added: SyncAction = { path: "B/added.md", action: "push", local: entity("B/added.md") };
+		const evidence = [remoteRename({
+			side: "local", identityKey: undefined, oldPath: "A", newPath: "B", isFolder: true,
+		})];
+		const result = admit([conflict, added], evidence, [
+			{ kind: "absent", side: "local", requestedPath: "A/known.md", authority: "stat" },
+			{ kind: "exact", side: "remote", requestedPath: "A/known.md", entity: changedRemote },
+			{ kind: "exact", side: "local", requestedPath: "B/added.md", entity: entity("B/added.md") },
+			{ kind: "absent", side: "remote", requestedPath: "B/added.md", authority: "stat" },
+		], projection({
+			A: "included", B: "included", "A/known.md": "included", "B/added.md": "included",
+		}));
+
+		expect(result.failures).toEqual([]);
+		expect(result.executable.actions).toEqual([conflict, added]);
+	});
+
 	it("defers a folder rename containing a descendant absent from scope projection", () => {
 		const action: SyncAction = {
 			path: "B", oldPath: "A", action: "rename_local", isFolder: true,

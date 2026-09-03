@@ -1,5 +1,6 @@
 import { projectRenameScope, type RenameScopeConsequence } from "./scope-projection";
 import type { AdmissionComponent } from "./plan-admission-graph";
+import { hasRemoteChanged } from "./change-compare";
 import type {
 	IdentityEvidence,
 	PathObservation,
@@ -52,6 +53,36 @@ export function evaluateIdentityComponent(
 		reasons.add("identity_postcondition_unproven");
 	}
 	return [...reasons].sort();
+}
+
+export function canUseOrdinaryLocalFolderActions(
+	component: AdmissionComponent, reasons: readonly AdmissionFailureReason[], scope: ScopeProjection,
+): boolean {
+	if (reasons.length !== 1 || reasons[0] !== "incomplete_folder_mapping") return false;
+	return component.evidence.some((item) => item.kind === "rename" && item.isFolder) &&
+		component.evidence.every((item) => item.kind === "rename" && item.side === "local") &&
+		[...component.paths].every((path) => scope.byEndpoint.get(path) === "included") &&
+		component.actions.length > 0 &&
+		component.actions.every((action) => ordinaryActionProven(action, component.observations));
+}
+
+function ordinaryActionProven(action: SyncAction, observations: readonly PathObservation[]): boolean {
+	if (!observed(observations, "local", action.path, !!action.local) ||
+		!observed(observations, "remote", action.path, !!action.remote)) return false;
+	if (action.action === "cleanup" || action.action === "conflict") return !!action.baseline;
+	if (action.action === "match") return !!action.local && !!action.remote;
+	if (action.action === "push") return !!action.local && (!action.remote ||
+		!!action.baseline && !hasRemoteChanged(action.remote, action.baseline));
+	return action.action === "delete_remote" && !!action.baseline && !!action.remote &&
+		!hasRemoteChanged(action.remote, action.baseline);
+}
+
+function observed(
+	observations: readonly PathObservation[], side: "local" | "remote", path: string, present: boolean,
+): boolean {
+	return observations.some((item) => item.side === side && item.requestedPath === path &&
+		(present ? item.kind === "exact"
+			: item.kind === "absent" && (side === "remote" || item.authority === "stat")));
 }
 function evaluateRenames(
 	component: AdmissionComponent,
