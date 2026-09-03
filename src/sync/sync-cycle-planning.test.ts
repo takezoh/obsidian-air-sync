@@ -1,13 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { renameEvidenceKey } from "./identity-evidence";
-import { renameDebtEvidence } from "./rename-debt";
 import {
 	captureBatchObservation,
 	prepareSyncCycleSnapshot,
 	type BatchObservation,
 } from "./sync-cycle-planning";
 import type { ChangeSet } from "./change-detector";
-import type { RenameDebt } from "./state";
 import type { MixedEntity, ScopeDisposition, ScopeProjection, SyncRecord } from "./types";
 
 function cannotMutateObservation(observation: BatchObservation): void {
@@ -57,7 +54,7 @@ describe("batch observation boundary", () => {
 		expect(() => (observation.entries as MixedEntity[]).push({ path: "extra.md" })).toThrow();
 	});
 
-	it("assembles the production boundary with all change and replay facts", () => {
+	it("assembles the production boundary from current-cycle facts", () => {
 		const previous = baseline("renamed.md");
 		const changeSet: ChangeSet = {
 			entries: [{
@@ -79,26 +76,17 @@ describe("batch observation boundary", () => {
 			}],
 			temperature: "cold",
 		};
-		const debt: RenameDebt = {
-			namespace: "backend\0root", side: "local", oldPath: "old.md", newPath: "renamed.md",
-			isFolder: false, oldDisposition: "included", newDisposition: "included",
-		};
-
 		const { snapshot } = prepareSyncCycleSnapshot(
-			changeSet, [debt], "backend\0root", { classifyPath: () => "included" },
+			changeSet, "backend\0root", { classifyPath: () => "included" },
 		);
 
 		expect(snapshot.entries).toEqual(changeSet.entries);
 		expect(snapshot.observations).toEqual(changeSet.observations);
-		expect(snapshot.evidence.map((item) => item.evidence)).toEqual([
-			...changeSet.identityEvidence, renameDebtEvidence(debt),
-		]);
+		expect(snapshot.evidence.map((item) => item.evidence)).toEqual(changeSet.identityEvidence);
 		expect([...snapshot.baselinePaths]).toEqual(["renamed.md"]);
-		expect([...snapshot.replayedLocalRenameKeys]).toEqual([
-			renameEvidenceKey(renameDebtEvidence(debt)),
-		]);
 		expect(snapshot.namespace).toBe("backend\0root");
 		expect(snapshot.scope.byEndpoint.get("renamed.md")).toBe("included");
 		expect("plan" in snapshot).toBe(false);
 	});
+
 });

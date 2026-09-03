@@ -79,18 +79,11 @@ describe("MetadataStore", () => {
 		await store.close();
 	});
 
-	it("sets and deletes one durable operation marker without replacing cache metadata", async () => {
+	it("does not expose standalone operation-marker writes", async () => {
 		const store = new MetadataStore<TestFile>("test-vault-operation", CONFIG);
 		await store.open();
-		await store.saveAll([], new Map([["changesStartPageToken", "cursor"]]));
-
-		await store.setMeta("pendingOperation", "payload");
-		expect(await store.getMeta("pendingOperation")).toBe("payload");
-		expect(await store.getMeta("changesStartPageToken")).toBe("cursor");
-
-		await store.deleteMeta("pendingOperation");
-		expect(await store.getMeta("pendingOperation")).toBeUndefined();
-		expect(await store.getMeta("changesStartPageToken")).toBe("cursor");
+		expect(store).not.toHaveProperty("setMeta");
+		expect(store).not.toHaveProperty("deleteMeta");
 		await store.close();
 	});
 

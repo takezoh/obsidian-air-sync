@@ -4,11 +4,7 @@ import { renameEvidenceKey } from "./identity-evidence";
 import { hasRemoteChanged } from "./change-compare";
 import { contentKey, sameContent } from "./content-identity";
 import type { FileEntity } from "../fs/types";
-import type {
-	LocalRenameEvidence,
-	ScopeProjection,
-	SyncRecord,
-} from "./types";
+import type { LocalRenameEvidence, ScopeProjection, SyncRecord } from "./types";
 
 type VersionRelation = "unchanged" | "changed";
 type ContentRelation = "same" | "different" | "unproven";
@@ -43,11 +39,7 @@ export type NormalizedRenameState = NormalizedRenameBase & (
 export type DeterminateNormalizedRenameState = Exclude<NormalizedRenameState,
 	{ kind: "evidence_unknown" | "evidence_contradicted" }>;
 
-export interface LocalRenameLifecycle {
-	persistBeforeExecution: readonly LocalRenameEvidence[];
-	releaseAfterSafeCheckpoint: readonly LocalRenameEvidence[];
-}
-
+/** Ignore rename hints that cannot constrain an already-synchronized identity. */
 export function classifyNonBindingLocalRenames(
 	components: readonly AdmissionComponent[],
 	baselinePaths: ReadonlySet<string>,
@@ -63,16 +55,6 @@ export function classifyNonBindingLocalRenames(
 		for (const candidate of candidates) nonBinding.add(renameEvidenceKey(candidate));
 	}
 	return nonBinding;
-}
-
-export function buildLocalRenameLifecycle(
-	persistBeforeExecution: readonly LocalRenameEvidence[],
-	releaseAfterSafeCheckpoint: readonly LocalRenameEvidence[],
-): LocalRenameLifecycle {
-	return {
-		persistBeforeExecution: Object.freeze([...persistBeforeExecution]),
-		releaseAfterSafeCheckpoint: Object.freeze([...releaseAfterSafeCheckpoint]),
-	};
 }
 
 function isNonBindingComponent(

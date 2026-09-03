@@ -36,8 +36,8 @@ boundaries:
     statement: Fact-only BatchObservation input and exact AuthorizedSyncPlan output.
   consumes:
   - id: BOUNDARY-002
-    statement: Change detection facts, identity evidence, observations, scope, namespace,
-      and persisted rename debt.
+    statement: Committed baseline, current change-detection facts, identity evidence,
+      observations, scope, and namespace.
   forbidden:
   - id: BOUNDARY-003
     statement: Observation importing or invoking action decision helpers.
@@ -73,7 +73,8 @@ failure_responsibilities:
 - id: FAILURE-003
   statement: Execution failures remain exact per-action outcomes.
 - id: FAILURE-004
-  statement: Finalization retains checkpoint and rename debt for nonterminal outcomes.
+  statement: Finalization withholds the checkpoint for nonterminal outcomes and writes
+    no recovery instruction.
 trust_boundaries:
 - id: TRUST-001
   statement: Remote and local filesystem observations are untrusted facts until Admission
@@ -103,9 +104,9 @@ Keep the sync engine structurally convergent by assigning every normal-cycle dec
 The pipeline is `Observation -> Admission -> Execution -> Commit/finalization`.
 
 - Observation owns acquisition and a cut-consistent immutable carrier.
-- Admission owns path-local proposal logic as a private helper, identity-component decisions, conflict policy, lifecycle dispositions, and exact authorization.
+- Admission owns path-local proposal logic as a private helper, identity-component decisions, conflict policy, and exact authorization.
 - Execution owns ordering and I/O for the authorized actions only.
-- Commit/finalization owns per-action state publication, completion proof, checkpoint commit-last, and exact debt release.
+- Commit/finalization owns per-action state publication, completion proof, and checkpoint commit-last.
 
 ## Boundaries
 
@@ -121,7 +122,7 @@ The orchestrator sequences the four owners but owns none of their policy. The ex
 
 ## Failure Responsibility
 
-Observation and Admission failures abort before effects. Execution records exact failures. Finalization alone decides whether completion is sufficient to advance the checkpoint and release Admission-selected rename debt.
+Observation and Admission failures abort before effects. Execution records exact failures. Finalization alone decides whether completion is sufficient to advance the checkpoint. A failure preserves the prior committed baseline/checkpoint and persists no operation intent.
 
 ## Variability
 

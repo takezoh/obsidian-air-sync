@@ -5,6 +5,8 @@ import type { AdmissionFailureComponent } from "./plan-admission";
 export interface SyncCycleOutcome {
 	execution: ExecutionResult;
 	admissionFailures: AdmissionFailureComponent[];
+	/** Current tracker rename input was not yet bound to a terminal sync decision. */
+	unsettledLocalRenameInput?: boolean;
 }
 
 /** Outcome counts for one completed sync cycle. */

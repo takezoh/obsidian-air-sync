@@ -669,6 +669,37 @@ describe("collectChanges — temperature selection", () => {
 			expect(result.identityEvidence).toEqual([]);
 		});
 
+		it("infers a case-only local rename from current state without a tracker event", async () => {
+			addFile(localFs, "case.md", "local edit", 2000);
+			const remote = addFile(remoteFs, "Case.md", "baseline", 1000);
+			remote.identityKey = "R";
+			await stateStore.put(makeRecord("Case.md", {
+				remoteIdentityKey: "R", localSize: 8, remoteSize: 8,
+			}));
+
+			const result = await collectChanges(makeDeps(), { forceFullScan: true });
+
+			expect(result.identityEvidence).toContainEqual({
+				kind: "rename", side: "local", oldPath: "Case.md", newPath: "case.md",
+				isFolder: false, authority: "current_state",
+			});
+		});
+
+		it("does not infer a case-only local rename when the baseline remote changed", async () => {
+			addFile(localFs, "case.md", "local edit", 2000);
+			const remote = addFile(remoteFs, "Case.md", "remote edit", 2000);
+			remote.identityKey = "R";
+			await stateStore.put(makeRecord("Case.md", {
+				remoteIdentityKey: "R", localSize: 8, remoteSize: 8,
+			}));
+
+			const result = await collectChanges(makeDeps(), { forceFullScan: true });
+
+			expect(result.identityEvidence).not.toContainEqual(expect.objectContaining({
+				kind: "rename", side: "local", oldPath: "Case.md", newPath: "case.md",
+			}));
+		});
+
 		it("authoritatively observes otherwise-unseen folder rename roots", async () => {
 			await localFs.mkdir("new");
 			localTracker.markFolderRenamed("new", "old");

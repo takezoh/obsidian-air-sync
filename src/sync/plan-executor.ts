@@ -72,12 +72,10 @@ export interface ExecutionContext {
 	/** Test seam: backoff sleep (default the real `sleep` from `./error`). */
 	sleep?: (ms: number) => Promise<void>;
 	/** この cycle で action を skip すべき場合に、その理由を返す。 */
-	isActionBlocked?: (action: SyncAction) => string | null;
 	/** Scheduler safe point acquired immediately before exact action execution. */
 	acquireActionPermit?: () => Promise<NormalActionPermit>;
 	/** Consume the active cycle's exact-object scheduler state; never chooses another action. */
 	beginAction?: (action: SyncAction) => "run" | "superseded" | "invalidated";
-	onActionBlocked?: (action: SyncAction) => void;
 	/** Publish a fatal terminal state before releasing the action permit. */
 	onActionFatal?: (action: SyncAction, error: AuthError) => void;
 	mutationBarrier?: LocalMutationBarrier;
@@ -214,18 +212,6 @@ export async function executePlan(
 	const deleteLocal: SyncAction[] = [];
 
 	for (const action of plan.actions) {
-		const blockedReason = ctx.isActionBlocked?.(action);
-		if (blockedReason) {
-			ctx.onActionBlocked?.(action);
-			result.blocked.push({ action, reason: blockedReason });
-			ctx.logger?.warn("executePlan: action blocked", {
-				path: action.path,
-				action: action.action,
-				reason: blockedReason,
-			});
-			reportProgress();
-			continue;
-		}
 		const { lane, tier } = ACTION_CLASS[action.action];
 		if (action.action === "conflict") {
 			conflicts.push(action);

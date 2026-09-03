@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import type { FileEntity } from "../fs/types";
-import { renameEvidenceKey } from "./identity-evidence";
 import {
 	admitBatchObservation,
 	admitDestructivePlan,
@@ -94,8 +93,6 @@ describe("admitDestructivePlan", () => {
 
 		expect(result.executable.actions).toEqual([action]);
 		expect(result.failures).toEqual([]);
-		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual([]);
-		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual([]);
 	});
 
 	it("retains a local rename when the additive proof has unknown current scope", () => {
@@ -114,8 +111,6 @@ describe("admitDestructivePlan", () => {
 
 		expect(result.executable.actions).toEqual([]);
 		expect(result.failures[0]?.reasons).toContain("unknown_observation");
-		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual(evidence);
-		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual([]);
 	});
 
 	it("retains a local rename when the remote destination is already occupied", () => {
@@ -133,7 +128,6 @@ describe("admitDestructivePlan", () => {
 		}));
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual(evidence);
 	});
 
 	it("retains a local rename when the source has baseline membership", () => {
@@ -153,7 +147,6 @@ describe("admitDestructivePlan", () => {
 		const result = admitDestructivePlan(snapshot);
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual(evidence);
 	});
 
 	it("admits only the terminal push for an unbaselined local rename chain", () => {
@@ -176,8 +169,6 @@ describe("admitDestructivePlan", () => {
 		}));
 
 		expect(result.executable.actions).toEqual([action]);
-		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual([]);
-		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual([]);
 	});
 
 	it("defers unobserved case-distinct deletions independently", () => {
@@ -293,25 +284,6 @@ describe("admitDestructivePlan", () => {
 		expect(result.dispositions).toEqual([expect.objectContaining({
 			kind: "resolved_no_action", paths: ["A.md", "B.md"], actions: [],
 		})]);
-		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual([]);
-	});
-
-	it("releases only replayed debt for an already-converged rename", () => {
-		const evidence = remoteRename({ side: "local", identityKey: undefined });
-		const observations: PathObservation[] = (["local", "remote"] as const).flatMap((side) => [
-			{ kind: "absent" as const, side, requestedPath: "A.md", authority: "stat" as const },
-			{ kind: "exact" as const, side, requestedPath: "B.md", entity: entity("B.md") },
-		]);
-		const snapshot = captureCycleAdmissionSnapshot(
-			{ actions: [] }, [evidence], observations,
-			projection({ "A.md": "included", "B.md": "included" }),
-			"backend\0root", [], [renameEvidenceKey(evidence)],
-		);
-
-		const result = admitDestructivePlan(snapshot);
-
-		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual([]);
-		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual([evidence]);
 	});
 
 	it("admits an additive push when a local rename has no synchronized anchor", () => {
@@ -330,30 +302,6 @@ describe("admitDestructivePlan", () => {
 
 		expect(result.executable.actions).toEqual([action]);
 		expect(result.failures).toEqual([]);
-		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual([]);
-		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual([]);
-	});
-
-	it("releases replayed debt after its additive push succeeds", () => {
-		const action: SyncAction = { path: "B.md", action: "push", local: entity("B.md") };
-		const evidence = remoteRename({ side: "local", identityKey: undefined });
-		const observations: PathObservation[] = [
-			{ kind: "absent", side: "local", requestedPath: "A.md", authority: "stat" },
-			{ kind: "absent", side: "remote", requestedPath: "A.md", authority: "stat" },
-			{ kind: "exact", side: "local", requestedPath: "B.md", entity: entity("B.md") },
-			{ kind: "absent", side: "remote", requestedPath: "B.md", authority: "stat" },
-		];
-		const snapshot = captureCycleAdmissionSnapshot(
-			{ actions: [action] }, [evidence], observations,
-			projection({ "A.md": "included", "B.md": "included" }),
-			"backend\0root", [], [renameEvidenceKey(evidence)],
-		);
-
-		const result = admitDestructivePlan(snapshot);
-
-		expect(result.executable.actions).toEqual([action]);
-		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual([]);
-		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual([evidence]);
 	});
 
 	it("keeps captured inputs stable when caller-owned containers change", () => {
@@ -443,8 +391,6 @@ describe("admitDestructivePlan", () => {
 			local: push.local, remote: deletion.remote, baseline: deletion.baseline,
 		}]);
 		expect(result.failures).toEqual([]);
-		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual(evidence);
-		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual(evidence);
 	});
 
 	it("shapes a backend-reported remote rename from the base component", () => {
@@ -818,12 +764,6 @@ describe("admitDestructivePlan", () => {
 		expect(result.executable.actions).toMatchObject([{
 			action: "rename_remote", oldPath: "Templates", path: "TemplateS", isFolder: true,
 		}]);
-		expect(result.localRenameLifecycle.persistBeforeExecution.map(renameEvidenceKey)).toContain(
-			renameEvidenceKey(folderEvidence),
-		);
-		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint.map(renameEvidenceKey)).toContain(
-			renameEvidenceKey(folderEvidence),
-		);
 	});
 
 	it("admits a remote folder rename from its managed descendants", () => {
@@ -917,7 +857,6 @@ describe("admitDestructivePlan", () => {
 			}),
 			"backend\0root",
 			["Templates/a.md"],
-			[renameEvidenceKey(folder), renameEvidenceKey(child)],
 		));
 
 		expect(result.failures).toEqual([]);
@@ -1066,7 +1005,7 @@ describe("admitDestructivePlan", () => {
 			{ kind: "exact", side: "remote", requestedPath: "A.md", entity: changedRemote },
 			{ kind: "absent", side: "remote", requestedPath: "B.md", authority: "stat" },
 		], projection({ "A.md": "included", "B.md": "included" }), "backend\0root",
-		["A.md"], [renameEvidenceKey(evidence)]);
+		["A.md"]);
 
 		const result = admitDestructivePlan(snapshot);
 
@@ -1074,8 +1013,6 @@ describe("admitDestructivePlan", () => {
 		expect(result.executable.actions[0]).toMatchObject({
 			action: "conflict", freshRenameState: "remote_changed", path: "B.md",
 		});
-		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual([]);
-		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual([evidence]);
 	});
 
 	it.each(["old", "new"] as const)(
@@ -1262,8 +1199,6 @@ describe("admitDestructivePlan", () => {
 			kind: "failed", reasons: ["scope_or_authority_missing"],
 			normalizedRenameState: { kind: "evidence_unknown" },
 		}]);
-		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual([candidate]);
-		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual([]);
 	});
 
 	it("returns evidence_contradicted when tracked R occurs at multiple current paths", () => {
@@ -1292,8 +1227,6 @@ describe("admitDestructivePlan", () => {
 			kind: "failed", reasons: ["tracked_identity_multiple_occurrences"],
 			normalizedRenameState: { kind: "evidence_contradicted" },
 		}]);
-		expect(result.localRenameLifecycle.persistBeforeExecution).toEqual([candidate]);
-		expect(result.localRenameLifecycle.releaseAfterSafeCheckpoint).toEqual([]);
 	});
 
 	it("does not mutate the plan, observations, evidence, or projection", () => {
@@ -1326,7 +1259,6 @@ describe("admitDestructivePlan", () => {
 		const scope = projection({ "A.md": "included", "B.md": "included" });
 		const snapshot = captureCycleAdmissionSnapshot(
 			{ actions: [action] }, [candidate], [observation], scope, "backend\0root",
-			[], [renameEvidenceKey(candidate)],
 		);
 
 		action.path = "mutated.md";
@@ -1341,8 +1273,6 @@ describe("admitDestructivePlan", () => {
 		expect(snapshot.observations[0]?.kind === "exact" &&
 			snapshot.observations[0].entity.backendMeta).toEqual({ revision: "observed-1" });
 		expect(snapshot.scope.byEndpoint.has("C.md")).toBe(false);
-		expect(() => (snapshot.replayedLocalRenameKeys as Set<string>).add("foreign"))
-			.toThrow(TypeError);
 		expect(() => (snapshot.baselinePaths as Set<string>).add("foreign.md"))
 			.toThrow(TypeError);
 		expect(() => (snapshot.scope.byEndpoint as Map<string, "included">)

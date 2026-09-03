@@ -1,54 +1,17 @@
-import type { RenamePair, ScopeDisposition, SyncRecord } from "./types";
+import type { RenamePair, SyncRecord } from "./types";
 import { IDBHelper, sanitizeDbName } from "../store/idb-helper";
 import { encodeContent, decodeContent } from "../store/content-codec";
 
 const DB_NAME_PREFIX = "air-sync";
 const STORE_NAME = "sync-records";
 const CONTENT_STORE_NAME = "sync-content";
-const RENAME_DEBT_STORE_NAME = "rename-debt";
 // v4: SyncRecord checksum moved from backendMeta.contentChecksum to a typed
 // remoteChecksum field — cold-start drops old records so they re-baseline.
 // v5: content store now holds codec-prefixed bytes (see content-codec.ts);
 // cold-start drops old un-prefixed entries so they re-baseline compressed.
-// v6: SyncRecord gains remoteIdentityKey and the rename candidate store is created.
-// Rows constrain endpoint acquisition only; fresh observations authorize effects.
-const DB_VERSION = 6;
-
-type RenameDebtSide = "local";
-type RenameDebtDisposition = ScopeDisposition;
-
-/** Legacy reported endpoints retained as non-authoritative COLD acquisition evidence. */
-export interface RenameDebt {
-	namespace: string;
-	side: RenameDebtSide;
-	oldPath: string;
-	newPath: string;
-	isFolder: boolean;
-	oldDisposition: RenameDebtDisposition;
-	newDisposition: RenameDebtDisposition;
-}
-
-interface StoredRenameDebt extends RenameDebt {
-	key: string;
-}
-
-function renameDebtKey(debt: RenameDebt): string {
-	return JSON.stringify([
-		debt.namespace,
-		debt.side,
-		debt.oldPath,
-		debt.newPath,
-		debt.isFolder,
-	]);
-}
-
-function toStoredRenameDebt(debt: RenameDebt): StoredRenameDebt {
-	return { ...debt, key: renameDebtKey(debt) };
-}
-
-function fromStoredRenameDebt({ key: _key, ...debt }: StoredRenameDebt): RenameDebt {
-	return debt;
-}
+// v6 added persisted rename intent. v7 removes it and cold-starts so future
+// decisions derive only from terminal records and current observations.
+const DB_VERSION = 7;
 
 /** Persistent store for sync records using IndexedDB */
 export class SyncStateStore {
@@ -70,9 +33,6 @@ export class SyncStateStore {
 				}
 				if (!db.objectStoreNames.contains(CONTENT_STORE_NAME)) {
 					db.createObjectStore(CONTENT_STORE_NAME, { keyPath: "path" });
-				}
-				if (!db.objectStoreNames.contains(RENAME_DEBT_STORE_NAME)) {
-					db.createObjectStore(RENAME_DEBT_STORE_NAME, { keyPath: "key" });
 				}
 			},
 		});
@@ -117,54 +77,6 @@ export class SyncStateStore {
 		return this.helper.runTransaction(STORE_NAME, "readonly", (tx) => {
 			const req = tx.objectStore(STORE_NAME).getAll();
 			return () => req.result as SyncRecord[];
-		});
-	}
-
-	/** Atomically add or replace unresolved rename edges. One record is stored per unique edge. */
-	async upsertRenameDebts(debts: RenameDebt[]): Promise<void> {
-		if (debts.length === 0) return;
-		await this.helper.runTransaction(RENAME_DEBT_STORE_NAME, "readwrite", (tx) => {
-			const store = tx.objectStore(RENAME_DEBT_STORE_NAME);
-			for (const debt of debts) {
-				store.put(toStoredRenameDebt(debt));
-			}
-			return () => {};
-		});
-	}
-
-	/** Read unresolved rename edges for one configured backend/root namespace. */
-	async getRenameDebts(namespace: string): Promise<RenameDebt[]> {
-		return this.helper.runTransaction(RENAME_DEBT_STORE_NAME, "readonly", (tx) => {
-			const req = tx.objectStore(RENAME_DEBT_STORE_NAME).getAll();
-			return () => (req.result as StoredRenameDebt[])
-				.filter((debt) => debt.namespace === namespace)
-				.map(fromStoredRenameDebt);
-		});
-	}
-
-	/** Atomically remove rename edges after their components resolve in a clean cycle. */
-	async deleteRenameDebts(debts: RenameDebt[]): Promise<void> {
-		if (debts.length === 0) return;
-		await this.helper.runTransaction(RENAME_DEBT_STORE_NAME, "readwrite", (tx) => {
-			const store = tx.objectStore(RENAME_DEBT_STORE_NAME);
-			for (const debt of debts) {
-				store.delete(renameDebtKey(debt));
-			}
-			return () => {};
-		});
-	}
-
-	/** Clear debt for a disconnected or replaced backend/root namespace. */
-	async clearRenameDebts(namespace: string): Promise<void> {
-		await this.helper.runTransaction(RENAME_DEBT_STORE_NAME, "readwrite", (tx) => {
-			const store = tx.objectStore(RENAME_DEBT_STORE_NAME);
-			const req = store.getAll();
-			req.onsuccess = () => {
-				for (const debt of req.result as StoredRenameDebt[]) {
-					if (debt.namespace === namespace) store.delete(debt.key);
-				}
-			};
-			return () => {};
 		});
 	}
 
@@ -253,15 +165,14 @@ export class SyncStateStore {
 		});
 	}
 
-	/** Clear all sync records, content, and legacy rename candidate evidence. */
+	/** Clear all terminal sync records and merge-base content. */
 	async clear(): Promise<void> {
 		await this.helper.runTransaction(
-			[STORE_NAME, CONTENT_STORE_NAME, RENAME_DEBT_STORE_NAME],
+			[STORE_NAME, CONTENT_STORE_NAME],
 			"readwrite",
 			(tx) => {
 			tx.objectStore(STORE_NAME).clear();
 			tx.objectStore(CONTENT_STORE_NAME).clear();
-			tx.objectStore(RENAME_DEBT_STORE_NAME).clear();
 			return () => {};
 			},
 		);

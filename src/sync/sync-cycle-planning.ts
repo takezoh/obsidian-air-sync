@@ -1,10 +1,7 @@
 import type { Logger } from "../logging/logger";
 import type { ChangeSet } from "./change-detector";
 import type { AdmissionResult } from "./plan-admission";
-import { mergeRenameDebtEvidence, renameDebtEvidence } from "./rename-debt";
-import { renameEvidenceKey } from "./identity-evidence";
 import { projectScope, type ScopeProjectionPolicy } from "./scope-projection";
-import type { RenameDebt } from "./state";
 import type {
 	IdentityEvidence,
 	LocalRenameEvidence,
@@ -31,7 +28,6 @@ export type DeepReadonly<T> =
 export interface BatchObservation {
 	readonly entries: DeepReadonly<readonly MixedEntity[]>;
 	readonly evidence: DeepReadonly<readonly CycleEvidenceItem[]>;
-	readonly replayedLocalRenameKeys: ReadonlySet<string>;
 	readonly baselinePaths: ReadonlySet<string>;
 	readonly observations: DeepReadonly<readonly PathObservation[]>;
 	readonly scope: DeepReadonly<ScopeProjection>;
@@ -47,7 +43,6 @@ export function captureBatchObservation(
 	namespace: string,
 	baselinePaths: readonly string[] = entries.flatMap((entry) =>
 		entry.prevSync ? [entry.path] : []),
-	replayedLocalRenameKeys: readonly string[] = [],
 ): BatchObservation {
 	const evidence = identityEvidence.map((item): CycleEvidenceItem =>
 		isLocalRenameEvidence(item)
@@ -56,7 +51,6 @@ export function captureBatchObservation(
 	return immutableSnapshot({
 		entries: [...entries],
 		evidence,
-		replayedLocalRenameKeys: new Set(replayedLocalRenameKeys),
 		baselinePaths: new Set(baselinePaths),
 		observations: [...observations],
 		scope: { byEndpoint: new Map(scope.byEndpoint) },
@@ -177,15 +171,11 @@ export function logChangeDetection(
 /** Pure batch observation plus structured diagnostics; no action construction or I/O. */
 export function prepareSyncCycleSnapshot(
 	changeSet: ChangeSet,
-	persistedDebts: readonly RenameDebt[],
 	namespace: string,
 	policy: ScopeProjectionPolicy,
 	logger?: Logger,
 ) {
-	const completeChangeSet: ChangeSet = {
-		...changeSet,
-		identityEvidence: mergeRenameDebtEvidence(changeSet.identityEvidence, persistedDebts),
-	};
+	const completeChangeSet = changeSet;
 	const scopeProjection = projectScope(completeChangeSet, policy);
 	const filtered = completeChangeSet.entries.filter((entry) =>
 		scopeProjection.byEndpoint.get(entry.path) === "included");
@@ -210,8 +200,7 @@ export function prepareSyncCycleSnapshot(
 		admittedObservations,
 		scopeProjection,
 		namespace,
-		completeChangeSet.entries.flatMap((entry) => entry.prevSync ? [entry.path] : []),
-		persistedDebts.map((debt) => renameEvidenceKey(renameDebtEvidence(debt))),
+		completeChangeSet.entries.flatMap((entry) => entry.prevSync ? [entry.prevSync.path] : []),
 	);
 	return { snapshot };
 }
@@ -229,13 +218,7 @@ export function logSyncCyclePlan(
 		total: admission.executable.actions.length,
 		proposed: admission.snapshot.plan.actions.length,
 		localRenameCandidates: renameCandidates.length,
-		freshLocalRenameCandidates: renameCandidates.filter((candidate) =>
-			!admission.snapshot.replayedLocalRenameKeys.has(renameEvidenceKey(candidate))).length,
-		replayedLocalRenameCandidates: admission.snapshot.replayedLocalRenameKeys.size,
-		persistedLocalRenameConstraints: admission.localRenameLifecycle.persistBeforeExecution.length,
-		nonBindingLocalRenameCandidates: renameCandidates.length -
-			admission.localRenameLifecycle.persistBeforeExecution.length,
-		releasableLocalRenameCandidates: admission.localRenameLifecycle.releaseAfterSafeCheckpoint.length,
+		freshLocalRenameCandidates: renameCandidates.length,
 		...actionBreakdown,
 	});
 	for (const component of admission.failures) {

@@ -1,7 +1,7 @@
 # ADR 0008 — Logical-identity admission fails closed before sync-plan execution
 
 **Status:** Accepted · 2026-08-25 · **Revised 2026-09-03** (excluded listing entries do not enter Admission)
-**Context area:** `sync/` — change evidence, scope projection, destructive admission, checkpoint/debt lifecycle
+**Context area:** `sync/` — change evidence, scope projection, destructive admission, checkpoint lifecycle
 **Related:** [ADR 0001](0001-metadata-cache-is-subordinate-to-commit-last.md), [ADR 0002](0002-backends-verified-by-shared-behaviour-contracts.md), [ADR 0006](0006-remote-rename-detection-is-order-independent.md), [Issue #43](https://github.com/takezoh/obsidian-air-sync/issues/43), [Issue #45](https://github.com/takezoh/obsidian-air-sync/issues/45), [Issue #47](https://github.com/takezoh/obsidian-air-sync/issues/47)
 
 ## Context
@@ -61,17 +61,14 @@ depend on that repair being complete.
    checkpoint and scope fingerprint do not advance, and the next normal trigger uses a
    COLD reevaluation without a tight retry loop.
 
-6. Crash recovery is bounded. An unresolved local reported edge and its endpoint
-   dispositions are persisted as namespace-scoped `RenameDebt` before plan I/O and
-   tracker acknowledgement. Remote edges are captured immediately when the delta
-   cursor yields them and are reconstructed after restart by withholding that cursor's
-   checkpoint. Admission alone classifies success eligibility, two-sided convergence,
-   and explicit scope no-op. Finalization performs only action-completion/membership
-   folding; after a safe checkpoint commits it retires the evidence/debt made releasable
-   by those dispositions. Backend/root teardown is serialized with sync execution and
-   clears the old namespace.
+6. Crash recovery persists no operation intent. A failed cycle leaves the prior
+   checkpoint and baseline unchanged; the next same-session trigger performs COLD
+   observation. Unresolved tracker input is acknowledged only after a clean terminal
+   cycle. After restart, current facts may reconstruct an unambiguous case-only local
+   relation, but general rename identity is never guessed. Finalization owns only the
+   clean checkpoint commit.
 
-7. SyncState schema version 6 cold-starts the incompatible baseline shape. Old
+7. SyncState schema version 7 cold-starts the incompatible baseline shape. Old
    `SyncRecord` and merge-base stores are dropped rather than field-migrated; the first
    no-baseline cycle is COLD and cannot derive deletion from legacy baseline absence.
 
@@ -79,8 +76,7 @@ depend on that repair being complete.
 
 - A suspicious rename may fail and require a later trigger or user intervention, but
   it does not execute a partial destructive interpretation.
-- The durable state remains O(U): one record per namespace-unique unresolved local
-  edge, not a persistent identity graph or descendant closure.
+- There is no durable unresolved-operation state or persistent identity graph.
 - Native IDs improve evidence but do not authorize cross-backend/root comparison.
 - Local and remote rename shaping helpers are private to Admission. There is no
   standalone whole-plan optimizer or second component build; a failed native
