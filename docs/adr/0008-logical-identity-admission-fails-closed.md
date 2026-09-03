@@ -1,6 +1,6 @@
 # ADR 0008 — Logical-identity admission fails closed before sync-plan execution
 
-**Status:** Accepted · 2026-08-25 · **Revised 2026-09-03** (excluded listing entries do not enter Admission)
+**Status:** Accepted · 2026-08-25 · **Revised 2026-09-03** (all deterministic scope exclusions are removed before Admission)
 **Context area:** `sync/` — change evidence, scope projection, destructive admission, checkpoint lifecycle
 **Related:** [ADR 0001](0001-metadata-cache-is-subordinate-to-commit-last.md), [ADR 0002](0002-backends-verified-by-shared-behaviour-contracts.md), [ADR 0006](0006-remote-rename-detection-is-order-independent.md), [Issue #43](https://github.com/takezoh/obsidian-air-sync/issues/43), [Issue #45](https://github.com/takezoh/obsidian-air-sync/issues/45), [Issue #47](https://github.com/takezoh/obsidian-air-sync/issues/47)
 
@@ -40,8 +40,10 @@ depend on that repair being complete.
    endpoint is included. A folder relation crossing scope at any observed descendant
    is discarded, leaving each included path to be planned from its own current and
    baseline facts. Excluded paths have no Admission disposition and cannot affect
-   identity topology or folder-mapping completeness. `unknown`, `mobile_deferred`, and
-   incomplete mappings among included paths fail the whole connected component. An
+   identity topology or folder-mapping completeness. The mobile maximum-size policy
+   follows the same boundary using current entity size; it has no Admission
+   disposition. `unknown` observations and incomplete mappings among included paths
+   fail the whole connected component. An
    included-to-included folder rename remains one opaque folder operation.
    On a case-insensitive local filesystem, COLD replay may expose the requested new
    spelling only as an alias of the old spelling. Admission may reconstruct an

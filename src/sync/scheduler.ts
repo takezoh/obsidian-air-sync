@@ -8,12 +8,19 @@ const DEBOUNCE_MS = 5000;
 function trackScopedFolderRename(
 	folder: TFolder,
 	oldRoot: string,
-	isExcluded: (path: string) => boolean,
+	isExcluded: (path: string, currentSize?: number) => boolean,
 	localTracker: LocalChangeTracker,
+	forceExpansion: boolean,
 ): boolean {
 	const newPrefix = `${folder.path}/`;
 	const pending = [...folder.children];
-	let tracked = false;
+	const descendants: Array<{
+		newPath: string;
+		oldPath: string;
+		newExcluded: boolean;
+		oldExcluded: boolean;
+	}> = [];
+	let hasExcluded = false;
 	while (pending.length > 0) {
 		const child = pending.pop()!;
 		if (child instanceof TFolder) {
@@ -23,19 +30,36 @@ function trackScopedFolderRename(
 		if (!child.path.startsWith(newPrefix)) continue;
 		const relative = child.path.substring(newPrefix.length);
 		const oldPath = relative ? `${oldRoot}/${relative}` : oldRoot;
-		const newExcluded = isExcluded(child.path);
-		const oldExcluded = isExcluded(oldPath);
+		const size = currentFileSize(child);
+		const newExcluded = isExcluded(child.path, size);
+		const oldExcluded = isExcluded(oldPath, size);
+		hasExcluded ||= newExcluded || oldExcluded;
+		descendants.push({ newPath: child.path, oldPath, newExcluded, oldExcluded });
+	}
+	if (!forceExpansion && !hasExcluded) {
+		localTracker.markFolderRenamed(folder.path, oldRoot);
+		return true;
+	}
+	let tracked = false;
+	for (const { newPath, oldPath, newExcluded, oldExcluded } of descendants) {
 		if (newExcluded && oldExcluded) continue;
 		if (!newExcluded && !oldExcluded) {
-			localTracker.markRenamed(child.path, oldPath);
+			localTracker.markRenamed(newPath, oldPath);
 		} else if (!newExcluded) {
-			localTracker.markDirty(child.path);
+			localTracker.markDirty(newPath);
 		} else {
 			localTracker.markDirty(oldPath);
 		}
 		tracked = true;
 	}
 	return tracked;
+}
+
+function currentFileSize(file: TAbstractFile): number | undefined {
+	return "stat" in file && typeof file.stat === "object" && file.stat !== null &&
+		"size" in file.stat && typeof file.stat.size === "number"
+		? file.stat.size
+		: undefined;
 }
 
 export interface SyncOrchestrator {
@@ -50,7 +74,7 @@ export interface SyncSchedulerDeps {
 	remoteFs: () => IFileSystem | null;
 	localTracker: LocalChangeTracker;
 	orchestrator: SyncOrchestrator;
-	isExcluded: (path: string) => boolean;
+	isExcluded: (path: string, currentSize?: number) => boolean;
 	registerEvent: (ref: EventRef) => void;
 	registerWindowEvent: (type: keyof WindowEventMap, cb: () => void) => void;
 	registerDocumentEvent: (type: keyof DocumentEventMap, cb: () => void) => void;
@@ -160,26 +184,23 @@ export class SyncScheduler {
 		const { vault, localTracker, isExcluded } = this.deps;
 
 		const onVaultChange = (file: TAbstractFile) => {
-			if (!isExcluded(file.path)) {
+			if (!isExcluded(file.path, currentFileSize(file))) {
 				localTracker.markDirty(file.path);
 				this.debouncedSync();
 			}
 		};
 
 		const onRename = (file: TAbstractFile, oldPath: string) => {
-			const newExcluded = isExcluded(file.path);
-			const oldExcluded = isExcluded(oldPath);
+			const size = currentFileSize(file);
+			const newExcluded = isExcluded(file.path, size);
+			const oldExcluded = isExcluded(oldPath, size);
 			let tracked = false;
 			if (file instanceof TFolder) {
-				if (!newExcluded && !oldExcluded) {
-					localTracker.markFolderRenamed(file.path, oldPath);
-					tracked = true;
-				} else {
-					// A cross-scope folder edge must not carry an excluded root into the
-					// sync engine. Expand it at this boundary and retain only included
-					// file endpoints; excluded descendants disappear completely.
-					tracked = trackScopedFolderRename(file, oldPath, isExcluded, localTracker);
-				}
+				// A folder operation can move excluded physical children. Expand any
+				// mixed-scope tree at this boundary and retain only included file effects.
+				tracked = trackScopedFolderRename(
+					file, oldPath, isExcluded, localTracker, newExcluded || oldExcluded,
+				);
 			} else if (!newExcluded && !oldExcluded) {
 				localTracker.markRenamed(file.path, oldPath);
 				tracked = true;
@@ -235,11 +256,12 @@ export class SyncScheduler {
 	}
 
 	private wireFileOpenEvent(): void {
-		const { workspace, orchestrator } = this.deps;
+		const { workspace, orchestrator, isExcluded } = this.deps;
 
 		this.deps.registerEvent(
 			workspace.on("file-open", async (file: TFile | null) => {
 				if (!file) return;
+				if (isExcluded(file.path, currentFileSize(file))) return;
 				await orchestrator.pullSingle(file.path);
 			}),
 		);

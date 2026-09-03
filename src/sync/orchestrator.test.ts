@@ -2261,6 +2261,48 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.close();
 		});
 
+		it("runs exactly one cold reconcile when the effective mobile threshold widens", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			addFile(remoteFs, "large.md", "remote content above narrow limit", 1000);
+			const localSeed = addFile(localFs, "seed.md", "seed", 1000);
+			const remoteSeed = addFile(remoteFs, "seed.md", "seed", 1000);
+			const settings = baseMockSettings({
+				backendType: "test",
+				vaultId: `test-${Math.random()}`,
+				mobileMaxFileSizeMB: 0.000005,
+			});
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
+			wireScopeFingerprint(remoteFs, null);
+			const remoteList = vi.spyOn(remoteFs, "list");
+			const deps = createDeps({
+				getSettings: () => settings,
+				localFs: () => localFs,
+				remoteFs: () => remoteFs,
+				backendProvider: () => mockProvider({}),
+				isMobile: () => true,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			await orchestrator.state.put({
+				path: "seed.md", hash: "",
+				localMtime: localSeed.mtime, remoteMtime: remoteSeed.mtime,
+				localSize: localSeed.size, remoteSize: remoteSeed.size, syncedAt: 900,
+			});
+
+			await orchestrator.runSync();
+			expect(localFs.files.has("large.md")).toBe(false);
+			const listCallsBeforeWidening = remoteList.mock.calls.length;
+
+			settings.mobileMaxFileSizeMB = 1;
+			await orchestrator.runSync();
+			expect(localFs.files.has("large.md")).toBe(true);
+			expect(remoteList).toHaveBeenCalledTimes(listCallsBeforeWidening + 1);
+
+			await orchestrator.runSync();
+			expect(remoteList).toHaveBeenCalledTimes(listCallsBeforeWidening + 1);
+			await orchestrator.close();
+		});
+
 		it("does not force cold when settings are unchanged between cycles", async () => {
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();

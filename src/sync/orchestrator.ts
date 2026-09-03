@@ -119,7 +119,7 @@ export class SyncOrchestrator {
 		return hasRemote && !isLocked && !isConnecting && isLayoutReady;
 	}
 
-	isExcluded(path: string): boolean {
+	isExcluded(path: string, currentSize?: number): boolean {
 		const settings = this.deps.getSettings();
 		// The backend's own metadata file is reserved: never sync it from either
 		// side, even when `.airsync` is opted into syncDotPaths. The remote FS also
@@ -131,6 +131,8 @@ export class SyncOrchestrator {
 		// being noise, some backends (Dropbox) reject these outright, which would
 		// otherwise fail every cycle and block the delta checkpoint.
 		if (isSystemJunkFile(path)) return true;
+		if (currentSize !== undefined && this.deps.isMobile() &&
+			currentSize > this.mobileMaxBytes()) return true;
 		const configDir = this.deps.configDir();
 		// This plugin's own data.json (backend credentials/vaultId) is reserved
 		// the same way, regardless of enableConfigSync — a user can put configDir
@@ -143,6 +145,10 @@ export class SyncOrchestrator {
 		// the user's ignore patterns.
 		if (isDotPathOutOfScope(path, getEffectiveSyncDotPaths(settings, configDir))) return true;
 		return isIgnored(path, getEffectiveIgnorePatterns(settings, configDir, this.deps.pluginId()));
+	}
+
+	private mobileMaxBytes(): number {
+		return this.deps.getSettings().mobileMaxFileSizeMB * 1024 * 1024;
 	}
 
 	/**
@@ -215,6 +221,7 @@ export class SyncOrchestrator {
 					this.deps.getSettings(),
 					this.deps.configDir(),
 					this.deps.pluginId(),
+					this.deps.isMobile() ? this.mobileMaxBytes() : null,
 				);
 				// A checkpoint capability without getScopeFingerprint doesn't track
 				// scope at all — skip the check rather than force a spurious cold
@@ -232,9 +239,8 @@ export class SyncOrchestrator {
 				if (!result) return; // Fatal error already handled
 
 				const { succeeded, failed, blocked, conflicts } = result;
-				// failed cycle では cursor が committed state より先に進んでいる可能性がある。
-				// ただし cold recovery を一度支払い済みの local-origin action だけが
-				// quarantine 対象なら、次 cycle の cold scan は不要。
+				// A failed cycle can leave the live cursor ahead of committed state, so
+				// the next explicit sync must reacquire current facts with a cold scan.
 				this.recoverViaColdScan = this.needsColdRecovery(result.outcome);
 				if (failed > 0 || blocked > 0) {
 					this.deps.onStatusChange("partial_error");
@@ -364,6 +370,7 @@ export class SyncOrchestrator {
 				invalidate: (action) => activeBatch?.invalidate(action) ?? false,
 				invalidateCycle: () => activeBatch?.blockCheckpoint(),
 				requestNormalLifecycle: () => this.requestNormalLifecycle(),
+				isExcluded: (candidate, currentSize) => this.isExcluded(candidate, currentSize),
 				logger: this.deps.logger,
 			});
 			this.deps.logger?.info("file-open priority completed", { path, outcome });
@@ -409,11 +416,8 @@ export class SyncOrchestrator {
 			});
 			const { renamePairs } = snapshot;
 
-			const isMobile = this.deps.isMobile();
-			const maxBytes = settings.mobileMaxFileSizeMB * 1024 * 1024;
 			planning = prepareSyncCycleSnapshot(changeSet, namespace, {
-				isExcluded: (path) => this.isExcluded(path),
-				mobileMaxBytes: isMobile ? maxBytes : undefined,
+				isExcluded: (path, currentSize) => this.isExcluded(path, currentSize),
 			}, this.deps.logger);
 			const visiblePaths = new Set(planning.snapshot.scope.byEndpoint.keys());
 			logChangeDetection(changeSet, renamePairs, this.deps.logger, visiblePaths);

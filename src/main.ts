@@ -147,7 +147,7 @@ export default class AirSyncPlugin extends Plugin {
 			remoteFs: () => this.backendManager.getRemoteFs(),
 			localTracker: this.localTracker,
 			orchestrator: this.orchestrator,
-			isExcluded: (path) => this.orchestrator.isExcluded(path),
+			isExcluded: (path, currentSize) => this.orchestrator.isExcluded(path, currentSize),
 			registerEvent: (ref) => this.registerEvent(ref),
 			registerWindowEvent: (type, cb) => this.registerDomEvent(window, type, cb),
 			registerDocumentEvent: (type, cb) => this.registerDomEvent(document, type, cb),

@@ -108,4 +108,19 @@ describe("computeScopeFingerprint", () => {
 		const b = await computeScopeFingerprint(settings, ".cfg", "air-sync-2");
 		expect(a).not.toBe(b);
 	});
+
+	it("includes the effective mobile threshold but ignores it on desktop", async () => {
+		const settings = mockSettings();
+		const mobileNarrow = await computeScopeFingerprint(settings, ".cfg", "air-sync", 10);
+		const mobileWide = await computeScopeFingerprint(settings, ".cfg", "air-sync", 20);
+		const desktopA = await computeScopeFingerprint(
+			mockSettings({ mobileMaxFileSizeMB: 10 }), ".cfg", "air-sync", null,
+		);
+		const desktopB = await computeScopeFingerprint(
+			mockSettings({ mobileMaxFileSizeMB: 20 }), ".cfg", "air-sync", null,
+		);
+
+		expect(mobileNarrow).not.toBe(mobileWide);
+		expect(desktopA).toBe(desktopB);
+	});
 });

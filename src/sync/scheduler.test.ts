@@ -295,6 +295,41 @@ describe("SyncScheduler", () => {
 			).toBe(false);
 		});
 
+		it("does not admit a mobile-oversized file to LocalChangeTracker", () => {
+			scheduler.destroy();
+			const isExcluded = vi.fn((_path: string, size?: number) => (size ?? 0) > 10);
+			deps = createDeps({ isExcluded });
+			scheduler = new SyncScheduler(deps);
+			scheduler.start();
+
+			const handler = deps.vaultHandlers.get("modify") as VaultHandler;
+			handler({ path: "large.md", stat: { size: 11 } } as unknown as TAbstractFile);
+
+			expect(isExcluded).toHaveBeenCalledWith("large.md", 11);
+			expect(deps.localTracker.getDirtyPaths()).toEqual(new Set());
+		});
+
+		it("expands an included-root mixed-size folder rename to eligible files only", () => {
+			scheduler.destroy();
+			const isExcluded = (_path: string, size?: number) => (size ?? 0) > 10;
+			deps = createDeps({ isExcluded });
+			scheduler = new SyncScheduler(deps);
+			scheduler.start();
+
+			const eligible = { path: "new/eligible.md", stat: { size: 10 } } as unknown as TAbstractFile;
+			const oversized = { path: "new/oversized.md", stat: { size: 11 } } as unknown as TAbstractFile;
+			const handler = deps.vaultHandlers.get("rename") as RenameHandler;
+			handler(makeFolder("new", [eligible, oversized]), "old");
+
+			expect(deps.localTracker.getFolderRenamePairs()).toEqual(new Map());
+			expect(deps.localTracker.getRenamePairs()).toEqual(
+				new Map([["new/eligible.md", "old/eligible.md"]]),
+			);
+			expect(deps.localTracker.getDirtyPaths()).toEqual(
+				new Set(["old/eligible.md", "new/eligible.md"]),
+			);
+	});
+
 		it("triggers debounced sync on vault change", () => {
 			const handler = deps.vaultHandlers.get("modify") as VaultHandler;
 			handler(makeFile("note.md"));
@@ -406,6 +441,127 @@ describe("SyncScheduler", () => {
 
 			expect(priorityRead).toHaveBeenCalledOnce();
 			expect(readText(localFs, "note.md")).toBe("new");
+			await runtime.close();
+		});
+
+		it("does not priority-read a mobile-oversized opened file", async () => {
+			vi.useRealTimers();
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			const local = addFile(localFs, "large.md", "old", 1000);
+			const localStat = await localFs.stat("large.md");
+			if (!localStat) throw new Error("test setup failed");
+			const remote = addFile(remoteFs, "large.md", "remote content", 2000);
+			remote.identityKey = "remote-large-id";
+			const priorityObserve = vi.fn().mockResolvedValue({
+				kind: "current" as const, path: "large.md", identityKey: "remote-large-id", token: "v2",
+				entity: { ...remote },
+				occupant: {
+					kind: "current" as const, path: "large.md", identityKey: "remote-large-id", token: "v2",
+					entity: { ...remote },
+				},
+			});
+			const priorityRead = vi.fn().mockResolvedValue({
+				kind: "content" as const,
+				content: remoteFs.files.get("large.md")!.content.slice(0),
+			});
+			remoteFs.priority = { observe: priorityObserve, read: priorityRead };
+			const tracker = new LocalChangeTracker();
+			const settings = mockSettings({
+				vaultId: `scheduler-mobile-${Math.random()}`,
+				mobileMaxFileSizeMB: 0.000001,
+			});
+			const runtime = new RuntimeSyncOrchestrator({
+				getSettings: () => settings,
+				saveSettings: vi.fn().mockResolvedValue(undefined),
+				configDir: () => ".cfg",
+				pluginId: () => "air-sync",
+				localFs: () => localFs,
+				remoteFs: () => remoteFs,
+				backendProvider: () => null,
+				onStatusChange: vi.fn(), onProgress: vi.fn(), notify: vi.fn(),
+				isMobile: () => true, localTracker: tracker,
+			});
+			await runtime.state.put({
+				path: "large.md", hash: localStat.hash,
+				localMtime: local.mtime, remoteMtime: 1000,
+				localSize: local.size, remoteSize: local.size,
+				remoteIdentityKey: "remote-large-id", syncedAt: 900,
+			});
+			scheduler.destroy();
+			deps = createDeps({
+				orchestrator: runtime, localTracker: tracker, remoteFs: () => remoteFs,
+			});
+			scheduler = new SyncScheduler(deps);
+			scheduler.start();
+
+			await deps.workspaceHandlers.get("file-open")!({ path: "large.md" });
+
+			expect(priorityObserve).not.toHaveBeenCalled();
+			expect(priorityRead).not.toHaveBeenCalled();
+			expect(readText(localFs, "large.md")).toBe("old");
+			await runtime.close();
+		});
+
+		it("stops a remotely grown mobile file after priority metadata observation", async () => {
+			vi.useRealTimers();
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			const local = addFile(localFs, "grown.md", "small", 1000);
+			const localStat = await localFs.stat("grown.md");
+			if (!localStat) throw new Error("test setup failed");
+			const remote = addFile(remoteFs, "grown.md", "remote content above limit", 2000);
+			remote.identityKey = "remote-grown-id";
+			const priorityObserve = vi.fn().mockResolvedValue({
+				kind: "current" as const, path: "grown.md", identityKey: "remote-grown-id", token: "v2",
+				entity: { ...remote },
+				occupant: {
+					kind: "current" as const, path: "grown.md", identityKey: "remote-grown-id", token: "v2",
+					entity: { ...remote },
+				},
+			});
+			const priorityRead = vi.fn().mockResolvedValue({
+				kind: "content" as const,
+				content: remoteFs.files.get("grown.md")!.content.slice(0),
+			});
+			remoteFs.priority = { observe: priorityObserve, read: priorityRead };
+			const tracker = new LocalChangeTracker();
+			const settings = mockSettings({
+				vaultId: `scheduler-mobile-grown-${Math.random()}`,
+				mobileMaxFileSizeMB: 0.00001,
+			});
+			const runtime = new RuntimeSyncOrchestrator({
+				getSettings: () => settings,
+				saveSettings: vi.fn().mockResolvedValue(undefined),
+				configDir: () => ".cfg", pluginId: () => "air-sync",
+				localFs: () => localFs, remoteFs: () => remoteFs,
+				backendProvider: () => null,
+				onStatusChange: vi.fn(), onProgress: vi.fn(), notify: vi.fn(),
+				isMobile: () => true, localTracker: tracker,
+			});
+			await runtime.state.put({
+				path: "grown.md", hash: localStat.hash,
+				localMtime: local.mtime, remoteMtime: 1000,
+				localSize: local.size, remoteSize: local.size,
+				remoteIdentityKey: "remote-grown-id", syncedAt: 900,
+			});
+			const localWrite = vi.spyOn(localFs, "write");
+			const baselineCommit = vi.spyOn(runtime.state, "compareAndPut");
+			scheduler.destroy();
+			deps = createDeps({
+				orchestrator: runtime, localTracker: tracker, remoteFs: () => remoteFs,
+			});
+			scheduler = new SyncScheduler(deps);
+			scheduler.start();
+
+			await deps.workspaceHandlers.get("file-open")!({ path: "grown.md" });
+
+			expect(priorityObserve).toHaveBeenCalledOnce();
+			expect(priorityRead).not.toHaveBeenCalled();
+			expect(localWrite).not.toHaveBeenCalled();
+			expect(baselineCommit).not.toHaveBeenCalled();
+			expect(tracker.getDirtyPaths()).toEqual(new Set());
+			expect(readText(localFs, "grown.md")).toBe("small");
 			await runtime.close();
 		});
 

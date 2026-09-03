@@ -39,17 +39,14 @@ describe("projectRenameScope", () => {
 		});
 	});
 
-	it.each(["unknown", "mobile_deferred"] as const)(
-		"defers the whole edge when either endpoint is %s",
-		(disposition) => {
-			for (const side of ["local", "remote"] as const) {
-				expect(projectRenameScope(rename(side), projection(disposition, "included")).consequence)
-					.toBe("defer");
-				expect(projectRenameScope(rename(side), projection("included", disposition)).consequence)
-					.toBe("defer");
-			}
-		},
-	);
+	it("defers the whole edge when either endpoint is unknown", () => {
+		for (const side of ["local", "remote"] as const) {
+			expect(projectRenameScope(rename(side), projection("unknown", "included")).consequence)
+				.toBe("defer");
+			expect(projectRenameScope(rename(side), projection("included", "unknown")).consequence)
+				.toBe("defer");
+		}
+	});
 
 	it("defaults an absent endpoint to unknown and defers", () => {
 		expect(projectRenameScope(rename("local"), {
@@ -254,17 +251,15 @@ describe("projectScope", () => {
 		]));
 	});
 
-	it("marks oversized included endpoints", () => {
-		const result = projectScope(changeSet({
+	it("removes oversized current files before projection", () => {
+		const result = applyScope(changeSet({
 			entries: [
 				{ path: "large.md", local: entity("large.md", 11) },
 				{ path: "small.md", remote: entity("small.md", 10) },
 			],
-		}), 10);
+		}), { isExcluded: (_path, currentSize) => (currentSize ?? 0) > 10 });
 
-		expect(result.byEndpoint).toEqual(new Map([
-			["large.md", "mobile_deferred"],
-			["small.md", "included"],
-		]));
+		expect(result.changeSet.entries.map((entry) => entry.path)).toEqual(["small.md"]);
+		expect(result.projection.byEndpoint).toEqual(new Map([["small.md", "included"]]));
 	});
 });
