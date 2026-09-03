@@ -80,15 +80,6 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	 */
 	private _scopeFingerprint: string | null = null;
 
-	/**
-	 * Cache changes not yet flushed to IndexedDB — persistence is deferred to the
-	 * checkpoint commit ({@link commitCheckpoint}) so the persisted cache never runs
-	 * ahead of the committed cursor (a crash would otherwise drop a deletion the
-	 * replay can't re-detect). `pendingFullPersist` supersedes it after a full scan.
-	 */
-	private touchedPaths = new Set<string>();
-	private pendingFullPersist = false;
-
 	protected constructor(
 		rootFolderId: string,
 		cache: AbstractMetadataCache<TFile>,
@@ -207,9 +198,6 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 		this.cache.buildFromFiles(allFiles);
 
 		this.initialized = true;
-		// Whole cache rebuilt → flush it all at the next commit (not just touched paths).
-		this.touchedPaths.clear();
-		this.pendingFullPersist = true;
 		this.logger?.info("Full scan completed", { fileCount: this.cache.size });
 	}
 
@@ -273,8 +261,7 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	 * Flush the file map AND the delta cursor to IndexedDB, atomically, after a clean
 	 * cycle. Both commit in one transaction, so the persisted cache can never run ahead
 	 * of — nor behind — the committed cursor: a failed flush lands neither, and on the
-	 * next run the replay re-detects any un-flushed work. The buffer is cleared only
-	 * after success (a throw propagates and retains it for the next clean cycle's retry).
+	 * next run the replay re-detects any un-flushed work.
 	 */
 	async commitCheckpoint(context?: { scopeFingerprint?: string }): Promise<void> {
 		if (!this.metadataStore) return;
@@ -283,21 +270,14 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 				this._scopeFingerprint = context.scopeFingerprint;
 			}
 			await this.commitCache();
-			this.pendingFullPersist = false;
-			this.touchedPaths.clear();
 		});
 	}
 
 	/**
-	 * Write the cache + cursor to the store. `pendingFullPersist` rewrites the whole map
-	 * (after a full scan); otherwise the touched paths are reconciled against the live
-	 * cache — present → upsert, absent → delete. The reconcile reads the final cache
-	 * state, so it is order-independent and correct even when `touched` spans several
-	 * earlier failed cycles. The cursor AND scope fingerprint are written in the SAME
-	 * transaction as the file changes (`saveAll`/`commitIncremental` both clear/overwrite
-	 * only the meta keys given here), so the persisted cache can never run ahead of (or
-	 * behind) the cursor, and a `saveAll` full persist can never silently drop the
-	 * previously-committed fingerprint by omission.
+	 * Write the complete final cache + cursor to the store. The snapshot is captured
+	 * under `cacheMutex`, and `saveAll` atomically replaces both cache rows and metadata.
+	 * This keeps the cache a complete, derived projection co-committed with the cursor;
+	 * commit correctness never depends on tracking individual mutation paths.
 	 */
 	private async commitCache(): Promise<void> {
 		const store = this.metadataStore;
@@ -306,19 +286,7 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 		const meta = new Map<string, string>();
 		if (this._changesPageToken !== null) meta.set(CURSOR_META_KEY, this._changesPageToken);
 		if (this._scopeFingerprint !== null) meta.set(SCOPE_FINGERPRINT_META_KEY, this._scopeFingerprint);
-		if (this.pendingFullPersist) {
-			await store.saveAll(this.cache.exportRecords(), meta);
-			return;
-		}
-		const updated: { path: string; file: TFile; isFolder: boolean; pathAuthority: PathAuthority }[] = [];
-		const deleted: string[] = [];
-		for (const path of this.touchedPaths) {
-			const file = this.cache.getFile(path);
-			if (file) updated.push({ path, file, isFolder: this.cache.isFolder(path),
-				pathAuthority: this.cache.getStoredPathAuthority(path) });
-			else deleted.push(path);
-		}
-		await store.commitIncremental(updated, deleted, meta);
+		await store.saveAll(this.cache.exportRecords(), meta);
 	}
 
 	/**
@@ -369,8 +337,6 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 			this._scopeFingerprint = null;
 			this.cache.clear();
 			this.initialized = false;
-			this.touchedPaths.clear();
-			this.pendingFullPersist = false;
 		});
 	}
 
@@ -397,9 +363,6 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 		}
 
 		this._changesPageToken = result.newToken;
-		// Buffer changed paths for the checkpoint commit (persisted only on a clean cycle).
-		for (const path of result.changedPaths) this.touchedPaths.add(path);
-
 		const modified: string[] = [];
 		const deleted: string[] = [];
 		for (const path of result.changedPaths) {

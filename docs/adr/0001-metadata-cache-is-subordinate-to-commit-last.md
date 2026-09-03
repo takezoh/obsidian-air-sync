@@ -1,15 +1,15 @@
 # ADR 0001 — The remote metadata cache is subordinate to commit-last state
 
-**Status:** Accepted · 2026-06-07 · **Revised 2026-06-07** (cursor single-holding: co-located with the cache; supersedes the earlier "keep the cursor in settings" tradeoff) · **Revised 2026-06-08** (convergence theory: documents state **C** and the third, runtime convergence mechanism `recoverViaColdScan` for same-session failures; corrects the concurrency claim — `cacheMutex` guards a real Group-A race; stale-guard reachability pending T7) · **Revised 2026-06-09** (T7 concluded: the `withCacheMutex` stale-guard is **retained** — it is the compare-and-swap of the mutex-released-during-I/O protocol, not a phantom lock; currently unreachable, kept as defense-in-depth; the phantom "concurrent delta" justification is corrected to the real invariant — one plan action per path) · **Revised 2026-06-14** (clarifies state **C**: the in-memory cursor is the **deferred-commit working state** — held in memory and committed last for crash-safety, *not* a performance optimization — so its overtaking on failure is a byproduct/liability reconciled by `recoverViaColdScan`, not a benefit; corrects the cache-vs-C contrast accordingly) · **Revised 2026-06-15** (executor lane/tier rescheduling: `delete_remote` is now **pooled** in the structural phase and the **inline delete CAS guard transitions from dormant to ACTIVE**; `rename_remote` stays serial and the `withCacheMutex` write/rename guard stays dormant; `conflict` runs in its **own serial phase** — see T7 and Prohibited patterns; cross-refs [ADR 0006](0006-remote-rename-detection-is-order-independent.md)) · **Revised 2026-06-15** (transfer pool is now an `AdaptivePool` with a mutable platform-aware ceiling, desktop ≤10 / mobile ≤3: this changes only the *number* of concurrent disjoint-path `push` writes, not the one-action-per-path invariant the write/rename guard's dormancy rests on — T7 unaffected)
+**Status:** Accepted · 2026-06-07 · **Revised 2026-06-07** (cursor single-holding: co-located with the cache; supersedes the earlier "keep the cursor in settings" tradeoff) · **Revised 2026-06-08** (convergence theory: documents state **C** and the third, runtime convergence mechanism `recoverViaColdScan` for same-session failures; corrects the concurrency claim — `cacheMutex` guards a real Group-A race; stale-guard reachability pending T7) · **Revised 2026-06-09** (T7 concluded: the `withCacheMutex` stale-guard is **retained** — it is the compare-and-swap of the mutex-released-during-I/O protocol, not a phantom lock; currently unreachable, kept as defense-in-depth; the phantom "concurrent delta" justification is corrected to the real invariant — one plan action per path) · **Revised 2026-06-14** (clarifies state **C**: the in-memory cursor is the **deferred-commit working state** — held in memory and committed last for crash-safety, *not* a performance optimization — so its overtaking on failure is a byproduct/liability reconciled by `recoverViaColdScan`, not a benefit; corrects the cache-vs-C contrast accordingly) · **Revised 2026-06-15** (executor lane/tier rescheduling: `delete_remote` is now **pooled** in the structural phase and the **inline delete CAS guard transitions from dormant to ACTIVE**; `rename_remote` stays serial and the `withCacheMutex` write/rename guard stays dormant; `conflict` runs in its **own serial phase** — see T7 and Prohibited patterns; cross-refs [ADR 0006](0006-remote-rename-detection-is-order-independent.md)) · **Revised 2026-06-15** (transfer pool is now an `AdaptivePool` with a mutable platform-aware ceiling, desktop ≤10 / mobile ≤3: this changes only the *number* of concurrent disjoint-path `push` writes, not the one-action-per-path invariant the write/rename guard's dormancy rests on — T7 unaffected) · **Revised 2026-09-04** (restores the closed two-authority durable-state model: clean cursor plus per-file `SyncRecord`; cache clean commits always replace the complete projection, with no touched-path or pending-persist state)
 **Context area:** sync pipeline / Google Drive backend
 **Related:** [sync-pipeline.md → Crash recovery](../sync-pipeline.md), [google-drive-backend.md](../google-drive-backend.md)
 
 ## Context
 
-Sync correctness rests on **two authoritative, commit-last states** (A and B) — **plus** a
-third, **non-authoritative runtime state** (C) whose divergence after a failure must be
-reconciled, or convergence does not hold. The two committed states, each written **last**
-(after the work they describe has succeeded):
+Sync correctness has exactly **two authoritative durable states** (A and B). Each is
+written **last** after the work it describes succeeds. A transient, non-authoritative
+runtime condition (C) can diverge after a failed cycle and is reconciled by the existing
+`recoverViaColdScan` path; it is not a third durable authority.
 
 | | State | Where | Commit rule |
 |---|---|---|---|
@@ -73,9 +73,9 @@ authoritative state and over-engineering its persistence**:
 
 ## Decision
 
-1. **The metadata cache is non-authoritative.** Authority = Google Drive (remote truth) + **A**
-   (cursor) + **B** (`SyncRecord`). Never reason about correctness from the cache; reason
-   from A + B + "re-run converges."
+1. **The metadata cache is non-authoritative.** The only authoritative durable sync
+   states are **A** (the clean-cycle cursor) and **B** (the per-file `SyncRecord`).
+   Google Drive remains remote truth; never reason about sync correctness from the cache.
 
 2. **Convergence is a property of A + B + the cold-reconcile-after-failure mechanism — not
    of A + B alone.** Two paths close the gap: a **crash** replays from the committed cursor
@@ -85,14 +85,12 @@ authoritative state and over-engineering its persistence**:
    Removing that path because "the committed cursor already holds" is the canonical way to
    re-open silent in-session data loss — and it is invisible to crash-only tests.
 
-3. **The cache has exactly one invariant: it must never be committed _ahead of_ (nor
-   _behind_) the committed cursor.** This is now **structural**: the cache and the cursor
-   live in the **same IndexedDB store** and commit in **one transaction**
-   (`commitGoogleDriveCache` → `MetadataStore.saveAll` / `commitIncremental`), so they cannot
-   diverge — a failed flush lands neither. A failed flush still **propagates** (the cycle
-   surfaces an error and the next run re-detects the un-flushed work), but there is no
-   longer a two-store ordering to get wrong, nor a buffer-clear that could outrun a
-   failed persist.
+3. **The cache has exactly one invariant: it must be a complete derived projection
+   co-committed with the cursor.** On a clean cycle `CachingRemoteFs` captures the final
+   live cache under `cacheMutex`, and `MetadataStore.saveAll` atomically replaces every
+   cache row and its metadata with the cursor. No touched-path set, pending-full-persist
+   flag, or other mutation bookkeeping participates in correctness. A failed flush
+   propagates and commits neither projection nor cursor.
 
 4. **Prefer simple-and-correct over optimized-and-subtle.** The cache flush should do one
    obvious thing. Convergence — not lockstep machinery — is the safety net.
@@ -107,7 +105,7 @@ authoritative state and over-engineering its persistence**:
 
 **Resolved — the cursor is co-located with the cache (single source of truth).** The
 cursor lives in the backend's IndexedDB store (`META_STORE`), committed in the **same
-transaction** as the file-map (`MetadataStore.saveAll` / `commitIncremental`). There is
+transaction** as the complete file-map (`MetadataStore.saveAll`). There is
 no second store and no write ordering, so the earlier "millisecond two-store window"
 (cursor in `settings`, cache in IndexedDB) is **gone** — cache and cursor are atomically
 in step, or both absent.
@@ -233,8 +231,8 @@ FS (`resetCheckpoint()`), not by editing settings.
   *"re-reports an un-pulled remote DELETION after a crash…"*, *"treats an empty store as
   no checkpoint: full-scans fresh and warrants no replay"*, and the rest of the
   *"cursor consolidation (crash safety)"* suite.
-- `metadata-store.test.ts` → *"commitIncremental upserts, deletes, and writes meta in one
-  transaction"* (the atomic cache+cursor co-commit).
+- `metadata-store.test.ts` → *"saveAll atomically replaces the complete file map and
+  metadata"* (the atomic complete-cache+cursor co-commit).
 - **T7 stale-guard disposition.** The guard *mechanism* is pinned by
   `googledrive/index.test.ts` / `dropbox/index.test.ts` → the *"stale-cache guard(s)"*
   suites (a cache re-key injected mid-phase-2 ⇒ the phase-3 write is skipped with a

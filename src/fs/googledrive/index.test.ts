@@ -386,23 +386,21 @@ describe("GoogleDriveFs.commitCheckpoint persistence-failure safety", () => {
 		const persistedAfterRename = (await store.loadAll()).files.map((record) => record.path).sort();
 		await first.close();
 
-		// A restart restores the committed cursor and file map, then the real Google
-		// incremental adapter applies the self-change through applyIdDeltaPage.
+		// A restart restores the complete committed map and the cursor. The real Google
+		// incremental adapter sees the self-change, but the live projection already has
+		// its final path, so it must not manufacture a second rename edge.
 		const restarted = new GoogleDriveFs(client, "root", undefined, store);
 		const replay = await restarted.getChangedPaths();
-		expect(replay?.renamed).toEqual([{
-			oldPath: "Templates", newPath: "TemplateS", isFolder: true,
-		}]);
+		expect(replay?.renamed).toEqual([]);
 		expect((await restarted.listCurrentSnapshot()).map((entry) => entry.path).sort()).toEqual([
 			"TemplateS", "TemplateS/note.md",
 		]);
 		await restarted.close(); // no checkpoint commit: model a failed Admission cycle
 
-		// The unadvanced persisted cursor repeats the rename after another restart.
+		// Without a clean checkpoint, another restart reads the same cursor but still
+		// begins from the complete final cache projection.
 		const replayedAgain = new GoogleDriveFs(client, "root", undefined, store);
-		expect((await replayedAgain.getChangedPaths())?.renamed).toEqual([{
-			oldPath: "Templates", newPath: "TemplateS", isFolder: true,
-		}]);
+		expect((await replayedAgain.getChangedPaths())?.renamed).toEqual([]);
 
 		// resetCheckpoint/full scan reads provider current state and loses the delta edge.
 		await replayedAgain.resetCheckpoint();
@@ -416,7 +414,7 @@ describe("GoogleDriveFs.commitCheckpoint persistence-failure safety", () => {
 		expect(persistedAfterRename).toEqual(["TemplateS", "TemplateS/note.md"]);
 	});
 
-	it("propagates a failed flush and keeps the buffer so the cursor is not committed ahead of the cache", async () => {
+	it("propagates a failed complete-cache flush so the cursor is not committed ahead of the cache", async () => {
 		const { GoogleDriveFs } = await import("./index");
 		type Store = import("../../store/metadata-store").MetadataStore<GoogleDriveFile>;
 
@@ -440,7 +438,7 @@ describe("GoogleDriveFs.commitCheckpoint persistence-failure safety", () => {
 		} as unknown as Store;
 
 		const fs = new GoogleDriveFs(mockClient, "root", undefined, failingStore);
-		await fs.list(); // fullScan → pendingFullPersist = true
+		await fs.list();
 
 		// The flush fails. commitCheckpoint MUST reject rather than swallow — the
 		// orchestrator awaits it before committing the (advanced) cursor, so a throw
@@ -448,10 +446,8 @@ describe("GoogleDriveFs.commitCheckpoint persistence-failure safety", () => {
 		await expect(fs.commitCheckpoint()).rejects.toThrow(/quota exceeded/);
 		expect(saveAll).toHaveBeenCalledTimes(1);
 
-		// The buffer is RETAINED (not cleared on failure), so when the store recovers
-		// the next clean cycle re-attempts the full flush. If the buffer had been
-		// cleared on failure, pendingFullPersist would be false and this second commit
-		// would persist nothing (saveAll would stay at 1).
+		// When the store recovers, the next clean cycle re-attempts the complete
+		// snapshot. A failed commit must not be treated as a completed checkpoint.
 		saveAll.mockResolvedValueOnce(undefined);
 		await fs.commitCheckpoint();
 		expect(saveAll).toHaveBeenCalledTimes(2);

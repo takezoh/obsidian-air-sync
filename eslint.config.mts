@@ -167,11 +167,13 @@ export default defineConfig(
 						'lint-bot-repro-classifier.mjs',
 						'lint-bot-repro.mjs',
 						'lint-bot-repro.test.mjs',
+						'sync-state-ownership-guard.test.mjs',
 						'manifest.json',
 						'test-fixtures/lint-bot-repro/untyped-dependencies.d.ts',
 						'test-fixtures/lint-bot-repro/untyped-vitest.d.ts',
 						'vitest.config.ts'
-					]
+					],
+					maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 9,
 				},
 				tsconfigRootDir: configRoot,
 				extraFileExtensions: ['.json']

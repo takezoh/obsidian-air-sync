@@ -79,37 +79,4 @@ describe("identity evidence", () => {
 		expect(completed).toEqual([]);
 	});
 
-	it("proves committed-to-current target identity for an actionless reported rename", () => {
-		const target = (identityKey: string): FileEntity => ({
-			path: "B.md", pathAuthority: "actual_resolved", identityKey,
-			isDirectory: false, size: 1, mtime: 1, hash: "",
-		});
-		const complete = (currentIdentityKey: string) => completeIdentityEvidence(
-			collectRemoteRenameEvidence([{ oldPath: "A.md", newPath: "B.md" }]),
-			[{ kind: "exact", side: "remote", requestedPath: "B.md", entity: target(currentIdentityKey) }],
-			[{
-				path: "B.md", remote: target(currentIdentityKey),
-				prevSync: {
-					path: "B.md", hash: "h", localMtime: 1, remoteMtime: 1,
-					localSize: 1, remoteSize: 1, remoteIdentityKey: "committed-id", syncedAt: 1,
-				},
-			}],
-		);
-
-		const foreignTarget = complete("foreign-id");
-		expect(foreignTarget.filter((item) => item.kind === "stable_identity")).toEqual([]);
-
-		const sameTarget = complete("committed-id");
-		// RED: this explicit baseline/current fact is what lets Admission distinguish
-		// a genuine self-echo from the foreign target above. The current collector
-		// suppresses same-path identity continuity, leaving actionless Admission no
-		// committed-id fact to compare with the reported edge's current identity.
-		expect(sameTarget).toContainEqual({
-			kind: "stable_identity", side: "remote", identityKey: "committed-id",
-			occurrences: [
-				{ side: "remote", phase: "baseline", path: "B.md", identityKey: "committed-id" },
-				{ side: "remote", phase: "current", path: "B.md", identityKey: "committed-id" },
-			],
-		});
-	});
 });

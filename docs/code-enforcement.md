@@ -277,12 +277,27 @@ these green when touching the pipeline:
 
 | Principle | Pinned by |
 |---|---|
+| **Two-authority durable sync state** — only the clean-cycle remote cursor and per-file successful `SyncRecord` are authoritative; the complete remote cache is a derived co-commit | `sync-state-ownership-guard.test.mjs` (run by `npm run lint:bot-repro`) |
 | **Remote backend completeness** — every registered provider resolves to an exact catalogued filesystem family, and every family runs all four shared contracts | `fs/registry.test.ts`, `tests/fs/remote-backend-contracts.test.ts` |
 | **#3 delta-first** — the hot path stats only dirty paths and never calls `list()` (full scans are cold-start only) | `sync/delta-first.test.ts` |
 | **#5 crash-safe** — an interrupted action commits no baseline and re-syncs to convergence | `sync/crash-safety.test.ts`, `sync/convergence.test.ts` |
 | **Fresh recovery uses existing state only** — retryable unknowns stay visible without a pending-operation presentation; exact legacy rename rows are released only after a clean checkpoint, and same-session failure still forces COLD | `sync/sync-notification.test.ts`, `sync/sync-cycle-finalization.test.ts`, `sync/orchestrator.test.ts` |
 | **Command-ID immutability** — registered command IDs are a stable, published API | `main-commands.test.ts` (snapshot — update only for a genuinely new command, never to rename a shipped ID) |
 | **Coverage floors** — ratchet thresholds (lines 76 / statements 75 / functions 70 / branches 65) | `vitest.config.ts`, enforced by `npm run test:coverage` in CI. Raise as coverage improves; never lower to make CI pass |
+
+### Closed two-authority fixture
+
+`sync-state-ownership-guard.test.mjs` inventories the reviewed private fields of
+`SyncOrchestrator`, the sole production caller of `commitCheckpoint`, and every
+production file allowed to mutate `SyncStateStore`. This makes a new durable owner or
+in-memory recovery owner a deliberate review event rather than an incidental field or
+write. The cache checkpoint must serialize the complete final live cache under its mutex
+with the cursor; do not add touched-path, pending-flush, receipt, journal, or other
+intermediate correctness state.
+
+When an intentional architecture change needs a new entry, update the guard fixture,
+ADR 0001, this section, and `AGENTS.md` together, then run `npm run lint:bot-repro`.
+Do not weaken the inventory or add a broad pattern exception to admit a writer.
 
 ## Declaring an exception
 

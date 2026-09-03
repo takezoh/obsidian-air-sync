@@ -37,19 +37,17 @@ describe("MetadataStore", () => {
 		await store.close();
 	});
 
-	it("commitIncremental upserts, deletes, and writes meta in one transaction", async () => {
+	it("saveAll atomically replaces the complete file map and metadata", async () => {
 		const store = new MetadataStore<TestFile>("test-vault-2", CONFIG);
 		await store.open();
 
 		await store.saveAll(
 			[{ path: "a.md", file: { id: "1", name: "a.md", mimeType: "text/plain" }, isFolder: false }],
-			new Map(),
+			new Map([["stale", "old"]]),
 		);
 
-		// Upsert b.md, delete a.md, and write the cursor — atomically.
-		await store.commitIncremental(
+		await store.saveAll(
 			[{ path: "b.md", file: { id: "2", name: "b.md", mimeType: "text/plain" }, isFolder: false }],
-			["a.md"],
 			new Map([["changesStartPageToken", "tok-1"]]),
 		);
 
@@ -57,6 +55,7 @@ describe("MetadataStore", () => {
 		expect(loaded.files).toHaveLength(1);
 		expect(loaded.files[0]!.path).toBe("b.md");
 		expect(loaded.meta.get("changesStartPageToken")).toBe("tok-1");
+		expect(loaded.meta.has("stale")).toBe(false);
 		expect(await store.getMeta("changesStartPageToken")).toBe("tok-1");
 
 		await store.close();

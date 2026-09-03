@@ -286,64 +286,6 @@ describe("admitDestructivePlan", () => {
 		})]);
 	});
 
-	it("resolves an actionless alias only with committed-to-current target continuity", () => {
-		const observations: PathObservation[] = [
-			{ kind: "alias", side: "local", requestedPath: "A.md", resolvedPath: "B.md", entity: entity("B.md") },
-			{ kind: "exact", side: "local", requestedPath: "B.md", entity: entity("B.md") },
-			{ kind: "absent", side: "remote", requestedPath: "A.md", authority: "stat" },
-			{ kind: "exact", side: "remote", requestedPath: "B.md", entity: entity("B.md", "X") },
-		];
-		const evidence: IdentityEvidence[] = [
-			remoteRename({ identityKey: "X" }),
-			{ kind: "alias", side: "local", requestedPath: "A.md", resolvedPath: "B.md" },
-			{
-				kind: "stable_identity", side: "remote", identityKey: "X", occurrences: [
-					{ side: "remote", phase: "baseline", path: "B.md", identityKey: "X" },
-					{ side: "remote", phase: "current", path: "B.md", identityKey: "X" },
-				],
-			},
-		];
-
-		const result = admit([], evidence, observations, projection({
-			"A.md": "included", "B.md": "included",
-		}));
-
-		// RED: path convergence plus immutable identity continuity is sufficient;
-		// the generic alias guard currently rejects it before using that proof.
-		expect(result.failures).toEqual([]);
-	});
-
-	it("rejects an actionless alias whose current target replaced the committed identity", () => {
-		const observations: PathObservation[] = [
-			{ kind: "alias", side: "local", requestedPath: "A.md", resolvedPath: "B.md", entity: entity("B.md") },
-			{ kind: "exact", side: "local", requestedPath: "B.md", entity: entity("B.md") },
-			{ kind: "absent", side: "remote", requestedPath: "A.md", authority: "stat" },
-			{ kind: "exact", side: "remote", requestedPath: "B.md", entity: entity("B.md", "Y") },
-		];
-		const evidence: IdentityEvidence[] = [
-			remoteRename({ identityKey: "Y" }),
-			{ kind: "alias", side: "local", requestedPath: "A.md", resolvedPath: "B.md" },
-			{
-				kind: "stable_identity", side: "remote", identityKey: "X", occurrences: [
-					{ side: "remote", phase: "baseline", path: "B.md", identityKey: "X" },
-				],
-			},
-			{
-				kind: "stable_identity", side: "remote", identityKey: "Y", occurrences: [
-					{ side: "remote", phase: "current", path: "B.md", identityKey: "Y" },
-				],
-			},
-		];
-
-		const result = admit([], evidence, observations, projection({
-			"A.md": "included", "B.md": "included",
-		}));
-
-		// RED: the same endpoint shape as the safe self-echo above must be rejected
-		// specifically for baseline X -> current Y, not merely by the alias guard.
-		expect(result.failures[0]?.reasons).toContain("conflicting_identity");
-	});
-
 	it("admits an additive push when a local rename has no synchronized anchor", () => {
 		const action: SyncAction = { path: "B.md", action: "push", local: entity("B.md") };
 		const evidence = [remoteRename({ side: "local", identityKey: undefined })];

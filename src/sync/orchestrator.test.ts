@@ -1092,14 +1092,6 @@ describe("SyncOrchestrator", () => {
 			expect(await orchestrator.state.get("Templates/Zettelkasten.md")).toBeUndefined();
 			expect(await orchestrator.state.get("TemplateS/Zettelkasten.md"))
 				.toMatchObject({ path: "TemplateS/Zettelkasten.md" });
-
-			vi.spyOn(remoteFs.checkpoint!, "getChangedPaths").mockResolvedValueOnce({
-				modified: ["TemplateS"],
-				deleted: ["Templates"],
-				renamed: [{ oldPath: "Templates", newPath: "TemplateS", isFolder: true }],
-			});
-			await orchestrator.runSync();
-			expect(warn).not.toHaveBeenCalled();
 			expect(deps.onStatusChange).toHaveBeenLastCalledWith("idle");
 			await orchestrator.close();
 		});

@@ -5,7 +5,7 @@ const FILES_STORE = "files";
 const META_STORE = "meta";
 
 /** Bump whenever persisted file-record semantics require a cold cache rebuild. */
-export const METADATA_CACHE_VERSION = 3;
+export const METADATA_CACHE_VERSION = 4;
 
 export interface FileRecord<T> {
 	path: string;
@@ -84,24 +84,6 @@ export class MetadataStore<T> {
 			for (const [key, value] of meta) {
 				metaStore.put({ key, value });
 			}
-			return () => {};
-		});
-	}
-
-	/**
-	 * Upsert file records, delete others, and write meta entries — all in ONE
-	 * readwrite transaction over both stores. Used for an incremental checkpoint:
-	 * the file-map changes and the delta cursor (in `meta`) commit atomically, so a
-	 * crash can never leave the persisted cache out of step with the persisted
-	 * cursor (the inverse would silently drop a remote deletion on the next replay).
-	 */
-	async commitIncremental(updated: FileRecord<T>[], deleted: string[], meta: Map<string, string>): Promise<void> {
-		await this.helper.runTransaction([FILES_STORE, META_STORE], "readwrite", (tx) => {
-			const filesStore = tx.objectStore(FILES_STORE);
-			const metaStore = tx.objectStore(META_STORE);
-			for (const record of updated) filesStore.put(record);
-			for (const path of deleted) filesStore.delete(path);
-			for (const [key, value] of meta) metaStore.put({ key, value });
 			return () => {};
 		});
 	}
