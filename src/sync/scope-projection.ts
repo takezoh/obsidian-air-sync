@@ -16,8 +16,7 @@ interface RenameScopeRule {
 }
 
 export interface ScopeProjectionPolicy {
-	isExcluded: (path: string) => boolean;
-	mobileMaxBytes?: number;
+	isExcluded: (path: string, currentSize?: number) => boolean;
 }
 
 export interface ScopedChangeSet {
@@ -38,7 +37,10 @@ export function applyScope(
 		observation.reason === "outside_tracked_root"
 			? [observation.requestedPath]
 			: []));
-	const isIncluded = (path: string) => !outsideRoot.has(path) && !policy.isExcluded(path);
+	const currentSizes = collectCurrentSizes(changeSet);
+	propagateRenameSizes(currentSizes, changeSet.identityEvidence);
+	const isIncluded = (path: string) =>
+		!outsideRoot.has(path) && !policy.isExcluded(path, currentSizes.get(path));
 	const surfacePaths = collectChangeSetPaths(changeSet);
 	const scoped: ChangeSet = {
 		...changeSet,
@@ -58,8 +60,62 @@ export function applyScope(
 	};
 	return {
 		changeSet: scoped,
-		projection: projectScope(scoped, policy.mobileMaxBytes),
+		projection: projectScope(scoped),
 	};
+}
+
+/** Current entities own size scope. Baseline size is deliberately not sticky. */
+function collectCurrentSizes(changeSet: ChangeSet): Map<string, number> {
+	const sizes = new Map<string, number>();
+	for (const entry of changeSet.entries) {
+		for (const entity of [entry.local, entry.remote]) {
+			if (!entity || entity.isDirectory) continue;
+			rememberLargestSize(sizes, entry.path, entity.size);
+			rememberLargestSize(sizes, entity.path, entity.size);
+		}
+	}
+	for (const observation of changeSet.observations) {
+		if (observation.kind !== "exact" && observation.kind !== "alias" &&
+			observation.kind !== "present_unresolved") continue;
+		if (observation.entity.isDirectory) continue;
+		rememberLargestSize(sizes, observation.requestedPath, observation.entity.size);
+		rememberLargestSize(sizes, observation.entity.path, observation.entity.size);
+		if (observation.kind === "alias") {
+			rememberLargestSize(sizes, observation.resolvedPath, observation.entity.size);
+		} else if (observation.kind === "present_unresolved") {
+			rememberLargestSize(sizes, observation.returnedPath, observation.entity.size);
+		}
+	}
+	return sizes;
+}
+
+/** A rename's current file size applies to both spellings before either enters Observation. */
+function propagateRenameSizes(
+	sizes: Map<string, number>,
+	evidence: readonly IdentityEvidence[],
+): void {
+	for (const item of evidence) {
+		if (item.kind !== "rename") continue;
+		propagateSizePair(sizes, item.oldPath, item.newPath);
+		if (!item.isFolder) continue;
+		const oldPrefix = `${item.oldPath}/`;
+		const newPrefix = `${item.newPath}/`;
+		const relatives = new Set<string>();
+		for (const path of sizes.keys()) {
+			if (path.startsWith(oldPrefix)) relatives.add(path.substring(oldPrefix.length));
+			if (path.startsWith(newPrefix)) relatives.add(path.substring(newPrefix.length));
+		}
+		for (const relative of relatives) {
+			propagateSizePair(sizes, `${oldPrefix}${relative}`, `${newPrefix}${relative}`);
+		}
+	}
+}
+
+function propagateSizePair(sizes: Map<string, number>, oldPath: string, newPath: string): void {
+	const size = Math.max(sizes.get(oldPath) ?? -1, sizes.get(newPath) ?? -1);
+	if (size < 0) return;
+	sizes.set(oldPath, size);
+	sizes.set(newPath, size);
 }
 
 function normalizeObservation(
@@ -138,10 +194,9 @@ function crossesScope(
 	return false;
 }
 
-/** Project mobile and observation completeness over already scoped facts. */
+/** Project observation completeness over already scoped facts. */
 export function projectScope(
 	changeSet: Pick<ChangeSet, "entries" | "observations" | "identityEvidence">,
-	mobileMaxBytes?: number,
 ): ScopeProjection {
 	const requiredPaths = collectScopePaths(changeSet.identityEvidence);
 	const paths = new Set(requiredPaths);
@@ -169,34 +224,13 @@ export function projectScope(
 		}
 	}
 
-	const sizes = new Map<string, number>();
-	for (const entry of changeSet.entries) {
-		for (const entity of [entry.local, entry.remote]) {
-			if (entity) rememberLargestSize(sizes, entry.path, entity.size);
-		}
-	}
-	for (const observation of changeSet.observations) {
-		if (isIncidentalDirectory(observation, requiredPaths)) continue;
-		if (observation.kind === "exact" || observation.kind === "present_unresolved") {
-			rememberLargestSize(sizes, observation.requestedPath, observation.entity.size);
-		} else if (observation.kind === "alias") {
-			rememberLargestSize(sizes, observation.resolvedPath, observation.entity.size);
-		}
-	}
-
 	const byEndpoint = new Map<string, ScopeDisposition>();
 	for (const path of paths) {
 		if (unknownPaths.has(path) || !knownPaths.has(path)) {
 			byEndpoint.set(path, "unknown");
 			continue;
 		}
-		const size = sizes.get(path);
-		byEndpoint.set(
-			path,
-			mobileMaxBytes !== undefined && size !== undefined && size > mobileMaxBytes
-				? "mobile_deferred"
-				: "included",
-		);
+		byEndpoint.set(path, "included");
 	}
 	return { byEndpoint };
 }
@@ -252,8 +286,8 @@ function rememberLargestSize(sizes: Map<string, number>, path: string, size: num
 
 function isIndeterminate(
 	disposition: ScopeDisposition,
-): disposition is "unknown" | "mobile_deferred" {
-	return disposition === "unknown" || disposition === "mobile_deferred";
+): disposition is "unknown" {
+	return disposition === "unknown";
 }
 
 function consequenceFor(

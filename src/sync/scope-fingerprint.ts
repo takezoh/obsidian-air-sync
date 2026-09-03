@@ -4,7 +4,8 @@ import { sha256 } from "../utils/hash";
 /**
  * A hash of every setting that determines which paths are in sync scope
  * (`SyncOrchestrator.isExcluded`): the config-sync toggles, `syncDotPaths`,
- * `ignorePatterns`, plus `configDir`/`pluginId` since `getEffectiveSyncDotPaths`/
+ * `ignorePatterns`, the effective mobile byte limit (or null on desktop), plus
+ * `configDir`/`pluginId` since `getEffectiveSyncDotPaths`/
  * `getEffectiveIgnorePatterns` fold them in when config sync is on. Compared
  * against the committed checkpoint's fingerprint so a scope-widening settings
  * change forces one cold reconcile — see `computeScopeFingerprint`'s caller in
@@ -21,6 +22,7 @@ export async function computeScopeFingerprint(
 	settings: AirSyncSettings,
 	configDir: string,
 	pluginId: string,
+	effectiveMobileMaxBytes: number | null = null,
 ): Promise<string> {
 	const canonical = JSON.stringify({
 		enableConfigSync: settings.enableConfigSync,
@@ -33,6 +35,7 @@ export async function computeScopeFingerprint(
 		ignorePatterns: settings.ignorePatterns,
 		configDir,
 		pluginId,
+		effectiveMobileMaxBytes,
 	});
 	return sha256(new TextEncoder().encode(canonical).buffer);
 }

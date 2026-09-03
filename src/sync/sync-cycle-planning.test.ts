@@ -130,6 +130,147 @@ describe("batch observation boundary", () => {
 		expect([...snapshot.baselinePaths]).toEqual(["old.md"]);
 	});
 
+	it("removes a mobile-oversized rename component before BatchObservation", () => {
+		const changeSet: ChangeSet = {
+			entries: [
+				{
+					path: "old.md", prevSync: baseline("old.md"),
+					remote: { path: "old.md", size: 4, mtime: 1, hash: "base", isDirectory: false },
+				},
+				{
+					path: "new.md",
+					local: { path: "new.md", size: 11, mtime: 2, hash: "new", isDirectory: false },
+				},
+			],
+			observations: [
+				{ kind: "absent", side: "local", requestedPath: "old.md", authority: "stat" },
+				{
+					kind: "exact", side: "remote", requestedPath: "old.md",
+					entity: { path: "old.md", size: 4, mtime: 1, hash: "base", isDirectory: false },
+				},
+				{
+					kind: "exact", side: "local", requestedPath: "new.md",
+					entity: { path: "new.md", size: 11, mtime: 2, hash: "new", isDirectory: false },
+				},
+				{ kind: "absent", side: "remote", requestedPath: "new.md", authority: "stat" },
+			],
+			identityEvidence: [{
+				kind: "rename", side: "local", oldPath: "old.md", newPath: "new.md",
+				isFolder: false, authority: "reported",
+			}],
+			temperature: "hot",
+		};
+
+		const { snapshot } = prepareSyncCycleSnapshot(changeSet, "backend\0root", {
+			isExcluded: (_path, currentSize) => (currentSize ?? 0) > 10,
+		});
+		const admission = admitBatchObservation(snapshot);
+
+		expect(snapshot.entries).toEqual([]);
+		expect(snapshot.observations).toEqual([]);
+		expect(snapshot.evidence).toEqual([]);
+		expect([...snapshot.scope.byEndpoint.keys()]).toEqual([]);
+		expect(admission.failures).toEqual([]);
+		expect(admission.executable.actions).toEqual([]);
+	});
+
+	it("uses current remote size and does not make baseline size sticky", () => {
+		const oversizedRemote: ChangeSet = {
+			entries: [{
+				path: "remote.md",
+				remote: { path: "remote.md", size: 11, mtime: 2, hash: "remote", isDirectory: false },
+			}],
+			observations: [{
+				kind: "exact", side: "remote", requestedPath: "remote.md",
+				entity: { path: "remote.md", size: 11, mtime: 2, hash: "remote", isDirectory: false },
+			}],
+			identityEvidence: [], temperature: "cold",
+		};
+		const historicalOnly: ChangeSet = {
+			entries: [{
+				path: "gone.md",
+				prevSync: { ...baseline("gone.md"), localSize: 11, remoteSize: 11 },
+			}],
+			observations: [
+				{ kind: "absent", side: "local", requestedPath: "gone.md", authority: "stat" },
+				{ kind: "absent", side: "remote", requestedPath: "gone.md", authority: "checkpoint_deleted" },
+			],
+			identityEvidence: [], temperature: "hot",
+		};
+		const shrunkCurrent: ChangeSet = {
+			entries: [{
+				path: "shrunk.md",
+				local: { path: "shrunk.md", size: 4, mtime: 2, hash: "small", isDirectory: false },
+				prevSync: { ...baseline("shrunk.md"), localSize: 11, remoteSize: 11 },
+			}],
+			observations: [{
+				kind: "exact", side: "local", requestedPath: "shrunk.md",
+				entity: { path: "shrunk.md", size: 4, mtime: 2, hash: "small", isDirectory: false },
+			}],
+			identityEvidence: [], temperature: "warm",
+		};
+
+		const remoteSnapshot = prepareSyncCycleSnapshot(oversizedRemote, "backend\0root", {
+			isExcluded: (_path, currentSize) => (currentSize ?? 0) > 10,
+		}).snapshot;
+		const historicalSnapshot = prepareSyncCycleSnapshot(historicalOnly, "backend\0root", {
+			isExcluded: (_path, currentSize) => (currentSize ?? 0) > 10,
+		}).snapshot;
+		const shrunkSnapshot = prepareSyncCycleSnapshot(shrunkCurrent, "backend\0root", {
+			isExcluded: (_path, currentSize) => (currentSize ?? 0) > 10,
+		}).snapshot;
+
+		expect(remoteSnapshot.entries).toEqual([]);
+		expect(remoteSnapshot.observations).toEqual([]);
+		expect([...remoteSnapshot.scope.byEndpoint.keys()]).toEqual([]);
+		expect(historicalSnapshot.entries).toHaveLength(1);
+		expect(historicalSnapshot.observations).toHaveLength(2);
+		expect(historicalSnapshot.scope.byEndpoint.get("gone.md")).toBe("included");
+		expect(shrunkSnapshot.entries).toHaveLength(1);
+		expect(shrunkSnapshot.scope.byEndpoint.get("shrunk.md")).toBe("included");
+	});
+
+	it("propagates a remote rename destination size to its old endpoint", () => {
+		const changeSet: ChangeSet = {
+			entries: [
+				{
+					path: "old.md", prevSync: baseline("old.md"),
+					local: { path: "old.md", size: 4, mtime: 1, hash: "base", isDirectory: false },
+				},
+				{
+					path: "new.md",
+					remote: { path: "new.md", size: 11, mtime: 2, hash: "remote", isDirectory: false },
+				},
+			],
+			observations: [
+				{
+					kind: "exact", side: "local", requestedPath: "old.md",
+					entity: { path: "old.md", size: 4, mtime: 1, hash: "base", isDirectory: false },
+				},
+				{ kind: "absent", side: "remote", requestedPath: "old.md", authority: "checkpoint_deleted" },
+				{ kind: "absent", side: "local", requestedPath: "new.md", authority: "stat" },
+				{
+					kind: "exact", side: "remote", requestedPath: "new.md",
+					entity: { path: "new.md", size: 11, mtime: 2, hash: "remote", isDirectory: false },
+				},
+			],
+			identityEvidence: [{
+				kind: "rename", side: "remote", oldPath: "old.md", newPath: "new.md",
+				isFolder: false, authority: "reported", identityKey: "remote-id",
+			}],
+			temperature: "hot",
+		};
+
+		const { snapshot } = prepareSyncCycleSnapshot(changeSet, "backend\0root", {
+			isExcluded: (_path, currentSize) => (currentSize ?? 0) > 10,
+		});
+
+		expect(snapshot.entries).toEqual([]);
+		expect(snapshot.observations).toEqual([]);
+		expect(snapshot.evidence).toEqual([]);
+		expect([...snapshot.scope.byEndpoint.keys()]).toEqual([]);
+	});
+
 	it.each([
 		{
 			name: "included to excluded as a deletion",

@@ -41,6 +41,7 @@ async function arrange() {
 			path: "note.md", localFs, remoteFs, stateStore, localTracker,
 			mutationBarrier: new LocalMutationBarrier(), target: { kind: "independent" as const },
 			supersede, invalidate, invalidateCycle, requestNormalLifecycle,
+			isExcluded: () => false,
 		},
 	};
 }

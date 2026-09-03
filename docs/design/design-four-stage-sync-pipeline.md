@@ -31,9 +31,9 @@ invariants:
     finalization policy.
   enforcement: test
 - id: INV-004
-  statement: Configured-scope filtering removes excluded paths and cross-scope identity
-    edges before BatchObservation; Admission and later stages cannot observe or branch
-    on them.
+  statement: Configured path and effective mobile-size filtering removes excluded
+    paths and cross-scope identity edges before BatchObservation; LocalChangeTracker,
+    Admission, and later stages cannot observe or branch on them.
   enforcement: test
 boundaries:
   provides:

@@ -7,24 +7,26 @@ Each sync cycle has exactly four top-level responsibility stages:
 1. **Observation** -- `collectChanges()` acquires exact entries, path observations, and normative identity evidence; scope projection and `captureBatchObservation()` freeze those facts without constructing actions.
 2. **Admission** -- `admitBatchObservation()` privately constructs the path-local proposal, builds identity-connected components once, applies conflict and destructive-action policy, assigns every relevant component one disposition and lifecycle membership, and issues the only `AuthorizedSyncPlan`.
 3. **Execution** -- `executePlan()` accepts that authorized plan only, performs its exact effects, and reports exact outcomes without inventing or rerouting actions.
-4. **Commit/finalization** -- per-action state publication records proven successes; `finalizeSyncCycle()` mechanically folds those outcomes with the Admission dispositions, commits a safe checkpoint, and only then retires released evidence and debt.
+4. **Commit/finalization** -- per-action state publication records proven successes; `finalizeSyncCycle()` mechanically folds those outcomes with the Admission dispositions and commits a safe checkpoint last.
 
 These stages describe responsibility owners, not one separately scheduled pass per helper function. Evidence completion, scope projection, and immutable fact capture belong to **Observation**. The path-local decision table, component build, conflict policy, and component-local rename shaping are private to **Admission**. They add no extra network scan merely by being named.
 
 The lower-level cycle sequence within those boundaries is:
 
 1. `collectChanges()` selects HOT/WARM/COLD collection, records authoritative path observations and identity evidence, confirms uncertain absences, and completes required hashes/identity facts.
-2. `applyScope()` removes excluded paths and cross-scope identity edges, then projects mobile and observation completeness over the remaining facts.
+2. `applyScope()` removes configured-path and mobile-size exclusions plus cross-scope identity edges, then projects observation completeness over the remaining facts.
 3. `captureBatchObservation()` fixes included entries, evidence, observations, scope, and namespace without an action carrier.
 4. `admitBatchObservation()` invokes the private path-local `planSync()` helper, then builds evidence-connected components once, shapes and decides each component, and projects the `AuthorizedSyncPlan` while preserving disconnected ordinary proposal order.
 5. `executePlan()` runs only that authorized projection and reports exact completion; each successful action is published through `commitAction()`.
-6. `finalizeSyncCycle()` folds disposition membership with execution completion, commits the checkpoint when safe, then retires released evidence and debt.
+6. `finalizeSyncCycle()` folds disposition membership with execution completion and commits the checkpoint only when safe.
 
 The orchestrator (`SyncOrchestrator.executeSyncOnce()`) only sequences the boundaries. `prepareSyncCycleSnapshot()` projects scope and produces a fact-only `BatchObservation`. The orchestrator passes it once to `admitBatchObservation()` at the authorization cut point; no executable action exists before that call.
 
 File-open priority does not add another set of these stages. It reuses the stored baseline and Admission's exact action projection, while a provider capability supplies only a detached current observation/read. The normal cycle is not re-decided at execution time and does not issue per-component targeted API calls.
 
-**Scope filter (`SyncOrchestrator.isExcluded()`)** — a path is synced only if it passes **both** gates:
+**Scope filter (`SyncOrchestrator.isExcluded()`)** — a path is synced only if it passes
+the configured path gates and, on mobile, its current file size is at or below the
+configured maximum:
 
 1. **Dot-path scope** (`isDotPathOutOfScope`): a dot-prefixed/hidden path (`.airsync`, `.obsidian`, `.git`, …) is in scope only when it sits under a configured `syncDotPaths` root — `settings.syncDotPaths` augmented with the vault's config directory when `enableConfigSync` is on (`getEffectiveSyncDotPaths`, `config-sync.ts`). Normal paths always pass. This is applied symmetrically to local and remote facts before `BatchObservation`; excluded endpoints and identity edges that cross the boundary are discarded.
 2. **Ignore patterns** (`isIgnored`): gitignore-style `ignorePatterns` — likewise augmented with a built-in pattern set (`getEffectiveIgnorePatterns`) prepended when `enableConfigSync` is on while excluding device-specific workspace state. The `syncConfigJsonFiles`, `syncConfigPlugins`, `syncConfigSnippets`, `syncConfigThemes`, and `syncConfigIcons` settings independently add root `*.json`, `plugins/`, `snippets/`, `themes/`, and `icons/`. `community-plugins.json` is classified with `plugins/`, not with generic root JSON, because it is the active community plugin list; it therefore follows `syncConfigPlugins` even when `syncConfigJsonFiles` differs. Root JSON and plugins stay on by default solely for backward compatibility with the pre-toggle Config Sync behavior; all newly introduced subtree scopes default to off and require explicit opt-in. These settings are part of the scope fingerprint, so changing one forces a single cold reconcile and surfaces remote-only files that predate the delta cursor.
@@ -33,7 +35,14 @@ File-open priority does not add another set of these stages. It reuses the store
 - The backend's own metadata path (`INTERNAL_METADATA_PATH` = `.airsync/metadata.json`, `sync/remote-vault.ts`): never synced from either side, even when `.airsync` is opted into `syncDotPaths`. The remote FS hides it too; excluding it here keeps the exclusion symmetric (otherwise a local copy would be pushed, then deleted as a phantom remote deletion).
 - This plugin's own settings file under the config directory (`isOwnPluginDataPath`, `config-sync.ts`): checked regardless of `enableConfigSync`, since a user can opt the config directory into `syncDotPaths` by hand without the toggle. Syncing it would let one device's backend credentials/vaultId overwrite another's — a soft `ignorePatterns` entry alone can't guarantee this (gitignore's last-match-wins semantics would let a user's own pattern override it), so it's enforced as a reserved path instead.
 
-The same `isExcluded()` gates the vault-event dirty tracking (scheduler), so push and pull use one scope rule across hot and cold paths.
+The same metadata-aware `isExcluded()` gates vault-event dirty tracking, collected
+facts before `BatchObservation`, and file-open priority content I/O. A file rename's
+current size applies to both endpoint spellings. If a folder contains both eligible
+and oversized children, the scheduler expands it to eligible file changes instead of
+retaining a native folder move that could carry the excluded child. Baseline size is
+not sticky: only currently existing local/remote entities determine size eligibility.
+The effective mobile threshold is part of the scope fingerprint, so widening it forces
+one cold reconcile for unchanged remote files behind the delta cursor.
 
 `runSync()` is gated on a connected remote (`remoteFs` present), layout-ready, and not-connecting; it serializes via an `AsyncMutex`. A call arriving while a sync runs sets `syncPending` and returns; the lock holder re-runs in a `do/while (syncPending)` loop. A tracker snapshot is acknowledged only after a clean, terminal cycle; an unresolved rename input remains in that in-memory input buffer for the next invocation. Each cycle (`executeSyncOnce`) is wrapped by `executeWithRetry`, which normally retries up to `MAX_RETRIES = 3` with exponential backoff plus jitter (`2^(attempt-1) * 1000 * (0.5 + Math.random())` ms), honoring `Retry-After` (×1000) on 429/403. `AuthError`, a non-rate-limit 403, and 404 abort without retry. A pre-Admission failure reports an error and causes the next normal trigger to use COLD observation; no evidence or recovery instruction is persisted.
 
@@ -102,7 +111,7 @@ Uses `AsyncPool(10)` for parallel local reads. Per-file errors are caught and sk
 
 After initial-match enrichment, `enrichHashesForRenames()` runs for local rename destinations derived from `ChangeSet.identityEvidence`. In warm/cold mode, `list()` returns `hash: ""`, but Admission's local-origin rename proof needs SHA-256 content equivalence. This step calls `stat()` on exact local destination entries. Only the `hash` field is updated; `mtime` and `size` from `list()` are preserved.
 
-Before hash enrichment, `collectChanges()` creates observations for every rename endpoint, confirms unknown endpoints, confirms the opposite side of carried debt/evidence, and in WARM/COLD confirms every baseline absence. A thrown `stat()` aborts the attempt; it is never converted to absence. Hash enrichment then touches exact entries only, and `completeIdentityEvidence()` adds same-root stable-ID occurrences.
+Before hash enrichment, `collectChanges()` creates observations for every rename endpoint, confirms unknown endpoints and their opposite side, and in WARM/COLD confirms every baseline absence. A thrown `stat()` aborts the attempt; it is never converted to absence. Hash enrichment then touches exact entries only, and `completeIdentityEvidence()` adds same-root stable-ID occurrences.
 
 ## Change detection
 
@@ -207,18 +216,17 @@ ordinary work retains proposal order, while a proved component replacement occup
 that component's place.
 `executePlan()` cannot accept a plain proposal through the supported typed API.
 
-Endpoint dispositions are `included`, `mobile_deferred`, or `unknown`.
-Any unknown/mobile endpoint and any incomplete folder descendant mapping fails Admission. The
+Endpoint dispositions are `included` or `unknown`. Deterministic path and mobile-size
+exclusions have no engine representation. Any unknown endpoint and any incomplete folder descendant mapping fails Admission. The
 full local/remote direction matrix and rejected identity inferences are recorded in
 [ADR 0008](adr/0008-logical-identity-admission-fails-closed.md).
 
-Before admitted I/O, local reported edges are upserted into the SyncState v6 rename-debt
-store under the snapshot's backend/root namespace. `finalizeSyncCycle()` does not
-re-evaluate scope, observations, identities, aliases, or action shapes: it folds the
-snapshot-bound dispositions with succeeded action membership. A safe checkpoint commits
-first; only then are mechanically releasable debt and session evidence retired.
-Disconnect/root switch waits on the orchestrator mutex before clearing state, so an
-old-target in-flight cycle cannot recreate debt after teardown.
+`finalizeSyncCycle()` does not re-evaluate scope, observations, identities, aliases,
+or action shapes: it folds the snapshot-bound dispositions with succeeded action
+membership. A safe checkpoint commits last. No pending rename, excluded path, or
+recovery instruction is persisted. Disconnect/root switch waits on the orchestrator
+mutex before clearing state, so an old-target in-flight cycle cannot publish state
+after teardown.
 
 ### Observability
 

@@ -11,6 +11,7 @@ import type { SyncAction } from "./types";
 export type OpenedFilePriorityResult =
 	| "applied"
 	| "already_current"
+	| "scope_filtered"
 	| "deferred_to_batch"
 	| "failed_retryable";
 
@@ -26,6 +27,7 @@ interface OpenedFilePriorityContext {
 	invalidate(action: SyncAction): boolean;
 	invalidateCycle(): void;
 	requestNormalLifecycle(): void;
+	isExcluded(path: string, currentSize?: number): boolean;
 	logger?: Logger;
 }
 
@@ -39,13 +41,12 @@ export async function syncOpenedFilePriority(
 	const expectedGeneration = ctx.localTracker.generation(ctx.path);
 
 	try {
-		const [localBefore, observed] = await Promise.all([
-			ctx.localFs.stat(ctx.path),
-			ctx.remoteFs.priority.observe({
+		const localBefore = await ctx.localFs.stat(ctx.path);
+		if (localBefore && ctx.isExcluded(ctx.path, localBefore.size)) return filterTarget(ctx);
+		const observed = await ctx.remoteFs.priority.observe({
 				path: ctx.path,
 				identityKey: expectedRecord.remoteIdentityKey,
-			}),
-		]);
+			});
 		if (!localBefore || localBefore.isDirectory || hasChanged(localBefore, expectedRecord)) {
 			invalidateTarget(ctx);
 			return "deferred_to_batch";
@@ -54,6 +55,7 @@ export async function syncOpenedFilePriority(
 			invalidateTarget(ctx);
 			return "deferred_to_batch";
 		}
+		if (ctx.isExcluded(ctx.path, observed.entity.size)) return filterTarget(ctx);
 
 		if (!hasRemoteChanged(observed.entity, expectedRecord)) {
 			const currentRecord = buildSyncRecord(localBefore, observed.entity, ctx.path);
@@ -129,6 +131,14 @@ function invalidateTarget(ctx: OpenedFilePriorityContext): void {
 	if (ctx.target.kind === "superseding") ctx.invalidate(ctx.target.action);
 	ctx.invalidateCycle();
 	ctx.requestNormalLifecycle();
+}
+
+function filterTarget(ctx: OpenedFilePriorityContext): "scope_filtered" {
+	if (ctx.target.kind === "superseding") {
+		ctx.invalidate(ctx.target.action);
+		ctx.invalidateCycle();
+	}
+	return "scope_filtered";
 }
 
 function deferToBatch(ctx: OpenedFilePriorityContext): "deferred_to_batch" {
