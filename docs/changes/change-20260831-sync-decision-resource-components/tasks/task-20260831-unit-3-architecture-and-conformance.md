@@ -2,7 +2,7 @@
 id: task-20260831-unit-3-architecture-and-conformance
 kind: task
 title: unit-3-architecture-and-conformance
-status: todo
+status: done
 created: '2026-08-31'
 priority: normal
 effort: medium
@@ -16,10 +16,8 @@ pr: null
 tags: []
 owners: []
 relations:
-- type: partOf
-  target: change-20260831-sync-decision-resource-components
-- type: dependsOn
-  target: task-20260831-unit-2-pipeline-and-lifecycle-migration
+- {type: partOf, target: change-20260831-sync-decision-resource-components}
+- {type: dependsOn, target: task-20260831-unit-2-pipeline-and-lifecycle-migration}
 source_paths: []
 change: change-20260831-sync-decision-resource-components
 summary: Promote the verified single-owner boundary, record the proposed ADR disposition,
@@ -28,6 +26,7 @@ max_diff_loc: 300
 pinned_context:
 - docs/changes/change-20260831-sync-decision-resource-components/tasks/task-20260831-unit-3-architecture-and-conformance.md
 - docs/changes/change-20260831-sync-decision-resource-components/design-plan
+updated: '2026-09-03'
 ---
 
 ## Responsibility
@@ -45,3 +44,13 @@ Promote the verified single-owner boundary, record the proposed ADR disposition,
 - AC-SD-002
 - AC-SD-006
 - AC-SD-008
+
+
+{% transition from="todo" to="in_progress" date="2026-09-03" %}
+reconcile-completed-delivery-history
+{% /transition %}
+
+
+{% transition from="in_progress" to="done" date="2026-09-03" %}
+implemented-and-verified-in-pr-57
+{% /transition %}
