@@ -22,6 +22,7 @@ export type {
 } from "./local-rename-admission";
 import { renameEvidenceKey, renameOptimizerView } from "./identity-evidence";
 import {
+	canUseOrdinaryLocalFolderActions,
 	evaluateIdentityComponent,
 	type AdmissionFailureReason as IdentityAdmissionFailureReason,
 } from "./identity-component-decision";
@@ -175,6 +176,7 @@ export function admitDestructivePlan(
 	);
 	const authorizedActions: SyncAction[] = [];
 	const dispositions: AdmissionDisposition[] = [];
+	const resolvedLocalRenameInputs = new Set<string>();
 	for (const component of components) {
 		const normalizedRenameState = normalizeFreshLocalRename(component, snapshot.scope);
 		if (normalizedRenameState) {
@@ -211,17 +213,28 @@ export function admitDestructivePlan(
 		const effectiveEvidence = component.evidence.filter((item) =>
 			item.kind !== "rename" || item.side !== "local" ||
 			!nonBindingCandidates.has(renameEvidenceKey(item)));
-		const decidedComponent: AdmissionComponent = {
+		let decidedComponent: AdmissionComponent = {
 			...component,
 			actions: shapeIdentityComponentActions(component.actions, effectiveEvidence),
 			evidence: effectiveEvidence,
 		};
+		let reasons = evaluateIdentityComponent(decidedComponent, snapshot.scope);
+		if (canUseOrdinaryLocalFolderActions(
+			{ ...component, evidence: effectiveEvidence }, reasons, snapshot.scope,
+		)) {
+			decidedComponent = { ...component, evidence: effectiveEvidence };
+			reasons = [];
+			for (const evidence of effectiveEvidence) {
+				if (evidence.kind === "rename" && evidence.side === "local") {
+					resolvedLocalRenameInputs.add(renameEvidenceKey(evidence));
+				}
+			}
+		}
 		const shared = {
 			paths: [...component.paths].sort(),
 			actions: [...decidedComponent.actions],
 			evidence: [...component.evidence].sort(compareEvidence),
 		};
-		const reasons = evaluateIdentityComponent(decidedComponent, snapshot.scope);
 		if (reasons.length > 0) {
 			dispositions.push({
 				kind: "failed",
@@ -253,6 +266,7 @@ export function admitDestructivePlan(
 			evidence.kind === "rename" && evidence.side === "local" &&
 			[...snapshot.baselinePaths].some((path) =>
 				path === evidence.oldPath || path.startsWith(`${evidence.oldPath}/`)) &&
+			!resolvedLocalRenameInputs.has(renameEvidenceKey(evidence)) &&
 			!authorizedActions.some((action) => actionCoversRename(action, evidence))),
 	};
 }
