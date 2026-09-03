@@ -5,11 +5,27 @@ title: Preserve case-only rename continuity across checkpoints
 status: active
 created: '2026-09-04'
 profile: sdd@1
-intent: <変更理由と期待結果>
-outcomes: []
-scope: []
-non_goals: []
-change_classes: []
+intent: Restore case-only rename continuity by returning cache persistence to ADR 0001's two-authority, commit-last model.
+outcomes:
+- Clean checkpoints persist the complete final remote metadata projection with the remote cursor.
+- Successful admitted file I/O commits its SyncRecord independently at the file boundary.
+- Existing affected vaults cold-start only derived metadata and retain SyncRecords.
+- The closed authority set and reviewed SyncOrchestrator field inventory are mechanically guarded.
+scope:
+- Complete cache snapshot at clean checkpoint
+- Removal of touchedPaths and pendingFullPersist
+- Metadata cache version 3 to 4 cold-start
+- Two-authority documentation and source enforcement
+non_goals:
+- New Admission or identity algorithm
+- COLD relation reconstruction or additional recovery state
+- SyncState database cold-start or SyncRecord migration
+- Broad cursor lifecycle or Orchestrator refactor
+change_classes:
+- behavior
+- responsibility
+- boundary
+- invariant
 governance:
   gate: auto
   reasons: []
@@ -28,12 +44,29 @@ unresolved_decisions: []
 tags: []
 owners: []
 relations: []
-source_paths: []
-summary: Ensure executor-origin cache mutations and immutable remote identity continuity
-  converge case-only renames across checkpoints and cold recovery.
+source_paths:
+- src/fs/caching/remote-fs.ts
+- src/store/metadata-store.ts
+- src/sync/state-committer.ts
+- src/sync/sync-cycle-finalization.ts
+- src/sync/orchestrator.ts
+- AGENTS.md
+- docs/code-enforcement.md
+- docs/adr/0001-metadata-cache-is-subordinate-to-commit-last.md
+summary: Persist a complete subordinate remote cache only with a clean cursor checkpoint,
+  retain per-file SyncRecords, and guard the exact two-authority boundary.
 updated: '2026-09-04'
 ---
 
 ## Summary
+
+The remote cursor and per-file `SyncRecord` are the only authoritative durable sync
+states. A checkpoint is the operation that commits the cursor after a wholly clean
+cycle, not a third state. The remote metadata cache is a replaceable projection and is
+serialized completely in the same transaction as that cursor.
+
+The repair removes `touchedPaths` and `pendingFullPersist`, cold-starts only metadata
+cache version 3 as version 4, and adds documentation plus a source guard so new durable
+authorities or `SyncOrchestrator` fields cannot be introduced silently.
 
 ## Closure Notes

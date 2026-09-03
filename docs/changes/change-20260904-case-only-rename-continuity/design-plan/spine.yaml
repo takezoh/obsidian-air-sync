@@ -3,97 +3,80 @@ version: 2
 granularity_profile: boundary-complete
 
 scope_expansion_signals:
-  - id: scope-signal-shared-cache-projection
+  - id: scope-signal-shared-cache-owner
     kind: shared_boundary
-    target_ref: contract-final-cache-projection
-    witness: The executor-origin checkpoint omission is inherited through CachingRemoteFs, so a Google-only folder patch would leave Dropbox and OneDrive with the same stale projection failure.
-    requirement_refs: [FR-CCR-01, FR-CCR-02]
-    authority_refs: [adr-0001-commit-last-cache, adr-0002-backends-verified-by-shared-behaviour-contracts]
-  - id: scope-signal-folder-descendant-proof
-    kind: critic_induced_contract
-    target_ref: contract-actionless-rename-terminal
-    witness: SyncRecord is file-scoped and supplies no committed folder-root identity, requiring a complete managed-descendant identity set for safe folder terminality.
-    requirement_refs: [FR-CCR-05, FR-CCR-06, FR-CCR-08]
-    authority_refs: [adr-0008-fail-closed-identity, adr-stateless-current-recovery]
-  - id: scope-signal-cold-relation-recovery
-    kind: critic_induced_contract
-    target_ref: contract-contextual-identity-continuity
-    witness: Existing affected vaults can enter COLD after reported rename evidence is gone, so current-state relation reconstruction and baseline convergence must be specified without durable intent.
-    requirement_refs: [FR-CCR-07, FR-CCR-08, NFR-CCR-01]
-    authority_refs: [adr-stateless-current-recovery, adr-four-stage-sync]
+    target_ref: contract-complete-cache-checkpoint
+    witness: Executor and delta paths mutate one inherited live cache, so the fix belongs at its shared clean-checkpoint owner rather than in one provider rename path.
+    requirement_refs: [FR-CCR-02, FR-CCR-03]
+    authority_refs: [adr-0001-commit-last-cache, adr-0002-shared-backends]
+  - id: scope-signal-state-rule-enforcement
+    kind: post_consultation_decision
+    target_ref: contract-state-boundary-enforcement
+    witness: The defect followed silent growth of state ownership, so the repair must make the original closed authority and Orchestrator field boundaries mechanically visible.
+    requirement_refs: [FR-CCR-01, NFR-CCR-01]
+    authority_refs: [adr-0001-commit-last-cache]
 
 requirements:
   - id: FR-CCR-01
-    type: event_driven
+    type: invariant
     priority: must
-    statement: When a clean cycle commits, atomically persist final live remote-cache values or absences from both delta acquisition and successful executor mutations with cursor and scope.
+    statement: "Keep exactly two authoritative durable sync states: the remote cursor committed after a wholly clean cycle and each terminal SyncRecord committed after successful admitted file I/O."
   - id: FR-CCR-02
     type: event_driven
     priority: must
-    statement: When write, mkdir, rename, delete, implicit parent creation, or folder subtree mutation changes a caching backend cache, register every affected old/new root, descendant, and parent path in one deferred checkpoint projection on all three backends.
+    statement: When a cycle is wholly clean, snapshot the complete final live remote metadata cache under its mutex and atomically replace it with the committed remote cursor.
   - id: FR-CCR-03
     type: unwanted
     priority: must
-    statement: If action, Admission, or checkpoint persistence fails, advance neither durable file map nor cursor/scope and retain the in-memory projection footprint until clean commit, reset, or full-scan supersession.
+    statement: Remove touchedPaths and pendingFullPersist without adding affected-path, pending-full, receipt, relation, or recovery correctness state.
   - id: FR-CCR-04
     type: event_driven
     priority: must
-    statement: When a rename or alias relation needs continuity proof, preserve committed/current same-root identity occurrences cycle-locally without emitting same-path evidence for unrelated ordinary unchanged rows.
+    statement: On first open by the repaired release, cold-start metadata cache version 3 as version 4 while preserving SyncState version 7 and all SyncRecords.
   - id: FR-CCR-05
-    type: conditional
-    priority: must
-    statement: When evaluating a folder relation, use the complete non-empty suffix-preserving one-to-one set of included managed descendant file identities as folder continuity without inventing a folder-root identity.
-  - id: FR-CCR-06
-    type: event_driven
-    priority: must
-    statement: When endpoints authoritatively converge and file or folder continuity is proved, resolve a zero-action reported rename without filesystem I/O and permit clean finalization.
-  - id: FR-CCR-07
-    type: state_driven
-    priority: must
-    statement: When COLD current state uniquely proves an old-to-new case-only folder relation after reported evidence is gone, reconstruct it and authorize only existing match and cleanup bookkeeping needed to converge SyncRecord paths.
-  - id: FR-CCR-08
-    type: unwanted
-    priority: must
-    statement: If identity is foreign, missing, duplicate, incomplete, ambiguously case-folded, or linked by an unrelated alias, authorize no destructive interpretation, report an existing failure reason, and withhold the checkpoint.
-  - id: NFR-CCR-01
     type: compatibility
     priority: must
-    statement: Preserve four-stage ownership and existing public and persisted contracts without a journal, operation intent, receipt, folder identity, schema migration, new evidence or status vocabulary, Orchestrator policy, or ordinary full-cache rewrite.
+    statement: Keep identity_postcondition_unproven as an unchanged cycle-local Admission reason and add no identity or Admission algorithm.
+  - id: NFR-CCR-01
+    type: maintainability
+    priority: must
+    statement: Pin the exact two-authority catalog and reviewed SyncOrchestrator instance-field inventory through coordinated documentation and a normal-gate source contract.
 
 components:
-  - id: component-remote-checkpoint-projection
+  - id: component-cache-checkpoint
     kind: existing
-    contract_refs: [contract-final-cache-projection]
+    contract_refs: [contract-complete-cache-checkpoint, contract-metadata-only-cold-start]
     paths:
       - src/fs/caching/remote-fs.ts
-      - src/fs/caching/metadata-cache.ts
-      - src/fs/googledrive/index.ts
-      - src/fs/dropbox/index.ts
-      - src/fs/onedrive/index.ts
       - src/store/metadata-store.ts
-  - id: component-contextual-identity-evidence
+      - src/fs/caching/remote-fs.contract.test.ts
+      - tests/fs/contracts/caching-remote-fs.contract.ts
+      - src/fs/googledrive/index.test.ts
+      - src/store/metadata-store.test.ts
+  - id: component-file-commit
     kind: existing
-    contract_refs: [contract-contextual-identity-continuity]
+    contract_refs: [contract-state-boundary-enforcement]
     paths:
-      - src/sync/change-detector.ts
-      - src/sync/identity-evidence.ts
-      - src/sync/path-observation.ts
-      - src/sync/sync-cycle-planning.ts
-  - id: component-actionless-rename-admission
-    kind: existing
-    contract_refs: [contract-actionless-rename-terminal]
+      - src/sync/state-committer.ts
+      - src/sync/state.ts
+      - src/sync/sync-cycle-finalization.ts
+  - id: component-state-boundary-guard
+    kind: planned
+    contract_refs: [contract-state-boundary-enforcement]
     paths:
-      - src/sync/identity-component-decision.ts
-      - src/sync/plan-admission-graph.ts
-      - src/sync/plan-admission.ts
+      - AGENTS.md
+      - docs/adr/0001-metadata-cache-is-subordinate-to-commit-last.md
+      - docs/code-enforcement.md
+      - src/sync/orchestrator.ts
+      - src/sync/state-boundary.test.ts
 
 contracts:
-  - id: contract-final-cache-projection
-    dimension: origin-independent atomic final cache projection
-    owner: component-remote-checkpoint-projection
-    requirement_refs: [FR-CCR-01, FR-CCR-02, FR-CCR-03, NFR-CCR-01]
-    unit_refs: ["Unit 1 — Final cache projection", "Unit 3 — Admission and integration closure"]
-    adr_refs: [adr-0001-commit-last-cache, adr-0002-backends-verified-by-shared-behaviour-contracts, adr-stateless-current-recovery]
+  - id: contract-complete-cache-checkpoint
+    dimension: complete subordinate projection at the clean cursor boundary
+    owner: component-cache-checkpoint
+    requirement_refs: [FR-CCR-01, FR-CCR-02, FR-CCR-03]
+    unit_refs: ["Unit 1 — Complete final cache snapshot", "Unit 3 — State ownership enforcement and integration"]
+    adr_refs: [adr-0001-commit-last-cache, adr-0002-shared-backends]
     verification:
       - id: verify-cache-projection-shared
         tier: T1
@@ -103,37 +86,28 @@ contracts:
         command: npm test -- --run src/fs/googledrive/index.test.ts
       - id: verify-cache-persist-failure
         tier: T1
-        command: npm test -- --run src/fs/googledrive/index.test.ts src/sync/orchestrator.test.ts
-      - id: verify-full-gate
-        tier: T1
-        command: npm run lint && npm run lint:bot-repro && npm run build && npm run test:coverage
+        command: npm test -- --run src/fs/caching/remote-fs.contract.test.ts
     partition:
       outcomes: [determinate, inconclusive]
-      default_policy: Record only cache updates that actually apply, commit final present or absent values atomically, and retain the prior durable checkpoint and pending footprint on failure.
+      default_policy: Persist one complete live snapshot only on clean finalization; propagate failure and leave the prior durable cursor/cache transaction unchanged.
     discretion:
-      - id: discretion-cache-touch-carrier
-        unit_ref: "Unit 1 — Final cache projection"
-        question: Choose the private helper and container-update shape used to register exact affected paths in the existing deferred Set.
+      - id: discretion-private-snapshot-helper
+        unit_ref: "Unit 1 — Complete final cache snapshot"
+        question: Choose the private helper shape for obtaining the complete live cache snapshot under the existing mutex.
         scope:
-          files:
-            - src/fs/caching/remote-fs.ts
-            - src/fs/caching/metadata-cache.ts
-            - src/fs/googledrive/index.ts
-            - src/fs/dropbox/index.ts
-            - src/fs/onedrive/index.ts
-          component: component-remote-checkpoint-projection
+          files: [src/fs/caching/remote-fs.ts]
+          component: component-cache-checkpoint
           visibility: private
         escalate_when:
-          - The implementation requires a public API, persisted footprint, Orchestrator input, or every-action full-cache scan.
-          - The representation cannot cover implicit parents and both old/new folder descendant paths in the cache-mutation critical section.
+          - The implementation needs a new field, public API, incremental write-set, or second persistence boundary.
         constraints:
-          - Reuse the existing deferred touched-path lifecycle and clear it only after successful commit, reset, or full-scan supersession.
-          - Do not mark a stale-guarded cache update that did not apply.
+          - Use the existing atomic metadata store transaction.
+          - Snapshot every live cache entry regardless of mutation origin.
         preserves:
-          contract_refs: [contract-final-cache-projection]
-          invariant_refs: [invariant-cache-cursor-colocation, invariant-projection-origin-independent]
-          observable_refs: [observable-restarted-cache-equals-live-final, observable-provider-self-delta-does-not-replay-stale-path]
-        verification_refs: [verify-cache-projection-shared, verify-google-restart-projection]
+          contract_refs: [contract-complete-cache-checkpoint]
+          invariant_refs: [invariant-two-authorities, invariant-no-pending-cache-state]
+          observable_refs: [observable-restart-restores-final-cache, observable-failed-checkpoint-restores-prior-cache]
+        verification_refs: [verify-cache-projection-shared, verify-google-restart-projection, verify-cache-persist-failure]
         difficulty_inputs:
           decision_reasoning: local_tradeoff
           boundary_reach: component
@@ -141,214 +115,182 @@ contracts:
           reversibility: bounded
           verification_strength: discriminating
           runtime_risk: data_loss
-          coupling: coupled_within_unit
+          coupling: independent
           grounding: evidenced
-  - id: contract-contextual-identity-continuity
-    dimension: sparse cycle-local identity facts and unique COLD folder relation reconstruction
-    owner: component-contextual-identity-evidence
-    requirement_refs: [FR-CCR-04, FR-CCR-05, FR-CCR-07, FR-CCR-08, NFR-CCR-01]
-    unit_refs: ["Unit 2 — Contextual folder continuity", "Unit 3 — Admission and integration closure"]
-    adr_refs: [adr-0008-fail-closed-identity, adr-four-stage-sync, adr-stateless-current-recovery]
+  - id: contract-metadata-only-cold-start
+    dimension: one-time derived metadata reset with authoritative baseline retention
+    owner: component-cache-checkpoint
+    requirement_refs: [FR-CCR-04, FR-CCR-05]
+    unit_refs: ["Unit 2 — Metadata-only versioned cold-start", "Unit 3 — State ownership enforcement and integration"]
+    adr_refs: [adr-0001-commit-last-cache, adr-0008-fail-closed-identity]
     verification:
-      - id: verify-contextual-identity-evidence
+      - id: verify-metadata-version-drop
         tier: T1
-        command: npm test -- --run src/sync/identity-evidence.test.ts
-      - id: verify-cold-folder-reconstruction
+        command: npm test -- --run src/store/metadata-store.test.ts
+      - id: verify-sync-record-retention
         tier: T1
-        command: npm test -- --run src/sync/change-detector.test.ts src/sync/identity-evidence.test.ts
-      - id: verify-ordinary-continuity-suppressed
+        command: npm test -- --run src/sync/state.test.ts
+      - id: verify-ordinary-cold-rebuild
         tier: T1
-        command: npm test -- --run src/sync/identity-evidence.test.ts src/sync/change-detector.test.ts
+        command: npm test -- --run src/sync/orchestrator.test.ts
     partition:
-      outcomes: [determinate, unknown, conflicting, inconclusive]
-      default_policy: Emit no inferred folder relation unless one complete included managed-descendant identity set selects exactly one case-only root mapping; preserve existing facts so every other state fails closed in Admission.
+      outcomes: [determinate, inconclusive]
+      default_policy: Drop and recreate only prior-version derived metadata; retain SyncState and enter the existing no-checkpoint COLD path.
+    discretion: []
+  - id: contract-state-boundary-enforcement
+    dimension: closed authority and orchestrator state inventory
+    owner: component-state-boundary-guard
+    requirement_refs: [FR-CCR-01, FR-CCR-03, FR-CCR-05, NFR-CCR-01]
+    unit_refs: ["Unit 3 — State ownership enforcement and integration"]
+    adr_refs: [adr-0001-commit-last-cache, adr-0008-fail-closed-identity]
+    verification:
+      - id: verify-state-boundary-source-contract
+        tier: T1
+        command: npm test -- --run src/sync/state-boundary.test.ts
+      - id: verify-full-gate
+        tier: T1
+        command: "npm run lint && npm run lint:bot-repro && npm run build && npm run test:coverage"
+    partition:
+      outcomes: [determinate, conflicting]
+      default_policy: Reject authority-catalog, SyncOrchestrator-field, or pending-cache-owner drift until the governing architecture is revised explicitly.
     discretion:
-      - id: discretion-folder-continuity-grouping
-        unit_ref: "Unit 2 — Contextual folder continuity"
-        question: Choose the private map/helper decomposition for grouping descendant identities by case-folded root and exact suffix.
+      - id: discretion-source-parser
+        unit_ref: "Unit 3 — State ownership enforcement and integration"
+        question: Choose a deterministic source parsing mechanism for the exact instance-field inventory.
         scope:
-          files:
-            - src/sync/change-detector.ts
-            - src/sync/identity-evidence.ts
-          component: component-contextual-identity-evidence
+          files: [src/sync/state-boundary.test.ts]
+          component: component-state-boundary-guard
           visibility: private
         escalate_when:
-          - The implementation needs a new evidence/public type, persisted relation, filesystem read in Admission, or an all-pairs search.
-          - The grouping cannot reject empty, partial, duplicate, foreign, multi-root, or non-suffix-preserving sets.
+          - The guard requires production runtime metadata, a broad lint disable, or a non-deterministic parser.
         constraints:
-          - Reuse stable_identity and RenameEvidence with current_state authority.
-          - Keep unrelated ordinary same-path records out of the evidence graph.
+          - Run in the existing unit-test gate without network access.
+          - Report the added or removed field names on mismatch.
         preserves:
-          contract_refs: [contract-contextual-identity-continuity, contract-actionless-rename-terminal]
-          invariant_refs: [invariant-identity-opaque-same-root, invariant-folder-proof-complete]
-          observable_refs: [observable-ordinary-same-path-sparse, observable-cold-case-relation-reconstructed]
-        verification_refs: [verify-contextual-identity-evidence, verify-cold-folder-reconstruction]
+          contract_refs: [contract-state-boundary-enforcement]
+          invariant_refs: [invariant-two-authorities, invariant-orchestrator-field-inventory]
+          observable_refs: [observable-unreviewed-state-drift-fails]
+        verification_refs: [verify-state-boundary-source-contract]
         difficulty_inputs:
-          decision_reasoning: multi_constraint
+          decision_reasoning: local_tradeoff
           boundary_reach: component
           context_scope: files
           reversibility: bounded
           verification_strength: discriminating
-          runtime_risk: data_loss
-          coupling: shared_across_units
+          runtime_risk: normal
+          coupling: independent
           grounding: evidenced
-  - id: contract-actionless-rename-terminal
-    dimension: Admission-only terminal and bookkeeping outcome for file and folder rename continuity
-    owner: component-actionless-rename-admission
-    requirement_refs: [FR-CCR-05, FR-CCR-06, FR-CCR-07, FR-CCR-08, NFR-CCR-01]
-    unit_refs: ["Unit 2 — Contextual folder continuity", "Unit 3 — Admission and integration closure"]
-    adr_refs: [adr-0008-fail-closed-identity, adr-four-stage-sync, adr-stateless-current-recovery]
-    verification:
-      - id: verify-actionless-identity-partition
-        tier: T1
-        command: npm test -- --run src/sync/plan-admission.test.ts
-      - id: verify-cold-recovery-integration
-        tier: T1
-        command: npm test -- --run src/sync/orchestrator.test.ts
-      - id: verify-case-only-live-fidelity
-        tier: T2
-        command: npm run test:e2e
-    partition:
-      outcomes: [determinate, unknown, conflicting, inconclusive]
-      default_policy: Resolve only complete endpoint and identity proof, authorize only exact match and cleanup for proved COLD baseline convergence, and otherwise retain the existing specific fail-closed reason with no checkpoint.
-    discretion: []
 
 adrs:
   - id: adr-0001-commit-last-cache
     status: accepted
-    decision_input_refs: [decision-input-checkpoint-projection-strategy, decision-input-checkpoint-projection]
-  - id: adr-0002-backends-verified-by-shared-behaviour-contracts
+    decision_input_refs: [decision-input-authority-ownership, decision-input-checkpoint-projection, decision-input-existing-vault-recovery]
+  - id: adr-0002-shared-backends
     status: accepted
     decision_input_refs: [decision-input-provider-coverage]
-  - id: adr-0003-opt-in-e2e-validates-fakes-against-real-backends
-    status: accepted
-    decision_input_refs: [decision-input-provider-coverage, decision-input-production-google-direction]
   - id: adr-0008-fail-closed-identity
     status: accepted
-    decision_input_refs: [decision-input-continuity-carrier, decision-input-actionless-status, decision-input-actionless-partition]
-  - id: adr-four-stage-sync
-    status: accepted
-    decision_input_refs: [decision-input-continuity-carrier, decision-input-actionless-status, decision-input-actionless-partition]
-  - id: adr-stateless-current-recovery
-    status: accepted
-    decision_input_refs: [decision-input-persisted-recovery, decision-input-production-google-direction, decision-input-actionless-partition]
+    decision_input_refs: [decision-input-admission-scope]
 
 units:
-  - title: "Unit 1 — Final cache projection"
-    chunk: cache-projection
-    contract_refs: [contract-final-cache-projection]
+  - title: "Unit 1 — Complete final cache snapshot"
+    chunk: complete-cache-checkpoint
+    contract_refs: [contract-complete-cache-checkpoint]
     files:
       - src/fs/caching/remote-fs.ts
-      - src/fs/caching/metadata-cache.ts
-      - src/fs/googledrive/index.ts
-      - src/fs/dropbox/index.ts
-      - src/fs/onedrive/index.ts
+      - src/fs/caching/remote-fs.contract.test.ts
+      - tests/fs/contracts/caching-remote-fs.contract.ts
+      - tests/fs/remote-backend-contracts.test.ts
       - src/fs/googledrive/index.test.ts
-      - tests/fs/contracts/caching-remote-fs.contract.ts
-      - tests/fs/remote-backend-contracts.test.ts
-    depends_on: []
-    acceptance:
-      - A clean restart restores final live path and identity projection after write, mkdir, rename, delete, implicit-parent, and subtree mutations.
-      - Google Drive, Dropbox, and OneDrive pass the same central caching contract.
-      - Failed persistence advances neither map nor cursor and retains the pending footprint.
-    objective: Extend the existing CachingRemoteFs deferred projection to every successful cache mutation origin without adding state or another owner.
-    output_format: TypeScript cache bookkeeping and focused/shared Vitest regressions.
-    tool_guidance: Start from the Google restart RED, register exact paths at each live-cache mutation seam, then apply the shared contract to the three-backend matrix.
-    task_boundaries: Do not change MetadataStore schema, IncrementalCheckpoint API, Orchestrator, executor ordering, provider retry behavior, or ordinary incremental complexity.
-    decision_closure_reason: Projection owner, mutation families, atomic boundary, failure behavior, and cost are fixed; only private helper shape is delegated.
-  - title: "Unit 2 — Contextual folder continuity"
-    chunk: observation-admission
-    contract_refs: [contract-contextual-identity-continuity, contract-actionless-rename-terminal]
-    files:
-      - src/sync/change-detector.ts
-      - src/sync/change-detector.test.ts
-      - src/sync/identity-evidence.ts
       - src/sync/identity-evidence.test.ts
-      - src/sync/identity-component-decision.ts
       - src/sync/plan-admission.test.ts
+      - src/sync/orchestrator.test.ts
     depends_on: []
     acceptance:
-      - Reported target X/X and X/Y facts remain distinguishable while unrelated same-path rows emit no evidence.
-      - A unique complete non-empty descendant set reconstructs one current_state folder relation from COLD baseline/current facts.
-      - Empty, partial, duplicate, foreign, multi-root, missing-identity, and unrelated-alias variants authorize no destructive action.
-    objective: Supply and decide the minimum cycle-local file/folder identity proof for reported self echoes and relation-loss recovery.
-    output_format: TypeScript Observation and Admission logic with paired pure Vitest counterexamples.
-    tool_guidance: Extend the existing WARM/COLD case inference and stable_identity completion, then make evaluateIdentityComponent consume the complete set; keep all negative cases paired with the positive fixture.
-    task_boundaries: Do not add evidence/action/status kinds, persisted folder identity, Admission I/O, path/content identity, component-wide alias exceptions, or Orchestrator policy.
-    decision_closure_reason: Carrier, relation authority, complete-set proof, terminal/failure partition, and state-only recovery shape are fixed; only private grouping decomposition is delegated.
-  - title: "Unit 3 — Admission and integration closure"
-    chunk: integration-docs
-    contract_refs: [contract-final-cache-projection, contract-contextual-identity-continuity, contract-actionless-rename-terminal]
+      - Every clean checkpoint persists the complete final live cache with the cursor.
+      - Restart after executor rename restores no stale old-casing path.
+      - touchedPaths and pendingFullPersist are absent and no equivalent pending field is added.
+      - Speculative Admission regressions for this incident are removed without production Admission changes.
+    objective: Replace origin-sensitive incremental cache bookkeeping with the one complete clean-boundary snapshot required by ADR 0001.
+    output_format: Shared TypeScript cache change and focused/shared Vitest regressions.
+    tool_guidance: Start from the Google restart failure, simplify commitCheckpoint to one complete snapshot, then run the central backend contract.
+    task_boundaries: Do not change provider operations, cursor timing, Admission, SyncState, or Orchestrator behavior.
+    decision_closure_reason: Owner, clean boundary, complete snapshot, failure behavior, and forbidden replacement state are fixed; only private helper shape remains.
+  - title: "Unit 2 — Metadata-only versioned cold-start"
+    chunk: metadata-cold-start
+    contract_refs: [contract-metadata-only-cold-start]
     files:
+      - src/store/metadata-store.ts
+      - src/store/metadata-store.test.ts
+      - src/sync/state.ts
+      - src/sync/state.test.ts
       - src/sync/orchestrator.test.ts
-      - tests/fs/contracts/caching-remote-fs.contract.ts
-      - tests/fs/remote-backend-contracts.test.ts
-      - e2e/helpers/rename-safety.ts
-      - docs/design/design-four-stage-sync-pipeline.md
-      - docs/adr/0001-metadata-cache-is-subordinate-to-commit-last.md
-      - docs/adr/0008-logical-identity-admission-fails-closed.md
-      - docs/dropbox-backend.md
-      - docs/sync-pipeline.md
-    depends_on: ["Unit 1 — Final cache projection", "Unit 2 — Contextual folder continuity"]
+    depends_on: ["Unit 1 — Complete final cache snapshot"]
     acceptance:
-      - A reported case-only folder self echo is idle and clean with no filesystem action.
-      - A pre-existing COLD relation-loss state authorizes only match and cleanup, converges its baseline, commits clean, and is idle on the following cycle.
-      - Paired foreign, recreated, missing, empty, incomplete, and ambiguous states remain partial_error with no destructive I/O or checkpoint advancement.
-      - Active design and directly contradictory backend docs describe final projection and managed-descendant continuity consistently.
-      - The complete repository gate passes and optional live provider evidence is reported separately.
-    objective: Prove end-to-end convergence and fail-closed behavior across all backends and promote only the durable existing-boundary invariants.
-    output_format: Integration/shared tests, optional live E2E scenario, narrow design/ADR/backend documentation corrections, and gate evidence.
-    tool_guidance: Run focused positive/negative suites before the central backend matrix and full gate; do not use credential-gated E2E as a deterministic gate substitute.
-    task_boundaries: No runtime Orchestrator change, durable recovery mechanism, new backend, release operation, unrelated documentation rewrite, or inference about unavailable historical provider metadata.
-    decision_closure_reason: Integration observables, backend parity, documentation promotion, and gate are fixed by the three contracts and accepted ADRs.
+      - Opening metadata version 3 as version 4 drops and recreates only metadata stores.
+      - SyncState remains version 7 and seeded SyncRecords remain readable.
+      - The missing metadata checkpoint selects ordinary COLD without special recovery logic.
+    objective: Discard the known-bad subordinate projection once while preserving both authoritative states.
+    output_format: One metadata version constant change and focused persistence/orchestration tests.
+    tool_guidance: Seed both databases independently, open the repaired versions, and assert metadata reset plus SyncRecord retention.
+    task_boundaries: No SyncState bump, migration, dual-store transaction, identity rule, or first-run branch.
+    decision_closure_reason: The reset target, retained authority, and ordinary recovery path are fixed with no implementation discretion.
+  - title: "Unit 3 — State ownership enforcement and integration"
+    chunk: state-boundary-enforcement
+    contract_refs: [contract-complete-cache-checkpoint, contract-metadata-only-cold-start, contract-state-boundary-enforcement]
+    files:
+      - docs/adr/0001-metadata-cache-is-subordinate-to-commit-last.md
+      - AGENTS.md
+      - docs/code-enforcement.md
+      - src/sync/orchestrator.ts
+      - src/sync/state-boundary.test.ts
+    depends_on: ["Unit 1 — Complete final cache snapshot", "Unit 2 — Metadata-only versioned cold-start"]
+    acceptance:
+      - All three governing documents name exactly cursor and SyncRecord as authorities and checkpoint as an operation.
+      - The source guard accepts only the reviewed SyncOrchestrator instance fields and rejects an added field.
+      - The source guard rejects reintroduced pending cache state.
+      - Focused checks and the full repository gate pass with no Admission or identity production diff.
+    objective: Make silent growth of sync state ownership a mechanical failure in the normal development gate.
+    output_format: Narrow architecture documentation, a deterministic source-contract test, and recorded gate evidence.
+    tool_guidance: Derive the exact field list from the final source, make mutation counterexamples fail, then run the full gate.
+    task_boundaries: No production registry, runtime reflection, lint disable, Orchestrator behavior change, or authority exception.
+    decision_closure_reason: Documents, guarded inventory, failure protocol, and normal-gate integration are fixed; only deterministic parser choice remains.
 
 acceptance:
   - id: AC-CCR-01
-    criteria: After any clean executor-side remote mutation, a recreated filesystem restores exactly the final live affected-path projection and a queued self-change emits no stale rename.
-    requirement_refs: [FR-CCR-01, FR-CCR-02]
+    criteria: A clean restart restores exactly the final live remote metadata projection after every cache mutation family.
+    requirement_refs: [FR-CCR-02]
   - id: AC-CCR-02
-    criteria: A failed cycle or failed checkpoint transaction leaves the previous durable map, cursor, and scope intact and retains pending in-memory projection work.
-    requirement_refs: [FR-CCR-03]
+    criteria: A failed cycle or checkpoint advances no cursor/cache transaction and uses no pending cache correctness state.
+    requirement_refs: [FR-CCR-01, FR-CCR-03]
   - id: AC-CCR-03
-    criteria: File X/X and a complete non-empty folder descendant X/X set resolve, while X/Y, missing, empty, incomplete, duplicate, ambiguous, and unrelated-alias variants fail closed.
-    requirement_refs: [FR-CCR-04, FR-CCR-05, FR-CCR-06, FR-CCR-08]
+    criteria: Metadata cache v3 is recreated as v4 while SyncState stays v7 and existing SyncRecords remain.
+    requirement_refs: [FR-CCR-04]
   - id: AC-CCR-04
-    criteria: A COLD vault with only baseline old paths and exact same-identity new local/remote paths reconstructs one current_state relation, performs only match and cleanup, then remains idle.
-    requirement_refs: [FR-CCR-07, FR-CCR-08]
+    criteria: No Admission or identity behavior changes and identity_postcondition_unproven remains cycle-local only.
+    requirement_refs: [FR-CCR-05]
   - id: AC-CCR-05
-    criteria: All three backends pass the shared contract, ordinary rows remain evidence-sparse, no prohibited state/API/status/owner is added, and the full repository gate passes.
-    requirement_refs: [FR-CCR-02, FR-CCR-04, NFR-CCR-01]
+    criteria: Documentation and the source contract reject a third authority, a new SyncOrchestrator field, or restored pending cache state.
+    requirement_refs: [FR-CCR-01, FR-CCR-03, NFR-CCR-01]
 
 dispositions:
-  - decision_input_ref: decision-input-checkpoint-projection-strategy
-    disposition: Adopt the existing touched-path projection for every successful cache mutation origin; this subsumes decision-input-checkpoint-projection and rejects provider-local pending state and ordinary full-store rewrites.
-    adr_refs: [adr-0001-commit-last-cache, adr-stateless-current-recovery]
-    contract_refs: [contract-final-cache-projection]
-  - decision_input_ref: decision-input-checkpoint-projection
-    disposition: Subsumed by decision-input-checkpoint-projection-strategy with the same existing deferred Set and atomic clean commit.
+  - decision_input_ref: decision-input-authority-ownership
+    disposition: "Keep exactly two authoritative durable states: clean-cycle remote cursor and per-file terminal SyncRecord; checkpoint is the cursor commit operation."
     adr_refs: [adr-0001-commit-last-cache]
-    contract_refs: [contract-final-cache-projection]
-  - decision_input_ref: decision-input-continuity-carrier
-    disposition: Reuse relation-contextual stable_identity occurrences and existing current_state RenameEvidence; reject a new carrier and universal same-path emission.
-    adr_refs: [adr-0008-fail-closed-identity, adr-four-stage-sync]
-    contract_refs: [contract-contextual-identity-continuity]
-  - decision_input_ref: decision-input-actionless-status
-    disposition: Subsumed by decision-input-actionless-partition; keep resolved_no_action and existing failures with no Orchestrator override or ambiguous status.
-    adr_refs: [adr-0008-fail-closed-identity, adr-four-stage-sync]
-    contract_refs: [contract-actionless-rename-terminal]
-  - decision_input_ref: decision-input-actionless-partition
-    disposition: Require authoritative endpoints plus file X/X or a complete managed-descendant folder set; use resolved_no_action, exact match/cleanup baseline convergence, or existing fail-closed reasons.
-    adr_refs: [adr-0008-fail-closed-identity, adr-stateless-current-recovery]
-    contract_refs: [contract-actionless-rename-terminal]
+    contract_refs: [contract-complete-cache-checkpoint, contract-state-boundary-enforcement]
+  - decision_input_ref: decision-input-checkpoint-projection
+    disposition: Replace touched-path incremental persistence with a complete live-cache snapshot in the existing atomic cursor transaction.
+    adr_refs: [adr-0001-commit-last-cache]
+    contract_refs: [contract-complete-cache-checkpoint]
+  - decision_input_ref: decision-input-existing-vault-recovery
+    disposition: Bump metadata cache 3 to 4 only; retain SyncState 7 and ordinary reconciliation against existing SyncRecords.
+    adr_refs: [adr-0001-commit-last-cache]
+    contract_refs: [contract-metadata-only-cold-start]
+  - decision_input_ref: decision-input-admission-scope
+    disposition: Make no Admission or identity change; keep identity_postcondition_unproven as the existing cycle-local fail-closed reason.
+    adr_refs: [adr-0008-fail-closed-identity]
+    contract_refs: [contract-metadata-only-cold-start, contract-state-boundary-enforcement]
   - decision_input_ref: decision-input-provider-coverage
-    disposition: Put deterministic projection coverage in the central Google Drive, Dropbox, and OneDrive contract matrix and retain one Google-shaped restart replay regression.
-    adr_refs: [adr-0002-backends-verified-by-shared-behaviour-contracts, adr-0003-opt-in-e2e-validates-fakes-against-real-backends]
-    contract_refs: [contract-final-cache-projection]
-  - decision_input_ref: decision-input-persisted-recovery
-    disposition: Reject journal, pending status, receipt, folder SyncRecord, and schema migration; recompute a unique current-state relation and converge through existing bookkeeping actions.
-    adr_refs: [adr-stateless-current-recovery]
-    contract_refs: [contract-contextual-identity-continuity, contract-actionless-rename-terminal]
-  - decision_input_ref: decision-input-production-google-direction
-    disposition: Treat unavailable raw event direction as optional live-fidelity evidence that does not block the deterministic projection, continuity, or COLD recovery contracts.
-    adr_refs: [adr-0003-opt-in-e2e-validates-fakes-against-real-backends, adr-stateless-current-recovery]
-    contract_refs: [contract-final-cache-projection, contract-contextual-identity-continuity]
+    disposition: Verify the shared complete-snapshot behavior through the central Google Drive, Dropbox, and OneDrive contract matrix plus the focused Google restart witness.
+    adr_refs: [adr-0002-shared-backends]
+    contract_refs: [contract-complete-cache-checkpoint]

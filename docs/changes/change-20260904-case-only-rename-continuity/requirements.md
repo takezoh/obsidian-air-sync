@@ -3,51 +3,22 @@ change: change-20260904-case-only-rename-continuity
 role: requirements
 functional_requirements:
 - id: FR-CCR-01
-  statement: When a clean cycle commits, atomically persist final live remote-cache
-    values or absences from both delta acquisition and successful executor mutations
-    with cursor and scope.
+  statement: Treat only the clean-cycle remote cursor and per-file terminal SyncRecord as authoritative durable sync state, committing each at its respective boundary.
   priority: must
 - id: FR-CCR-02
-  statement: When write, mkdir, rename, delete, implicit parent creation, or folder
-    subtree mutation changes a caching backend cache, register every affected old/new
-    root, descendant, and parent path in one deferred checkpoint projection on all
-    three backends.
+  statement: When a cycle is wholly clean, atomically persist the cursor with a complete snapshot of the final live remote metadata cache.
   priority: must
 - id: FR-CCR-03
-  statement: If action, Admission, or checkpoint persistence fails, advance neither
-    durable file map nor cursor/scope and retain the in-memory projection footprint
-    until clean commit, reset, or full-scan supersession.
+  statement: Remove touchedPaths and pendingFullPersist without replacing them with affected-path, pending-full, receipt, or recovery correctness state.
   priority: must
 - id: FR-CCR-04
-  statement: When a rename or alias relation needs continuity proof, preserve committed/current
-    same-root identity occurrences cycle-locally without emitting same-path evidence
-    for unrelated ordinary unchanged rows.
+  statement: On first open by the repair, cold-start only metadata cache version 3 as version 4 while retaining SyncState version 7 and all SyncRecords.
   priority: must
 - id: FR-CCR-05
-  statement: When evaluating a folder relation, use the complete non-empty suffix-preserving
-    one-to-one set of included managed descendant file identities as folder continuity
-    without inventing a folder-root identity.
-  priority: must
-- id: FR-CCR-06
-  statement: When endpoints authoritatively converge and file or folder continuity
-    is proved, resolve a zero-action reported rename without filesystem I/O and permit
-    clean finalization.
-  priority: must
-- id: FR-CCR-07
-  statement: When COLD current state uniquely proves an old-to-new case-only folder
-    relation after reported evidence is gone, reconstruct it and authorize only existing
-    match and cleanup bookkeeping needed to converge SyncRecord paths.
-  priority: must
-- id: FR-CCR-08
-  statement: If identity is foreign, missing, duplicate, incomplete, ambiguously case-folded,
-    or linked by an unrelated alias, authorize no destructive interpretation, report
-    an existing failure reason, and withhold the checkpoint.
+  statement: Preserve identity_postcondition_unproven solely as an existing cycle-local Admission failure reason, without changing identity decisions or persisting the reason.
   priority: must
 - id: NFR-CCR-01
-  statement: Preserve four-stage ownership and existing public and persisted contracts
-    without a journal, operation intent, receipt, folder identity, schema migration,
-    new evidence or status vocabulary, Orchestrator policy, or ordinary full-cache
-    rewrite.
+  statement: Close the authoritative owner set and reviewed SyncOrchestrator state-field inventory through ADR, AGENTS, code-enforcement, and a mechanical source guard.
   priority: must
 ---
 
@@ -57,75 +28,74 @@ functional_requirements:
 
 ## Content
 
-### FR-CCR-01 — Final cache projection at clean checkpoint
+### FR-CCR-01 — Exactly two authoritative durable states
 
-When a clean cycle commits its checkpoint, it shall atomically persist the final live
-remote-cache values or absences produced by delta acquisition and successful
-executor-side filesystem mutations together with the cursor and scope fingerprint.
+The sync engine shall treat only these durable states as authoritative:
 
-### FR-CCR-02 — Complete mutation footprint on every caching backend
+1. the remote delta cursor, persisted after a wholly clean cycle; and
+2. each file's terminal `SyncRecord`, persisted after that file's admitted I/O
+   succeeds.
 
-When write, mkdir, rename, delete, implicit parent creation, or folder subtree mutation
-changes the live cache, Google Drive, Dropbox, and OneDrive shall include every affected
-old/new root, descendant, and parent key in the same deferred checkpoint projection.
+A later failure in the same cycle shall not roll back already-successful file records
+and shall not advance the remote cursor. “Checkpoint” names the clean-cycle cursor
+commit boundary; it is not another stored state. The existing scope fingerprint, if
+stored with the cursor, is checkpoint-validity metadata and shall not become an
+independent decision or recovery authority.
 
-### FR-CCR-03 — Commit-last failure behavior
+### FR-CCR-02 — Complete subordinate cache projection
 
-If an action, Admission component, or checkpoint transaction fails, the system shall
-advance neither the durable file map nor its cursor/scope and shall retain the in-memory
-projection footprint for a later clean commit unless reset or a full scan supersedes it.
+When a Google Drive, Dropbox, or OneDrive cycle is wholly clean,
+`CachingRemoteFs` shall snapshot the complete final live metadata cache under its cache
+mutex and atomically replace the durable projection while committing the cursor. The
+snapshot shall include observation-origin and successful executor-origin effects
+without tracking which individual paths produced them.
 
-### FR-CCR-04 — Sparse cycle-local continuity evidence
+The cache remains non-authoritative and fully derivable from the provider. Its
+co-persistence with the cursor is atomicity for a subordinate projection, not a third
+source of sync truth.
 
-When a reported rename/alias or candidate current-state case-only relation needs
-continuity proof, Observation shall retain committed and current same-root remote
-identity occurrences through the existing `stable_identity` carrier. It shall not emit
-same-path identity evidence for unrelated ordinary unchanged rows.
+### FR-CCR-03 — No pending cache correctness state
 
-### FR-CCR-05 — Folder continuity from managed descendants
+The implementation shall remove `touchedPaths` and `pendingFullPersist`. It shall not
+replace them with a persisted or in-memory affected-path set, pending-operation list,
+receipt, recovery debt, or relation state. If Admission, execution, or checkpoint
+persistence prevents a clean cycle, the durable cursor and cache projection shall stay
+at their prior clean boundary; successful file `SyncRecord`s may remain committed.
 
-When Admission evaluates a folder relation, it shall treat the complete, non-empty,
-suffix-preserving, one-to-one set of included managed descendant file identities as the
-folder's logical continuity. Each pair shall have the same non-empty committed/current
-remote identity. No persisted folder record or folder-root identity shall be added.
+### FR-CCR-04 — Metadata-cache-only COLD recovery
 
-### FR-CCR-06 — Proven actionless self echo
+When the repaired release first opens metadata cache version 3, the existing IndexedDB
+upgrade policy shall drop and recreate only that derived cache as version 4. The
+`SyncStateStore` database shall remain version 7 and all existing `SyncRecord`s shall be
+retained. The following cycle shall use the ordinary no-checkpoint COLD path to rebuild
+remote metadata; no legacy migration or inferred rename shall run.
 
-When old/new endpoints are authoritatively converged and file or folder continuity is
-proved, Admission shall classify a zero-action reported rename as
-`resolved_no_action`, perform no filesystem effect, and permit clean finalization.
+### FR-CCR-05 — Existing fail-closed decision remains cycle-local
 
-### FR-CCR-07 — Recovery after relation loss
+`identity_postcondition_unproven` shall remain an existing cycle-local Admission failure
+reason. It shall not be persisted as status, intent, or recovery instruction. This
+change shall add no Admission evidence, graph edge, identity rule, action disposition,
+or COLD relation reconstruction. Any unrelated identity defect requires its own proven
+regression and change.
 
-When a COLD observation has no reported rename but baseline old-casing paths and current
-local/remote new-casing paths uniquely prove the same case-only folder relation,
-Observation shall emit that relation with `current_state` authority. Admission shall
-permit only existing `match` and `cleanup` bookkeeping required to converge SyncRecord
-paths; the following clean sync shall be idle.
+### NFR-CCR-01 — Mechanically closed state boundary
 
-### FR-CCR-08 — Foreign, incomplete, and unrelated states fail closed
+ADR 0001, `AGENTS.md`, and `docs/code-enforcement.md` shall enumerate exactly the remote
+cursor and `SyncRecord` as authoritative durable sync state. A source-contract guard
+shall pin that two-item authority catalog and the complete reviewed instance-field
+inventory of `SyncOrchestrator`.
 
-When identity differs, is missing, is duplicated, cannot cover the complete included
-managed descendant set, admits multiple case-fold relations, or an alias is unrelated to
-the exact proved relation, Admission shall authorize no destructive interpretation,
-report an existing specific failure, and withhold the checkpoint.
-
-### NFR-CCR-01 — Minimal compatibility surface
-
-The repair shall preserve the four-stage pipeline and existing public/persisted
-contracts. It shall add no schema migration, journal, operation intent, provider receipt,
-folder identity field, evidence/status vocabulary, Orchestrator decision, or ordinary
-full-cache rewrite.
+The guard shall fail on any additional `SyncOrchestrator` field or authority owner. A
+change to the guard is an architectural change and requires coordinated updates to ADR
+0001, `AGENTS.md`, and `docs/code-enforcement.md`; it is not an ordinary way to make lint
+green. The same guard shall prevent reintroduction of `touchedPaths`,
+`pendingFullPersist`, or an equivalent pending cache owner.
 
 ### Acceptance counterexamples
 
-- A clean restart that restores `Templates/...` after the live cache renamed it to
-  `TemplateS/...` fails FR-CCR-01/02.
-- Accepting a folder because only one of several managed descendants retains its
-  identity fails FR-CCR-05/08.
-- Treating case-fold equality, equal content, or a current provider folder ID as folder
-  continuity fails FR-CCR-05/08.
-- Leaving a pre-existing old-path baseline unchanged after returning a clean result
-  fails FR-CCR-07 because the next COLD cycle repeats the same error.
-- Emitting same-path identity evidence for every unchanged file or adding a pending
-  rename/status fails NFR-CCR-01.
+- Treating “checkpoint” as state distinct from the cursor fails FR-CCR-01.
+- Restoring a stale pre-rename path after a clean restart fails FR-CCR-02.
+- Replacing removed bookkeeping with another pending write-set fails FR-CCR-03.
+- Bumping SyncState or deleting/migrating `SyncRecord`s fails FR-CCR-04.
+- Adding or persisting an identity result, even under a different name, fails FR-CCR-05.
+- Adding an unreviewed authority owner or `SyncOrchestrator` field fails NFR-CCR-01.
