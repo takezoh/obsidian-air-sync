@@ -1231,6 +1231,77 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.close();
 		});
 
+		it("converges a case-only local folder rename with excluded descendants", async () => {
+			const warn = vi.fn();
+			const debug = vi.fn();
+			const deps = createDeps({
+				logger: {
+					debug, info: vi.fn(), warn, error: vi.fn(), flush: vi.fn(),
+				} as unknown as Logger,
+			});
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			deps.localFs = () => localFs;
+			deps.remoteFs = () => remoteFs;
+
+			for (const name of ["Zettelkasten CTO.md", "Zettelkasten.md"]) {
+				const localEntity = addFile(localFs, `TemplateS/${name}`, "content", 1000);
+				localEntity.hash = `hash-${name}`;
+				const remoteEntity = addFile(remoteFs, `Templates/${name}`, "content", 1000);
+				remoteEntity.hash = `hash-${name}`;
+			}
+			addFile(remoteFs, "Templates/desktop.ini", "excluded", 1000);
+			confirmMockPath(localFs, "TemplateS");
+			confirmMockPath(remoteFs, "Templates");
+
+			const exactStat = localFs.stat.bind(localFs);
+			vi.spyOn(localFs, "stat").mockImplementation(async (path) => {
+				const exact = await exactStat(path);
+				if (exact) return exact;
+				if (path === "Templates") return exactStat("TemplateS");
+				const alias = [...localFs.files.keys()].find(
+					(candidate) => candidate.toLowerCase() === path.toLowerCase(),
+				);
+				return alias ? exactStat(alias) : null;
+			});
+
+			deps.localTracker.acknowledge(deps.localTracker.snapshot());
+			deps.localTracker.markFolderRenamed("TemplateS", "Templates");
+			for (const name of ["Zettelkasten CTO.md", "Zettelkasten.md"]) {
+				deps.localTracker.markRenamed(`TemplateS/${name}`, `Templates/${name}`);
+			}
+			const orchestrator = new SyncOrchestrator(deps);
+			for (const name of ["Zettelkasten CTO.md", "Zettelkasten.md"]) {
+				await orchestrator.state.put({
+					path: `Templates/${name}`,
+					hash: `hash-${name}`,
+					localMtime: 1000,
+					remoteMtime: 1000,
+					localSize: 7,
+					remoteSize: 7,
+					syncedAt: 900,
+				});
+			}
+
+			const renameSpy = vi.spyOn(remoteFs, "rename");
+			await orchestrator.runSync();
+
+			expect(warn).not.toHaveBeenCalled();
+			expect(renameSpy).toHaveBeenCalledTimes(1);
+			expect(renameSpy).toHaveBeenCalledWith("Templates", "TemplateS");
+			expect(remoteFs.files.has("TemplateS/Zettelkasten CTO.md")).toBe(true);
+			expect(remoteFs.files.has("TemplateS/Zettelkasten.md")).toBe(true);
+			expect(debug.mock.calls.filter(([message]) => message === "Remote-only paths")
+				.flatMap(([, details]) => (details as { paths: string[] }).paths))
+				.not.toContain("Templates/desktop.ini");
+			expect(await orchestrator.state.getRenameDebts("test:root")).toEqual([]);
+			expect(deps.onStatusChange).toHaveBeenLastCalledWith("idle");
+
+			await orchestrator.runSync();
+			expect(deps.onStatusChange).toHaveBeenLastCalledWith("idle");
+			await orchestrator.close();
+		});
+
 		it("acknowledges dirty paths after sync", async () => {
 			const deps = createDeps();
 			const localFs = createMockLocalFs();

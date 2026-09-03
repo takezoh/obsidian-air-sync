@@ -100,7 +100,7 @@ describe("projectScope", () => {
 		]));
 	});
 
-	it("retains nested folder descendants and dot-path policy independently", () => {
+	it("keeps an explicit cross-scope folder endpoint but omits excluded listing descendants", () => {
 		const folderRename: RenameEvidence = {
 			...rename("local", "folder", ".archive"), isFolder: true,
 		};
@@ -120,7 +120,6 @@ describe("projectScope", () => {
 			["folder", "included"],
 			[".archive", "policy_out"],
 			["folder/nested/a.md", "included"],
-			[".archive/nested/a.md", "policy_out"],
 		]));
 	});
 
@@ -198,7 +197,7 @@ describe("projectScope", () => {
 		expect(result.byEndpoint.get("a.md")).toBe("unknown");
 	});
 
-	it("marks only oversized included endpoints mobile-deferred", () => {
+	it("marks oversized included endpoints and omits excluded listing entries", () => {
 		const result = projectScope(changeSet({
 			entries: [
 				{ path: "large.md", local: entity("large.md", 11) },
@@ -213,7 +212,6 @@ describe("projectScope", () => {
 		expect(result.byEndpoint).toEqual(new Map([
 			["large.md", "mobile_deferred"],
 			["small.md", "included"],
-			["excluded.md", "policy_out"],
 		]));
 	});
 

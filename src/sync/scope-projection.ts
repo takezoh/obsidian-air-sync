@@ -37,8 +37,10 @@ export function projectScope(
 	policy: ScopeProjectionPolicy,
 ): ScopeProjection {
 	const requiredPaths = collectScopePaths(changeSet.identityEvidence);
-	for (const entry of changeSet.entries) requiredPaths.add(entry.path);
 	const paths = new Set(requiredPaths);
+	for (const entry of changeSet.entries) {
+		if (policy.classifyPath(entry.path) !== "policy_out") paths.add(entry.path);
+	}
 	const knownPaths = new Set<string>();
 	const unknownPaths = new Set<string>();
 	for (const entry of changeSet.entries) {
@@ -46,6 +48,8 @@ export function projectScope(
 	}
 	for (const observation of changeSet.observations) {
 		if (isIncidentalDirectory(observation, requiredPaths)) continue;
+		if (!requiredPaths.has(observation.requestedPath) &&
+			policy.classifyPath(observation.requestedPath) === "policy_out") continue;
 		paths.add(observation.requestedPath);
 		if (observation.kind === "unknown") {
 			unknownPaths.add(observation.requestedPath);

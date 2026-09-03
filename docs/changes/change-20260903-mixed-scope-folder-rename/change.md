@@ -2,7 +2,7 @@
 id: change-20260903-mixed-scope-folder-rename
 kind: change
 title: Converge mixed-scope folder renames
-status: active
+status: abandoned
 created: '2026-09-03'
 profile: sdd@1
 intent: Allow mixed-scope folder renames to converge without granting sync authority
@@ -73,4 +73,9 @@ only when their individual mappings are complete; excluded descendants are untou
 
 {% transition from="closing" to="active" date="2026-09-03" %}
 Keep package active until PR commit identity and deployed verification are recorded
+{% /transition %}
+
+
+{% transition from="active" to="abandoned" date="2026-09-03" %}
+Rejected: excluded descendants must not enter Admission topology; folder rename is opaque
 {% /transition %}

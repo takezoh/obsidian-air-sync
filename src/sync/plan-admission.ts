@@ -9,7 +9,6 @@ import {
 import {
 	buildLocalRenameLifecycle,
 	classifyNonBindingLocalRenames,
-	footprintRenameLifecycle,
 	normalizeFreshLocalRename,
 	type DeterminateNormalizedRenameState,
 	type EvidenceContradictionReason,
@@ -30,10 +29,7 @@ import {
 } from "./identity-component-decision";
 import { coalesceLocalFolderRenames, optimizeLocalFileRenames } from "./optimize-local-renames";
 import { coalesceRemoteFolderRenames, optimizeRemoteFileRenames } from "./optimize-remote-renames";
-import {
-	partitionAdmissionTopology,
-	reconstructCaseAliasChildRenames,
-} from "./admission-topology";
+import { reconstructCaseAliasChildRenames } from "./case-alias-recovery";
 import type { FileEntity } from "../fs/types";
 import type {
 	IdentityEvidence,
@@ -176,9 +172,8 @@ export function admitDestructivePlan(
 	snapshot: AdmissionSnapshot,
 ): AdmissionResult {
 	const observedEvidence = snapshot.evidence.map((item) => item.evidence);
-	const topology = partitionAdmissionTopology(observedEvidence, snapshot.scope);
 	const components = buildAdmissionComponents(
-		snapshot.plan, topology.identityEvidence, snapshot.observations, snapshot.scope,
+		snapshot.plan, observedEvidence, snapshot.observations, snapshot.scope,
 	);
 	const authorizedActions: SyncAction[] = [];
 	const dispositions: AdmissionDisposition[] = [];
@@ -266,9 +261,6 @@ export function admitDestructivePlan(
 			});
 		}
 	}
-	const footprintLifecycle = footprintRenameLifecycle(topology.footprintConstraints, dispositions);
-	persistBeforeExecution.push(...footprintLifecycle.persistBeforeExecution);
-	releaseAfterSafeCheckpoint.push(...footprintLifecycle.releaseAfterSafeCheckpoint);
 	dispositions.sort((left, right) => left.paths.join("\0").localeCompare(right.paths.join("\0")));
 	const executable = Object.freeze({
 		actions: Object.freeze(authorizedActions),

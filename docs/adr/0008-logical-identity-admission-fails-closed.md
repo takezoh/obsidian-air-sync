@@ -1,6 +1,6 @@
 # ADR 0008 — Logical-identity admission fails closed before sync-plan execution
 
-**Status:** Accepted · 2026-08-25 · **Revised 2026-09-03** (mixed-scope folder evidence is partitioned before action shaping)
+**Status:** Accepted · 2026-08-25 · **Revised 2026-09-03** (excluded listing entries do not enter Admission)
 **Context area:** `sync/` — change evidence, scope projection, destructive admission, checkpoint/debt lifecycle
 **Related:** [ADR 0001](0001-metadata-cache-is-subordinate-to-commit-last.md), [ADR 0002](0002-backends-verified-by-shared-behaviour-contracts.md), [ADR 0006](0006-remote-rename-detection-is-order-independent.md), [Issue #43](https://github.com/takezoh/obsidian-air-sync/issues/43), [Issue #45](https://github.com/takezoh/obsidian-air-sync/issues/45), [Issue #47](https://github.com/takezoh/obsidian-air-sync/issues/47)
 
@@ -34,15 +34,14 @@ depend on that repair being complete.
    opaque, same-root evidence only. Equal non-empty keys relate occurrences; unequal
    keys separate them. Missing keys provide no evidence.
 
-3. Scope is projected for both rename endpoints before entries are filtered. The
+3. Scope is projected for explicit rename endpoints before entries are filtered. The
    origin-aware matrix decides whether the only safe consequence is rename, transfer,
    deletion, no-op, or failure. `unknown`, `mobile_deferred`, and incomplete included
-   folder mappings fail the whole connected component. A folder edge spanning included
-   and policy-excluded descendants is not an executable unit. Before graph construction,
-   Admission partitions managed identity evidence from operation-footprint constraints.
-   It may form child units only when every included descendant has aligned, determinate
-   child rename evidence. Policy-excluded descendants—regardless of the policy rule
-   that excluded them—never enter managed identity components and remain untouched.
+   folder mappings fail the whole connected component. A policy-excluded path that
+   merely appears in a filesystem listing is omitted from the Admission snapshot; it
+   is neither a managed identity node nor part of folder-mapping completeness. An
+   included-to-included folder rename remains one opaque folder operation. `policy_out`
+   is retained only for an explicit rename endpoint that crosses the configured scope.
    On a case-insensitive local filesystem, COLD replay may expose the requested new
    spelling only as an alias of the old spelling. Admission may reconstruct an
    otherwise actionless child rename only from a complete same-content baseline, an
@@ -86,9 +85,7 @@ depend on that repair being complete.
 - Local and remote rename shaping helpers are private to Admission. There is no
   standalone whole-plan optimizer or second component build; a failed native
   projection fails unless another complete component outcome is independently proved.
-  Mixed-scope folder partitioning is that proof only when all included descendants have
-  aligned child evidence and all remaining descendants are explicitly policy-excluded.
-  Case-alias replay reconstruction is likewise limited to the fully observed unchanged
+  Case-alias replay reconstruction is limited to the fully observed unchanged
   source/vacant-destination state; it is not evidence inference from spelling alone.
 - Issue #46 can be fixed without changing this boundary. Better cache causality should
   reduce ambiguity, while this admission policy remains the safety net.

@@ -439,7 +439,6 @@ export class SyncOrchestrator {
 				carriedIdentityEvidence: carriedEvidence,
 			});
 			const { renamePairs } = snapshot;
-			logChangeDetection(changeSet, renamePairs, this.deps.logger);
 
 			const isMobile = this.deps.isMobile();
 			const maxBytes = settings.mobileMaxFileSizeMB * 1024 * 1024;
@@ -447,6 +446,8 @@ export class SyncOrchestrator {
 				classifyPath: (path) => this.isExcluded(path) ? "policy_out" : "included",
 				mobileMaxBytes: isMobile ? maxBytes : undefined,
 			}, this.deps.logger);
+			const visiblePaths = new Set(planning.snapshot.scope.byEndpoint.keys());
+			logChangeDetection(changeSet, renamePairs, this.deps.logger, visiblePaths);
 			this.carriedAdmissionEvidence = mergeIdentityEvidence(
 				this.carriedAdmissionEvidence,
 				changeSet.identityEvidence.filter((item) => item.kind === "rename"),

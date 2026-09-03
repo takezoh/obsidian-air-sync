@@ -26,9 +26,7 @@ export function buildAdmissionComponents(
 	for (const [index, evidence] of identityEvidence.entries()) {
 		const paths = evidencePathSets[index]!;
 		graph.connect(evidence.kind === "rename" && evidence.isFolder
-			? [...paths, ...folderDescendantPaths(
-				evidence.oldPath, evidence.newPath, sortedKnownPaths, scope,
-			)]
+			? [...paths, ...folderDescendantPaths(evidence.oldPath, evidence.newPath, sortedKnownPaths)]
 			: paths);
 	}
 	for (const paths of observationPathSets) graph.connect(paths);
@@ -57,12 +55,11 @@ function folderDescendantPaths(
 	oldPath: string,
 	newPath: string,
 	sortedKnownPaths: readonly string[],
-	scope: ScopeProjection,
 ): string[] {
 	return [
 		...pathsWithPrefix(sortedKnownPaths, `${oldPath}/`),
 		...pathsWithPrefix(sortedKnownPaths, `${newPath}/`),
-	].filter((path) => scope.byEndpoint.get(path) !== "policy_out");
+	];
 }
 
 function pathsWithPrefix(sortedPaths: readonly string[], prefix: string): string[] {

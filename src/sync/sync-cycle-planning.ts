@@ -141,16 +141,20 @@ export function logChangeDetection(
 	changeSet: ChangeSet,
 	renamePairs: ReadonlyMap<string, string>,
 	logger?: Logger,
+	visiblePaths?: ReadonlySet<string>,
 ): void {
-	const remoteOnlyPaths = changeSet.entries.filter((entry) => !entry.local && entry.remote)
+	const entries = visiblePaths
+		? changeSet.entries.filter((entry) => visiblePaths.has(entry.path))
+		: changeSet.entries;
+	const remoteOnlyPaths = entries.filter((entry) => !entry.local && entry.remote)
 		.map((entry) => entry.path);
 	logger?.info("Change detection completed", {
 		temperature: changeSet.temperature,
-		entries: changeSet.entries.length,
-		localOnly: changeSet.entries.filter((entry) => entry.local && !entry.remote).length,
+		entries: entries.length,
+		localOnly: entries.filter((entry) => entry.local && !entry.remote).length,
 		remoteOnly: remoteOnlyPaths.length,
-		both: changeSet.entries.filter((entry) => entry.local && entry.remote).length,
-		enriched: changeSet.entries.filter((entry) => entry.local?.hash && !entry.prevSync).length,
+		both: entries.filter((entry) => entry.local && entry.remote).length,
+		enriched: entries.filter((entry) => entry.local?.hash && !entry.prevSync).length,
 		hashEnrichmentCandidates: changeSet.hashEnrichment?.candidates ?? 0,
 		hashEnrichmentMatches: changeSet.hashEnrichment?.matches ?? 0,
 		renamePairs: renamePairs.size,
@@ -185,6 +189,14 @@ export function prepareSyncCycleSnapshot(
 	const scopeProjection = projectScope(completeChangeSet, policy);
 	const filtered = completeChangeSet.entries.filter((entry) =>
 		scopeProjection.byEndpoint.get(entry.path) === "included");
+	const admittedObservations = completeChangeSet.observations.filter((observation) => {
+		if (scopeProjection.byEndpoint.has(observation.requestedPath)) return true;
+		if (observation.kind === "alias") {
+			return scopeProjection.byEndpoint.has(observation.resolvedPath);
+		}
+		return observation.kind === "present_unresolved" &&
+			scopeProjection.byEndpoint.has(observation.returnedPath);
+	});
 	if (filtered.length !== completeChangeSet.entries.length) {
 		logger?.debug("Files filtered", {
 			total: completeChangeSet.entries.length,
@@ -195,7 +207,7 @@ export function prepareSyncCycleSnapshot(
 	const snapshot = captureBatchObservation(
 		filtered,
 		completeChangeSet.identityEvidence,
-		completeChangeSet.observations,
+		admittedObservations,
 		scopeProjection,
 		namespace,
 		completeChangeSet.entries.flatMap((entry) => entry.prevSync ? [entry.path] : []),
