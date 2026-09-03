@@ -1,4 +1,3 @@
-import { projectRenameScope } from "./scope-projection";
 import type { AdmissionComponent } from "./plan-admission-graph";
 import { renameEvidenceKey } from "./identity-evidence";
 import { hasRemoteChanged } from "./change-compare";
@@ -64,8 +63,6 @@ function isNonBindingComponent(
 	scope: ScopeProjection,
 ): boolean {
 	if (component.evidence.length !== candidates.length) return false;
-	if (component.actions.length === 0 && candidates.every((candidate) =>
-		projectRenameScope(candidate, scope).consequence === "none")) return true;
 	if (candidates.some((candidate) => candidate.isFolder)) return false;
 	if ([...component.paths].some((path) => baselinePaths.has(path) ||
 		scope.byEndpoint.get(path) !== "included")) return false;

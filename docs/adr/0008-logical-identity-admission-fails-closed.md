@@ -34,14 +34,15 @@ depend on that repair being complete.
    opaque, same-root evidence only. Equal non-empty keys relate occurrences; unequal
    keys separate them. Missing keys provide no evidence.
 
-3. Scope is projected for explicit rename endpoints before entries are filtered. The
-   origin-aware matrix decides whether the only safe consequence is rename, transfer,
-   deletion, no-op, or failure. `unknown`, `mobile_deferred`, and incomplete included
-   folder mappings fail the whole connected component. A policy-excluded path that
-   merely appears in a filesystem listing is omitted from the Admission snapshot; it
-   is neither a managed identity node nor part of folder-mapping completeness. An
-   included-to-included folder rename remains one opaque folder operation. `policy_out`
-   is retained only for an explicit rename endpoint that crosses the configured scope.
+3. Configured scope is applied before the immutable Admission snapshot is constructed.
+   Excluded entries and observations are removed, stable-identity occurrences are
+   clipped to included paths, and rename/alias evidence is retained only when every
+   endpoint is included. A folder relation crossing scope at any observed descendant
+   is discarded, leaving each included path to be planned from its own current and
+   baseline facts. Excluded paths have no Admission disposition and cannot affect
+   identity topology or folder-mapping completeness. `unknown`, `mobile_deferred`, and
+   incomplete mappings among included paths fail the whole connected component. An
+   included-to-included folder rename remains one opaque folder operation.
    On a case-insensitive local filesystem, COLD replay may expose the requested new
    spelling only as an alias of the old spelling. Admission may reconstruct an
    otherwise actionless child rename only from a complete same-content baseline, an

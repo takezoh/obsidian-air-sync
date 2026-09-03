@@ -1,7 +1,7 @@
 import type { Logger } from "../logging/logger";
 import type { ChangeSet } from "./change-detector";
 import type { AdmissionResult } from "./plan-admission";
-import { projectScope, type ScopeProjectionPolicy } from "./scope-projection";
+import { applyScope, type ScopeProjectionPolicy } from "./scope-projection";
 import type {
 	IdentityEvidence,
 	LocalRenameEvidence,
@@ -175,32 +175,23 @@ export function prepareSyncCycleSnapshot(
 	policy: ScopeProjectionPolicy,
 	logger?: Logger,
 ) {
-	const completeChangeSet = changeSet;
-	const scopeProjection = projectScope(completeChangeSet, policy);
-	const filtered = completeChangeSet.entries.filter((entry) =>
-		scopeProjection.byEndpoint.get(entry.path) === "included");
-	const admittedObservations = completeChangeSet.observations.filter((observation) => {
-		if (scopeProjection.byEndpoint.has(observation.requestedPath)) return true;
-		if (observation.kind === "alias") {
-			return scopeProjection.byEndpoint.has(observation.resolvedPath);
-		}
-		return observation.kind === "present_unresolved" &&
-			scopeProjection.byEndpoint.has(observation.returnedPath);
-	});
-	if (filtered.length !== completeChangeSet.entries.length) {
+	const { changeSet: scopedChangeSet, projection } = applyScope(changeSet, policy);
+	const admittedEntries = scopedChangeSet.entries.filter((entry) =>
+		projection.byEndpoint.get(entry.path) === "included");
+	if (admittedEntries.length !== changeSet.entries.length) {
 		logger?.debug("Files filtered", {
-			total: completeChangeSet.entries.length,
-			afterFilter: filtered.length,
-			excluded: completeChangeSet.entries.length - filtered.length,
+			total: changeSet.entries.length,
+			afterFilter: admittedEntries.length,
+			excluded: changeSet.entries.length - admittedEntries.length,
 		});
 	}
 	const snapshot = captureBatchObservation(
-		filtered,
-		completeChangeSet.identityEvidence,
-		admittedObservations,
-		scopeProjection,
+		admittedEntries,
+		scopedChangeSet.identityEvidence,
+		scopedChangeSet.observations,
+		projection,
 		namespace,
-		completeChangeSet.entries.flatMap((entry) => entry.prevSync ? [entry.prevSync.path] : []),
+		scopedChangeSet.entries.flatMap((entry) => entry.prevSync ? [entry.prevSync.path] : []),
 	);
 	return { snapshot };
 }

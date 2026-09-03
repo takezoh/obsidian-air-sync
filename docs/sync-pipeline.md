@@ -14,8 +14,8 @@ These stages describe responsibility owners, not one separately scheduled pass p
 The lower-level cycle sequence within those boundaries is:
 
 1. `collectChanges()` selects HOT/WARM/COLD collection, records authoritative path observations and identity evidence, confirms uncertain absences, and completes required hashes/identity facts.
-2. `projectScope()` classifies every evidence endpoint before exact entries are filtered.
-3. `captureBatchObservation()` fixes entries, evidence, observations, scope, and namespace without an action carrier.
+2. `applyScope()` removes excluded paths and cross-scope identity edges, then projects mobile and observation completeness over the remaining facts.
+3. `captureBatchObservation()` fixes included entries, evidence, observations, scope, and namespace without an action carrier.
 4. `admitBatchObservation()` invokes the private path-local `planSync()` helper, then builds evidence-connected components once, shapes and decides each component, and projects the `AuthorizedSyncPlan` while preserving disconnected ordinary proposal order.
 5. `executePlan()` runs only that authorized projection and reports exact completion; each successful action is published through `commitAction()`.
 6. `finalizeSyncCycle()` folds disposition membership with execution completion, commits the checkpoint when safe, then retires released evidence and debt.
@@ -26,7 +26,7 @@ File-open priority does not add another set of these stages. It reuses the store
 
 **Scope filter (`SyncOrchestrator.isExcluded()`)** — a path is synced only if it passes **both** gates:
 
-1. **Dot-path scope** (`isDotPathOutOfScope`): a dot-prefixed/hidden path (`.airsync`, `.obsidian`, `.git`, …) is in scope only when it sits under a configured `syncDotPaths` root — `settings.syncDotPaths` augmented with the vault's config directory when `enableConfigSync` is on (`getEffectiveSyncDotPaths`, `config-sync.ts`). Normal paths always pass. This is applied symmetrically to local and remote evidence. Both rename endpoints are classified before exact entries are filtered, so filtering cannot erase a constraint and leave its destructive half executable.
+1. **Dot-path scope** (`isDotPathOutOfScope`): a dot-prefixed/hidden path (`.airsync`, `.obsidian`, `.git`, …) is in scope only when it sits under a configured `syncDotPaths` root — `settings.syncDotPaths` augmented with the vault's config directory when `enableConfigSync` is on (`getEffectiveSyncDotPaths`, `config-sync.ts`). Normal paths always pass. This is applied symmetrically to local and remote facts before `BatchObservation`; excluded endpoints and identity edges that cross the boundary are discarded.
 2. **Ignore patterns** (`isIgnored`): gitignore-style `ignorePatterns` — likewise augmented with a built-in pattern set (`getEffectiveIgnorePatterns`) prepended when `enableConfigSync` is on while excluding device-specific workspace state. The `syncConfigJsonFiles`, `syncConfigPlugins`, `syncConfigSnippets`, `syncConfigThemes`, and `syncConfigIcons` settings independently add root `*.json`, `plugins/`, `snippets/`, `themes/`, and `icons/`. `community-plugins.json` is classified with `plugins/`, not with generic root JSON, because it is the active community plugin list; it therefore follows `syncConfigPlugins` even when `syncConfigJsonFiles` differs. Root JSON and plugins stay on by default solely for backward compatibility with the pre-toggle Config Sync behavior; all newly introduced subtree scopes default to off and require explicit opt-in. These settings are part of the scope fingerprint, so changing one forces a single cold reconcile and surfaces remote-only files that predate the delta cursor.
 
 `isExcluded()` also reserves two paths unconditionally, ahead of both gates, so neither `syncDotPaths` nor `ignorePatterns` can ever pull them back into scope:
@@ -161,7 +161,7 @@ There is no volume-based abort gate. Deletion safety rests on four independent l
 1. **Decision rules** -- an ambiguous case (a file gone on one side while the surviving side changed since baseline) is routed to `conflict` (keep both), never to a deletion; a missing baseline never yields a deletion.
 2. **layoutReady gate** -- sync does not run before the Obsidian vault index is loaded. `SyncScheduler` defers its event wiring, and `runSync()` is gated on `app.workspace.layoutReady`, so a `list()` that under-reports during startup cannot be mistaken for mass local deletions.
 3. **Authoritative observation** -- listing absence is re-`stat()`'d before it can authorize deletion. `LocalFs.stat()` falls back to the vault adapter on an index miss. `actual_resolved` proves an exact/alias path; `requested_echo` proves presence only; `null` proves absence; a thrown stat aborts the cycle. HOT checkpoint tombstones remain authoritative remote absence (Issue #44).
-4. **Whole-component admission** -- rename, alias, unresolved-presence, and stable-ID edges connect related managed paths. Paths excluded by system-junk rules, user ignore patterns, dot-path scope, Config Sync policy, or reserved-path policy are omitted before the Admission snapshot unless the path is an explicit cross-scope rename endpoint. An included-to-included folder rename is one opaque folder operation; excluded listing entries are not identity nodes and do not participate in mapping completeness. If the component decision cannot prove that every managed resource survives, `admitDestructivePlan()` fails it before execution. Deletions are additionally soft (trash), but recoverability is not used as authorization.
+4. **Whole-component admission** -- rename, alias, unresolved-presence, and stable-ID edges connect related managed paths. Paths excluded by system-junk rules, user ignore patterns, dot-path scope, Config Sync policy, or reserved-path policy are absent from the Admission snapshot. An included-to-included folder rename is one opaque folder operation; excluded physical entries are not identity nodes and do not participate in mapping completeness. If the component decision cannot prove that every managed resource survives, `admitDestructivePlan()` fails it before execution. Deletions are additionally soft (trash), but recoverability is not used as authorization.
 
 ## Identity-component action shaping
 
@@ -190,7 +190,7 @@ When `getChangedPaths()` reports a rename pair, Admission may shape `delete_loca
 
 ## Destructive admission
 
-`prepareSyncCycleSnapshot()` projects scope before filtering and freezes entries,
+`prepareSyncCycleSnapshot()` applies scope before freezing included entries,
 normative evidence, observations, scope, and backend/root namespace into one fact-only
 `BatchObservation`. The orchestrator passes that value once to
 `admitBatchObservation()`. Admission privately constructs the path-local proposal, then builds connected components from
@@ -198,8 +198,8 @@ actions plus rename/alias/stable-identity evidence and path observations and emi
 exactly one `authorized`, `resolved_no_action`, or `failed` disposition per
 relevant component, including evidence-connected components with zero actions.
 
-Admission alone proves exact deletion authority, native rename, a direction-specific
-scope transition, two-sided convergence, or the recognized source-recreation
+Admission alone proves exact deletion authority, native rename, two-sided convergence,
+or the recognized source-recreation
 postcondition. Unknown, conflicting, incomplete, or otherwise unproved components
 fail closed as a whole, including state-only actions. Only actions from `authorized`
 dispositions are projected into the nominal `AuthorizedSyncPlan`; disconnected
@@ -207,7 +207,7 @@ ordinary work retains proposal order, while a proved component replacement occup
 that component's place.
 `executePlan()` cannot accept a plain proposal through the supported typed API.
 
-Endpoint dispositions are `included`, `policy_out`, `mobile_deferred`, or `unknown`.
+Endpoint dispositions are `included`, `mobile_deferred`, or `unknown`.
 Any unknown/mobile endpoint and any incomplete folder descendant mapping fails Admission. The
 full local/remote direction matrix and rejected identity inferences are recorded in
 [ADR 0008](adr/0008-logical-identity-admission-fails-closed.md).

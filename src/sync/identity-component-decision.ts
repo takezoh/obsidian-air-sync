@@ -36,8 +36,7 @@ export function evaluateIdentityComponent(
 
 	const renames = component.evidence.filter((item): item is RenameEvidence => item.kind === "rename");
 	const resolvedNoAction = component.actions.length === 0 && renames.length > 0 &&
-		renames.every((rename) => projectRenameScope(rename, scope).consequence === "none" ||
-			resolvedAtBothSides(rename, component.observations));
+		renames.every((rename) => resolvedAtBothSides(rename, component.observations));
 	if (renames.length > 0 && reasons.size === 0) {
 		const renameReason = evaluateRenames(component, renames, scope, resolvedNoAction);
 		if (renameReason) reasons.add(renameReason);
@@ -71,9 +70,6 @@ function evaluateRenames(
 	}
 	if (resolvedNoAction) return undefined;
 	if (matchesNativeRenames(component, consequences, scope)) return undefined;
-	if (rules.length === 1 && matchesScopeTransition(
-		component, rules[0]!.rename, rules[0]!.rule.consequence,
-	)) return undefined;
 	if (rules.length === 1 && preservesRecreatedRemoteSource(component, rules[0]!.rename)) {
 		return undefined;
 	}
@@ -162,25 +158,6 @@ function nativeDestinationOccupied(
 		if (observation.kind === "alias") return observation.resolvedPath === rename.newPath;
 		return observation.kind === "present_unresolved" && observation.returnedPath === rename.newPath;
 	});
-}
-
-function matchesScopeTransition(
-	component: AdmissionComponent,
-	rename: RenameEvidence,
-	consequence: RenameScopeConsequence,
-): boolean {
-	const actions = component.actions;
-	if (consequence === "none") return actions.length === 0;
-	if (consequence === "defer" || consequence === "rename_local" || consequence === "rename_remote") {
-		return false;
-	}
-	if (actions.length !== 1) return false;
-	const expectedPath = consequence === "delete_local" || consequence === "delete_remote"
-		? rename.oldPath : rename.newPath;
-	if (actions[0]!.action !== consequence || actions[0]!.path !== expectedPath) return false;
-	if (consequence === "push") return !isOccupied(component, "remote", rename.newPath);
-	if (consequence === "pull") return !isOccupied(component, "local", rename.newPath);
-	return true;
 }
 
 function preservesRecreatedRemoteSource(component: AdmissionComponent, rename: RenameEvidence): boolean {
@@ -307,11 +284,4 @@ function currentRemoteIdentityByPath(component: AdmissionComponent): Map<string,
 		if (action.remote?.identityKey) result.set(action.remote.path, action.remote.identityKey);
 	}
 	return result;
-}
-
-function isOccupied(component: AdmissionComponent, side: "local" | "remote", path: string): boolean {
-	return component.observations.some((observation) => observation.side === side &&
-		((observation.kind === "exact" && observation.requestedPath === path) ||
-			(observation.kind === "alias" && observation.resolvedPath === path) ||
-			(observation.kind === "present_unresolved" && observation.returnedPath === path)));
 }

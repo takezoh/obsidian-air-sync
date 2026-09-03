@@ -9,7 +9,7 @@ import type { FileEntity, RemoteChecksum } from "../fs/types";
 import type { MixedEntity, PathObservation, SyncRecord } from "./types";
 import { md5 } from "../utils/md5";
 import { sha256, sha1 } from "../utils/hash";
-import { projectRenameScope, projectScope } from "./scope-projection";
+import { applyScope } from "./scope-projection";
 
 function makeRecord(path: string, overrides: Partial<SyncRecord> = {}): SyncRecord {
 	return {
@@ -752,17 +752,16 @@ describe("collectChanges — temperature selection", () => {
 				expect(folderEvidence?.kind).toBe("rename");
 				if (!folderEvidence || folderEvidence.kind !== "rename") return;
 
-				const rootsOut = projectScope(result, {
-					classifyPath: (path) => path === "old" || path === "new"
-						? "policy_out"
-						: "included",
+				const rootsOut = applyScope(result, {
+					isExcluded: (path) => path === "old" || path === "new",
 				});
-				expect(projectRenameScope(folderEvidence, rootsOut).consequence).toBe("defer");
+				expect(rootsOut.changeSet.identityEvidence).not.toContain(folderEvidence);
 
-				const mixedChild = projectScope(result, {
-					classifyPath: (path) => path === "new/a.md" ? "policy_out" : "included",
+				const mixedChild = applyScope(result, {
+					isExcluded: (path) => path === "new/a.md",
 				});
-				expect(projectRenameScope(folderEvidence, mixedChild).consequence).toBe("defer");
+				expect(mixedChild.changeSet.identityEvidence).not.toContain(folderEvidence);
+				expect([...mixedChild.projection.byEndpoint.keys()]).not.toContain("new/a.md");
 			},
 		);
 
@@ -793,10 +792,11 @@ describe("collectChanges — temperature selection", () => {
 			expect(folderEvidence?.kind).toBe("rename");
 			if (!folderEvidence || folderEvidence.kind !== "rename") return;
 
-			const mixedChild = projectScope(result, {
-				classifyPath: (path) => path === "new/a.md" ? "policy_out" : "included",
+			const mixedChild = applyScope(result, {
+				isExcluded: (path) => path === "new/a.md",
 			});
-			expect(projectRenameScope(folderEvidence, mixedChild).consequence).toBe("defer");
+			expect(mixedChild.changeSet.identityEvidence).not.toContain(folderEvidence);
+			expect([...mixedChild.projection.byEndpoint.keys()]).not.toContain("new/a.md");
 			},
 		);
 

@@ -30,6 +30,11 @@ invariants:
   statement: A checkpoint advances only after all admitted actions are terminal under
     finalization policy.
   enforcement: test
+- id: INV-004
+  statement: Configured-scope filtering removes excluded paths and cross-scope identity
+    edges before BatchObservation; Admission and later stages cannot observe or branch
+    on them.
+  enforcement: test
 boundaries:
   provides:
   - id: BOUNDARY-001
@@ -45,6 +50,9 @@ boundaries:
     statement: Execution inventing, replacing, or rerouting actions.
   - id: BOUNDARY-005
     statement: Finalization inferring success from listing absence or partial completion.
+  - id: BOUNDARY-006
+    statement: BatchObservation carrying an excluded path, excluded-path disposition,
+      or identity edge with an excluded endpoint.
 variability:
   fixed:
   - id: FIXED-001
@@ -111,6 +119,12 @@ The pipeline is `Observation -> Admission -> Execution -> Commit/finalization`.
 ## Boundaries
 
 `BatchObservation` contains facts, never `SyncPlan` or another action carrier. `AuthorizedSyncPlan` can be created only by Admission. Execution and finalization consume that exact object and cannot call decision helpers.
+
+Configured-scope filtering is the entrance to this boundary. Paths rejected by that
+filter, observations that disclose them, and identity edges with an excluded endpoint
+must be removed before `BatchObservation` is constructed. Admission and later stages
+have no excluded-path disposition and cannot let an excluded physical entry affect a
+sync decision.
 
 ## Invariants
 

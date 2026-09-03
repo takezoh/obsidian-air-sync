@@ -56,7 +56,7 @@ async function runCycle(
 		changes: snapshot,
 	});
 	const proposal = planSync(changeSet.entries);
-	const scope = projectScope(changeSet, { classifyPath: () => "included" });
+	const scope = projectScope(changeSet);
 	const admission = admitDestructivePlan(captureCycleAdmissionSnapshot(
 		proposal, changeSet.identityEvidence, changeSet.observations, scope, "crash-safety-test",
 	));

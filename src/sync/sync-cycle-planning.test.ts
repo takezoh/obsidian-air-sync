@@ -6,6 +6,7 @@ import {
 } from "./sync-cycle-planning";
 import type { ChangeSet } from "./change-detector";
 import type { MixedEntity, ScopeDisposition, ScopeProjection, SyncRecord } from "./types";
+import { admitBatchObservation } from "./plan-admission";
 
 function cannotMutateObservation(observation: BatchObservation): void {
 	// @ts-expect-error -- the Observation boundary is deeply readonly at compile time.
@@ -77,7 +78,7 @@ describe("batch observation boundary", () => {
 			temperature: "cold",
 		};
 		const { snapshot } = prepareSyncCycleSnapshot(
-			changeSet, "backend\0root", { classifyPath: () => "included" },
+			changeSet, "backend\0root", { isExcluded: () => false },
 		);
 
 		expect(snapshot.entries).toEqual(changeSet.entries);
@@ -87,6 +88,122 @@ describe("batch observation boundary", () => {
 		expect(snapshot.namespace).toBe("backend\0root");
 		expect(snapshot.scope.byEndpoint.get("renamed.md")).toBe("included");
 		expect("plan" in snapshot).toBe(false);
+	});
+
+	it("removes excluded paths and cross-scope identity before the engine boundary", () => {
+		const oldRecord = baseline("old.md");
+		const excludedRecord = baseline("desktop.ini");
+		const changeSet: ChangeSet = {
+			entries: [
+				{ path: "old.md", prevSync: oldRecord },
+				{
+					path: "new.md",
+					local: { path: "new.md", size: 4, mtime: 2, hash: "new", isDirectory: false },
+				},
+				{ path: "desktop.ini", prevSync: excludedRecord },
+			],
+			observations: [
+				{ kind: "absent", side: "local", requestedPath: "old.md", authority: "stat" },
+				{
+					kind: "exact", side: "local", requestedPath: "new.md",
+					entity: { path: "new.md", size: 4, mtime: 2, hash: "new", isDirectory: false },
+				},
+				{
+					kind: "absent", side: "local", requestedPath: "desktop.ini", authority: "stat",
+				},
+			],
+			identityEvidence: [{
+				kind: "rename", side: "local", oldPath: "old.md", newPath: "new.md",
+				isFolder: false, authority: "reported",
+			}],
+			temperature: "hot",
+		};
+
+		const { snapshot } = prepareSyncCycleSnapshot(changeSet, "backend\0root", {
+			isExcluded: (path) => path !== "old.md",
+		});
+
+		expect(snapshot.entries.map((entry) => entry.path)).toEqual(["old.md"]);
+		expect(snapshot.observations.map((item) => item.requestedPath)).toEqual(["old.md"]);
+		expect(snapshot.evidence).toEqual([]);
+		expect([...snapshot.scope.byEndpoint.keys()]).toEqual(["old.md"]);
+		expect([...snapshot.baselinePaths]).toEqual(["old.md"]);
+	});
+
+	it.each([
+		{
+			name: "included to excluded as a deletion",
+			excludedPath: "new.md",
+			entries: [
+				{
+					path: "old.md", prevSync: baseline("old.md"),
+					remote: { path: "old.md", size: 4, mtime: 1, hash: "base", isDirectory: false },
+				},
+				{
+					path: "new.md",
+					local: { path: "new.md", size: 4, mtime: 2, hash: "new", isDirectory: false },
+				},
+			],
+			observations: [
+				{ kind: "absent", side: "local", requestedPath: "old.md", authority: "stat" },
+				{
+					kind: "exact", side: "remote", requestedPath: "old.md",
+					entity: { path: "old.md", size: 4, mtime: 1, hash: "base", isDirectory: false },
+				},
+				{
+					kind: "exact", side: "local", requestedPath: "new.md",
+					entity: { path: "new.md", size: 4, mtime: 2, hash: "new", isDirectory: false },
+				},
+			] as ChangeSet["observations"],
+			expectedAction: { action: "delete_remote", path: "old.md" },
+		},
+		{
+			name: "excluded to included as a creation",
+			excludedPath: "old.md",
+			entries: [
+				{
+					path: "old.md", prevSync: baseline("old.md"),
+					remote: { path: "old.md", size: 4, mtime: 1, hash: "base", isDirectory: false },
+				},
+				{
+					path: "new.md",
+					local: { path: "new.md", size: 4, mtime: 2, hash: "new", isDirectory: false },
+				},
+			],
+			observations: [
+				{
+					kind: "exact", side: "remote", requestedPath: "old.md",
+					entity: { path: "old.md", size: 4, mtime: 1, hash: "base", isDirectory: false },
+				},
+				{
+					kind: "exact", side: "local", requestedPath: "new.md",
+					entity: { path: "new.md", size: 4, mtime: 2, hash: "new", isDirectory: false },
+				},
+				{ kind: "absent", side: "remote", requestedPath: "new.md", authority: "stat" },
+			] as ChangeSet["observations"],
+			expectedAction: { action: "push", path: "new.md" },
+		},
+	] as const)("plans a cross-scope local rename $name", ({ excludedPath, entries, observations, expectedAction }) => {
+		const changeSet: ChangeSet = {
+			entries: [...entries],
+			observations: [...observations],
+			identityEvidence: [{
+				kind: "rename", side: "local", oldPath: "old.md", newPath: "new.md",
+				isFolder: false, authority: "reported",
+			}],
+			temperature: "hot",
+		};
+		const { snapshot } = prepareSyncCycleSnapshot(changeSet, "backend\0root", {
+			isExcluded: (path) => path === excludedPath,
+		});
+
+		const admission = admitBatchObservation(snapshot);
+
+		expect(snapshot.evidence).toEqual([]);
+		expect(admission.failures).toEqual([]);
+		expect(admission.executable.actions).toEqual([
+			expect.objectContaining(expectedAction),
+		]);
 	});
 
 });

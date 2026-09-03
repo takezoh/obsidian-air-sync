@@ -175,7 +175,7 @@ describe("SyncScheduler", () => {
 			);
 		});
 
-		it("preserves rename evidence when the old endpoint is excluded", () => {
+		it("tracks only the included destination when the old endpoint is excluded", () => {
 			scheduler.destroy();
 			deps = createDeps({ isExcluded: (p: string) => p === "old.md" });
 			scheduler = new SyncScheduler(deps);
@@ -183,12 +183,11 @@ describe("SyncScheduler", () => {
 
 			const handler = deps.vaultHandlers.get("rename") as RenameHandler;
 			handler(makeFile("new.md"), "old.md");
-			expect(deps.localTracker.getDirtyPaths().has("new.md")).toBe(true);
-			expect(deps.localTracker.getDirtyPaths().has("old.md")).toBe(true);
-			expect(deps.localTracker.getRenamePairs().get("new.md")).toBe("old.md");
+			expect(deps.localTracker.getDirtyPaths()).toEqual(new Set(["new.md"]));
+			expect(deps.localTracker.getRenamePairs().size).toBe(0);
 		});
 
-		it("preserves rename evidence when the new endpoint is excluded", () => {
+		it("tracks only the included source when the new endpoint is excluded", () => {
 			scheduler.destroy();
 			deps = createDeps({ isExcluded: (p: string) => p === "new.md" });
 			scheduler = new SyncScheduler(deps);
@@ -196,8 +195,8 @@ describe("SyncScheduler", () => {
 
 			const handler = deps.vaultHandlers.get("rename") as RenameHandler;
 			handler(makeFile("new.md"), "old.md");
-			expect(deps.localTracker.getDirtyPaths()).toEqual(new Set(["old.md", "new.md"]));
-			expect(deps.localTracker.getRenamePairs().get("new.md")).toBe("old.md");
+			expect(deps.localTracker.getDirtyPaths()).toEqual(new Set(["old.md"]));
+			expect(deps.localTracker.getRenamePairs().size).toBe(0);
 		});
 
 		it("ignores a rename when both endpoints are excluded", () => {
@@ -216,22 +215,25 @@ describe("SyncScheduler", () => {
 		});
 
 		it.each(["old", "new"] as const)(
-			"preserves a folder edge when only %s root is excluded",
+			"expands a folder rename to the included child when the %s tree is excluded",
 			(excluded) => {
 			scheduler.destroy();
-			deps = createDeps({ isExcluded: (path) => path === excluded });
+			deps = createDeps({ isExcluded: (path) => path === excluded || path.startsWith(`${excluded}/`) });
 			scheduler = new SyncScheduler(deps);
 			scheduler.start();
 
 			const handler = deps.vaultHandlers.get("rename") as RenameHandler;
-			handler(makeFolder("new"), "old");
+			handler(makeFolder("new", ["new/a.md"]), "old");
 
-			expect(deps.localTracker.getFolderRenamePairs().get("new")).toBe("old");
-			expect(deps.localTracker.getDirtyPaths().size).toBe(0);
+			expect(deps.localTracker.getFolderRenamePairs().size).toBe(0);
+			expect(deps.localTracker.getRenamePairs().size).toBe(0);
+			expect(deps.localTracker.getDirtyPaths()).toEqual(
+				new Set([excluded === "old" ? "new/a.md" : "old/a.md"]),
+			);
 			},
 		);
 
-		it("preserves a folder edge when excluded roots contain an included descendant", () => {
+		it("records only an included child rename when excluded roots contain it", () => {
 			scheduler.destroy();
 			deps = createDeps({
 				isExcluded: (path) => path === "old" || path === "new",
@@ -242,8 +244,9 @@ describe("SyncScheduler", () => {
 			const handler = deps.vaultHandlers.get("rename") as RenameHandler;
 			handler(makeFolder("new", ["new/a.md"]), "old");
 
-			expect(deps.localTracker.getFolderRenamePairs().get("new")).toBe("old");
-			expect(deps.localTracker.getDirtyPaths().size).toBe(0);
+			expect(deps.localTracker.getFolderRenamePairs().size).toBe(0);
+			expect(deps.localTracker.getRenamePairs()).toEqual(new Map([["new/a.md", "old/a.md"]]));
+			expect(deps.localTracker.getDirtyPaths()).toEqual(new Set(["old/a.md", "new/a.md"]));
 		});
 
 		it("finds an included descendant below an excluded nested folder", () => {
@@ -258,7 +261,10 @@ describe("SyncScheduler", () => {
 			const handler = deps.vaultHandlers.get("rename") as RenameHandler;
 			handler(makeFolder("new", [nested]), "old");
 
-			expect(deps.localTracker.getFolderRenamePairs().get("new")).toBe("old");
+			expect(deps.localTracker.getFolderRenamePairs().size).toBe(0);
+			expect(deps.localTracker.getRenamePairs()).toEqual(
+				new Map([["new/nested/a.md", "old/nested/a.md"]]),
+			);
 		});
 
 		it("ignores a folder edge only when roots and descendants are all excluded", () => {

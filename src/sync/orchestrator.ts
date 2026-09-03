@@ -412,7 +412,7 @@ export class SyncOrchestrator {
 			const isMobile = this.deps.isMobile();
 			const maxBytes = settings.mobileMaxFileSizeMB * 1024 * 1024;
 			planning = prepareSyncCycleSnapshot(changeSet, namespace, {
-				classifyPath: (path) => this.isExcluded(path) ? "policy_out" : "included",
+				isExcluded: (path) => this.isExcluded(path),
 				mobileMaxBytes: isMobile ? maxBytes : undefined,
 			}, this.deps.logger);
 			const visiblePaths = new Set(planning.snapshot.scope.byEndpoint.keys());

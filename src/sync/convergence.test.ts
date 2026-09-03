@@ -65,7 +65,7 @@ async function runCycle(env: Env): Promise<SyncPlan> {
 		stateStore,
 		changes: snapshot,
 	});
-	const scope = projectScope(changeSet, { classifyPath: () => "included" });
+	const scope = projectScope(changeSet);
 	const admission = admitBatchObservation(captureBatchObservation(
 		changeSet.entries, changeSet.identityEvidence, changeSet.observations, scope, "convergence-test",
 	));

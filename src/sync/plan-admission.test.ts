@@ -572,16 +572,6 @@ describe("admitDestructivePlan", () => {
 		expect(result.failures[0]!.reasons).toEqual(["opposing_deletes"]);
 	});
 
-	it("admits the exact in-scope to policy-out consequence", () => {
-		const action: SyncAction = { path: "A.md", action: "delete_local", local: entity("A.md") };
-		const scope = projection({ "A.md": "included", "B.md": "policy_out" });
-
-		const result = admit([action], [remoteRename()], [], scope);
-
-		expect(result.executable.actions).toEqual([action]);
-		expect(result.failures).toEqual([]);
-	});
-
 	it("defers a rename crossing an unknown scope endpoint", () => {
 		const action: SyncAction = { path: "A.md", action: "delete_local", local: entity("A.md") };
 		const scope = projection({ "A.md": "included", "B.md": "unknown" });
@@ -656,19 +646,6 @@ describe("admitDestructivePlan", () => {
 		const scope = projection({ "A.md": "included", "B.md": "included" });
 
 		const result = admit(actions, [remoteRename()], observations, scope);
-
-		expect(result.executable.actions).toEqual([]);
-		expect(result.failures[0]!.reasons).toEqual(["rename_mismatch"]);
-	});
-
-	it("defers an out-to-in transfer when the destination side is occupied", () => {
-		const action: SyncAction = { path: "B.md", action: "pull", remote: entity("B.md", "X") };
-		const scope = projection({ "A.md": "policy_out", "B.md": "included" });
-		const observations: PathObservation[] = [{
-			kind: "exact", side: "local", requestedPath: "B.md", entity: entity("B.md"),
-		}];
-
-		const result = admit([action], [remoteRename()], observations, scope);
 
 		expect(result.executable.actions).toEqual([]);
 		expect(result.failures[0]!.reasons).toEqual(["rename_mismatch"]);

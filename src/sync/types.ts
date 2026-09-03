@@ -34,7 +34,7 @@ export interface MixedEntity {
 
 export type SyncSide = "local" | "remote";
 
-export type ScopeDisposition = "included" | "policy_out" | "mobile_deferred" | "unknown";
+export type ScopeDisposition = "included" | "mobile_deferred" | "unknown";
 
 export interface ScopeProjection {
 	byEndpoint: ReadonlyMap<string, ScopeDisposition>;
