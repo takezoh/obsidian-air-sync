@@ -382,6 +382,7 @@ export default defineConfig(
 		"main.js",
 		".roost", // local agent/tooling git worktrees (not part of the plugin)
 		".agent-reactor", // ditto — agent-reactor's worktrees live here
+		".worktrees", // ditto — this repo's own delivery worktrees live here
 		// Opt-in real-cloud e2e harness (ADR 0003): local/manual only, never
 		// bundled. It deliberately uses Node APIs (fetch, fs, readline) and real
 		// network — forbidden in shipped src/ by the mobile-compat / restricted-
