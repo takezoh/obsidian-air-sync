@@ -289,17 +289,19 @@ these green when touching the pipeline:
 
 `sync-state-ownership-guard.test.mjs` uses the installed TypeScript AST to inventory every
 `SyncOrchestrator` instance field (including non-private, `#private`, computed, and
-constructor-parameter fields), the sole production caller of `commitCheckpoint`, and the
-production imports, references, constructors, and mutating calls for `SyncStateStore` and
-`IDBHelper`. Its receiver tracking covers direct, aliased, and bracket-notation
-`SyncStateStore` calls. This makes a new durable owner, persistent-store owner, or
-in-memory recovery owner a deliberate review event rather than an incidental field or
-write. The cache checkpoint must serialize the complete final live cache under its mutex
-with the cursor; do not add touched-path, pending-flush, receipt, journal, or other
-intermediate correctness state.
+constructor-parameter fields), every production property/element access to
+`commitCheckpoint` (including extracted or bound forms), and the production imports,
+references, constructors, and mutating calls for `SyncStateStore`, `MetadataStore`, and
+`IDBHelper`. It also inventories direct `indexedDB.open` accesses. Its receiver tracking
+covers direct, aliased, and bracket-notation `SyncStateStore` calls. This makes a new
+durable owner, persistent-store owner, or in-memory recovery owner a deliberate review
+event rather than an incidental field or write. The cache checkpoint must serialize the
+complete final live cache under its mutex with the cursor; do not add touched-path,
+pending-flush, receipt, journal, or other intermediate correctness state.
 
-This is an architectural change detector, not a malicious-code sandbox: it is deliberately
-conservative for ordinary TypeScript ownership forms, and semantic review remains required.
+This is an ordinary architectural primitive/owner inventory, not a malicious-code sandbox:
+it is deliberately conservative for ordinary TypeScript ownership forms, and semantic
+review remains required.
 
 When an intentional architecture change needs a new entry, update the guard fixture,
 ADR 0001, this section, and `AGENTS.md` together, then run `npm run lint:bot-repro`.

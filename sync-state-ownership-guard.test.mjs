@@ -14,7 +14,7 @@ const ORCHESTRATOR_INSTANCE_FIELDS = [
 	"syncMutex", "stateStore", "syncPending", "recoverViaColdScan", "priorityCoordinator",
 	"localMutationBarrier", "activeBatch", "sessionId", "deps",
 ];
-const CHECKPOINT_CALLERS = ["src/sync/sync-cycle-finalization.ts"];
+const CHECKPOINT_ACCESSORS = ["src/sync/sync-cycle-finalization.ts"];
 const SYNC_STATE_STORE = {
 	imports: [
 		"src/sync/change-detector.ts", "src/sync/conflict-resolver.ts", "src/sync/conflict.ts",
@@ -34,6 +34,20 @@ const IDB_HELPER = {
 	references: ["src/store/metadata-store.ts", "src/sync/state.ts"],
 	constructors: ["src/store/metadata-store.ts", "src/sync/state.ts"],
 };
+const METADATA_STORE = {
+	imports: [
+		"src/fs/caching/remote-fs.ts", "src/fs/dropbox/index.ts", "src/fs/dropbox/provider-base.ts",
+		"src/fs/googledrive/index.ts", "src/fs/googledrive/provider-base.ts", "src/fs/onedrive/index.ts",
+		"src/fs/onedrive/provider-base.ts", "src/fs/pkce-app-folder-provider.ts",
+	],
+	references: [
+		"src/fs/caching/remote-fs.ts", "src/fs/dropbox/index.ts", "src/fs/dropbox/provider-base.ts",
+		"src/fs/googledrive/index.ts", "src/fs/googledrive/provider-base.ts", "src/fs/onedrive/index.ts",
+		"src/fs/onedrive/provider-base.ts", "src/fs/pkce-app-folder-provider.ts",
+	],
+	constructors: ["src/fs/googledrive/provider-base.ts", "src/fs/pkce-app-folder-provider.ts"],
+};
+const INDEXED_DB_OPEN_ACCESSORS = ["src/store/idb-helper.ts"];
 
 function productionTypeScriptFiles(directory = SOURCE_ROOT) {
 	return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -182,10 +196,10 @@ function syncStateMutationCalls(sourceFile, localNames) {
 }
 
 function sourceInventory(sourceFile) {
-	const result = Object.fromEntries(["SyncStateStore", "IDBHelper"].map((symbol) => [symbol, {
+	const result = Object.fromEntries(["SyncStateStore", "IDBHelper", "MetadataStore"].map((symbol) => [symbol, {
 		imports: false, references: false, constructors: false, mutations: false,
 	}]));
-	for (const symbol of ["SyncStateStore", "IDBHelper"]) {
+	for (const symbol of ["SyncStateStore", "IDBHelper", "MetadataStore"]) {
 		const localNames = importedLocalNames(sourceFile, symbol);
 		result[symbol].imports = localNames.size > 0;
 		if (symbol === "SyncStateStore") result[symbol].mutations = syncStateMutationCalls(sourceFile, localNames).length > 0;
@@ -201,33 +215,62 @@ function sourceInventory(sourceFile) {
 	return result;
 }
 
+function namedPropertyOrElementAccess(node, propertyName) {
+	if (ts.isPropertyAccessExpression(node)) return node.name.text === propertyName;
+	return ts.isElementAccessExpression(node) && node.argumentExpression &&
+		(ts.isStringLiteral(node.argumentExpression) || ts.isNoSubstitutionTemplateLiteral(node.argumentExpression)) &&
+		node.argumentExpression.text === propertyName;
+}
+
+function indexedDbOpenAccesses(sourceFile) {
+	let found = false;
+	const visit = (node) => {
+		if (namedPropertyOrElementAccess(node, "open")) {
+			const receiver = ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node) ? node.expression : undefined;
+			if (receiver && ts.isIdentifier(receiver) && receiver.text === "indexedDB") found = true;
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(sourceFile);
+	return found;
+}
+
 function inventoryProductionSources(files = productionTypeScriptFiles()) {
 	const inventory = {
-		orchestratorFields: [], checkpointCallers: [],
+		orchestratorFields: [], checkpointAccessors: [], indexedDbOpenAccessors: [],
 		syncStateStore: { imports: [], references: [], constructors: [], mutationCallers: [] },
 		idbHelper: { imports: [], references: [], constructors: [] },
+		metadataStore: { imports: [], references: [], constructors: [] },
 	};
 	for (const path of files) {
 		const sourceFile = parseSource(readFileSync(path, "utf8"), path);
 		const file = relative(ROOT, path);
 		if (file === "src/sync/orchestrator.ts") inventory.orchestratorFields = syncOrchestratorInstanceFields(sourceFile);
 		const source = sourceInventory(sourceFile);
-		for (const [symbol, target] of [["SyncStateStore", inventory.syncStateStore], ["IDBHelper", inventory.idbHelper]]) {
+		for (const [symbol, target] of [
+			["SyncStateStore", inventory.syncStateStore], ["IDBHelper", inventory.idbHelper],
+			["MetadataStore", inventory.metadataStore],
+		]) {
 			const current = source[symbol];
 			if (current.imports) target.imports.push(file);
 			if (current.references) target.references.push(file);
 			if (current.constructors) target.constructors.push(file);
 			if (symbol === "SyncStateStore" && current.mutations) target.mutationCallers.push(file);
 		}
-		let hasCheckpointCall = false;
+		let hasCheckpointAccess = false;
 		const visit = (node) => {
-			if (ts.isCallExpression(node) && callName(node.expression) === "commitCheckpoint") hasCheckpointCall = true;
+			if (namedPropertyOrElementAccess(node, "commitCheckpoint")) hasCheckpointAccess = true;
 			ts.forEachChild(node, visit);
 		};
 		visit(sourceFile);
-		if (hasCheckpointCall) inventory.checkpointCallers.push(file);
+		if (hasCheckpointAccess) inventory.checkpointAccessors.push(file);
+		if (indexedDbOpenAccesses(sourceFile)) inventory.indexedDbOpenAccessors.push(file);
 	}
-	for (const value of [inventory.checkpointCallers, ...Object.values(inventory.syncStateStore), ...Object.values(inventory.idbHelper)]) {
+	for (const value of [
+		inventory.checkpointAccessors, inventory.indexedDbOpenAccessors,
+		...Object.values(inventory.syncStateStore), ...Object.values(inventory.idbHelper),
+		...Object.values(inventory.metadataStore),
+	]) {
 		if (Array.isArray(value)) value.sort();
 	}
 	return inventory;
@@ -235,9 +278,11 @@ function inventoryProductionSources(files = productionTypeScriptFiles()) {
 
 function assertClosedInventory(inventory) {
 	assert.deepEqual(inventory.orchestratorFields, ORCHESTRATOR_INSTANCE_FIELDS);
-	assert.deepEqual(inventory.checkpointCallers, CHECKPOINT_CALLERS);
+	assert.deepEqual(inventory.checkpointAccessors, CHECKPOINT_ACCESSORS);
 	assert.deepEqual(inventory.syncStateStore, SYNC_STATE_STORE);
 	assert.deepEqual(inventory.idbHelper, IDB_HELPER);
+	assert.deepEqual(inventory.metadataStore, METADATA_STORE);
+	assert.deepEqual(inventory.indexedDbOpenAccessors, INDEXED_DB_OPEN_ACCESSORS);
 }
 
 test("two-authority ownership fixture stays closed", () => {
@@ -271,4 +316,28 @@ test("guard rejects a third IDBHelper owner", () => {
 	const sourceState = sourceInventory(source);
 	assert.equal(sourceState.IDBHelper.constructors, true);
 	assert.throws(() => assert.deepEqual(sourceState.IDBHelper.constructors, false));
+});
+
+test("guard rejects bound or extracted checkpoint access", () => {
+	const source = parseSource(`const checkpoint = fs["commitCheckpoint"].bind(fs);`, "synthetic-checkpoint.ts");
+	let found = false;
+	const visit = (node) => {
+		if (namedPropertyOrElementAccess(node, "commitCheckpoint")) found = true;
+		ts.forEachChild(node, visit);
+	};
+	visit(source);
+	assert.equal(found, true);
+	assert.throws(() => assert.deepEqual(found, false));
+});
+
+test("guard rejects a third MetadataStore or direct indexedDB.open owner", () => {
+	const metadataSource = parseSource(`import { MetadataStore } from "./metadata-store";
+		class ExtraPersistentStore { store = new MetadataStore("vault", {} as never); }`, "synthetic-metadata-owner.ts");
+	const metadataState = sourceInventory(metadataSource);
+	assert.equal(metadataState.MetadataStore.constructors, true);
+	assert.throws(() => assert.deepEqual(metadataState.MetadataStore.constructors, false));
+
+	const indexedDbSource = parseSource(`indexedDB["open"]("extra", 1);`, "synthetic-indexeddb-owner.ts");
+	assert.equal(indexedDbOpenAccesses(indexedDbSource), true);
+	assert.throws(() => assert.deepEqual(indexedDbOpenAccesses(indexedDbSource), false));
 });
