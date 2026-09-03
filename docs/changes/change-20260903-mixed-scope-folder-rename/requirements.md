@@ -19,6 +19,10 @@ role: requirements
   unknown/mobile-deferred.
 - **FR-4:** The behavior shall be symmetric for local-origin and remote-origin folder
   renames.
+- **FR-5:** When a case-insensitive local filesystem reports the destination as an
+  alias of the old spelling during COLD replay, Admission shall reconstruct a pure
+  child `rename_remote` only if the baseline is complete, the remote source is
+  unchanged, and the remote destination is authoritatively absent.
 
 ## Acceptance scenarios
 
@@ -30,3 +34,6 @@ role: requirements
 - Given an additional included descendant without child evidence, or an unknown
   descendant, then Admission authorizes nothing and reports
   `incomplete_folder_mapping`.
+- Given a replayed case-only rename whose destination resolves as a local alias, then
+  Admission reconstructs the child rename from the unchanged baseline; changed or
+  incomplete evidence remains failed.

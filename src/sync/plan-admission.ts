@@ -29,11 +29,15 @@ import {
 } from "./identity-component-decision";
 import { coalesceLocalFolderRenames, optimizeLocalFileRenames } from "./optimize-local-renames";
 import { coalesceRemoteFolderRenames, optimizeRemoteFileRenames } from "./optimize-remote-renames";
-import { partitionMixedScopeFolderEvidence } from "./scope-normalization";
+import {
+	partitionMixedScopeFolderEvidence,
+	reconstructCaseAliasChildRenames,
+} from "./scope-normalization";
 import type { FileEntity } from "../fs/types";
 import type {
 	IdentityEvidence,
 	LocalRenameEvidence,
+	MixedEntity,
 	PathObservation,
 	ScopeProjection,
 	SyncAction,
@@ -150,7 +154,16 @@ export interface AdmissionResult {
 
 /** Sole production entry: construct, validate, and authorize actions from observed facts. */
 export function admitBatchObservation(observation: BatchObservation): AdmissionResult {
-	return admitDestructivePlan(bindAdmissionPlan(observation, planSync([...observation.entries])));
+	const identityEvidence = observation.evidence.map((item) => item.evidence);
+	const proposed = planSync([...observation.entries]);
+	const actions = reconstructCaseAliasChildRenames(
+		proposed.actions,
+		[...observation.entries] as MixedEntity[],
+		identityEvidence,
+		[...observation.observations] as PathObservation[],
+		observation.scope,
+	);
+	return admitDestructivePlan(bindAdmissionPlan(observation, { actions }));
 }
 
 /**

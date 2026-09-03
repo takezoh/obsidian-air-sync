@@ -1,5 +1,13 @@
 import { projectRenameScope } from "./scope-projection";
-import type { IdentityEvidence, RenameEvidence, ScopeProjection } from "./types";
+import { hasRemoteChanged } from "./change-compare";
+import type {
+	IdentityEvidence,
+	MixedEntity,
+	PathObservation,
+	RenameEvidence,
+	ScopeProjection,
+	SyncAction,
+} from "./types";
 
 /**
  * A folder rename is only an executable unit while every descendant has the
@@ -25,6 +33,71 @@ export function partitionMixedScopeFolderEvidence(
 				(item.requestedPath === folder.newPath && item.resolvedPath === folder.oldPath)));
 	});
 	return deduplicateRenameEvidence(retained);
+}
+
+/**
+ * Recover a pure local child rename after a case-insensitive filesystem has
+ * canonicalized the requested destination back to the old spelling. The
+ * action is reconstructed only from a complete baseline and exact unchanged
+ * remote source; ambiguous or edited states remain failed Admission inputs.
+ */
+export function reconstructCaseAliasChildRenames(
+	baseActions: readonly SyncAction[],
+	entries: readonly MixedEntity[],
+	evidence: readonly IdentityEvidence[],
+	observations: readonly PathObservation[],
+	scope: ScopeProjection,
+): SyncAction[] {
+	const folders = partitionableFolders(evidence, scope);
+	if (folders.length === 0) return [...baseActions];
+	const actions = [...baseActions];
+	const seen = new Set<string>();
+	for (const candidate of evidence) {
+		if (candidate.kind !== "rename" || candidate.side !== "local" || candidate.isFolder) continue;
+		const key = `${candidate.oldPath}\0${candidate.newPath}`;
+		if (seen.has(key) || !folders.some((folder) => isAlignedChild(folder, candidate))) continue;
+		seen.add(key);
+		if (actions.some((action) => action.path === candidate.oldPath ||
+			action.path === candidate.newPath)) continue;
+
+		const source = entries.find((entry) => entry.path === candidate.oldPath);
+		const alias = observations.find((item): item is Extract<PathObservation, { kind: "alias" }> =>
+			item.kind === "alias" && item.side === "local" &&
+			item.requestedPath === candidate.newPath && item.resolvedPath === candidate.oldPath);
+		const remoteSource = observations.find((item): item is Extract<PathObservation, { kind: "exact" }> =>
+			item.kind === "exact" &&
+			item.side === "remote" && item.requestedPath === candidate.oldPath);
+		const remoteTarget = observations.find((item): item is Extract<PathObservation, { kind: "absent" }> =>
+			item.kind === "absent" &&
+			item.side === "remote" && item.requestedPath === candidate.newPath);
+		if (!source?.prevSync || !source.local || !alias || !remoteSource ||
+			!remoteTarget || !source.prevSync.hash || source.local.hash !== source.prevSync.hash ||
+			(source.prevSync.remoteIdentityKey !== undefined &&
+				remoteSource.entity.identityKey !== source.prevSync.remoteIdentityKey) ||
+			hasRemoteChanged(remoteSource.entity, source.prevSync)) continue;
+
+		actions.push({
+			action: "rename_remote", oldPath: candidate.oldPath, path: candidate.newPath,
+			local: source.local, remote: remoteSource.entity, baseline: source.prevSync,
+		});
+	}
+	return actions;
+}
+
+function partitionableFolders(
+	evidence: readonly IdentityEvidence[],
+	scope: ScopeProjection,
+): RenameEvidence[] {
+	return evidence.filter((item): item is RenameEvidence => item.kind === "rename" &&
+		item.isFolder && isCompletelyRepresentedByIncludedChildren(item, evidence, scope));
+}
+
+function isAlignedChild(folder: RenameEvidence, child: RenameEvidence): boolean {
+	const oldPrefix = `${folder.oldPath}/`;
+	const newPrefix = `${folder.newPath}/`;
+	return child.side === folder.side && child.oldPath.startsWith(oldPrefix) &&
+		child.newPath.startsWith(newPrefix) &&
+		child.oldPath.substring(oldPrefix.length) === child.newPath.substring(newPrefix.length);
 }
 
 function deduplicateRenameEvidence(evidence: readonly IdentityEvidence[]): IdentityEvidence[] {

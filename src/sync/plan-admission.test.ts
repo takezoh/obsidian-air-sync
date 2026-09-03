@@ -876,6 +876,89 @@ describe("admitDestructivePlan", () => {
 		});
 	});
 
+	it("reconstructs a pure child rename when cold replay sees a local case alias", () => {
+		const previous: SyncRecord = {
+			path: "Templates/a.md", hash: "h", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, remoteIdentityKey: "remote-a", syncedAt: 1,
+		};
+		const local = entity("Templates/a.md");
+		const remote = entity("Templates/a.md", "remote-a");
+		const folder = remoteRename({
+			side: "local", identityKey: undefined, oldPath: "Templates",
+			newPath: "TemplateS", isFolder: true,
+		});
+		const child = remoteRename({
+			side: "local", identityKey: undefined, oldPath: "Templates/a.md",
+			newPath: "TemplateS/a.md",
+		});
+		const result = admitBatchObservation(captureBatchObservation(
+			[{ path: "Templates/a.md", local, remote, prevSync: previous }],
+			[
+				{ kind: "alias", side: "local", requestedPath: "TemplateS", resolvedPath: "Templates" },
+				{ kind: "alias", side: "local", requestedPath: "TemplateS/a.md", resolvedPath: "Templates/a.md" },
+				folder, child, { ...folder }, { ...child },
+			],
+			[
+				{ kind: "exact", side: "local", requestedPath: "Templates/a.md", entity: local },
+				{
+					kind: "alias", side: "local", requestedPath: "TemplateS/a.md",
+					resolvedPath: "Templates/a.md", entity: local,
+				},
+				{ kind: "exact", side: "remote", requestedPath: "Templates/a.md", entity: remote },
+				{ kind: "absent", side: "remote", requestedPath: "TemplateS/a.md", authority: "stat" },
+			],
+			projection({
+				Templates: "included", TemplateS: "included",
+				"Templates/a.md": "included", "TemplateS/a.md": "included",
+				"Templates/desktop.ini": "policy_out",
+			}),
+			"backend\0root",
+			["Templates/a.md"],
+			[renameEvidenceKey(folder), renameEvidenceKey(child)],
+		));
+
+		expect(result.failures).toEqual([]);
+		expect(result.executable.actions).toHaveLength(1);
+		expect(result.executable.actions[0]).toMatchObject({
+			action: "rename_remote", oldPath: "Templates/a.md", path: "TemplateS/a.md",
+		});
+	});
+
+	it("does not reconstruct an actionless case alias after the remote source changed", () => {
+		const previous: SyncRecord = {
+			path: "A/a.md", hash: "h", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, remoteIdentityKey: "remote-a", syncedAt: 1,
+		};
+		const local = entity("A/a.md");
+		const changedRemote = { ...entity("A/a.md", "remote-a"), mtime: 2 };
+		const folder = remoteRename({
+			side: "local", identityKey: undefined, oldPath: "A", newPath: "a", isFolder: true,
+		});
+		const child = remoteRename({
+			side: "local", identityKey: undefined, oldPath: "A/a.md", newPath: "a/a.md",
+		});
+		const result = admitBatchObservation(captureBatchObservation(
+			[{ path: "A/a.md", local, remote: changedRemote, prevSync: previous }],
+			[folder, child],
+			[
+				{
+					kind: "alias", side: "local", requestedPath: "a/a.md",
+					resolvedPath: "A/a.md", entity: local,
+				},
+				{ kind: "exact", side: "remote", requestedPath: "A/a.md", entity: changedRemote },
+				{ kind: "absent", side: "remote", requestedPath: "a/a.md", authority: "stat" },
+			],
+			projection({
+				A: "included", a: "included", "A/a.md": "included", "a/a.md": "included",
+				"A/desktop.ini": "policy_out",
+			}),
+			"backend\0root",
+		));
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.failures[0]!.reasons).toEqual(["rename_mismatch"]);
+	});
+
 	it("rejects mixed-scope folder partitioning when an included descendant lacks child evidence", () => {
 		const actions: SyncAction[] = [
 			{ path: "A/a.md", action: "delete_local", local: entity("A/a.md") },

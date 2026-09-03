@@ -16,7 +16,9 @@ role: verification
   child evidence from the live log.
 - Counterexamples retain fail-closed behavior for missing included-child evidence and
   unknown descendant scope.
+- The live post-failure shape is covered: COLD replay, duplicate debt evidence, zero
+  ordinary proposal actions, and local destination aliasing the old case spelling.
 - `npm run lint`: passed.
 - `npm run lint:bot-repro`: passed (29 tests).
 - `npm run build`: passed.
-- `npm run test:coverage`: passed (91 files, 1731 tests).
+- `npm run test:coverage`: passed (91 files, 1733 tests).

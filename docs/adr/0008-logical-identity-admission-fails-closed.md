@@ -41,6 +41,10 @@ depend on that repair being complete.
    and policy-excluded descendants is not an executable unit: Admission may partition
    it into child units only when every included descendant has aligned, determinate
    child rename evidence. Policy-excluded descendants remain untouched.
+   On a case-insensitive local filesystem, COLD replay may expose the requested new
+   spelling only as an alias of the old spelling. Admission may reconstruct an
+   otherwise actionless child rename only from a complete same-content baseline, an
+   unchanged exact remote source, and an authoritatively absent remote destination.
 
 4. `admitDestructivePlan` is the sole owner of cross-path identity-component action
    shaping, destructive admissibility, disposition, and local lifecycle membership.
@@ -82,6 +86,8 @@ depend on that repair being complete.
   projection fails unless another complete component outcome is independently proved.
   Mixed-scope folder partitioning is that proof only when all included descendants have
   aligned child evidence and all remaining descendants are explicitly policy-excluded.
+  Case-alias replay reconstruction is likewise limited to the fully observed unchanged
+  source/vacant-destination state; it is not evidence inference from spelling alone.
 - Issue #46 can be fixed without changing this boundary. Better cache causality should
   reduce ambiguity, while this admission policy remains the safety net.
 

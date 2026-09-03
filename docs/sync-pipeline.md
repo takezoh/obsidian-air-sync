@@ -178,6 +178,8 @@ For a local reported rename in `ChangeSet.identityEvidence`, Admission may shape
 - **File renames** (`optimizeLocalFileRenames`): Consumes the derived file view of local `RenameEvidence`.
 - **Folder renames** (`coalesceLocalFolderRenames`): Consumes the derived folder view and coalesces all mapped descendant actions into one `rename_remote` with `isFolder: true`. Every descendant must pass hash verification. When descendants have mixed included/policy-excluded scope, Admission does not coalesce the folder: it uses independently proven included child renames and leaves excluded paths untouched. Missing included mappings still fail Admission.
 
+On case-insensitive local filesystems, a COLD replay can resolve the requested new spelling back to the old spelling and therefore produce no ordinary path-local action. For an included child of a proven mixed-scope folder partition, Admission reconstructs `rename_remote` only when the local alias is exact, the stored baseline content matches local content, the exact remote source is unchanged, and remote destination absence is authoritative. This lets persisted evidence converge without weakening changed-content or ambiguous-identity handling.
+
 ### Remote renames — trusted (`optimize-remote-renames.ts`)
 
 When `getChangedPaths()` reports a rename pair, Admission may shape `delete_local(oldPath) + pull(newPath)` → `rename_local`. The report is authoritative rename evidence, so this shaping needs no content-hash inference. Surfacing that pair is the backend's job and is order-independent across all backends ([ADR 0006](adr/0006-remote-rename-detection-is-order-independent.md)). The same component decision validates the shaped result; there is no independently trusted intermediate plan.
