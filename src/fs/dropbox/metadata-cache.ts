@@ -118,6 +118,24 @@ export class DropboxMetadataCache extends AbstractMetadataCache<DropboxEntry> {
 		this.setFile(path, entry, pathAuthority);
 	}
 
+	/** Provider-returned path_display is the topology authority for mutations. */
+	setResolvedEntry(entry: DropboxEntry): string | null {
+		// Until the stable vault id has been resolved to its current display path,
+		// path_display is absolute and cannot be projected into vault-relative keys.
+		if (this.rootSegmentsLower.length === 0) return null;
+		const path = this.relativize(entry);
+		if (path === null || path === "") return null;
+		this.setEntry(path, entry, "actual_resolved");
+		return path;
+	}
+
+	/** Resolve Dropbox's case-insensitive address to its provider-preserved spelling. */
+	findPathIgnoringCase(path: string): string | undefined {
+		const lower = path.toLowerCase();
+		return [...this.entries()].find(([candidate]) =>
+			candidate.toLowerCase() === lower)?.[0];
+	}
+
 	/**
 	 * Build the cache from a flat list of recursive `list_folder` entries (Dropbox's
 	 * full-scan shape), relativizing each `path_display` against the current root.

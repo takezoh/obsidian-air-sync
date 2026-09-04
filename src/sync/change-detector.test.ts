@@ -1336,15 +1336,12 @@ describe("collectChanges — warm deletion confirmation", () => {
 });
 
 /**
- * forceFullScan recovery (ARCHITECTURE.md principle #5, "an interrupted sync
- * converges by re-syncing"). WARM detects remote changes via the delta cursor
- * alone. After an interrupted/partial sync the cursor has advanced past files
- * that were *reported* but never pulled-and-baselined, so WARM is structurally
- * blind to them: they exist remotely, have no baseline, and never reappear in
- * the delta. forceFullScan forces a COLD full join (remote list vs records),
- * which is the only mode that rediscovers such orphans.
+ * `forceFullScan` models ordinary COLD acquisition selected from durable facts
+ * (missing checkpoint or changed scope). WARM reads only the committed delta
+ * lineage and therefore does not enumerate an unbaselined remote file absent
+ * from that lineage. COLD's full join does. No prior failure is an input.
  */
-describe("collectChanges — forceFullScan rediscovers un-baselined remote files", () => {
+describe("collectChanges — COLD acquisition discovers un-baselined remote files", () => {
 	let localFs: MockFileSystem;
 	let remoteFs: MockFileSystem;
 	let stateStore: ReturnType<typeof createMockStateStore>;
@@ -1359,9 +1356,8 @@ describe("collectChanges — forceFullScan rediscovers un-baselined remote files
 		remoteFs = createMockRemoteFs();
 		stateStore = createMockStateStore();
 		localTracker = new LocalChangeTracker();
-		// Post-crash state: synced.md was pulled and its baseline committed;
-		// orphan.md was left un-pulled. The remote delta cursor has moved past
-		// orphan.md, so getChangedPaths() (the mock default) reports nothing.
+		// The durable state has one per-file record and no record for orphan.md;
+		// getChangedPaths() (the mock default) reports no delta for either.
 		addFile(localFs, "synced.md", "kept", 1000);
 		addFile(remoteFs, "synced.md", "kept", 1000);
 		addFile(remoteFs, "orphan.md", "left behind", 1000);

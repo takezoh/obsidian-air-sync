@@ -17,6 +17,7 @@ relations:
 - {type: partOf, target: change-20260831-sync-decision-resource-components}
 source_paths:
 - src/sync/plan-admission.ts
+- src/sync/plan-admission-case-alias.ts
 - src/sync/plan-admission-graph.ts
 - src/sync/identity-component-decision.ts
 - src/sync/sync-cycle-planning.ts
@@ -82,6 +83,10 @@ required.
   not by Observation-inferred rename evidence. Admission normalizes the component and
   alone chooses the explicit canonicalization action or a fail-closed result. The
   decision cannot branch on COLD/WARM/HOT, whole-store state, or a prior failure.
+- When one case-only folder component contains edited and unchanged children,
+  Admission preserves edited content as ordinary child work, removes only redundant
+  child casing effects, and emits one existing parent folder rename. This remains one
+  component decision; the executor does not reconstruct an ancestor operation.
 - `AuthorizedSyncPlan`, executor phases, SyncState v6 `RenameDebt`, provider
   interfaces, and checkpoint-before-retirement remain unchanged.
 

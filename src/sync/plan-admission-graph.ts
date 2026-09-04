@@ -33,7 +33,14 @@ export function buildAdmissionComponents(
 			? [...paths, ...folderDescendantPaths(evidence.oldPath, evidence.newPath, sortedKnownPaths)]
 			: paths);
 	}
-	for (const paths of observationPathSets) graph.connect(paths);
+	for (const [index, observation] of observations.entries()) {
+		const paths = observationPathSets[index]!;
+		graph.connect(observation.kind === "alias" && observation.entity.isDirectory
+			? [...paths, ...folderDescendantPaths(
+				observation.requestedPath, observation.resolvedPath, sortedKnownPaths,
+			)]
+			: paths);
+	}
 	for (const paths of entryPathSets) graph.connect(paths);
 
 	const byRoot = new Map<string, AdmissionComponent>();

@@ -84,3 +84,5 @@ checks, and live Google Drive, Dropbox, and OneDrive E2E all pass.
 The 2026-09-04 case-alias refactor was checked against this boundary: facts still enter
 one immutable Admission snapshot, every recognized component receives one disposition,
 and Executor still accepts only the nominal `AuthorizedSyncPlan`.
+The follow-up parent-component repair preserves that contract while replacing redundant
+child topology effects with one Admission-authorized folder action.

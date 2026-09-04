@@ -48,7 +48,9 @@ async function maybeStoreMergeBase(
 	const { stateStore, localFs, enableThreeWayMerge, logger } = ctx;
 	if (!(enableThreeWayMerge && localFs && localEntity && isMergeEligible(path, size))) return;
 	try {
-		const content = await localFs.read(path);
+		// The record key follows the admitted topology, while the entity path is the
+		// filesystem-resolved endpoint from which the successful bytes are readable.
+		const content = await localFs.read(localEntity.path);
 		await stateStore.putContent(path, content);
 	} catch (err) {
 		logger?.warn("Failed to store content for 3-way merge", {

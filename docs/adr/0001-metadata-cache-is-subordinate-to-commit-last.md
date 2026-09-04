@@ -121,6 +121,10 @@ FS (`resetCheckpoint()`), not by editing settings.
 - eager / mid-cycle cache persistence;
 - swallowing a cache-persist failure and continuing to advance the cursor;
 - treating the cache as authoritative for change detection or deletion;
+- treating caller-requested spelling as provider topology. `requested_echo` may refresh
+  metadata only at an identity's current resolved path; it must not re-key that identity
+  or descendants. Only provider-resolved metadata or a successfully completed explicit
+  rename endpoint may change the derived topology;
 - persisting or retaining a prior failure, Admission disposition, quarantine, recovery mode,
   or pending-operation marker as input to a later decision;
 - returning or retrying without first aborting an incomplete working view, or aborting while

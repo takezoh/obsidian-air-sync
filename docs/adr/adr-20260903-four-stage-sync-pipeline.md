@@ -52,6 +52,12 @@ and schema version are outside the decision boundary.
 
 The orchestrator sequences these owners but is not an additional policy layer. Priority coordination and rename-debt gates remain mechanisms inside these owners, not additional stages. No provider/checkpoint API, persistence schema, phase order, conflict rule, or user-visible outcome changes as part of this decision.
 
+A case-only parent transition follows the same four stages. Observation may acquire
+the parent endpoints revealed by child aliases but creates no action. Admission alone
+collapses the complete component into child content actions plus one parent folder
+rename. Execution uses the entity-resolved local/remote endpoints already present in
+those actions, then the existing structural barrier performs the parent rename.
+
 ## Consequences
 
 {% consequence kind="positive" %}

@@ -123,6 +123,13 @@ central `tests/fs/remote-backend-contracts.test.ts` unit composition root.
   the raw adapter (`DotPathAdapter`) — this is mechanism, not policy. Whether a hidden
   path *syncs* is separate policy (`syncDotPaths` + `ignorePatterns`, both must pass),
   enforced in `SyncOrchestrator.isExcluded()`.
+- **Requested paths are addresses, not topology facts.** A cache-backed backend may
+  use caller spelling to locate an object, but `requested_echo` must never re-key a
+  stable identity or its descendants. Only provider-resolved metadata, or the
+  successful endpoint of an explicit provider rename, may change cached topology.
+  Case-only parent transitions are decided once by Admission from complete current-cycle
+  facts: child content is handled at the existing provider path, followed by one parent
+  folder rename. Do not add per-child recovery, a new status/action, or cross-cycle state.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the rationale behind these.
 

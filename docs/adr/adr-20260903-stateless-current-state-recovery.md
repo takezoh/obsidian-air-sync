@@ -8,14 +8,17 @@ decision_makers:
 - project owner
 consequences:
   positive:
-  - Recovery has one path and cannot replay an obligation that contradicts current state.
+  - Recovery has one path and cannot replay an obligation that contradicts current
+    state.
   - A failed action is eligible again on the next explicit sync.
   negative:
-  - A Dropbox case-only two-leg move cannot be made crash-atomic without provider support or a prohibited journal.
+  - A Dropbox case-only two-leg move cannot be made crash-atomic without provider
+    support or a prohibited journal.
   neutral:
   - Native rename evidence remains a current-cycle optimization, not correctness state.
 confirmation: Production has no operation journal or cross-cycle failure quarantine;
-  failure/restart convergence tests, versioned cold-start tests, and the repository gate pass.
+  failure/restart convergence tests, versioned cold-start tests, and the repository
+  gate pass.
 tags: []
 owners: []
 relations:
@@ -30,7 +33,8 @@ source_paths:
 - src/sync/sync-cycle-finalization.ts
 - src/fs/dropbox/index.ts
 - src/store/metadata-store.ts
-summary: Persist terminal facts only; after any error, re-observe current endpoints and replan.
+summary: Persist terminal facts only; after any error, re-observe current endpoints
+  and replan.
 updated: '2026-09-04'
 ---
 

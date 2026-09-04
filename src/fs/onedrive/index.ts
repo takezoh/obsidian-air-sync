@@ -138,18 +138,28 @@ export class OneDriveFs extends CachingRemoteFs<OneDriveItem> {
 		const { result: item } = await this.withCacheMutex({
 			operationName: "write",
 			resolve: async () => {
-				if (this.cache.isFolder(path)) {
-					throw new Error(`Cannot write file: "${path}" is an existing directory`);
-				}
-				const existingId = this.cache.idAt(path);
 				const fileName = path.split("/").pop()!;
 				const parentPath = OneDriveMetadataCache.parentPath(path);
 				const parentId = parentPath ? await this.ensureFolder(parentPath) : this.rootFolderId;
-				return { fileName, parentId, existingId };
+				const actualParent = parentId === this.rootFolderId
+					? ""
+					: this.cache.getPathById(parentId);
+				if (actualParent === undefined) {
+					throw new Error(`Cannot resolve provider parent for "${path}"`);
+				}
+				const targetPath = actualParent ? `${actualParent}/${fileName}` : fileName;
+				if (this.cache.isFolder(targetPath)) {
+					throw new Error(`Cannot write file: "${targetPath}" is an existing directory`);
+				}
+				return { fileName, parentId, existingId: this.cache.idAt(targetPath), targetPath };
 			},
 			execute: (r) => this.client.upload(r.parentId, r.fileName, content, mtime),
-			staleGuard: (r) => ({ path, expectedId: r.existingId }),
-			update: (_r, result) => { this.cache.setFile(path, result); },
+			staleGuard: (r) => ({ path: r.targetPath, expectedId: r.existingId }),
+			update: (r, result) => {
+				if (!this.cache.applyFileChange(result)) {
+					this.cache.setFile(r.targetPath, result, "requested_echo");
+				}
+			},
 		});
 
 		const hash = await sha256(content);
@@ -220,7 +230,9 @@ export class OneDriveFs extends CachingRemoteFs<OneDriveItem> {
 					return;
 				}
 				this.cache.removeEntry(oldPath);
-				this.cache.setFile(newPath, result);
+				if (!this.cache.applyFileChange(result)) {
+					this.cache.setFile(newPath, result, "actual_resolved");
+				}
 				if (r.wasFolder) this.cache.rewriteChildPaths(oldPath, newPath);
 			},
 		});
@@ -235,17 +247,28 @@ export class OneDriveFs extends CachingRemoteFs<OneDriveItem> {
 		let currentPath = "";
 		let parentId = this.rootFolderId;
 		for (const part of parts) {
-			currentPath = currentPath ? `${currentPath}/${part}` : part;
-			const cached = this.cache.getFile(currentPath);
-			if (cached && this.cache.isFolder(currentPath)) {
+			const requestedPath = currentPath ? `${currentPath}/${part}` : part;
+			const matchingPaths = [...(this.cache.getChildren(currentPath) ?? [])].filter((candidate) =>
+				this.cache.getFile(candidate)?.name.toLowerCase() === part.toLowerCase());
+			if (matchingPaths.length > 1) {
+				throw new Error(`Ambiguous provider folder for "${requestedPath}"`);
+			}
+			const cachedPath = matchingPaths[0] ?? requestedPath;
+			const cached = this.cache.getFile(cachedPath);
+			if (cached && this.cache.isFolder(cachedPath)) {
 				parentId = cached.id;
 			} else if (cached) {
-				throw new Error(`Cannot create directory "${path}": "${currentPath}" is a file`);
+				throw new Error(`Cannot create directory "${path}": "${cachedPath}" is a file`);
 			} else {
 				const folder = await this.client.createFolder(parentId, part);
-				this.cache.setFile(currentPath, folder);
+				if (!this.cache.applyFileChange(folder)) {
+					this.cache.setFile(requestedPath, folder, "requested_echo");
+				}
 				parentId = folder.id;
 			}
+			const resolved = this.cache.getPathById(parentId);
+			if (!resolved) throw new Error(`Cannot resolve provider folder for "${requestedPath}"`);
+			currentPath = resolved;
 		}
 		return parentId;
 	}

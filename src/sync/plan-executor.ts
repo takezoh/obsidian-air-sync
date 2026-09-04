@@ -437,11 +437,11 @@ async function runActionIO(
 	switch (action.action) {
 		case "push": {
 			if (!action.local) throw new Error(`push action requires local entity: ${path}`);
-			const content = await localFs.read(path);
+			const content = await localFs.read(action.local.path);
 			const remoteEntity = await remoteFs.write(path, content, action.local.mtime);
 			// stat() may return null if the file was deleted between read and stat (race condition);
 			// fall back to action.local which is the pre-sync metadata
-			const localEntity = await localFs.stat(path) ?? action.local;
+			const localEntity = await localFs.stat(action.local.path) ?? action.local;
 			return { localEntity, remoteEntity };
 		}
 
@@ -801,6 +801,8 @@ async function executeConflictAction(
 			remoteFs: ctx.remoteFs,
 			local: action.local,
 			remote: action.remote,
+			localPath: action.local?.path,
+			remotePath: action.remote?.path,
 			baseline: action.baseline,
 			stateStore: ctx.committer.stateStore,
 			logger: ctx.logger,
@@ -827,7 +829,12 @@ async function executeConflictAction(
 				? await executeFreshConflictEffects(action, ctx, resolution)
 				: undefined;
 			const localEntity = fresh?.localEntity ?? await ctx.localFs.stat(action.path) ?? action.local;
-			const remoteEntity = fresh?.remoteEntity ?? await ctx.remoteFs.stat(action.path) ?? action.remote;
+			const remoteEntity = fresh?.remoteEntity ??
+				await ctx.remoteFs.stat(action.path) ??
+				(action.remote?.path !== action.path
+					? await ctx.remoteFs.stat(action.remote?.path ?? action.path)
+					: null) ??
+				action.remote;
 			if (fresh) {
 				const baseline = fresh.terminalFreshProof.action.baseline;
 				if (!baseline) {

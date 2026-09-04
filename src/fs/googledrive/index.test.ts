@@ -195,7 +195,7 @@ describe("GoogleDriveFs mutation provenance", () => {
 	it("returns the native folder identity without claiming requested casing was resolved", async () => {
 		const { GoogleDriveFs } = await import("./index");
 		const mockClient = {
-			findChildByName: vi.fn().mockResolvedValue(null),
+			listChildrenByName: vi.fn().mockResolvedValue([]),
 			createFolder: vi.fn().mockResolvedValue({
 				id: "folder1",
 				name: "Docs",
@@ -217,6 +217,71 @@ describe("GoogleDriveFs mutation provenance", () => {
 });
 
 describe("GoogleDriveFs.write stale-cache guard for new paths", () => {
+	it("rejects an unresolved parent when Google Drive returns duplicate names", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const duplicate = (id: string): GoogleDriveFile => ({
+			id, name: "Templates", mimeType: "application/vnd.google-apps.folder", parents: ["root"],
+		});
+		const uploadFile = vi.fn();
+		const createFolder = vi.fn();
+		const client = {
+			listAllFiles: vi.fn().mockResolvedValue([]),
+			getChangesStartToken: vi.fn().mockResolvedValue("token-1"),
+			getFile: vi.fn().mockResolvedValue({
+				id: "root", name: "root", mimeType: "application/vnd.google-apps.folder", trashed: false,
+			}),
+			listChildrenByName: vi.fn().mockResolvedValue([duplicate("one"), duplicate("two")]),
+			uploadFile, createFolder,
+		} as never;
+		const fs = new GoogleDriveFs(client, "root");
+		await fs.list();
+
+		await expect(fs.write(
+			"Templates/note.md", new TextEncoder().encode("x").buffer, 1000,
+		)).rejects.toThrow('Ambiguous provider entry for "Templates"');
+		expect(createFolder).not.toHaveBeenCalled();
+		expect(uploadFile).not.toHaveBeenCalled();
+	});
+
+	it("updates the existing child when resolving a case-only parent alias", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const folder: GoogleDriveFile = {
+			id: "folder-1", name: "Templates",
+			mimeType: "application/vnd.google-apps.folder", parents: ["root"],
+		};
+		const child: GoogleDriveFile = {
+			id: "child-1", name: "note.md", mimeType: "text/plain",
+			parents: [folder.id], size: "3",
+		};
+		const uploadFile = vi.fn().mockResolvedValue({
+			...child, name: "note.md", size: "7",
+		});
+		const client = {
+			listAllFiles: vi.fn().mockResolvedValue([folder, child]),
+			getChangesStartToken: vi.fn().mockResolvedValue("token-1"),
+			listChildrenByName: vi.fn().mockResolvedValue([folder]),
+			uploadFile,
+		} as never;
+		const fs = new GoogleDriveFs(client, "root");
+		await fs.list();
+
+		const mtime = Date.now();
+		await fs.write(
+			"TemplateS/note.md",
+			new TextEncoder().encode("changed").buffer,
+			mtime,
+		);
+
+		expect(uploadFile).toHaveBeenCalledOnce();
+		expect(uploadFile.mock.calls[0]?.[0]).toBe("note.md");
+		expect(uploadFile.mock.calls[0]?.[1]).toBe("folder-1");
+		expect(uploadFile.mock.calls[0]?.[3]).toBe("application/octet-stream");
+		expect(uploadFile.mock.calls[0]?.[4]).toBe("child-1");
+		expect(uploadFile.mock.calls[0]?.[5]).toBe(mtime);
+		expect((await fs.stat("Templates/note.md"))?.identityKey).toBe("child-1");
+		expect(await fs.stat("TemplateS/note.md")).toBeNull();
+	});
+
 	it("does not clobber a concurrent re-key that created the same path during upload", async () => {
 		const uploadResult: GoogleDriveFile = {
 			id: "uploaded-id",

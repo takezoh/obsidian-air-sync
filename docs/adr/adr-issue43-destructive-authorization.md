@@ -69,6 +69,10 @@ Observation does not infer rename identity, and Executor does not detect the pro
 from action shape or missing baseline. Acquisition temperature and whole-store state
 cannot change the component decision.
 
+The same boundary applies when several case-alias children reveal one parent transition:
+Admission retains their content decisions and authorizes one parent folder rename.
+Provider path resolution remains an execution precondition, not a second authorization.
+
 Actionless uncertainty is deferred, visible, checkpoint-holding, evidence-retaining,
 and requests a later COLD cycle without a tight retry. Only an exception strictly before
 Admission is treated by the orchestrator as evidence-acquisition recovery; it retains

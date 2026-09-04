@@ -5,14 +5,18 @@ title: Preserve case-only rename continuity across checkpoints
 status: active
 created: '2026-09-04'
 profile: sdd@1
-intent: Restore case-only rename continuity by returning cache persistence to ADR 0001's two-authority, commit-last model.
+intent: Restore case-only rename continuity by returning cache persistence to ADR
+  0001's two-authority, commit-last model.
 outcomes:
-- Clean checkpoints persist the complete final remote metadata projection with the remote cursor.
+- Clean checkpoints persist the complete final remote metadata projection with the
+  remote cursor.
 - Successful admitted file I/O commits its SyncRecord independently at the file boundary.
-- Existing affected vaults cold-start both persistence databases and rebuild from current facts.
+- Existing affected vaults cold-start both persistence databases and rebuild from
+  current facts.
 - Every cycle resolves stale case aliases from current component facts, with the same
   Admission result for COLD, WARM, and HOT acquisition.
-- The closed authority set and reviewed SyncOrchestrator field inventory are mechanically guarded.
+- The closed authority set and reviewed SyncOrchestrator field inventory are mechanically
+  guarded.
 scope:
 - src/fs/caching/remote-fs.ts — complete cache snapshot at clean checkpoint
 - src/store/metadata-store.ts — metadata cache version 3 to 4 cold-start
@@ -24,7 +28,8 @@ scope:
 - src/fs/local/index.ts — discard stale case aliases only after raw-adapter resolution
 - src/fs/local/dot-path-adapter.ts — authoritative segment-wise actual-casing resolution
 - src/fs/local/dot-path-adapter.test.ts — adapter casing-resolution regression
-- src/fs/local/local-fs.test.ts — stale-alias and genuine case-sensitive collision regressions
+- src/fs/local/local-fs.test.ts — stale-alias and genuine case-sensitive collision
+  regressions
 - src/__mocks__/obsidian.ts — root adapter listing fidelity
 - src/sync/change-detector.ts — observation-only case-alias facts and hash enrichment
 - src/sync/change-hash-enrichment.ts — content facts for observed case aliases
@@ -32,7 +37,8 @@ scope:
 - src/sync/case-alias-planning.ts — case-alias executor protocol helpers
 - src/sync/current-state-case-rename.ts — remove Observation-side rename inference
 - src/sync/plan-admission-graph.ts — carry fact entries into each Admission component
-- src/sync/local-rename-admission.ts — typed component normalization and exhaustive decision
+- src/sync/local-rename-admission.ts — typed component normalization and exhaustive
+  decision
 - src/sync/plan-admission.ts — sole case-alias authorization owner
 - src/sync/plan-executor.ts — pre-effect and terminal proof before SyncRecord commit
 - src/sync/types.ts — restrict rename evidence authority to reported events
@@ -45,19 +51,28 @@ scope:
 - AGENTS.md — repository operating rule
 - ARCHITECTURE.md — LocalFs and initial-state reconstruction boundary
 - docs/adr/0001-metadata-cache-is-subordinate-to-commit-last.md — governing decision
-- docs/adr/0008-logical-identity-admission-fails-closed.md — current-fact canonicalization rationale
-- docs/adr/adr-20260903-stateless-current-state-recovery.md — schema invalidation boundary
-- docs/adr/adr-20260831-admission-owned-local-rename-constraint-lifecycle.md — mark superseded by stateless recovery
-- docs/adr/adr-20260831-admission-owns-identity-component-decisi.md — component-fact decision invariant
-- docs/adr/adr-20260902-fresh-state-reconciliation-for-rename-edits.md — baseline-backed alias classification
+- docs/adr/0008-logical-identity-admission-fails-closed.md — current-fact canonicalization
+  rationale
+- docs/adr/adr-20260903-stateless-current-state-recovery.md — schema invalidation
+  boundary
+- docs/adr/adr-20260831-admission-owned-local-rename-constraint-lifecycle.md — mark
+  superseded by stateless recovery
+- docs/adr/adr-20260831-admission-owns-identity-component-decisi.md — component-fact
+  decision invariant
+- docs/adr/adr-20260902-fresh-state-reconciliation-for-rename-edits.md — baseline-backed
+  alias classification
 - docs/adr/adr-20260903-four-stage-sync-pipeline.md — stage boundary invariant
-- docs/adr/adr-issue43-destructive-authorization.md — fact-only snapshot and explicit protocol
+- docs/adr/adr-issue43-destructive-authorization.md — fact-only snapshot and explicit
+  protocol
 - docs/design/design-four-stage-sync-pipeline.md — persistent responsibility rule
-- docs/changes/change-20260825-issue43-destructive-authorization/change.md — nominal-plan compatibility review
-- docs/changes/change-20260901-admission-priority-pull/change.md — priority boundary compatibility review
+- docs/changes/change-20260825-issue43-destructive-authorization/change.md — nominal-plan
+  compatibility review
+- docs/changes/change-20260901-admission-priority-pull/change.md — priority boundary
+  compatibility review
 - docs/code-enforcement.md — mechanical enforcement contract
 non_goals:
-- Rename inference in Observation or decisions based on cycle temperature/whole-store state
+- Rename inference in Observation or decisions based on cycle temperature/whole-store
+  state
 - New Admission status, persisted relation, or recovery state
 - SyncRecord migration or stopped-state/error-specific recovery logic
 - Broad cursor lifecycle or Orchestrator refactor

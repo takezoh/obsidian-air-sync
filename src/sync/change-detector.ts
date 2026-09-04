@@ -19,6 +19,7 @@ import {
 } from "./remote-change-source";
 import {
 	confirmEntryAbsences,
+	confirmCaseAliasParentEndpoints,
 	confirmRenameOppositeEndpoints,
 	confirmUnknownRenameEndpoints,
 	ensureRenameEndpointObservations,
@@ -45,10 +46,9 @@ export interface ChangeDetectorDeps {
 
 export interface CollectChangesOptions {
 	/**
-	 * Force a COLD full join regardless of tracker/store state. Used for crash
-	 * recovery: after an interrupted or partial sync the delta-based hot/warm
-	 * path can't rediscover remote files that were reported but never baselined
-	 * (the cursor has moved past them). A full remote list vs records can.
+	 * Force a COLD full join regardless of tracker/store state. This is selected
+	 * from durable facts such as a missing checkpoint or changed scope, never from
+	 * a prior failure or persisted recovery instruction.
 	 */
 	forceFullScan?: boolean;
 }
@@ -105,6 +105,9 @@ export async function collectChanges(
 	if (changeSet.temperature !== "hot") {
 		await confirmEntryAbsences(changeSet, deps.localFs, deps.remoteFs);
 	}
+	await confirmCaseAliasParentEndpoints(
+		changeSet.observations, deps.localFs, deps.remoteFs,
+	);
 	await enrichHashesForLocalCaseAliases(
 		changeSet.entries, changeSet.observations, changeSet.identityEvidence,
 		deps.localFs, deps.remoteFs,

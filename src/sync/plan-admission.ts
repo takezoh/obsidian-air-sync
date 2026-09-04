@@ -1,4 +1,4 @@
-/* eslint max-lines: ["error", 420] -- admission keeps proposal binding, authorization, and fresh rename classification inside its sole policy boundary. */
+/* eslint max-lines: ["error", 450] -- admission keeps proposal binding, authorization, fresh rename classification, and case-alias component normalization inside its sole policy boundary. */
 import { buildAdmissionComponents, type AdmissionComponent } from "./plan-admission-graph";
 import { planSync } from "./decision-engine";
 import {
@@ -27,7 +27,10 @@ import {
 } from "./identity-component-decision";
 import { coalesceLocalFolderRenames, optimizeLocalFileRenames } from "./optimize-local-renames";
 import { coalesceRemoteFolderRenames, optimizeRemoteFileRenames } from "./optimize-remote-renames";
-import { reconstructCaseAliasChildRenames } from "./case-alias-planning";
+import {
+	normalizeCaseAliasParentTransition,
+	reconstructCaseAliasChildRenames,
+} from "./plan-admission-case-alias";
 import type { FileEntity } from "../fs/types";
 import type {
 	IdentityEvidence,
@@ -191,7 +194,21 @@ export function admitDestructivePlan(
 	);
 	const authorizedActions: SyncAction[] = [];
 	const dispositions: AdmissionDisposition[] = [];
-	for (const component of components) {
+	for (const observedComponent of components) {
+		const parentActions = normalizeCaseAliasParentTransition(
+			observedComponent,
+			snapshot.scope,
+			(child) => {
+				const state = normalizeLocalMove(child, snapshot.scope);
+				if (!state) return undefined;
+				const decision = decideLocalMove(state);
+				return decision.kind === "authorized" ? decision.action : undefined;
+			},
+		);
+		const component: AdmissionComponent = {
+			...observedComponent,
+			actions: parentActions ?? observedComponent.actions,
+		};
 		const normalizedRenameState = normalizeLocalMove(component, snapshot.scope);
 		if (normalizedRenameState) {
 			const decision = decideLocalMove(normalizedRenameState);

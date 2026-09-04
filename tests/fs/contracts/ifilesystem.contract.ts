@@ -164,9 +164,9 @@ function registerStableIdentityContract(ctx: IFileSystemContractCtx): void {
 		it("survives rename and distinguishes replacement at the same path", async () => {
 			await ctx.seed("identity-old.txt", "first");
 			const echoed = await ctx.fs().stat("identity-old.txt");
-			// Mutation-backed cache paths echo the requested spelling. A backend must
-			// expose that limitation instead of upgrading it to resolved-path proof.
-			expect(echoed?.pathAuthority).toBe("requested_echo");
+			// A provider-returned mutation path is resolved topology. A sparse response
+			// may remain a requested echo, but these faithful fakes return the path.
+			expect(echoed?.pathAuthority).toBe("actual_resolved");
 			expect(echoed?.identityKey).toBeTruthy();
 
 			// A replay-free full observation is producer-resolved and must retain the
@@ -180,7 +180,7 @@ function registerStableIdentityContract(ctx: IFileSystemContractCtx): void {
 
 			await ctx.fs().rename("identity-old.txt", "identity-new.txt");
 			const moved = await ctx.fs().stat("identity-new.txt");
-			expect(moved?.pathAuthority).toBe("requested_echo");
+			expect(moved?.pathAuthority).toBe("actual_resolved");
 			expect(moved?.identityKey).toBe(before?.identityKey);
 
 			await ctx.fs().delete("identity-new.txt");

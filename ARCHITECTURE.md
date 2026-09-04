@@ -276,6 +276,7 @@ Key design points:
 - `delete()` is idempotent (deleting a non-existent path is a no-op) and backends may use soft deletion (trash). Deleting a directory removes its children recursively; the caller must separately clean up the SyncRecord for each removed child path (`delete()` does not touch sync state).
 - `write()` auto-creates parent directories.
 - `rename(oldPath, newPath)` throws if `oldPath` does not exist or if `newPath` already exists (Admission proves destination occupancy before issuing a native rename, while execution still fails safely on a race); it auto-creates parent directories. `mkdir()` is idempotent and throws if an intermediate component is an existing file.
+- A mutation argument is an address, not proof of provider casing. A `requested_echo` may update metadata only at the stable identity's already-resolved path; it never re-keys topology. Provider-returned resolved metadata, or a successful explicit rename endpoint when the provider response is sparse, is required to move a cache identity. For a complete case-only parent component, Admission keeps child content effects at the provider-current path and emits one parent folder rename; the existing executor phase barrier performs that rename only after content settles.
 
 ## IBackendProvider / IAuthProvider
 

@@ -32,7 +32,7 @@ export function evaluateIdentityComponent(
 	}
 	if (hasConflictingIdentity(component)) reasons.add("conflicting_identity");
 	if (hasOpposingDeletes(component.actions)) reasons.add("opposing_deletes");
-	if (hasAliasTargetMutation(component)) reasons.add("alias_target_mutation");
+	if (hasAliasTargetMutation(component, scope)) reasons.add("alias_target_mutation");
 
 	const renames = component.evidence.filter((item): item is RenameEvidence => item.kind === "rename");
 	const resolvedNoAction = component.actions.length === 0 && renames.length > 0 &&
@@ -207,14 +207,20 @@ function hasOpposingDeletes(actions: readonly SyncAction[]): boolean {
 		actions.some((action) => action.action === "delete_remote");
 }
 
-function hasAliasTargetMutation(component: AdmissionComponent): boolean {
+function hasAliasTargetMutation(
+	component: AdmissionComponent,
+	scope: ScopeProjection,
+): boolean {
 	return component.evidence.some((evidence) => evidence.kind === "alias" &&
-		!component.actions.some((action) => isMatchingAliasRename(component, action, evidence)));
+		!component.actions.some((action) =>
+			isMatchingAliasRename(component, action, evidence, scope)));
 }
 
 function isMatchingAliasRename(
 	component: AdmissionComponent, action: SyncAction,
-	alias: Extract<IdentityEvidence, { kind: "alias" }>,): boolean {
+	alias: Extract<IdentityEvidence, { kind: "alias" }>,
+	scope: ScopeProjection,
+): boolean {
 	if (action.action !== "rename_local" && action.action !== "rename_remote") return false;
 	const matchingPaths = (oldPath: string, newPath: string) => (
 		alias.requestedPath === oldPath && alias.resolvedPath === newPath) || (
@@ -223,9 +229,24 @@ function isMatchingAliasRename(
 		? { oldPath: action.oldPath, newPath: action.path }
 		: action.descendants?.find((candidate) => matchingPaths(candidate.oldPath, candidate.newPath));
 	if (!pair) return false;
-	return component.evidence.some((evidence) => evidence.kind === "rename" &&
+	if (component.evidence.some((evidence) => evidence.kind === "rename" &&
 		evidence.oldPath === pair.oldPath && evidence.newPath === pair.newPath &&
-		action.action === (evidence.side === "local" ? "rename_remote" : "rename_local"));
+		action.action === (evidence.side === "local" ? "rename_remote" : "rename_local"))) {
+		return true;
+	}
+	if (alias.side !== "local" || action.action !== "rename_remote" || !action.isFolder) {
+		return false;
+	}
+	const oldRemote = component.observations.some((observation) =>
+		observation.kind === "exact" && observation.side === "remote" &&
+		observation.requestedPath === action.oldPath && observation.entity.isDirectory);
+	const newRemoteAbsent = component.observations.some((observation) =>
+		observation.kind === "absent" && observation.side === "remote" &&
+		observation.requestedPath === action.path && observation.authority === "stat");
+	return oldRemote && newRemoteAbsent && folderMappingComplete(action, {
+		kind: "rename", side: "local", oldPath: action.oldPath, newPath: action.path,
+		isFolder: true, authority: "reported",
+	}, scope);
 }
 
 function hasConflictingIdentity(component: AdmissionComponent): boolean {

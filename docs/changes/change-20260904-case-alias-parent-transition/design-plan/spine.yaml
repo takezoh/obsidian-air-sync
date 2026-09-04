@@ -1,0 +1,358 @@
+artifact: design-plan-spine
+version: 2
+granularity_profile: spike-first
+
+scope_expansion_signals:
+  - id: scope-signal-smaller-parent-transition
+    kind: smaller_structural_alternative
+    target_ref: contract-admission-parent-transition
+    witness: The existing explicit folder rename plus the existing execution phase barriers can express the parent transition without a compound protocol, dependency graph, or executor inference.
+    requirement_refs: [FR-CAPT-001, NFR-CAPT-002]
+    authority_refs: [adr-0008-fail-closed-identity, adr-four-stage-sync-pipeline]
+  - id: scope-signal-shared-filesystem-boundary
+    kind: shared_boundary
+    target_ref: contract-provider-resolved-topology
+    witness: Google Drive, OneDrive, and Dropbox share the requested-path cache seam and must expose the same provider-proven mutation-target behavior.
+    requirement_refs: [FR-CAPT-003, NFR-CAPT-001]
+    authority_refs: [adr-0001-commit-last-cache, adr-0008-fail-closed-identity]
+requirements:
+  - id: FR-CAPT-001
+    type: event_driven
+    priority: must
+    statement: When complete current-cycle evidence proves one included case-only parent mapping, Admission shall retain every child content action, replace only topology-only descendant renames, and authorize exactly one existing explicit parent folder rename in the same plan.
+  - id: FR-CAPT-002
+    type: invariant
+    priority: must
+    statement: Equal complete component facts shall produce the same Admission decision under COLD, WARM, and HOT without a prior-failure input, recovery branch, new status, or additional correctness owner.
+  - id: FR-CAPT-003
+    type: invariant
+    priority: must
+    statement: Requested spelling shall never prove provider topology or re-key the cache; only provider-resolved metadata or a successfully completed explicit rename endpoint may establish projected topology.
+  - id: FR-CAPT-004
+    type: safety
+    priority: must
+    statement: A cycle shall not commit the remote cursor past any admitted child content work; each SyncRecord commits only after its own admitted I/O, and cursor plus complete derived cache commit only after a wholly clean plan.
+  - id: FR-CAPT-005
+    type: invariant
+    priority: must
+    statement: The executor shall execute the authorized plan exactly through the existing transfer, serial-conflict, and structural barriers so child content effects finish before the explicit parent folder rename.
+  - id: FR-CAPT-006
+    type: safety
+    priority: must
+    statement: Incomplete descendant mapping, ambiguous provider resolution, a foreign or recreated destination identity, or a changed mutation precondition shall fail closed and leave the working view uncommitted.
+  - id: NFR-CAPT-001
+    type: non_functional
+    priority: must
+    statement: Provider resolution shall reuse the attempt-local live cache, perform at most one lookup per previously unresolved parent segment and one existing-child lookup per mutation, and add no parent lookup for later sibling mutations.
+  - id: NFR-CAPT-002
+    type: maintainability
+    priority: must
+    statement: The repair shall add no action type, generic DAG, executor re-admission, persisted evidence, schema migration, recovery instruction, Admission status, or correctness-critical in-memory state.
+
+components:
+  - id: component-validation-harness
+    kind: planned
+    contract_refs: [contract-production-shape-gate]
+    paths:
+      - src/sync/orchestrator.test.ts
+      - src/sync/plan-admission.test.ts
+      - src/fs/googledrive/index.test.ts
+      - src/fs/onedrive/index.test.ts
+      - src/fs/dropbox/index.test.ts
+  - id: component-cache-backed-filesystems
+    kind: existing
+    contract_refs: [contract-provider-resolved-topology]
+    paths:
+      - src/fs/caching/metadata-cache.ts
+      - src/fs/caching/path-authority.ts
+      - src/fs/caching/remote-fs.ts
+      - src/fs/googledrive/index.ts
+      - src/fs/onedrive/index.ts
+      - src/fs/dropbox/index.ts
+  - id: component-admission-parent-normalization
+    kind: existing
+    contract_refs: [contract-admission-parent-transition]
+    paths:
+      - src/sync/plan-admission.ts
+      - src/sync/plan-admission-graph.ts
+      - src/sync/plan-admission-case-alias.ts
+      - src/sync/optimize-local-renames.ts
+      - src/sync/types.ts
+  - id: component-execution-and-commit
+    kind: existing
+    contract_refs: [contract-exact-execution-and-checkpoint]
+    paths:
+      - src/sync/plan-executor.ts
+      - src/sync/state-committer.ts
+      - src/sync/sync-cycle-finalization.ts
+      - sync-state-ownership-guard.test.mjs
+
+contracts:
+  - id: contract-production-shape-gate
+    dimension: evidence_seeking
+    owner: component-validation-harness
+    requirement_refs: [FR-CAPT-001, FR-CAPT-002, FR-CAPT-003, FR-CAPT-004]
+    unit_refs: [unit-0-production-shape-gate]
+    adr_refs: [adr-0001-commit-last-cache, adr-0008-fail-closed-identity, adr-four-stage-sync-pipeline]
+    verification:
+      - id: verify-cold-production-shape
+        tier: T1
+        command: npm test -- --run src/sync/orchestrator.test.ts src/sync/plan-admission.test.ts
+      - id: verify-provider-paired-controls
+        tier: T1
+        command: npm test -- --run src/fs/googledrive/index.test.ts src/fs/onedrive/index.test.ts src/fs/dropbox/index.test.ts
+    partition:
+      outcomes: [determinate, unknown, conflicting]
+      default_policy: No production file may change unless complete COLD facts reach Admission with distinguishable child content and topology-only effects and all three provider fixtures distinguish an alias lookup from an explicit rename.
+    discretion: []
+  - id: contract-provider-resolved-topology
+    dimension: integration_contract
+    owner: component-cache-backed-filesystems
+    requirement_refs: [FR-CAPT-003, FR-CAPT-006, NFR-CAPT-001, NFR-CAPT-002]
+    unit_refs: [unit-1-provider-resolved-topology, unit-3-convergence-and-enforcement]
+    adr_refs: [adr-0001-commit-last-cache, adr-0008-fail-closed-identity]
+    verification:
+      - id: verify-google-provider-topology
+        tier: T1
+        command: npm test -- --run src/fs/googledrive/index.test.ts src/fs/googledrive/metadata-cache.test.ts
+      - id: verify-onedrive-provider-topology
+        tier: T1
+        command: npm test -- --run src/fs/onedrive/index.test.ts src/fs/onedrive/metadata-cache.test.ts
+      - id: verify-dropbox-provider-topology
+        tier: T1
+        command: npm test -- --run src/fs/dropbox/index.test.ts src/fs/dropbox/metadata-cache.test.ts
+      - id: verify-three-backend-cache-contract
+        tier: T1
+        command: npm test -- --run tests/fs/remote-backend-contracts.test.ts
+    partition:
+      outcomes: [determinate, unknown, inconclusive, conflicting]
+      default_policy: Use provider-returned name or path with an actual-resolved parent chain; a sparse write stays at the current identity path, while successful explicit rename confirms its endpoint. Reject ambiguity or identity mismatch without create fallback or a second cache.
+    discretion: []
+  - id: contract-admission-parent-transition
+    dimension: control_flow
+    owner: component-admission-parent-normalization
+    requirement_refs: [FR-CAPT-001, FR-CAPT-002, FR-CAPT-004, FR-CAPT-005, FR-CAPT-006, NFR-CAPT-002]
+    unit_refs: [unit-2-admission-parent-transition, unit-3-convergence-and-enforcement]
+    adr_refs: [adr-0008-fail-closed-identity, adr-four-stage-sync-pipeline]
+    verification:
+      - id: verify-same-cycle-mixed-admission
+        tier: T1
+        command: npm test -- --run src/sync/plan-admission.test.ts
+      - id: verify-temperature-independent-decision
+        tier: T1
+        command: npm test -- --run src/sync/orchestrator.test.ts
+    partition:
+      outcomes: [determinate, unknown, inconclusive, conflicting]
+      default_policy: Authorize the joint plan only for one complete same-identity mapping with a non-foreign destination; every incomplete, ambiguous, crossed, or recreated mapping retains existing fail-closed Admission behavior.
+    discretion: []
+  - id: contract-exact-execution-and-checkpoint
+    dimension: state_lifecycle
+    owner: component-execution-and-commit
+    requirement_refs: [FR-CAPT-002, FR-CAPT-004, FR-CAPT-005, FR-CAPT-006, NFR-CAPT-002]
+    unit_refs: [unit-3-convergence-and-enforcement]
+    adr_refs: [adr-0001-commit-last-cache, adr-four-stage-sync-pipeline]
+    verification:
+      - id: verify-executor-phase-order
+        tier: T1
+        command: npm test -- --run src/sync/plan-executor.test.ts
+      - id: verify-checkpoint-last
+        tier: T1
+        command: npm test -- --run src/sync/sync-cycle-finalization.test.ts src/sync/orchestrator.test.ts
+      - id: verify-state-ownership-guard
+        tier: T1
+        command: npm test -- --run sync-state-ownership-guard.test.mjs
+      - id: verify-full-repository-gate
+        tier: T1
+        command: "npm run lint && npm run lint:bot-repro && npm run build && npm run test:coverage"
+    partition:
+      outcomes: [determinate, inconclusive, conflicting]
+      default_policy: Preserve exact-plan phase execution and commit only a wholly clean terminal result; every incomplete or exceptional attempt aborts its live working view under the existing lifecycle.
+    discretion: []
+
+adrs:
+  - id: adr-0001-commit-last-cache
+    status: accepted
+    decision_input_refs: [decision-input-durable-authority, decision-input-cache-topology, input-no-third-authority]
+  - id: adr-0008-fail-closed-identity
+    status: accepted
+    decision_input_refs: [decision-input-admission-owner, decision-input-folder-component, input-requested-echo, input-admission-owns-topology]
+  - id: adr-four-stage-sync-pipeline
+    status: accepted
+    decision_input_refs: [decision-input-executor-boundary, decision-input-retry-model, input-executor-exact-actions]
+
+units:
+  - title: unit-0-production-shape-gate
+    chunk: test-only-evidence-gate
+    contract_refs: [contract-production-shape-gate]
+    files:
+      - src/sync/orchestrator.test.ts
+      - src/sync/plan-admission.test.ts
+      - src/fs/googledrive/index.test.ts
+      - src/fs/onedrive/index.test.ts
+      - src/fs/dropbox/index.test.ts
+    depends_on: []
+    acceptance:
+      - A complete production COLD acquisition exposes the parent stable identity, managed descendant identity set, and distinct push, pull, conflict, unchanged, and topology-only proposals to Admission.
+      - A remote-only changed child remains represented as content work and the characterization fails if a cursor could become clean without executing it.
+      - "Each backend fixture proves the paired controls: an alias lookup returning Templates does not re-key, while an explicit rename response returning TemplateS does re-key."
+      - If any required production carrier or paired control is absent or conflicting, no production edit begins and the design returns for revision.
+    objective: Establish the actual production and provider evidence shape before any repair code changes.
+    output_format: Characterization and discriminating RED tests only.
+    tool_guidance: Enter through production Observation and Admission; do not use a hand-built AuthorizedSyncPlan as the only evidence.
+    task_boundaries: No production changes, provider assumptions, recovery inputs, new statuses, or action-schema changes.
+    decision_closure_reason: This gate closes the recovered evidence gaps without creating a runtime branch or leaving the repair owner open.
+  - title: unit-1-provider-resolved-topology
+    chunk: shared-filesystem-boundary
+    contract_refs: [contract-provider-resolved-topology]
+    files:
+      - src/fs/caching/metadata-cache.ts
+      - src/fs/caching/path-authority.ts
+      - src/fs/caching/remote-fs.ts
+      - src/fs/googledrive/index.ts
+      - src/fs/googledrive/index.test.ts
+      - src/fs/onedrive/index.ts
+      - src/fs/onedrive/index.test.ts
+      - src/fs/dropbox/index.ts
+      - src/fs/dropbox/index.test.ts
+      - tests/fs/contracts/caching-remote-fs.contract.ts
+      - tests/fs/remote-backend-contracts.test.ts
+    depends_on: [unit-0-production-shape-gate]
+    acceptance:
+      - Requested echo never re-keys topology or supplies a mutation precondition.
+      - Provider-resolved parent and child identity select one update target and the returned provider path updates the live derived projection.
+      - Alias lookup and explicit rename controls pass for Google Drive, OneDrive, and Dropbox, including ambiguous-child failure.
+      - Cache-hit, first unresolved path, and repeated sibling request counts meet the fixed bound.
+    objective: Make the existing cache-backed filesystem preserve provider-proven topology and bounded mutation targeting.
+    output_format: Narrow shared boundary changes, adapter fixtures, and central contract coverage.
+    tool_guidance: Reuse the attempt-local live cache and existing stable-ID projection; request enough Google results to distinguish one from multiple without another resolver cache.
+    task_boundaries: Do not rename ancestors, decide sync actions, create a second cache, persist mutation evidence, or fall back from ambiguity to create.
+    decision_closure_reason: Provider truth, failure behavior, and request bounds are fixed; backend request syntax remains private.
+  - title: unit-2-admission-parent-transition
+    chunk: admission-normalization
+    contract_refs: [contract-admission-parent-transition]
+    files:
+      - src/sync/plan-admission.ts
+      - src/sync/plan-admission-graph.ts
+      - src/sync/plan-admission-case-alias.ts
+      - src/sync/optimize-local-renames.ts
+      - src/sync/plan-admission.test.ts
+      - src/sync/orchestrator.test.ts
+      - src/sync/types.ts
+    depends_on: [unit-0-production-shape-gate, unit-1-provider-resolved-topology]
+    acceptance:
+      - Admission retains every push, pull, and conflict action in the current plan and removes only descendant actions proven topology-only.
+      - Admission emits exactly one existing rename_remote action for the parent with old path, new path, and isFolder true.
+      - Complete mapping includes every managed descendant identity and rejects incomplete, crossed, ambiguous, foreign, or recreated targets.
+      - Equal complete facts produce the same admitted plan in COLD, WARM, and HOT.
+    objective: Represent the case-only parent topology effect once while preserving all same-cycle content work.
+    output_format: Admission-local normalization using existing actions and focused production-path tests.
+    tool_guidance: Use the current immutable cycle evidence and existing component traversal; keep the explicit parent folder rename in the structural phase.
+    task_boundaries: No parent-only defer, generic DAG, dependency inference, new action/disposition/status, late re-admission, or state outside the cycle snapshot.
+    decision_closure_reason: The existing Admission owner and explicit folder action fully express the required decision; no new protocol is needed.
+  - title: unit-3-convergence-and-enforcement
+    chunk: integration-and-recurrence-guard
+    contract_refs: [contract-provider-resolved-topology, contract-admission-parent-transition, contract-exact-execution-and-checkpoint]
+    files:
+      - src/sync/plan-executor.test.ts
+      - src/sync/sync-cycle-finalization.test.ts
+      - src/sync/orchestrator.test.ts
+      - tests/fs/remote-backend-contracts.test.ts
+      - sync-state-ownership-guard.test.mjs
+      - AGENTS.md
+      - docs/code-enforcement.md
+      - docs/adr/0001-metadata-cache-is-subordinate-to-commit-last.md
+      - docs/adr/0008-logical-identity-admission-fails-closed.md
+      - docs/design/design-four-stage-sync-pipeline.md
+    depends_on: [unit-1-provider-resolved-topology, unit-2-admission-parent-transition]
+    acceptance:
+      - Mixed siblings finish all content effects before the single structural parent rename, with no stale warning, duplicate object, failed action, or blocked action.
+      - A remote-only delta child is executed before cursor publication and is not hidden by a clean result.
+      - Mutation or rename failure leaves the cursor and complete cache checkpoint unpublished; ordinary COLD, WARM, and HOT re-evaluate current facts.
+      - The root ownership guard and full project gate pass, and all three caching backend registrations exercise the shared contract.
+    objective: Prove end-to-end convergence and make the existing responsibility boundary mechanically resistant to recurrence.
+    output_format: Integration regressions, shared backend contract updates, existing design/enforcement clarification, and gate evidence.
+    tool_guidance: Assert exact action and provider event order plus checkpoint publication; use the repository-root ownership guard path.
+    task_boundaries: Do not change executor phase topology, per-file commit policy, checkpoint authority, schema, or add recovery state.
+    decision_closure_reason: Execution and persistence remain unchanged owners; this unit adds discriminating integration and enforcement evidence only.
+
+acceptance:
+  - id: AC-CAPT-001
+    criteria: One COLD production-path mixed case-alias cycle executes every admitted child content action and one explicit parent folder rename before reporting clean.
+    requirement_refs: [FR-CAPT-001, FR-CAPT-004, FR-CAPT-005]
+  - id: AC-CAPT-002
+    criteria: The same complete current facts produce the same authorized component plan under COLD, WARM, and HOT with no prior-failure input.
+    requirement_refs: [FR-CAPT-002, NFR-CAPT-002]
+  - id: AC-CAPT-003
+    criteria: Alias lookup preserves provider-returned Templates while explicit rename re-keys to TemplateS, and all three backends update the existing child identity rather than create a duplicate.
+    requirement_refs: [FR-CAPT-003, FR-CAPT-006]
+  - id: AC-CAPT-004
+    criteria: Cache-hit, first unresolved path, and repeated sibling mutations meet the provider lookup bound without prefetch or another cache.
+    requirement_refs: [NFR-CAPT-001]
+  - id: AC-CAPT-005
+    criteria: Foreign, recreated, incomplete, ambiguous, or changed targets fail closed and cannot advance the cursor or publish a complete cache checkpoint.
+    requirement_refs: [FR-CAPT-004, FR-CAPT-006]
+  - id: AC-CAPT-006
+    criteria: The ownership guard and repository gate prove no new action protocol, state owner, recovery path, schema, or execution dependency mechanism.
+    requirement_refs: [NFR-CAPT-002]
+
+dispositions:
+  - decision_input_ref: input-requested-echo
+    disposition: "adopted: Requested echo is retained only as an untrusted lookup or caller echo and is prohibited from proving or re-keying topology."
+    adr_refs: [adr-0008-fail-closed-identity]
+    contract_refs: [contract-provider-resolved-topology]
+  - decision_input_ref: input-backend-only
+    disposition: "rejected: Provider targeting is necessary but cannot replace the explicit parent topology effect or make mutually invalidating child topology actions jointly executable."
+    contract_refs: [contract-provider-resolved-topology, contract-admission-parent-transition]
+  - decision_input_ref: input-admission-owns-topology
+    disposition: "adopted: Admission remains the sole owner that converts complete component evidence into authorized topology actions."
+    adr_refs: [adr-0008-fail-closed-identity]
+    contract_refs: [contract-admission-parent-transition]
+  - decision_input_ref: input-executor-exact-actions
+    disposition: "adopted: Execution retains the existing exact-plan transfer, serial-conflict, and structural phases without inference."
+    adr_refs: [adr-four-stage-sync-pipeline]
+    contract_refs: [contract-exact-execution-and-checkpoint]
+  - decision_input_ref: input-no-third-authority
+    disposition: "adopted: The design uses only cycle evidence, per-file SyncRecords, and the clean remote checkpoint; no state owner is added."
+    adr_refs: [adr-0001-commit-last-cache]
+    contract_refs: [contract-exact-execution-and-checkpoint]
+  - decision_input_ref: decision-input-repair-topology
+    disposition: "adopted: The repair is one same-cycle Admission normalization plus a subordinate provider-truth boundary, not a recovery flow."
+    contract_refs: [contract-admission-parent-transition, contract-provider-resolved-topology]
+  - decision_input_ref: decision-input-compound-protocol
+    disposition: "rejected: Existing action types and phase barriers express the joint plan without new partial-effect or resume semantics."
+    adr_refs: [adr-four-stage-sync-pipeline]
+    contract_refs: [contract-admission-parent-transition]
+  - decision_input_ref: decision-input-generic-dag
+    disposition: "rejected: A dependency graph would duplicate Admission reasoning in Execution and add bookkeeping not required by the single parent transition."
+    adr_refs: [adr-four-stage-sync-pipeline]
+    contract_refs: [contract-exact-execution-and-checkpoint]
+  - decision_input_ref: decision-input-filesystem-only
+    disposition: "rejected: The shared filesystem correction is necessary but the reproduced control proves it is insufficient without Admission parent normalization."
+    contract_refs: [contract-provider-resolved-topology, contract-admission-parent-transition]
+  - decision_input_ref: decision-input-new-state
+    disposition: "rejected: Persisted intent, recovery status, pending work, and additional correctness memory violate the closed authority model and are unnecessary."
+    adr_refs: [adr-0001-commit-last-cache, adr-0008-fail-closed-identity]
+    contract_refs: [contract-exact-execution-and-checkpoint]
+  - decision_input_ref: decision-input-durable-authority
+    disposition: "adopted: Per-file SyncRecords remain post-I/O authority and cursor plus complete cache remain clean-cycle commit-last authority."
+    adr_refs: [adr-0001-commit-last-cache]
+    contract_refs: [contract-exact-execution-and-checkpoint]
+  - decision_input_ref: decision-input-cache-topology
+    disposition: "adopted: The metadata cache remains a provider-derived working projection and never records requested or intended topology as fact."
+    adr_refs: [adr-0001-commit-last-cache]
+    contract_refs: [contract-provider-resolved-topology]
+  - decision_input_ref: decision-input-admission-owner
+    disposition: "subsumed: Closed by input-admission-owns-topology and the same Admission contract."
+    contract_refs: [contract-admission-parent-transition]
+  - decision_input_ref: decision-input-folder-component
+    disposition: "adopted: A complete folder component is the current parent identity plus the full managed descendant identity set, not a new persistent folder identity."
+    adr_refs: [adr-0008-fail-closed-identity]
+    contract_refs: [contract-admission-parent-transition]
+  - decision_input_ref: decision-input-executor-boundary
+    disposition: "adopted: Executor performs authorized actions exactly and does not infer ancestor renames or re-admit actions."
+    adr_refs: [adr-four-stage-sync-pipeline]
+    contract_refs: [contract-exact-execution-and-checkpoint]
+  - decision_input_ref: decision-input-retry-model
+    disposition: "adopted: Any incomplete attempt aborts its live view and the next COLD, WARM, or HOT acquisition decides only from current facts and committed records."
+    adr_refs: [adr-0001-commit-last-cache, adr-0008-fail-closed-identity]
+    contract_refs: [contract-exact-execution-and-checkpoint]

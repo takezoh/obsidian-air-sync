@@ -71,6 +71,46 @@ export async function confirmEntryAbsences(
 	}
 }
 
+/**
+ * A file-level local alias can reveal a case-only parent mismatch even when the
+ * listing produced no explicit folder rename evidence.  Observe the two parent
+ * endpoints as facts so Admission can decide the whole component; this function
+ * does not create rename evidence or actions.
+ */
+export async function confirmCaseAliasParentEndpoints(
+	observations: PathObservation[],
+	localFs: IFileSystem,
+	remoteFs: IFileSystem,
+): Promise<void> {
+	const pairs = new Map<string, { oldPath: string; newPath: string }>();
+	for (const observation of observations) {
+		if (observation.kind !== "alias" || observation.side !== "local" ||
+			observation.entity.isDirectory) continue;
+		const oldPath = parentPath(observation.requestedPath);
+		const newPath = parentPath(observation.resolvedPath);
+		if (!oldPath || !newPath || oldPath === newPath ||
+			oldPath.toLowerCase() !== newPath.toLowerCase()) continue;
+		pairs.set(`${oldPath}\0${newPath}`, { oldPath, newPath });
+	}
+	const pool = new AsyncPool(10);
+	await Promise.all([...pairs.values()].flatMap(({ oldPath, newPath }) => [
+		{ side: "local" as const, path: oldPath, fs: localFs },
+		{ side: "local" as const, path: newPath, fs: localFs },
+		{ side: "remote" as const, path: oldPath, fs: remoteFs },
+		{ side: "remote" as const, path: newPath, fs: remoteFs },
+	].filter(({ side, path }) => !observations.some((observation) =>
+		observation.side === side && observation.requestedPath === path &&
+		observation.kind !== "unknown" && observation.kind !== "present_unresolved"))
+		.map(({ side, path, fs }) => pool.run(async () => {
+			replaceObservation(observations, observePath(side, path, await fs.stat(path)));
+		}))));
+}
+
+function parentPath(path: string): string {
+	const separator = path.lastIndexOf("/");
+	return separator === -1 ? "" : path.slice(0, separator);
+}
+
 function observationAt(
 	observations: readonly PathObservation[],
 	indexes: ReadonlyMap<string, number>,

@@ -83,3 +83,5 @@ PR #54 の Admission-centered pipeline を正本として保ち、file-open を 
 The 2026-09-04 case-alias protocol does not change priority ownership: only an ordinary
 Admission-marked singleton pull can become `priorityPullAction`; component-level rename
 and canonicalization actions remain in the normal authorized batch.
+Parent case-alias normalization likewise remains batch-only and creates no detached
+priority path, late Admission, or additional lifecycle state.

@@ -283,6 +283,7 @@ these green when touching the pipeline:
 | **#5 crash-safe** — an interrupted action commits no baseline and re-syncs to convergence | `sync/crash-safety.test.ts`, `sync/convergence.test.ts` |
 | **Attempt-bounded remote working view** — a clean cycle commits; every incomplete result or pre-closeout exception aborts before classification/retry; the next COLD/WARM/HOT attempt derives only from durable/current facts | `sync/sync-cycle-finalization.test.ts`, `sync/orchestrator.test.ts`, `sync/plan-executor.test.ts`, `tests/fs/remote-backend-contracts.test.ts` |
 | **Case-alias canonicalization adds no owner** — Observation records raw-adapter actual casing and comparable content facts; Admission alone normalizes an explicit alias component and may canonicalize remote casing when endpoints, vacancy, unique identity, and content are complete. Temperature, global record count, database version, and prior failure are not decision inputs | `fs/local/local-fs.test.ts`, `sync/change-detector.test.ts`, `sync/plan-admission.test.ts`, `sync/orchestrator.test.ts` |
+| **Requested spelling has no topology authority** — `requested_echo` may refresh metadata at an identity's current path but cannot re-key it. Provider-resolved mutation responses and successful explicit rename endpoints alone may change the cache path; a mixed case-only parent component retains content work and uses one parent rename | `fs/googledrive/metadata-cache.test.ts`, `fs/googledrive/index.test.ts`, `fs/dropbox/index.test.ts`, `fs/onedrive/index.test.ts`, `sync/orchestrator.test.ts` |
 | **Command-ID immutability** — registered command IDs are a stable, published API | `main-commands.test.ts` (snapshot — update only for a genuinely new command, never to rename a shipped ID) |
 | **Coverage floors** — ratchet thresholds (lines 76 / statements 75 / functions 70 / branches 65) | `vitest.config.ts`, enforced by `npm run test:coverage` in CI. Raise as coverage improves; never lower to make CI pass |
 
@@ -305,6 +306,9 @@ Orchestrator field to carry them across cycles. Case-alias handling must use one
 Admission-owned normalized component and exhaustive decision, never an
 initial/COLD/error partition. Observation owns fact acquisition only; negative tests
 cover every destructive precondition plus temperature and unrelated-record invariance.
+Within that component, caller-requested spelling remains an address only. It cannot
+become cached topology, cannot authorize a child rename, and cannot substitute for the
+single explicit parent transition after content work.
 
 This is an ordinary architectural primitive/owner inventory, not a malicious-code sandbox:
 it is deliberately conservative for ordinary TypeScript ownership forms, and semantic

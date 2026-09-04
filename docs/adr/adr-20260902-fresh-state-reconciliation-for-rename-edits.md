@@ -71,7 +71,13 @@ count, schema version, and previous failure do not select a state.
 
 Admission authorizes one serial compound rename/write only for state 1, write-only for state 2, and state-only baseline repair for state 3. States 4–5 enter a narrow path-aware adapter to existing `auto_merge | duplicate`; no rename/write happens first. State 6 is a retryable current-invocation error with no action or pending row.
 
-The executor uses existing rename/write operations and commits the new-path record only after terminal fresh verification. Failure or crash commits neither new record nor checkpoint. The next ordinary sync uses the last committed checkpoint/baseline and current observations to classify again. No raw rename retry and no rollback rename are allowed.
+For aligned children of one proven case-only parent transition, Admission factors that
+same fresh classification into content and topology: a locally edited child remains an
+ordinary push at the provider-current path, a remotely changed child remains conflict
+work, and only the redundant child rename is consumed. One parent folder rename follows
+through the existing structural phase and rewrites the successful descendant records.
+
+The executor uses existing rename/write operations and commits the admitted record only after terminal verification. Failure or crash never commits the remote checkpoint; already successful per-file records retain their ordinary post-I/O semantics. The next ordinary sync uses the last committed checkpoint/baseline and current observations to classify again. No raw rename retry and no rollback rename are allowed.
 
 Conflict adaptation is transient. It supplies old merge-base path, new local path, current remote path, and target path to existing resolver behavior. Each fresh invocation delegates at most once to configured existing resolver semantics. Content equality does not establish ownership of a prior conflict output, and this ADR adds no exactly-once conflict-artifact guarantee or durable conflict-result state.
 

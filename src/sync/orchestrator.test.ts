@@ -2,6 +2,9 @@ import { describe, it, expect, vi } from "vitest";
 import "fake-indexeddb/auto";
 import { SyncOrchestrator } from "./orchestrator";
 import type { SyncOrchestratorDeps } from "./orchestrator";
+import { collectChanges } from "./change-detector";
+import { prepareSyncCycleSnapshot } from "./sync-cycle-planning";
+import { admitBatchObservation } from "./plan-admission";
 import { LocalChangeTracker } from "./local-tracker";
 import {
 	confirmMockPath, createMockLocalFs, createMockRemoteFs, type MockFileSystem,
@@ -460,6 +463,107 @@ describe("SyncOrchestrator", () => {
 			expect(writeRemote).not.toHaveBeenCalled();
 			expect(remoteFs.files.has("Case.md")).toBe(false);
 			expect(remoteFs.files.has("case.md")).toBe(true);
+			expect(deps.onStatusChange).toHaveBeenLastCalledWith("idle");
+			await orchestrator.close();
+		});
+
+		it("admits the complete mixed-child case-only folder component from a cold scan", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			const localChanged = addFile(localFs, "TemplateS/changed.md", "local edit", 2000);
+			const localPush = addFile(localFs, "TemplateS/push.md", "local edit", 2000);
+			const localSame = addFile(localFs, "TemplateS/same.md", "same", 1000);
+			const remoteChanged = addFile(remoteFs, "Templates/changed.md", "remote edit", 2000);
+			const remotePush = addFile(remoteFs, "Templates/push.md", "base", 1000);
+			const remoteSame = addFile(remoteFs, "Templates/same.md", "same", 1000);
+			remoteChanged.identityKey = "changed-R";
+			remotePush.identityKey = "push-R";
+			remoteSame.identityKey = "same-R";
+			confirmMockPath(localFs, "TemplateS");
+			confirmMockPath(remoteFs, "Templates");
+
+			const exactLocalStat = localFs.stat.bind(localFs);
+			const exactLocalWrite = localFs.write.bind(localFs);
+			const exactRemoteWrite = remoteFs.write.bind(remoteFs);
+			const localPhysicalPath = (path: string) => path === "Templates"
+				? "TemplateS"
+				: path.startsWith("Templates/")
+					? `TemplateS/${path.slice("Templates/".length)}`
+					: path;
+			localFs.stat = async (path) => {
+				const exact = await exactLocalStat(path);
+				if (exact) return exact;
+				return exactLocalStat(localPhysicalPath(path));
+			};
+			localFs.write = (path, content, mtime) =>
+				exactLocalWrite(localPhysicalPath(path), content, mtime);
+			remoteFs.write = (path, content, mtime) => {
+				const providerPath = path.startsWith("TemplateS/")
+					? `Templates/${path.slice("TemplateS/".length)}`
+					: path;
+				return exactRemoteWrite(providerPath, content, mtime);
+			};
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`,
+				lastSyncedIdentity: "test:root", conflictStrategy: "duplicate",
+			});
+			const info = vi.fn();
+			const warn = vi.fn();
+			const error = vi.fn();
+			const tracker = new LocalChangeTracker();
+			const deps = createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+				localTracker: tracker,
+				logger: {
+					debug: vi.fn(), info, warn, error, flush: vi.fn(),
+				} as unknown as Logger,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			const baseChanged = new TextEncoder().encode("base").buffer;
+			const baseSame = new TextEncoder().encode("same").buffer;
+			await orchestrator.state.put({
+				path: "Templates/changed.md", hash: await sha256(baseChanged),
+				localMtime: 1000, remoteMtime: 1000, localSize: 4, remoteSize: 4,
+				remoteIdentityKey: "changed-R", syncedAt: 900,
+			});
+			await orchestrator.state.put({
+				path: "Templates/same.md", hash: await sha256(baseSame),
+				localMtime: localSame.mtime, remoteMtime: remoteSame.mtime,
+				localSize: localSame.size, remoteSize: remoteSame.size,
+				remoteIdentityKey: "same-R", syncedAt: 900,
+			});
+			await orchestrator.state.put({
+				path: "Templates/push.md", hash: await sha256(baseChanged),
+				localMtime: 1000, remoteMtime: remotePush.mtime,
+				localSize: 4, remoteSize: remotePush.size,
+				remoteIdentityKey: "push-R", syncedAt: 900,
+			});
+			const renameRemote = vi.spyOn(remoteFs, "rename");
+			const changes = await collectChanges({
+				localFs, remoteFs, stateStore: orchestrator.state, changes: tracker.snapshot(),
+			}, { forceFullScan: true });
+			const planning = prepareSyncCycleSnapshot(changes, "test:root", {
+				isExcluded: () => false,
+			});
+			const admission = admitBatchObservation(planning.snapshot);
+			expect(admission.snapshot.observations).toContainEqual(expect.objectContaining({
+				kind: "alias", side: "local",
+				requestedPath: "Templates", resolvedPath: "TemplateS",
+			}));
+			expect(admission.failures).toEqual([]);
+
+			await orchestrator.runSync();
+
+			const planLog = info.mock.calls.find(([message]) => message === "Sync plan created");
+			expect(planLog?.[1]).toMatchObject({ push: 1, conflict: 1, rename_remote: 1 });
+			expect(renameRemote.mock.calls).toEqual([["Templates", "TemplateS"]]);
+			expect(error.mock.calls).toEqual([]);
+			expect(warn.mock.calls).toEqual([]);
+			expect(localChanged.path).toBe("TemplateS/changed.md");
+			expect(localPush.path).toBe("TemplateS/push.md");
+			expect(readText(remoteFs, "TemplateS/push.md")).toBe("local edit");
+			expect(await orchestrator.state.get("Templates/push.md")).toBeUndefined();
+			expect(await orchestrator.state.get("TemplateS/push.md")).toBeDefined();
 			expect(deps.onStatusChange).toHaveBeenLastCalledWith("idle");
 			await orchestrator.close();
 		});
@@ -1820,14 +1924,11 @@ describe("SyncOrchestrator", () => {
 		});
 	});
 
-	describe("crash recovery via hasCheckpoint", () => {
+	describe("ordinary cold reconstruction from checkpoint absence", () => {
 		/**
-		 * Reproduces the reported bug: a sync interrupted before pulling a remote
-		 * file leaves the vault half-synced. On restart, baselines exist (so the
-		 * default path is WARM) and the remote delta cursor has advanced past the
-		 * un-pulled file (mock getChangedPaths reports nothing), so WARM is blind.
-		 * `hasCheckpoint(settings) === false` (no committed cursor) must force a
-		 * COLD full reconcile that rediscovers and pulls the orphan.
+		 * A missing durable checkpoint selects the ordinary COLD acquisition path.
+		 * Existing per-file records may coexist with files that have no record, so
+		 * the full join must rediscover both without consulting prior failure state.
 		 */
 		it("hasCheckpoint=false forces a cold reconcile that pulls the un-synced file", async () => {
 			const localFs = createMockLocalFs();

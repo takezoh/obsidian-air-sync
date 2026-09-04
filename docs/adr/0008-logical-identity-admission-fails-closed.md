@@ -47,6 +47,12 @@ depend on that repair being complete.
    spelling only as an alias of the old spelling. Admission may reconstruct an
    otherwise actionless child rename only from a complete same-content baseline, an
    unchanged exact remote source, and an authoritatively absent remote destination.
+   When one case-only parent mapping contains both content-changing and unchanged
+   descendants, Admission decides the complete component in the same cycle: it retains
+   each child content decision at the provider-current old-casing path, consumes only
+   redundant child topology renames, and emits one existing folder `rename_remote`.
+   Execution's existing content-before-structural barrier then completes the content
+   before the parent transition; it does not infer or recover that transition later.
 
 4. `admitDestructivePlan` is the sole owner of cross-path identity-component action
    shaping, destructive admissibility, disposition, and local lifecycle membership.

@@ -36,9 +36,9 @@ invariants:
     on them.
   enforcement: test
 - id: INV-005
-  statement: Admission decisions depend only on current component facts and
-    component-local terminal baseline; acquisition temperature, global store state,
-    previous errors, and database version are not decision inputs.
+  statement: Admission decisions depend only on current component facts and component-local
+    terminal baseline; acquisition temperature, global store state, previous errors,
+    and database version are not decision inputs.
   enforcement: test
 boundaries:
   provides:
