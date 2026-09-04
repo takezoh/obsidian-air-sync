@@ -7,8 +7,6 @@ import {
 	type BatchObservation,
 } from "./sync-cycle-planning";
 import {
-	classifyNonBindingLocalRenames,
-	normalizeLocalMove,
 	type DeterminateNormalizedRenameState,
 	type EvidenceContradictionReason,
 	type EvidenceUnknownReason,
@@ -20,17 +18,10 @@ export type {
 	EvidenceUnknownReason,
 	NormalizedRenameState,
 } from "./local-rename-admission";
-import { renameEvidenceKey, renameOptimizerView } from "./identity-evidence";
 import {
-	evaluateIdentityComponent,
+	decideIdentityComponent,
 	type AdmissionFailureReason as IdentityAdmissionFailureReason,
 } from "./identity-component-decision";
-import { coalesceLocalFolderRenames, optimizeLocalFileRenames } from "./optimize-local-renames";
-import { coalesceRemoteFolderRenames, optimizeRemoteFileRenames } from "./optimize-remote-renames";
-import {
-	normalizeCaseAliasParentTransition,
-	reconstructCaseAliasChildRenames,
-} from "./plan-admission-case-alias";
 import type { FileEntity } from "../fs/types";
 import type {
 	IdentityEvidence,
@@ -165,16 +156,8 @@ export interface AdmissionResult {
 
 /** Sole production entry: construct, validate, and authorize actions from observed facts. */
 export function admitBatchObservation(observation: BatchObservation): AdmissionResult {
-	const identityEvidence = observation.evidence.map((item) => item.evidence);
 	const proposed = planSync([...observation.entries]);
-	const actions = reconstructCaseAliasChildRenames(
-		proposed.actions,
-		[...observation.entries] as MixedEntity[],
-		identityEvidence,
-		[...observation.observations] as PathObservation[],
-		observation.scope,
-	);
-	return admitDestructivePlan(bindAdmissionPlan(observation, { actions }));
+	return admitDestructivePlan(bindAdmissionPlan(observation, proposed));
 }
 
 /**
@@ -193,57 +176,19 @@ export function admitDestructivePlan(
 	const authorizedActions: SyncAction[] = [];
 	const dispositions: AdmissionDisposition[] = [];
 	for (const observedComponent of components) {
-		const parentActions = normalizeCaseAliasParentTransition(
-			observedComponent,
-			snapshot.scope,
-			(child) => {
-				const state = normalizeLocalMove(child, snapshot.scope);
-				if (!state) return undefined;
-				const decision = decideLocalMove(state);
-				return decision.kind === "authorized" ? decision.action : undefined;
-			},
+		const decision = decideIdentityComponent(
+			observedComponent, snapshot.scope, snapshot.baselinePaths,
 		);
-		const component: AdmissionComponent = {
-			...observedComponent,
-			actions: parentActions ?? observedComponent.actions,
-		};
-		const normalizedRenameState = normalizeLocalMove(component, snapshot.scope);
-		let decidedComponent: AdmissionComponent;
-		let candidateReasons: AdmissionFailureReason[] = [];
-		if (normalizedRenameState) {
-			const decision = decideLocalMove(normalizedRenameState);
-			if (decision.kind === "authorized") {
-				decidedComponent = { ...component, actions: [decision.action] };
-			} else if (decision.kind === "resolved_no_action") {
-				decidedComponent = { ...component, actions: [] };
-			} else if (decision.kind === normalizedRenameState.kind) {
-				decidedComponent = { ...component, actions: [] };
-				candidateReasons = [decision.reason];
-			} else {
-				throw new Error("Fresh rename decision/state invariant violated");
-			}
-		} else {
-			const nonBindingCandidates = classifyNonBindingLocalRenames(
-				[component], snapshot.baselinePaths, snapshot.scope,
-			);
-			const effectiveEvidence = component.evidence.filter((item) =>
-				item.kind !== "rename" || item.side !== "local" ||
-				!nonBindingCandidates.has(renameEvidenceKey(item)));
-			decidedComponent = {
-				...component,
-				actions: shapeIdentityComponentActions(component.actions, effectiveEvidence),
-				evidence: effectiveEvidence,
-			};
-		}
+		const decidedComponent = decision.component;
 		const shared = {
-			paths: [...component.paths].sort(),
+			paths: [...observedComponent.paths].sort(),
 			actions: [...decidedComponent.actions],
-			evidence: [...component.evidence].sort(compareEvidence),
-			...(normalizedRenameState ? { normalizedRenameState } : {}),
+			evidence: [...observedComponent.evidence].sort(compareEvidence),
+			...(decision.normalizedRenameState
+				? { normalizedRenameState: decision.normalizedRenameState }
+				: {}),
 		};
-		const reasons = evaluateIdentityComponent(
-			decidedComponent, snapshot.scope, candidateReasons,
-		);
+		const reasons = [...decision.reasons];
 		if (reasons.length > 0) {
 			const failure: AdmissionFailureComponent = {
 				kind: "failed",
@@ -293,94 +238,6 @@ function actionCoversRename(
 		evidence.newPath === `${newPrefix}${evidence.oldPath.slice(oldPrefix.length)}`;
 }
 
-type LocalMoveDecision =
-	| { readonly kind: "authorized"; readonly action: FreshRenameAction | CaseAliasCanonicalizationAction }
-	| { readonly kind: "resolved_no_action" }
-	| { readonly kind: "evidence_unknown"; readonly reason: EvidenceUnknownReason }
-	| { readonly kind: "evidence_contradicted"; readonly reason: EvidenceContradictionReason };
-
-function decideLocalMove(state: NormalizedRenameState): LocalMoveDecision {
-	if (state.kind === "evidence_unknown") {
-		return { kind: state.kind, reason: state.reason };
-	}
-	if (state.kind === "evidence_contradicted") {
-		return { kind: state.kind, reason: state.reason };
-	}
-	if (state.kind === "untracked_case_alias") {
-		return {
-			kind: "authorized",
-			action: {
-				action: "rename_remote", protocol: "case_alias_canonicalization",
-				oldPath: state.candidate.oldPath, path: state.candidate.newPath,
-				local: state.local, remote: state.remote,
-			},
-		};
-	}
-	return { kind: "authorized", action: freshRenameAction(state) };
-}
-
-function freshRenameAction(
-	state: Exclude<DeterminateNormalizedRenameState, { kind: "untracked_case_alias" }>,
-): FreshRenameAction {
-	const shared = {
-		path: state.candidate.newPath,
-		oldPath: state.candidate.oldPath,
-		local: state.local,
-		baseline: state.baseline,
-		normalizedRenameState: state,
-	};
-	switch (state.kind) {
-		case "baseline_at_old_vacant_target":
-			return state.relation === "unchanged"
-				? {
-					...shared, action: "rename_remote", freshRenameState: "old_path_baseline",
-					remote: state.source.entity, remotePath: state.source.path,
-				}
-				: {
-					...shared, action: "conflict", freshRenameState: "remote_changed",
-					remote: state.source.entity, remotePath: state.source.path,
-					remoteIdentitySource: state.source.entity,
-				};
-		case "baseline_at_new":
-			if (state.localRelation === "same") {
-				return {
-					...shared, action: "match", freshRenameState: "converged",
-					remote: state.target.entity, remotePath: state.target.path,
-				};
-			}
-			return state.relation === "changed"
-				? {
-					...shared, action: "conflict", freshRenameState: "remote_changed",
-					remote: state.target.entity, remotePath: state.target.path,
-					remoteIdentitySource: state.target.entity,
-				}
-				: {
-					...shared, action: "push", freshRenameState: "post_rename_old_content",
-					remote: state.target.entity, remotePath: state.target.path,
-				};
-		case "baseline_at_third_vacant_target":
-			return {
-				...shared, action: "conflict", freshRenameState: "remote_changed",
-				remote: state.source.entity, remotePath: state.source.path,
-				remoteIdentitySource: state.source.entity,
-			};
-		case "baseline_at_third_foreign_target":
-			return {
-				...shared, action: "conflict", freshRenameState: "remote_changed",
-				remote: state.primary.entity, remotePath: state.primary.path,
-				remoteIdentitySource: state.primary.entity,
-				additionalRemote: state.additional.entity,
-			};
-		case "baseline_absent_foreign_target":
-			return {
-				...shared, action: "conflict", freshRenameState: "destination_conflict",
-				remote: state.additional.entity, remotePath: state.additional.path,
-			};
-		case "baseline_absent_vacant_target":
-			return { ...shared, action: "conflict", freshRenameState: "remote_changed" };
-	}
-}
-
 function priorityPullAction(component: AdmissionComponent): SyncAction | undefined {
 	if (component.paths.size !== 1 || component.actions.length !== 1 ||
 		component.evidence.length > 0) return undefined;
@@ -398,29 +255,4 @@ function priorityPullAction(component: AdmissionComponent): SyncAction | undefin
 
 function compareEvidence(left: IdentityEvidence, right: IdentityEvidence): number {
 	return JSON.stringify(left).localeCompare(JSON.stringify(right));
-}
-
-function shapeIdentityComponentActions(
-	baseActions: readonly SyncAction[],
-	evidence: readonly IdentityEvidence[],
-): SyncAction[] {
-	const { localFiles, localFolders, remote } = renameOptimizerView(evidence);
-	let actions = [...baseActions];
-	if (localFolders.size > 0) {
-		const folderResult = coalesceLocalFolderRenames(actions, localFolders, localFiles);
-		actions = folderResult.actions;
-		if (folderResult.remainingFileRenames.size > 0) {
-			actions = optimizeLocalFileRenames(actions, folderResult.remainingFileRenames).actions;
-		}
-	} else if (localFiles.size > 0) {
-		actions = optimizeLocalFileRenames(actions, localFiles).actions;
-	}
-	if (remote.length > 0) {
-		const folderResult = coalesceRemoteFolderRenames(actions, remote);
-		actions = folderResult.actions;
-		if (folderResult.remainingPairs.length > 0) {
-			actions = optimizeRemoteFileRenames(actions, folderResult.remainingPairs).actions;
-		}
-	}
-	return actions;
 }

@@ -127,6 +127,14 @@ use those imports; the rest of production consumes the public Admission result o
 `AuthorizedSyncPlan`. This keeps path-local proposal and identity-component authority
 from becoming two whole-plan policy owners again.
 
+`sync-admission-authority-guard.test.mjs` closes the boundary inside Admission.
+Production value imports of rename candidate shapers, report-family classification, and
+the topology proof are limited to their declared owner, `identity-component-decision.ts`.
+The same AST guard rejects module-scope mutable or computed correctness data in the
+decision and subordinate proof modules.
+The selected rename family and folder proof must therefore remain immutable call-local
+values; a helper cannot become a second policy or retry-state owner.
+
 ### Producer-qualified mock path evidence
 
 Sync tests must not choose path authority independently from the filesystem role.
@@ -278,6 +286,7 @@ these green when touching the pipeline:
 | Principle | Pinned by |
 |---|---|
 | **Two-authority durable sync state** — only the clean-cycle remote cursor and per-file successful `SyncRecord` are authoritative; the complete remote cache is a derived co-commit | `sync-state-ownership-guard.test.mjs` (run by `npm run lint:bot-repro`) |
+| **Single Admission rename authority** — one identity-component decision selects and shapes a rename family once; subordinate candidate/topology helpers cannot become policy owners or retain proof across calls | `sync-admission-authority-guard.test.mjs`, `sync/plan-admission.test.ts` |
 | **Remote backend completeness** — every registered provider resolves to an exact catalogued filesystem family, and every family runs all four shared contracts | `fs/registry.test.ts`, `tests/fs/remote-backend-contracts.test.ts` |
 | **#3 delta-first** — the hot path stats only dirty paths and never calls `list()` (full scans are cold-start only) | `sync/delta-first.test.ts` |
 | **#5 crash-safe** — an interrupted action commits no baseline and re-syncs to convergence | `sync/crash-safety.test.ts`, `sync/convergence.test.ts` |

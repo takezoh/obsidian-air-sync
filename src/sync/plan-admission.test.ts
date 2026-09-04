@@ -7,6 +7,8 @@ import {
 	type AuthorizedSyncPlan,
 } from "./plan-admission";
 import { captureBatchObservation } from "./sync-cycle-planning";
+import { decideIdentityComponent } from "./identity-component-decision";
+import type { AdmissionComponent } from "./plan-admission-graph";
 import type {
 	IdentityEvidence,
 	PathObservation,
@@ -47,6 +49,48 @@ function remoteRename(
 	return {
 		kind: "rename", side: "remote", oldPath: "A.md", newPath: "B.md",
 		isFolder: false, authority: "reported", identityKey: "X", ...overrides,
+	};
+}
+
+function countedArray<T>(values: readonly T[], counter: { reads: number }): T[] {
+	return new Proxy([...values], {
+		get(target, property, receiver) {
+			if (property === Symbol.iterator) {
+				return function* iterator() {
+					for (let index = 0; index < target.length; index++) {
+						counter.reads++;
+						yield target[index]!;
+					}
+				};
+			}
+			if (typeof property === "string" && /^\d+$/.test(property)) counter.reads++;
+			return Reflect.get(target, property, receiver) as unknown;
+		},
+	});
+}
+
+function countedMap<K, V>(
+	entries: readonly (readonly [K, V])[],
+	counter: { reads: number },
+): ReadonlyMap<K, V> {
+	const map = new Map(entries);
+	const count = function* <T>(values: Iterable<T>): IterableIterator<T> {
+		for (const value of values) {
+			counter.reads++;
+			yield value;
+		}
+	};
+	return {
+		get size() { return map.size; },
+		get(key) { counter.reads++; return map.get(key); },
+		has(key) { counter.reads++; return map.has(key); },
+		entries() { return count(map.entries()); },
+		keys() { return count(map.keys()); },
+		values() { return count(map.values()); },
+		forEach(callback, thisArg) {
+			for (const [key, value] of count(map.entries())) callback.call(thisArg, value, key, this);
+		},
+		[Symbol.iterator]() { return count(map.entries()); },
 	};
 }
 
@@ -986,6 +1030,432 @@ describe("admitDestructivePlan", () => {
 		expect(result.failures[0]!.reasons).toEqual(["incomplete_folder_mapping"]);
 	});
 
+	it("rejects conflicting reports before selecting any candidate family", () => {
+		const actions: SyncAction[] = [
+			{ path: "A.md", action: "delete_local", local: entity("A.md") },
+			{ path: "B.md", action: "pull", remote: entity("B.md", "X") },
+			{ path: "C.md", action: "pull", remote: entity("C.md", "X") },
+		];
+		const reports = [
+			remoteRename({ oldPath: "A.md", newPath: "B.md" }),
+			remoteRename({ oldPath: "A.md", newPath: "C.md" }),
+		];
+
+		for (const evidence of [reports, [...reports].reverse()]) {
+			const result = admit(actions, evidence, [], projection({
+				"A.md": "included", "B.md": "included", "C.md": "included",
+			}));
+
+			expect(result.executable.actions).toEqual([]);
+			expect(result.dispositions).toHaveLength(1);
+			expect(result.dispositions[0]).toMatchObject({
+				kind: "failed", reasons: ["rename_mismatch"], actions: [],
+			});
+		}
+	});
+
+	it("does not fall back to a complete alias candidate when reports conflict", () => {
+		const fixture = caseAliasFixture();
+		const reports: IdentityEvidence[] = [
+			remoteRename({ oldPath: "Case.md", newPath: "X.md" }),
+			remoteRename({ oldPath: "Case.md", newPath: "Y.md" }),
+		];
+		const scope = projection({
+			"Case.md": "included", "case.md": "included",
+			"X.md": "included", "Y.md": "included",
+		});
+		const permutations = [
+			{ actions: fixture.actions, evidence: [...fixture.evidence, ...reports], observations: fixture.observations },
+			{ actions: [...fixture.actions].reverse(), evidence: [...reports, ...fixture.evidence], observations: [...fixture.observations].reverse() },
+		];
+
+		const control = admit(
+			fixture.actions, fixture.evidence, fixture.observations, fixture.scope, fixture.entries,
+		);
+		expect(control.dispositions).toMatchObject([{ kind: "authorized" }]);
+		for (const variant of permutations) {
+			const result = admit(
+				variant.actions, variant.evidence, variant.observations, scope, fixture.entries,
+			);
+			expect(result.executable.actions).toEqual([]);
+			expect(result.dispositions).toHaveLength(1);
+			expect(result.failures[0]!.reasons).toEqual(["rename_mismatch"]);
+		}
+	});
+
+	it("reports orthogonal observation failure before report-family conflict", () => {
+		const result = admit([
+			{ path: "A.md", action: "delete_local", local: entity("A.md") },
+		], [
+			remoteRename({ oldPath: "A.md", newPath: "B.md" }),
+			remoteRename({ oldPath: "A.md", newPath: "C.md" }),
+		], [{
+			kind: "present_unresolved", side: "remote", requestedPath: "A.md",
+			returnedPath: "A.md", entity: entity("A.md", "X"), source: "stat",
+		}], projection({
+			"A.md": "included", "B.md": "included", "C.md": "included",
+		}));
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.failures[0]!.reasons).toEqual(["present_unresolved"]);
+	});
+
+	it("rejects distinct same-side file roots joined into one identity component", () => {
+		const baseline = (path: string, remoteIdentityKey: string): SyncRecord => ({
+			path, hash: "h", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, remoteIdentityKey, syncedAt: 1,
+		});
+		const result = admit([
+			{
+				path: "A.md", action: "delete_remote", remote: entity("A.md", "L"),
+				baseline: baseline("A.md", "L"),
+			},
+			{ path: "B.md", action: "push", local: entity("B.md") },
+			{
+				path: "C.md", action: "delete_remote", remote: entity("C.md", "R"),
+				baseline: baseline("C.md", "R"),
+			},
+			{ path: "D.md", action: "push", local: entity("D.md") },
+		], [
+			remoteRename({ side: "local", oldPath: "A.md", newPath: "B.md", identityKey: undefined }),
+			remoteRename({ side: "local", oldPath: "C.md", newPath: "D.md", identityKey: undefined }),
+			{
+				kind: "stable_identity", side: "remote", identityKey: "R", occurrences: [
+					{ side: "remote", phase: "current", path: "B.md", identityKey: "R" },
+					{ side: "remote", phase: "baseline", path: "C.md", identityKey: "R" },
+				],
+			},
+		], [], projection({
+			"A.md": "included", "B.md": "included", "C.md": "included", "D.md": "included",
+		}));
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.failures[0]!.reasons).toEqual(["rename_mismatch"]);
+	});
+
+	it("rejects two report families joined into one identity component", () => {
+		const baseline = (path: string, remoteIdentityKey: string): SyncRecord => ({
+			path, hash: "h", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, remoteIdentityKey, syncedAt: 1,
+		});
+		const actions: SyncAction[] = [
+			{
+				path: "A.md", action: "delete_remote", remote: entity("A.md", "L"),
+				baseline: baseline("A.md", "L"),
+			},
+			{ path: "B.md", action: "push", local: entity("B.md") },
+			{
+				path: "C.md", action: "delete_local", local: entity("C.md"),
+				baseline: baseline("C.md", "R"),
+			},
+			{ path: "D.md", action: "pull", remote: entity("D.md", "R") },
+		];
+		const evidence: IdentityEvidence[] = [
+			remoteRename({
+				side: "local", oldPath: "A.md", newPath: "B.md", identityKey: undefined,
+			}),
+			remoteRename({ oldPath: "C.md", newPath: "D.md", identityKey: "R" }),
+			{
+				kind: "stable_identity", side: "remote", identityKey: "R", occurrences: [
+					{ side: "remote", phase: "current", path: "B.md", identityKey: "R" },
+					{ side: "remote", phase: "baseline", path: "C.md", identityKey: "R" },
+				],
+			},
+		];
+
+		const result = admit(actions, evidence, [], projection({
+			"A.md": "included", "B.md": "included", "C.md": "included", "D.md": "included",
+		}));
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.dispositions).toHaveLength(1);
+		expect(result.failures[0]!.reasons).toEqual(["opposing_deletes"]);
+	});
+
+	it("reports incomplete folder mapping before evaluating an alias", () => {
+		const action: SyncAction = {
+			path: "B", oldPath: "A", action: "rename_local", isFolder: true,
+			descendants: [{ oldPath: "A/x.md", newPath: "B/x.md" }],
+		};
+		const result = admit([action], [
+			remoteRename({ oldPath: "A", newPath: "B", isFolder: true }),
+			{ kind: "alias", side: "local", requestedPath: "B/y.md", resolvedPath: "A/y.md" },
+		], [], projection({
+			A: "included", B: "included", "A/x.md": "included", "B/x.md": "included",
+			"A/y.md": "included", "B/y.md": "included",
+		}));
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.failures).toHaveLength(1);
+		expect(result.failures[0]!.reasons).toEqual(["incomplete_folder_mapping"]);
+	});
+
+	it("rejects an alias outside a complete selected folder mapping", () => {
+		const action: SyncAction = {
+			path: "B", oldPath: "A", action: "rename_local", isFolder: true,
+			descendants: [
+				{ oldPath: "A/x.md", newPath: "B/x.md" },
+				{ oldPath: "A/y.md", newPath: "B/y.md" },
+			],
+		};
+		const result = admit([action], [
+			remoteRename({ oldPath: "A", newPath: "B", isFolder: true }),
+			{ kind: "alias", side: "local", requestedPath: "B/x.md", resolvedPath: "A/y.md" },
+		], [], projection({
+			A: "included", B: "included", "A/x.md": "included", "B/x.md": "included",
+			"A/y.md": "included", "B/y.md": "included",
+		}));
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.failures[0]!.reasons).toEqual(["alias_target_mutation"]);
+	});
+
+	it("rejects duplicate endpoints in a selected folder mapping", () => {
+		const action: SyncAction = {
+			path: "B", oldPath: "A", action: "rename_local", isFolder: true,
+			descendants: [
+				{ oldPath: "A/x.md", newPath: "B/x.md" },
+				{ oldPath: "A/x.md", newPath: "B/x.md" },
+			],
+		};
+		const result = admit([action], [
+			remoteRename({ oldPath: "A", newPath: "B", isFolder: true }),
+		], [], projection({
+			A: "included", B: "included", "A/x.md": "included", "B/x.md": "included",
+		}));
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.failures[0]!.reasons).toEqual(["incomplete_folder_mapping"]);
+	});
+
+	it("does not derive rename authority from an action-shaped folder mapping", () => {
+		const localAlias = entity("A/x.md");
+		const remoteFolder = { ...entity("A", "folder"), isDirectory: true };
+		const action: SyncAction = {
+			path: "B", oldPath: "A", action: "rename_remote", isFolder: true,
+			descendants: [{ oldPath: "A/x.md", newPath: "B/x.md" }],
+		};
+		const result = admit([action], [
+			{ kind: "alias", side: "local", requestedPath: "B/x.md", resolvedPath: "A/x.md" },
+		], [
+			{ kind: "alias", side: "local", requestedPath: "B/x.md", resolvedPath: "A/x.md", entity: localAlias },
+			{ kind: "exact", side: "remote", requestedPath: "A", entity: remoteFolder },
+			{ kind: "absent", side: "remote", requestedPath: "B", authority: "stat" },
+		], projection({
+			A: "included", B: "included", "A/x.md": "included", "B/x.md": "included",
+		}));
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.failures[0]!.reasons).toEqual(["alias_target_mutation"]);
+	});
+
+	it("requires exactly one native action for a selected folder root", () => {
+		const action: SyncAction = {
+			path: "B", oldPath: "A", action: "rename_local", isFolder: true,
+			descendants: [{ oldPath: "A/x.md", newPath: "B/x.md" }],
+		};
+		const result = admit([action, { ...action }], [
+			remoteRename({ oldPath: "A", newPath: "B", isFolder: true }),
+		], [], projection({
+			A: "included", B: "included", "A/x.md": "included", "B/x.md": "included",
+		}));
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.failures[0]!.reasons).toEqual(["rename_mismatch"]);
+	});
+
+	it("rejects a file action as the binding for a reported folder root", () => {
+		const action: SyncAction = {
+			path: "B", oldPath: "A", action: "rename_local",
+		};
+		const result = admit([action], [
+			remoteRename({ oldPath: "A", newPath: "B", isFolder: true }),
+		], [], projection({ A: "included", B: "included" }));
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.failures[0]!.reasons).toEqual(["rename_mismatch"]);
+	});
+
+	it("uses the shallowest aligned folder report as the governing root", () => {
+		const action: SyncAction = {
+			path: "B", oldPath: "A", action: "rename_local", isFolder: true,
+			descendants: [
+				{ oldPath: "A/sub/x.md", newPath: "B/sub/x.md" },
+			],
+		};
+		const reports = [
+			remoteRename({ oldPath: "A", newPath: "B", isFolder: true, identityKey: "root" }),
+			remoteRename({
+				oldPath: "A/sub", newPath: "B/sub", isFolder: true, identityKey: "sub",
+			}),
+			remoteRename({
+				oldPath: "A/sub/x.md", newPath: "B/sub/x.md", identityKey: "file",
+			}),
+		];
+		const scope = projection({
+			A: "included", B: "included", "A/sub": "included", "B/sub": "included",
+			"A/sub/x.md": "included", "B/sub/x.md": "included",
+		});
+
+		for (const evidence of [reports, [...reports].reverse()]) {
+			const result = admit([action], evidence, [], scope);
+			expect(result.failures).toEqual([]);
+			expect(result.executable.actions).toEqual([action]);
+		}
+	});
+
+	it("materializes full-scan nested folder reports as one governing root action", () => {
+		const actions: SyncAction[] = [
+			{ path: "A/sub/x.md", action: "delete_local", local: entity("A/sub/x.md") },
+			{ path: "B/sub/x.md", action: "pull", remote: entity("B/sub/x.md", "file") },
+		];
+		const reports = [
+			remoteRename({ oldPath: "A", newPath: "B", isFolder: true, identityKey: "root" }),
+			remoteRename({
+				oldPath: "A/sub", newPath: "B/sub", isFolder: true, identityKey: "sub",
+			}),
+			remoteRename({
+				oldPath: "A/sub/x.md", newPath: "B/sub/x.md", identityKey: "file",
+			}),
+		];
+		const result = admit(actions, reports, [], projection({
+			A: "included", B: "included", "A/sub": "included", "B/sub": "included",
+			"A/sub/x.md": "included", "B/sub/x.md": "included",
+		}));
+
+		expect(result.failures).toEqual([]);
+		expect(result.executable.actions).toMatchObject([{
+			action: "rename_local", oldPath: "A", path: "B", isFolder: true,
+			descendants: [{ oldPath: "A/sub/x.md", newPath: "B/sub/x.md" }],
+		}]);
+	});
+
+	it("accepts an alias matching a reported nested folder under the governing root", () => {
+		const action: SyncAction = {
+			path: "B", oldPath: "A", action: "rename_local", isFolder: true,
+			descendants: [{ oldPath: "A/sub/x.md", newPath: "B/sub/x.md" }],
+		};
+		const result = admit([action], [
+			remoteRename({ oldPath: "A", newPath: "B", isFolder: true, identityKey: "root" }),
+			remoteRename({
+				oldPath: "A/sub", newPath: "B/sub", isFolder: true, identityKey: "sub",
+			}),
+			{ kind: "alias", side: "local", requestedPath: "B/sub", resolvedPath: "A/sub" },
+		], [], projection({
+			A: "included", B: "included", "A/sub": "included", "B/sub": "included",
+			"A/sub/x.md": "included", "B/sub/x.md": "included",
+		}));
+
+		expect(result.failures).toEqual([]);
+		expect(result.executable.actions).toEqual([action]);
+	});
+
+	it.each([
+		{
+			name: "one identity across two edges",
+			children: [remoteRename({
+				oldPath: "A/x.md", newPath: "B/x.md", identityKey: "root",
+			})],
+		},
+		{
+			name: "two identities on one edge",
+			children: [
+				remoteRename({ oldPath: "A/x.md", newPath: "B/x.md", identityKey: "X" }),
+				remoteRename({ oldPath: "A/x.md", newPath: "B/x.md", identityKey: "Y" }),
+			],
+		},
+	])("rejects folder report identity conflict: $name", ({ children }) => {
+		const action: SyncAction = {
+			path: "B", oldPath: "A", action: "rename_local", isFolder: true,
+			descendants: [{ oldPath: "A/x.md", newPath: "B/x.md" }],
+		};
+		const result = admit([action], [
+			remoteRename({ oldPath: "A", newPath: "B", isFolder: true, identityKey: "root" }),
+			...children,
+		], [], projection({
+			A: "included", B: "included", "A/x.md": "included", "B/x.md": "included",
+		}));
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.failures[0]!.reasons).toEqual(["rename_mismatch"]);
+	});
+
+	it("reports ambiguous folder-root binding independently of action order", () => {
+		const partial: SyncAction = {
+			path: "B", oldPath: "A", action: "rename_local", isFolder: true,
+			descendants: [{ oldPath: "A/x.md", newPath: "B/x.md" }],
+		};
+		const complete: SyncAction = {
+			path: "B", oldPath: "A", action: "rename_local", isFolder: true,
+			descendants: [
+				{ oldPath: "A/x.md", newPath: "B/x.md" },
+				{ oldPath: "A/y.md", newPath: "B/y.md" },
+			],
+		};
+		const evidence = [remoteRename({ oldPath: "A", newPath: "B", isFolder: true })];
+		const scope = projection({
+			A: "included", B: "included", "A/x.md": "included", "B/x.md": "included",
+			"A/y.md": "included", "B/y.md": "included",
+		});
+
+		for (const actions of [[partial, complete], [complete, partial]]) {
+			const result = admit(actions, evidence, [], scope);
+			expect(result.executable.actions).toEqual([]);
+			expect(result.failures[0]!.reasons).toEqual(["rename_mismatch"]);
+		}
+	});
+
+	it.each([64, 512])("keeps selected-root proof collection reads affine at size %i", (size) => {
+		const counter = { reads: 0 };
+		const descendants = countedArray(Array.from({ length: size }, (_, index) => ({
+			oldPath: `A/${index}.md`, newPath: `B/${index}.md`,
+		})), counter);
+		const action: SyncAction = {
+			path: "B", oldPath: "A", action: "rename_local", isFolder: true, descendants,
+		};
+		const evidence: IdentityEvidence[] = [
+			remoteRename({ oldPath: "A", newPath: "B", isFolder: true }),
+			...Array.from({ length: size }, (_, index): IdentityEvidence => ({
+				kind: "alias", side: "local",
+				requestedPath: `B/${index}.md`, resolvedPath: `A/${index}.md`,
+			})),
+		];
+		const scopeEntries: Record<string, ScopeDisposition> = { A: "included", B: "included" };
+		for (let index = 0; index < size; index++) {
+			scopeEntries[`A/${index}.md`] = "included";
+			scopeEntries[`B/${index}.md`] = "included";
+		}
+		const scopeCounter = { reads: 0 };
+		const component: AdmissionComponent = {
+			paths: new Set(Object.keys(scopeEntries)),
+			actions: countedArray([action], counter),
+			entries: countedArray([], counter),
+			evidence: countedArray(evidence, counter),
+			observations: countedArray([], counter),
+		};
+
+		const scope: ScopeProjection = {
+			byEndpoint: countedMap(Object.entries(scopeEntries), scopeCounter),
+		};
+		const decision = decideIdentityComponent(component, scope, new Set());
+		const collectionSize = 1 + size + evidence.length + Object.keys(scopeEntries).length;
+		const bound = 32 * collectionSize + 128;
+
+		expect(decision.reasons).toEqual([]);
+		expect(counter.reads + scopeCounter.reads).toBeLessThanOrEqual(bound);
+		if (size === 512) {
+			const oracleCounter = { reads: 0 };
+			const oraclePairs = countedArray(descendants, oracleCounter);
+			for (const alias of evidence.slice(1)) {
+				if (alias.kind !== "alias") continue;
+				for (const pair of oraclePairs) {
+					void (pair.oldPath === alias.resolvedPath && pair.newPath === alias.requestedPath);
+				}
+			}
+			expect(oracleCounter.reads).toBeGreaterThan(bound);
+		}
+	});
+
 	it("admits a local folder rename from its managed descendants", () => {
 		const previous = (path: string): SyncRecord => ({
 			path, hash: "h", localMtime: 1, remoteMtime: 1,
@@ -1032,7 +1502,9 @@ describe("admitDestructivePlan", () => {
 		];
 		const evidence: IdentityEvidence[] = [
 			remoteRename({ oldPath: "Templates", newPath: "TemplateS", isFolder: true }),
-			remoteRename({ oldPath: "Templates/a.md", newPath: "TemplateS/a.md" }),
+			remoteRename({
+				oldPath: "Templates/a.md", newPath: "TemplateS/a.md", identityKey: "child-X",
+			}),
 		];
 
 		const result = admit(actions, evidence, [], projection({
@@ -1218,6 +1690,142 @@ describe("admitDestructivePlan", () => {
 		expect(intendedOnly.executable.actions).toEqual([]);
 		expect(intendedOnly.failures).toHaveLength(1);
 		expect(intendedOnly.failures[0]?.reasons).toEqual(["identity_postcondition_unproven"]);
+	});
+
+	it("honors a reported remote parent rename after the prior local parent transition committed", () => {
+		const localFolder: FileEntity = {
+			...entity("TemplateS"), isDirectory: true, size: 0,
+		};
+		const remoteFolder: FileEntity = {
+			...entity("Templates", "folder-R"), isDirectory: true, size: 0,
+		};
+		const localA = freshEntity("TemplateS/a.md", "A");
+		const localB = freshEntity("TemplateS/b.md", "B");
+		const remoteA = freshEntity("Templates/a.md", "A", "remote-A");
+		const remoteB = freshEntity("Templates/b.md", "B", "remote-B");
+		const previousA: SyncRecord = {
+			path: "TemplateS/a.md", hash: "A", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, remoteIdentityKey: "remote-A", syncedAt: 1,
+		};
+		const previousB: SyncRecord = {
+			path: "TemplateS/b.md", hash: "B", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, remoteIdentityKey: "remote-B", syncedAt: 1,
+		};
+		const entries: MixedEntity[] = [
+			{ path: "TemplateS/a.md", local: localA, prevSync: previousA },
+			{ path: "Templates/a.md", remote: remoteA },
+			{ path: "TemplateS/b.md", local: localB, prevSync: previousB },
+			{ path: "Templates/b.md", remote: remoteB },
+		];
+		const observations: PathObservation[] = [
+			{
+				kind: "alias", side: "local", requestedPath: "Templates",
+				resolvedPath: "TemplateS", entity: localFolder,
+			},
+			{ kind: "exact", side: "local", requestedPath: "TemplateS", entity: localFolder },
+			{ kind: "exact", side: "remote", requestedPath: "Templates", entity: remoteFolder },
+			{ kind: "absent", side: "remote", requestedPath: "TemplateS", authority: "stat" },
+			...["a.md", "b.md"].flatMap((name) => {
+				const local = name === "a.md" ? localA : localB;
+				const remote = name === "a.md" ? remoteA : remoteB;
+				return [
+					{
+						kind: "alias" as const, side: "local" as const,
+						requestedPath: `Templates/${name}`, resolvedPath: `TemplateS/${name}`,
+						entity: local,
+					},
+					{
+						kind: "exact" as const, side: "local" as const,
+						requestedPath: `TemplateS/${name}`, entity: local,
+					},
+					{
+						kind: "exact" as const, side: "remote" as const,
+						requestedPath: `Templates/${name}`, entity: remote,
+					},
+					{
+						kind: "absent" as const, side: "remote" as const,
+						requestedPath: `TemplateS/${name}`, authority: "stat" as const,
+					},
+				];
+			}),
+		];
+		const evidence: IdentityEvidence[] = [
+			{ kind: "alias", side: "local", requestedPath: "Templates", resolvedPath: "TemplateS" },
+			{ kind: "alias", side: "local", requestedPath: "Templates/a.md", resolvedPath: "TemplateS/a.md" },
+			{ kind: "alias", side: "local", requestedPath: "Templates/b.md", resolvedPath: "TemplateS/b.md" },
+			{
+				kind: "rename", side: "remote", oldPath: "TemplateS", newPath: "Templates",
+				isFolder: true, authority: "reported", identityKey: "folder-R",
+			},
+			...[
+				["remote-A", "a.md"],
+				["remote-B", "b.md"],
+			].map(([identityKey, name]): IdentityEvidence => ({
+				kind: "stable_identity", side: "remote", identityKey: identityKey!, occurrences: [
+					{
+						side: "remote", phase: "baseline", path: `TemplateS/${name}`,
+						identityKey,
+					},
+					{
+						side: "remote", phase: "current", path: `Templates/${name}`,
+						identityKey,
+					},
+				],
+			})),
+		];
+		const scope = projection({
+			Templates: "included", TemplateS: "included",
+			"Templates/a.md": "included", "TemplateS/a.md": "included",
+			"Templates/b.md": "included", "TemplateS/b.md": "included",
+		});
+
+		const result = admitBatchObservation(captureBatchObservation(
+			entries, evidence, observations, scope, "backend\0root",
+		));
+		const withoutParentAliasNormalization = admitBatchObservation(captureBatchObservation(
+			entries,
+			evidence,
+			observations.filter((item) => !(item.kind === "alias" && item.side === "local" &&
+				item.requestedPath === "Templates" && item.entity.isDirectory)),
+			scope,
+			"backend\0root",
+		));
+
+		expect(result.snapshot.plan.actions).toHaveLength(4);
+		const summarize = (admission: typeof result) => ({
+			reasons: admission.failures.flatMap((failure) => failure.reasons),
+			dispositions: admission.dispositions.map((disposition) => disposition.kind),
+			executable: admission.executable.actions.map((action) => ({
+				action: action.action,
+				...((action.action === "rename_local" || action.action === "rename_remote")
+					? { oldPath: action.oldPath, path: action.path }
+					: {}),
+			})),
+			candidates: admission.dispositions.flatMap((disposition) => disposition.actions)
+				.map((action) => ({
+					action: action.action,
+					...((action.action === "rename_local" || action.action === "rename_remote")
+						? { oldPath: action.oldPath, path: action.path }
+						: {}),
+				})),
+		});
+		expect({
+			productionFacts: summarize(result),
+			withoutParentAliasNormalization: summarize(withoutParentAliasNormalization),
+		}).toEqual({
+			productionFacts: {
+				reasons: [],
+				dispositions: ["authorized"],
+				executable: [{ action: "rename_local", oldPath: "TemplateS", path: "Templates" }],
+				candidates: [{ action: "rename_local", oldPath: "TemplateS", path: "Templates" }],
+			},
+			withoutParentAliasNormalization: {
+				reasons: [],
+				dispositions: ["authorized"],
+				executable: [{ action: "rename_local", oldPath: "TemplateS", path: "Templates" }],
+				candidates: [{ action: "rename_local", oldPath: "TemplateS", path: "Templates" }],
+			},
+		});
 	});
 
 	it("does not reconstruct an actionless case alias after the remote source changed", () => {
@@ -1462,6 +2070,30 @@ describe("admitDestructivePlan", () => {
 			action: "conflict", freshRenameState: "remote_changed", path: "B.md",
 			remotePath: "C.md", remote: movedRemote, remoteIdentitySource: movedRemote,
 		});
+	});
+
+	it("rejects a mixed report family whose remote postcondition is unobserved", () => {
+		const baseline: SyncRecord = {
+			path: "A.md", hash: "H0", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, remoteIdentityKey: "R", syncedAt: 1,
+		};
+		const local = freshEntity("B.md", "H1");
+		const result = admit([
+			{ path: "A.md", action: "cleanup", baseline },
+			{ path: "B.md", action: "push", local },
+		], [
+			remoteRename({ side: "local", identityKey: undefined }),
+			remoteRename({ oldPath: "A.md", newPath: "C.md", identityKey: "R" }),
+		], [
+			{ kind: "absent", side: "local", requestedPath: "A.md", authority: "stat" },
+			{ kind: "exact", side: "local", requestedPath: "B.md", entity: local },
+			{ kind: "absent", side: "remote", requestedPath: "A.md", authority: "stat" },
+			{ kind: "absent", side: "remote", requestedPath: "B.md", authority: "stat" },
+			{ kind: "absent", side: "remote", requestedPath: "C.md", authority: "stat" },
+		], projection({ "A.md": "included", "B.md": "included", "C.md": "included" }));
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.failures[0]!.reasons).toEqual(["rename_mismatch"]);
 	});
 
 	it("authorizes one primary/additional conflict when a third-path R and destination Y coexist", () => {

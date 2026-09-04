@@ -42,8 +42,18 @@ invariants:
   enforcement: test
 - id: INV-006
   statement: Component-local normalization shapes a candidate only; every normalized
-    component reaches exactly one action-aware Admission evaluator before exactly one
-    disposition is emitted.
+    component reaches exactly one action-aware Admission evaluator before exactly
+    one disposition is emitted.
+  enforcement: test
+- id: INV-007
+  statement: Admission selects one authority family from immutable raw component facts,
+    materializes it once, evaluates it once, and disposes the component once; coherent
+    reports precede aliases and normative conflict has no fallback.
+  enforcement: contract
+- id: INV-008
+  statement: A selected folder-root claim governs only exact, complete, unique, suffix-preserving,
+    included descendants proven by immutable call-local data that is discarded with
+    the component decision.
   enforcement: test
 boundaries:
   provides:
@@ -63,6 +73,10 @@ boundaries:
   - id: BOUNDARY-006
     statement: BatchObservation carrying an excluded path, excluded-path disposition,
       or identity edge with an excluded endpoint.
+  - id: BOUNDARY-007
+    statement: Production modules other than the identity-component decision importing
+      rename candidate/topology helpers, or Admission retaining mutable correctness
+      proof at module scope or across calls.
 variability:
   fixed:
   - id: FIXED-001

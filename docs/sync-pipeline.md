@@ -7,7 +7,7 @@ Each sync cycle has exactly four top-level responsibility stages:
 1. **Observation** -- `collectChanges()` acquires exact entries, path observations, and normative identity evidence; scope projection and `captureBatchObservation()` freeze those facts without constructing actions.
 2. **Admission** -- `admitBatchObservation()` privately constructs the path-local proposal, builds identity-connected components once, applies conflict and destructive-action policy, assigns every relevant component one disposition and lifecycle membership, and issues the only `AuthorizedSyncPlan`.
 3. **Execution** -- `executePlan()` accepts that authorized plan only, performs its exact effects, and reports exact outcomes without inventing or rerouting actions.
-4. **Commit/finalization** -- per-action state publication records proven successes; `finalizeSyncCycle()` mechanically folds those outcomes with the Admission dispositions, commits a safe checkpoint, and only then retires released evidence and debt.
+4. **Commit/finalization** -- per-action state publication records proven successes; `finalizeSyncCycle()` mechanically folds those outcomes with the Admission dispositions and commits the remote cursor/checkpoint only after a clean cycle.
 
 These stages describe responsibility owners, not one separately scheduled pass per helper function. Evidence completion, scope projection, and immutable fact capture belong to **Observation**. The path-local decision table, component build, conflict policy, and component-local rename shaping are private to **Admission**. They add no extra network scan merely by being named.
 
@@ -18,7 +18,7 @@ The lower-level cycle sequence within those boundaries is:
 3. `captureBatchObservation()` fixes included entries, evidence, observations, scope, and namespace without an action carrier.
 4. `admitBatchObservation()` invokes the private path-local `planSync()` helper, then builds evidence-connected components once, shapes and decides each component, and projects the `AuthorizedSyncPlan` while preserving disconnected ordinary proposal order.
 5. `executePlan()` runs only that authorized projection and reports exact completion; each successful action is published through `commitAction()`.
-6. `finalizeSyncCycle()` folds disposition membership with execution completion, commits the checkpoint when safe, then retires released evidence and debt.
+6. `finalizeSyncCycle()` folds disposition membership with execution completion and commits the remote cursor/checkpoint only when every component is terminal and the cycle is clean.
 
 The orchestrator (`SyncOrchestrator.executeSyncOnce()`) only sequences the boundaries. `prepareSyncCycleSnapshot()` projects scope and produces a fact-only `BatchObservation`. The orchestrator passes it once to `admitBatchObservation()` at the authorization cut point; no executable action exists before that call.
 
@@ -102,7 +102,7 @@ Uses `AsyncPool(10)` for parallel local reads. Per-file errors are caught and sk
 
 After initial-match enrichment, `enrichHashesForRenames()` runs for local rename destinations derived from `ChangeSet.identityEvidence`. In warm/cold mode, `list()` returns `hash: ""`, but Admission's local-origin rename proof needs SHA-256 content equivalence. This step calls `stat()` on exact local destination entries. Only the `hash` field is updated; `mtime` and `size` from `list()` are preserved.
 
-Before hash enrichment, `collectChanges()` creates observations for every rename endpoint, confirms unknown endpoints, confirms the opposite side of carried debt/evidence, and in WARM/COLD confirms every baseline absence. A thrown `stat()` aborts the attempt; it is never converted to absence. Hash enrichment then touches exact entries only, and `completeIdentityEvidence()` adds same-root stable-ID occurrences.
+Before hash enrichment, `collectChanges()` creates observations for every current-cycle rename endpoint, confirms unknown endpoints, and in WARM/COLD confirms every baseline absence. A thrown `stat()` aborts the attempt; it is never converted to absence. Hash enrichment then touches exact entries only, and `completeIdentityEvidence()` adds same-root stable-ID occurrences.
 
 ## Change detection
 
@@ -207,18 +207,27 @@ ordinary work retains proposal order, while a proved component replacement occup
 that component's place.
 `executePlan()` cannot accept a plain proposal through the supported typed API.
 
+Within each identity component, Admission selects rename authority once from the raw
+facts before candidate shaping. A coherent reported rename family precedes alias-only
+current facts; aliases prove endpoint equivalence but never choose the opposite
+direction. The selected family is shaped once and evaluated once. A reported folder
+root governs only exact, complete, unique, suffix-preserving included descendant pairs
+held in call-local proof data. That proof is discarded when the decision returns and
+never enters an action, store, checkpoint, retry, or recovery mechanism. See
+[the authority arbitration ADR](adr/adr-20260904-remote-rename-alias-arbitration.md).
+
 Endpoint dispositions are `included`, `mobile_deferred`, or `unknown`.
 Any unknown/mobile endpoint and any incomplete folder descendant mapping fails Admission. The
 full local/remote direction matrix and rejected identity inferences are recorded in
 [ADR 0008](adr/0008-logical-identity-admission-fails-closed.md).
 
-Before admitted I/O, local reported edges are upserted into the SyncState v6 rename-debt
-store under the snapshot's backend/root namespace. `finalizeSyncCycle()` does not
-re-evaluate scope, observations, identities, aliases, or action shapes: it folds the
-snapshot-bound dispositions with succeeded action membership. A safe checkpoint commits
-first; only then are mechanically releasable debt and session evidence retired.
-Disconnect/root switch waits on the orchestrator mutex before clearing state, so an
-old-target in-flight cycle cannot recreate debt after teardown.
+No operation intent, rename evidence, failed disposition, or recovery instruction is
+persisted. `finalizeSyncCycle()` does not re-evaluate scope, observations, identities,
+aliases, or action shapes: it folds the snapshot-bound dispositions with succeeded
+action membership. Successful file actions publish their `SyncRecord`; the remote
+cursor, derived cache, and scope checkpoint publish only after a wholly clean cycle.
+An incomplete attempt aborts its working view, and the next invocation re-observes and
+reclassifies through the same COLD/WARM/HOT Admission contract.
 
 ### Observability
 

@@ -101,6 +101,16 @@ central `tests/fs/remote-backend-contracts.test.ts` unit composition root.
     shape stays connected instead of silently breaking the resolver / stranding
     foreign-backend params. Both are idempotent (a no-op on the current shape). Do not
     grow this list without the same "reshape/discard, not transform" justification.
+- Sync correctness has exactly two durable publication points: a file's `SyncRecord`
+  after that admitted action succeeds, and the remote cursor/derived cache/scope
+  checkpoint after a wholly clean cycle. Do not persist operation intent, rename
+  evidence, Admission failures, retry instructions, or recovery markers. COLD/WARM/HOT
+  must re-observe current facts and enter the same Admission contract.
+- Within Admission, `identity-component-decision.ts` is the sole rename-authority
+  owner. Candidate shapers, `identity-component-report-family.ts`, and
+  `identity-component-topology.ts` are pure subordinate functions: they must not be
+  imported as independent policy stages or retain
+  correctness data across calls. The architecture guard enforces this boundary.
 
 ### Project-specific gotchas
 

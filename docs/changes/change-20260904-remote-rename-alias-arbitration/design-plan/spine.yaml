@@ -1,0 +1,587 @@
+artifact: design-plan-spine
+version: 2
+granularity_profile: algorithm-bound
+
+scope_expansion_signals: []
+
+requirements:
+  - id: FR-RAA-001
+    type: invariant
+    priority: must
+    statement: While Admission decides one connected identity component, it shall preserve the immutable raw component, invoke one private component-decision producer exactly once, evaluate exactly once, and emit exactly one existing final disposition through admitDestructivePlan.
+  - id: FR-RAA-002
+    type: event_driven
+    priority: must
+    statement: When effective authoritative reported claims form one coherent family, Admission shall select their root, direction, identity, and postcondition before any alias-only candidate and shall derive direction only from the reported side and old-to-new edge.
+  - id: FR-RAA-003
+    type: unwanted
+    priority: must
+    statement: If effective reported claims require incompatible roots, directions, identities, or postconditions, Admission shall fail the entire component with existing rename_mismatch semantics and no alias, ordinary-action, or reported-subset fallback.
+  - id: FR-RAA-004
+    type: conditional
+    priority: must
+    statement: When a selected reported folder root is materialized, its authority shall govern each and only each descendant in the same correctly directed native action after the complete mapping is proven suffix-aligned, included, endpoint-unique, exhaustive, and unambiguous.
+  - id: FR-RAA-005
+    type: ubiquitous
+    priority: must
+    statement: The system shall treat aliases only as endpoint-equivalence facts and shall never let alias spelling, presence, or a plausible action synthesize a report, select direction while an effective report exists, or authorize a descendant outside the selected proof.
+  - id: FR-RAA-006
+    type: compatibility
+    priority: must
+    statement: When the effective reported set is empty and complete current facts prove the existing local case-only parent policy, Admission shall retain child content work at provider-current paths and authorize exactly one existing parent rename_remote under the unchanged content-before-structural barrier.
+  - id: FR-RAA-007
+    type: invariant
+    priority: must
+    statement: Equal complete immutable component facts shall produce identical actions, disposition, and ordered reasons after COLD, WARM, or HOT acquisition and for Google Drive, OneDrive, or Dropbox, without temperature or provider identity as a decision input.
+  - id: FR-RAA-008
+    type: observable_failure
+    priority: must
+    statement: Admission shall apply the fixed failure-predicate precedence, deduplicate and canonically sort multi-reason results, emit only existing failure strings, and preserve the result across input permutations.
+  - id: NFR-RAA-001
+    type: state_boundary
+    priority: must
+    statement: The change shall add no persisted or public schema, migration, recovery branch, pending instruction, intermediate checkpoint, orchestrator field, correctness-critical cross-call owner, provider call, action, status, disposition, or failure reason.
+  - id: NFR-RAA-002
+    type: performance
+    priority: must
+    statement: Classification, selected-family materialization, topology indexing, and final evaluation shall perform no I/O in linear time and call-local space, with instrumented reads no greater than 32 times the total actions, descendants, evidence, observations, and scope endpoints plus 128.
+  - id: NFR-RAA-003
+    type: governance
+    priority: must
+    statement: A static guard shall reject production value imports of candidate or topology helpers outside identity-component-decision.ts and module-scope mutable correctness data in the decision/proof modules, while the existing state-owner guard remains unchanged and green.
+  - id: NFR-RAA-004
+    type: documentation
+    priority: must
+    statement: A new ADR shall explicitly supersede only stale present-tense RenameDebt and pending-retirement claims in earlier accepted ADRs; current guides and the active design shall state the stateless boundary without modifying historical ADR text or completed changes.
+
+components:
+  - id: component-identity-component-authority
+    kind: existing
+    contract_refs:
+      - contract-single-component-admission
+      - contract-authority-arbitration
+      - contract-root-proof-failure-semantics
+      - contract-provider-temperature-equivalence
+      - contract-admission-architecture-conformance
+    paths:
+      - src/sync/plan-admission.ts
+      - src/sync/plan-admission-graph.ts
+      - src/sync/identity-component-decision.ts
+      - src/sync/plan-admission-case-alias.ts
+      - src/sync/local-rename-admission.ts
+      - src/sync/optimize-local-renames.ts
+      - src/sync/optimize-remote-renames.ts
+      - src/sync/plan-admission.test.ts
+  - id: component-execution-commit-boundary
+    kind: existing
+    contract_refs:
+      - contract-execution-state-preservation
+    paths:
+      - src/sync/plan-executor.ts
+      - src/sync/state-committer.ts
+      - src/sync/sync-cycle-finalization.ts
+      - sync-state-ownership-guard.test.mjs
+
+contracts:
+  - id: contract-single-component-admission
+    dimension: responsibility_boundary
+    owner: component-identity-component-authority
+    requirement_refs:
+      - FR-RAA-001
+      - NFR-RAA-001
+    unit_refs:
+      - unit-1-pin-red-and-negative-contracts
+      - unit-2-centralize-component-decision
+      - unit-4-enforce-and-publish-boundary
+    adr_refs:
+      - adr-20260904-remote-rename-alias-arbitration
+      - adr-20260831-admission-owns-identity-component-decisi
+      - adr-20260903-four-stage-sync-pipeline
+    verification:
+      - id: verify-one-component-result
+        tier: T0
+        command: npm test -- --run src/sync/plan-admission.test.ts
+      - id: verify-private-component-importer
+        tier: T1
+        command: node --test sync-admission-authority-guard.test.mjs
+    partition:
+      outcomes: [determinate, unknown, inconclusive, conflicting]
+      default_policy: Only the once-called private component result can be mapped by admitDestructivePlan to one existing disposition; every non-determinate result is non-executable and no caller may override it.
+
+  - id: contract-authority-arbitration
+    dimension: authority_precedence
+    owner: component-identity-component-authority
+    requirement_refs:
+      - FR-RAA-002
+      - FR-RAA-003
+      - FR-RAA-005
+      - FR-RAA-006
+      - NFR-RAA-002
+    unit_refs:
+      - unit-1-pin-red-and-negative-contracts
+      - unit-2-centralize-component-decision
+    adr_refs:
+      - adr-20260904-remote-rename-alias-arbitration
+      - adr-0008-logical-identity-admission-fails-closed
+    verification:
+      - id: verify-reported-over-alias
+        tier: T0
+        command: npm test -- --run src/sync/plan-admission.test.ts
+      - id: verify-conflict-no-fallback
+        tier: T0
+        command: npm test -- --run src/sync/plan-admission.test.ts
+      - id: verify-linear-authority-selection
+        tier: T0
+        command: npm test -- --run src/sync/plan-admission.test.ts
+    partition:
+      outcomes: [determinate, unknown, inconclusive, conflicting]
+      default_policy: A coherent non-empty effective reported family wins, a conflicting or unprovable reported family fails without fallback, and an alias-only family is eligible only when the effective reported set is empty.
+
+  - id: contract-root-proof-failure-semantics
+    dimension: topology_and_failure_semantics
+    owner: component-identity-component-authority
+    requirement_refs:
+      - FR-RAA-003
+      - FR-RAA-004
+      - FR-RAA-005
+      - FR-RAA-008
+      - NFR-RAA-002
+    unit_refs:
+      - unit-1-pin-red-and-negative-contracts
+      - unit-2-centralize-component-decision
+    adr_refs:
+      - adr-20260904-remote-rename-alias-arbitration
+      - adr-0008-logical-identity-admission-fails-closed
+    verification:
+      - id: verify-exact-root-descendant-proof
+        tier: T0
+        command: npm test -- --run src/sync/plan-admission.test.ts
+      - id: verify-stable-reason-precedence
+        tier: T0
+        command: npm test -- --run src/sync/plan-admission.test.ts
+      - id: verify-no-synthetic-action-authority
+        tier: T0
+        command: npm test -- --run src/sync/plan-admission.test.ts
+      - id: verify-affine-read-bound
+        tier: T0
+        command: npm test -- --run src/sync/plan-admission.test.ts
+    partition:
+      outcomes: [determinate, unknown, inconclusive, conflicting]
+      default_policy: Report conflict or root/action binding mismatch yields rename_mismatch; a bound but incomplete folder mapping yields incomplete_folder_mapping; non-folder deferred scope yields unknown_scope; only a complete proof can expose alias_target_mutation for an alias outside its exact pairs.
+    discretion:
+      - id: discretion-private-proof-index
+        unit_ref: unit-2-centralize-component-decision
+        question: Which collision-safe private map representation should index exact descendant pairs to their one immutable selected-root proof within a component call?
+        scope:
+          files:
+            - src/sync/identity-component-topology.ts
+          component: component-identity-component-authority
+          visibility: private
+        escalate_when:
+          - The representation changes any exported/public type, action, disposition, reason, selected authority, exact pair, or failure precedence.
+          - The representation adds another proof, module-scope or cross-call retention, non-linear rescanning, persistence, or another production owner/caller.
+        constraints:
+          - The returned proof is read-only after construction, references one selected immutable authority, and is discarded before Admission returns.
+          - The representation preserves exact roots, direction, suffix mapping, included scope, endpoint uniqueness, exhaustive coverage, and the fixed affine read bound.
+        authority:
+          may_choose:
+            - One ReadonlyMap keyed by a collision-safe composite endpoint pair.
+            - Nested ReadonlyMaps keyed first by old endpoint and then by new endpoint.
+        preserves:
+          contract_refs:
+            - contract-authority-arbitration
+            - contract-root-proof-failure-semantics
+          invariant_refs:
+            - FR-RAA-001
+            - FR-RAA-004
+            - NFR-RAA-001
+          observable_refs:
+            - observable-reported-remote-wins
+            - observable-exact-root-coverage
+            - observable-stable-reason-array
+        verification_refs:
+          - verify-exact-root-descendant-proof
+          - verify-stable-reason-precedence
+          - verify-affine-read-bound
+        difficulty_inputs:
+          decision_reasoning: local_tradeoff
+          boundary_reach: private
+          context_scope: files
+          reversibility: trivial
+          verification_strength: discriminating
+          runtime_risk: data_loss
+          coupling: coupled_within_unit
+          grounding: evidenced
+
+  - id: contract-provider-temperature-equivalence
+    dimension: compatibility
+    owner: component-identity-component-authority
+    requirement_refs:
+      - FR-RAA-007
+      - NFR-RAA-001
+    unit_refs:
+      - unit-3-prove-common-lifecycle-contracts
+    adr_refs:
+      - adr-0006-remote-rename-detection-is-order-independent
+      - adr-20260903-stateless-current-state-recovery
+      - adr-20260904-remote-rename-alias-arbitration
+    verification:
+      - id: verify-temperature-fact-equivalence
+        tier: T1
+        command: npm test -- --run src/sync/change-detector.test.ts src/sync/orchestrator.test.ts
+      - id: verify-three-backend-folder-rename-contract
+        tier: T1
+        command: npm test -- --run tests/fs/remote-backend-contracts.test.ts
+      - id: verify-provider-delta-contracts
+        tier: T1
+        command: npm test -- --run src/fs/googledrive/incremental-sync.test.ts src/fs/onedrive/incremental-sync.test.ts src/fs/dropbox/incremental-sync.test.ts
+    partition:
+      outcomes: [determinate, unknown, conflicting]
+      default_policy: Equal complete provider-neutral facts have one Admission meaning; missing or ambiguous facts fail at the existing boundary, and unavailable live evidence cannot select a provider- or temperature-specific rule.
+
+  - id: contract-execution-state-preservation
+    dimension: state_lifecycle
+    owner: component-execution-commit-boundary
+    requirement_refs:
+      - FR-RAA-006
+      - FR-RAA-007
+      - NFR-RAA-001
+    unit_refs:
+      - unit-3-prove-common-lifecycle-contracts
+    adr_refs:
+      - adr-0001-metadata-cache-is-subordinate-to-commit-last
+      - adr-20260903-four-stage-sync-pipeline
+      - adr-20260903-stateless-current-state-recovery
+    verification:
+      - id: verify-post-success-opposite-rename
+        tier: T1
+        command: npm test -- --run src/sync/orchestrator.test.ts
+      - id: verify-execution-and-commit
+        tier: T1
+        command: npm test -- --run src/sync/plan-executor.test.ts src/sync/state-committer.test.ts src/sync/sync-cycle-finalization.test.ts
+      - id: verify-state-ownership-closed
+        tier: T1
+        command: node --test sync-state-ownership-guard.test.mjs
+    partition:
+      outcomes: [determinate, inconclusive, conflicting]
+      default_policy: Preserve child-content-before-parent execution, post-I/O file records, abort for every incomplete attempt, and clean-cycle-only checkpoint publication; any extra state, recovery, or ordering need is a design conflict.
+
+  - id: contract-admission-architecture-conformance
+    dimension: architecture_enforcement
+    owner: component-identity-component-authority
+    requirement_refs:
+      - FR-RAA-001
+      - FR-RAA-002
+      - FR-RAA-004
+      - FR-RAA-008
+      - NFR-RAA-001
+      - NFR-RAA-003
+      - NFR-RAA-004
+    unit_refs:
+      - unit-4-enforce-and-publish-boundary
+    adr_refs:
+      - adr-20260904-remote-rename-alias-arbitration
+      - adr-20260903-four-stage-sync-pipeline
+      - adr-20260903-stateless-current-state-recovery
+    verification:
+      - id: verify-admission-authority-guard
+        tier: T1
+        command: node --test sync-admission-authority-guard.test.mjs
+      - id: verify-existing-state-owner-guard
+        tier: T1
+        command: node --test sync-state-ownership-guard.test.mjs
+      - id: verify-bot-and-doc-enforcement
+        tier: T1
+        command: npm run lint:bot-repro
+      - id: verify-complete-repository-gate
+        tier: T2
+        command: "npm run lint && npm run lint:bot-repro && npm run build && npm run test:coverage"
+    partition:
+      outcomes: [determinate, unknown, conflicting]
+      default_policy: A foreign helper importer, module-scope mutable proof, changed state-owner inventory, stale current authority guide, missing ADR/design promotion, or red project gate blocks completion.
+
+adrs:
+  - id: adr-20260904-remote-rename-alias-arbitration
+    status: proposed
+    decision_input_refs:
+      - decision-input-structural-owner
+      - decision-input-reported-precedence
+      - decision-input-root-descendant-authority
+      - decision-input-stale-rename-debt-doc
+  - id: adr-0001-metadata-cache-is-subordinate-to-commit-last
+    status: accepted
+    decision_input_refs:
+      - decision-input-closed-state
+      - decision-input-no-new-state
+  - id: adr-0006-remote-rename-detection-is-order-independent
+    status: accepted
+    decision_input_refs:
+      - decision-input-provider-common-path
+      - decision-input-live-provider-parity
+  - id: adr-0008-logical-identity-admission-fails-closed
+    status: accepted
+    decision_input_refs:
+      - decision-input-reported-precedence
+      - decision-input-root-descendant-authority
+      - decision-input-descendant-governance
+  - id: adr-20260831-admission-owns-identity-component-decisi
+    status: accepted
+    decision_input_refs:
+      - decision-input-structural-owner
+      - decision-input-root-carrier
+  - id: adr-20260903-four-stage-sync-pipeline
+    status: accepted
+    decision_input_refs:
+      - decision-input-structural-owner
+      - decision-input-stale-rename-debt-doc
+      - decision-input-doc-drift
+  - id: adr-20260903-stateless-current-state-recovery
+    status: accepted
+    decision_input_refs:
+      - decision-input-closed-state
+      - decision-input-no-new-state
+      - decision-input-doc-drift
+
+units:
+  - title: unit-1-pin-red-and-negative-contracts
+    chunk: discriminating-test-first-contract
+    contract_refs:
+      - contract-single-component-admission
+      - contract-authority-arbitration
+      - contract-root-proof-failure-semantics
+    files:
+      - src/sync/plan-admission.test.ts
+    depends_on: []
+    acceptance:
+      - The production-shaped three-alias, one-remote-root, two-stable-identity recurrence is RED before production repair and expects only rename_local in the reported direction.
+      - Action, evidence, and observation permutations preserve exact actions, one disposition, and exact existing reasons.
+      - Conflicting reports, wrong binding/direction, partial and unknown folder mappings, non-folder unknown scope, post-proof alias mismatch, and synthetic action authority have the exact reason arrays defined by the contract and zero executable actions.
+      - No-effective-report local parent behavior remains a positive compatibility control.
+      - Instrumented connected fixtures of sizes 64 and 512 satisfy the fixed affine element-read cap and reject an all-pairs implementation.
+    objective: Lock authority, proof, reason, and complexity observations before changing production responsibility.
+    output_format: Focused Vitest RED, exact negative matrix, permutation table, and instrumented collection-read assertions.
+    tool_guidance: Enter through admitBatchObservation or captureCycleAdmissionSnapshot and assert exact component count, disposition kind, actions, and ordered reasons rather than private carrier shape.
+    task_boundaries: Tests only; do not edit production, weaken an existing negative, invent a reason/status/action, or encode acquisition/recovery history.
+    decision_closure_reason: Approved precedence, exact coverage, fixed existing reasons, and the affine bound fully determine the observable contract.
+
+  - title: unit-2-centralize-component-decision
+    chunk: admission-authority-and-proof
+    contract_refs:
+      - contract-single-component-admission
+      - contract-authority-arbitration
+      - contract-root-proof-failure-semantics
+    files:
+      - src/sync/plan-admission.ts
+      - src/sync/plan-admission-graph.ts
+      - src/sync/identity-component-decision.ts
+      - src/sync/identity-component-report-family.ts
+      - src/sync/identity-component-topology.ts
+      - src/sync/plan-admission-case-alias.ts
+      - src/sync/local-rename-admission.ts
+      - src/sync/optimize-local-renames.ts
+      - src/sync/optimize-remote-renames.ts
+      - src/sync/plan-admission.test.ts
+    depends_on:
+      - unit-1-pin-red-and-negative-contracts
+    acceptance:
+      - admitDestructivePlan invokes one private component-decision producer and no longer runtime-imports or sequences candidate builders.
+      - The producer classifies all effective reports from raw facts, selects one coherent family or fails conflict, materializes the selected family once from raw actions, obtains one subordinate proof, evaluates once, and returns one closed result.
+      - Candidate builders accept the raw component and already selected family variant and cannot reselect authority or consume another family's rewritten actions.
+      - The proof begins with selected authority, covers only exact complete descendants, and never reconstructs RenameEvidence from an action.
+      - The fixed reason precedence and public action/evidence/result/failure schemas remain unchanged.
+      - All proof/index data is call-local, read-only after construction, and within the fixed affine read bound.
+    objective: Replace ordered competing normalizers and action-derived coverage with one cohesive component decision and subordinate proof.
+    output_format: Pure TypeScript responsibility refactor and focused green contract matrix.
+    tool_guidance: Keep plan-admission as the public facade, identity-component-decision as its sole private producer, and topology as a data-only helper in the same component.
+    task_boundaries: No provider I/O, backend branch, public provenance, second component owner, cross-family rewrite chain, post-decision override, state, recovery, action/status/disposition/reason addition, or executor change.
+    decision_closure_reason: Owner, precedence, shaping boundary, proof predicates, failure partition, and lifetime are fixed; only the private exact-pair map representation is delegated.
+
+  - title: unit-3-prove-common-lifecycle-contracts
+    chunk: integration-and-compatibility
+    contract_refs:
+      - contract-provider-temperature-equivalence
+      - contract-execution-state-preservation
+    files:
+      - src/sync/plan-admission.test.ts
+      - src/sync/change-detector.test.ts
+      - src/sync/orchestrator.test.ts
+      - src/sync/plan-executor.test.ts
+      - src/sync/state-committer.test.ts
+      - src/sync/sync-cycle-finalization.test.ts
+      - tests/fs/remote-backend-contracts.test.ts
+      - tests/fs/contracts/caching-remote-fs.contract.ts
+      - src/fs/googledrive/incremental-sync.test.ts
+      - src/fs/onedrive/incremental-sync.test.ts
+      - src/fs/dropbox/incremental-sync.test.ts
+      - sync-state-ownership-guard.test.mjs
+    depends_on:
+      - unit-2-centralize-component-decision
+    acceptance:
+      - A clean local parent transition followed by an opposite provider-current folder report and unchanged local aliases authorizes one rename_local and reaches ordinary clean finalization.
+      - Equal complete facts have equal Admission meaning with no acquisition-temperature or provider discriminator.
+      - Child content remains before parent structure, each file record follows successful I/O, and incomplete attempts abort and withhold the checkpoint.
+      - Google Drive, OneDrive, and Dropbox retain one shared folder RenamePair/current-snapshot contract and require no production backend change.
+      - The existing state-owner guard passes unchanged and without fixture expansion.
+    objective: Prove the Admission-only repair preserves shared acquisition, execution, and durable-state contracts end to end.
+    output_format: T1 integration evidence and green existing shared/focused contracts.
+    tool_guidance: Reuse central registered-family contracts and exact lifecycle cuts; optional live E2E is supplementary only.
+    task_boundaries: Test changes only; do not modify provider, executor, committer, finalizer, checkpoint, state production code, ordering, retry, or recovery behavior.
+    decision_closure_reason: Accepted ADRs fix all downstream behavior, so this unit verifies compatibility rather than choosing a mechanism.
+
+  - title: unit-4-enforce-and-publish-boundary
+    chunk: static-and-durable-governance
+    contract_refs:
+      - contract-single-component-admission
+      - contract-admission-architecture-conformance
+    files:
+      - eslint.config.mts
+      - sync-admission-authority-guard.test.mjs
+      - package.json
+      - docs/adr/adr-20260904-remote-rename-alias-arbitration.md
+      - docs/design/design-four-stage-sync-pipeline.md
+      - AGENTS.md
+      - ARCHITECTURE.md
+      - docs/sync-pipeline.md
+      - docs/code-enforcement.md
+      - docs/changes/change-20260904-remote-rename-alias-arbitration/change.md
+      - docs/changes/change-20260904-remote-rename-alias-arbitration/requirements.md
+      - docs/changes/change-20260904-remote-rename-alias-arbitration/implementation.md
+      - docs/changes/change-20260904-remote-rename-alias-arbitration/verification.md
+    depends_on:
+      - unit-2-centralize-component-decision
+      - unit-3-prove-common-lifecycle-contracts
+    acceptance:
+      - The new AST guard rejects a module-scope proof Map, mutable top-level declarations, and every unapproved production helper importer while admitting the declared pure module shape.
+      - ESLint permits candidate/topology runtime imports only in identity-component-decision and keeps all involved modules pure.
+      - The existing state-owner guard remains unchanged and green, and lint:bot-repro runs both guards.
+      - The proposed ADR records the approved design and clause-level supersession without editing accepted ADR history; active design and current guides state the same boundary.
+      - The docs conformance checks and complete repository gate pass without exceptions or weakened fixtures.
+    objective: Make the repaired ownership and no-state boundary mechanically durable and publish its current normative documentation.
+    output_format: Independent TypeScript-AST guard, tightened lint graph, proposed ADR, persistent-design promotion, current-guide alignment, and recorded full-gate evidence.
+    tool_guidance: Use closed import/declaration inventories and synthetic negatives; supersede stale historical clauses in the new ADR rather than rewriting accepted files.
+    task_boundaries: Do not modify accepted ADR files or completed changes, broaden lint exceptions, widen the state-owner fixture, add runtime counters, or claim optional live evidence.
+    decision_closure_reason: The user-approved structural boundary and critique-fixed guard/doc requirements determine all governance surfaces.
+
+acceptance:
+  - id: AC-RAA-001
+    criteria: The exact three-alias, one-reported-remote-folder, two-stable-identity recurrence produces one authorized disposition containing only rename_local TemplateS to Templates and no failure, with or without the former parent-alias normalization opportunity.
+    requirement_refs:
+      - FR-RAA-001
+      - FR-RAA-002
+      - FR-RAA-005
+  - id: AC-RAA-002
+    criteria: Incompatible normative reports or an unbound/wrong-direction selected report produce exactly rename_mismatch and zero executable actions regardless of alias completeness or input order.
+    requirement_refs:
+      - FR-RAA-003
+      - FR-RAA-008
+  - id: AC-RAA-003
+    criteria: A selected reported folder root governs every and only exact complete included unique descendant pairs; partial or unknown-scope mappings produce incomplete_folder_mapping, while an alias outside an otherwise complete proof produces alias_target_mutation, all with zero actions.
+    requirement_refs:
+      - FR-RAA-004
+      - FR-RAA-005
+      - FR-RAA-008
+  - id: AC-RAA-004
+    criteria: Without an effective report, the existing complete local case-only parent component retains provider-current child content work and exactly one parent rename_remote executed after content.
+    requirement_refs:
+      - FR-RAA-006
+  - id: AC-RAA-005
+    criteria: Equal complete facts yield identical actions, disposition, and ordered reasons across COLD, WARM, HOT and provider namespaces, while all registered backends retain the shared folder RenamePair/current-snapshot contract.
+    requirement_refs:
+      - FR-RAA-007
+  - id: AC-RAA-006
+    criteria: Classification, one-family materialization, one proof index, and one final fold satisfy the fixed affine element-read cap with no provider I/O or production counter.
+    requirement_refs:
+      - NFR-RAA-002
+  - id: AC-RAA-007
+    criteria: The new static guard rejects a module-scope proof cache and foreign helper importer, lint runs it, and the existing state-owner/checkpoint guard remains unchanged and green with no public or persisted state change.
+    requirement_refs:
+      - NFR-RAA-001
+      - NFR-RAA-003
+  - id: AC-RAA-008
+    criteria: The proposed ADR explicitly supersedes stale present-tense debt clauses without modifying accepted history; current guides and active design state the stateless single-owner boundary and the complete project gate passes.
+    requirement_refs:
+      - NFR-RAA-004
+
+dispositions:
+  - decision_input_ref: decision-input-structural-owner
+    disposition: adopted; component-identity-component-authority is the sole rename-arbitration semantic owner, admitDestructivePlan is its public facade, one private decideIdentityComponent producer is called once per raw component, and a local conditional or second topology owner is rejected.
+    adr_refs:
+      - adr-20260904-remote-rename-alias-arbitration
+      - adr-20260831-admission-owns-identity-component-decisi
+    contract_refs:
+      - contract-single-component-admission
+      - contract-admission-architecture-conformance
+  - decision_input_ref: decision-input-reported-precedence
+    disposition: adopted; a coherent effective reported family selects direction before aliases, while conflict fails without alias, ordinary-action, or report-subset fallback.
+    adr_refs:
+      - adr-20260904-remote-rename-alias-arbitration
+      - adr-0008-logical-identity-admission-fails-closed
+    contract_refs:
+      - contract-authority-arbitration
+  - decision_input_ref: decision-input-root-descendant-authority
+    disposition: adopted; one selected reported root governs only its correctly directed exact complete included unique descendant mapping through a subordinate call-local proof.
+    adr_refs:
+      - adr-20260904-remote-rename-alias-arbitration
+      - adr-0008-logical-identity-admission-fails-closed
+    contract_refs:
+      - contract-root-proof-failure-semantics
+  - decision_input_ref: decision-input-closed-state
+    disposition: adopted from existing authority; no persistence, intermediate checkpoint, recovery branch, orchestrator field, or correctness-critical cross-call owner is permitted.
+    adr_refs:
+      - adr-0001-metadata-cache-is-subordinate-to-commit-last
+      - adr-20260903-stateless-current-state-recovery
+    contract_refs:
+      - contract-execution-state-preservation
+      - contract-admission-architecture-conformance
+  - decision_input_ref: decision-input-stale-rename-debt-doc
+    disposition: adopted as clause-level supersession in the new ADR and current-guide correction; accepted ADR files and completed changes remain immutable history.
+    adr_refs:
+      - adr-20260904-remote-rename-alias-arbitration
+      - adr-20260903-stateless-current-state-recovery
+    contract_refs:
+      - contract-admission-architecture-conformance
+  - decision_input_ref: decision-input-google-attribution
+    disposition: not_applicable; actor or raw-payload attribution may be separate diagnostics but is not an Admission authority input and cannot change handling of a valid report.
+    contract_refs:
+      - contract-provider-temperature-equivalence
+  - decision_input_ref: decision-input-live-provider-parity
+    disposition: not_applicable to implementation selection; always-on registered-family contracts are mandatory and optional live evidence cannot weaken or fork the common contract.
+    adr_refs:
+      - adr-0006-remote-rename-detection-is-order-independent
+    contract_refs:
+      - contract-provider-temperature-equivalence
+  - decision_input_ref: decision-input-private-provenance
+    disposition: implementation_detail; the proof must reference the selected immutable RenameEvidence directly and remain call-local, while only the private exact-pair map representation is delegated.
+    contract_refs:
+      - contract-root-proof-failure-semantics
+  - decision_input_ref: decision-input-root-carrier
+    disposition: subsumed by decision-input-root-descendant-authority and decision-input-structural-owner; topology is not a separate component or authority.
+    adr_refs:
+      - adr-20260904-remote-rename-alias-arbitration
+    contract_refs:
+      - contract-single-component-admission
+      - contract-root-proof-failure-semantics
+  - decision_input_ref: decision-input-descendant-governance
+    disposition: subsumed by decision-input-root-descendant-authority; exact complete selected-root coverage is the single governing rule.
+    contract_refs:
+      - contract-root-proof-failure-semantics
+  - decision_input_ref: decision-input-no-new-state
+    disposition: subsumed by decision-input-closed-state; the two-authority and stateless retry boundary remains unchanged.
+    adr_refs:
+      - adr-0001-metadata-cache-is-subordinate-to-commit-last
+      - adr-20260903-stateless-current-state-recovery
+    contract_refs:
+      - contract-execution-state-preservation
+  - decision_input_ref: decision-input-provider-common-path
+    disposition: adopted; provider-specific detection terminates at the common RenamePair/current-snapshot boundary and Admission contains no backend branch.
+    adr_refs:
+      - adr-0006-remote-rename-detection-is-order-independent
+    contract_refs:
+      - contract-provider-temperature-equivalence
+  - decision_input_ref: decision-input-doc-drift
+    disposition: subsumed by decision-input-stale-rename-debt-doc; the new ADR supersedes stale present-tense clauses and current guides are corrected without historical edits.
+    adr_refs:
+      - adr-20260904-remote-rename-alias-arbitration
+      - adr-20260903-stateless-current-state-recovery
+    contract_refs:
+      - contract-admission-architecture-conformance

@@ -9,7 +9,7 @@
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
 		"version": "node version-bump.mjs && git add manifest.json versions.json",
 		"lint": "eslint --max-warnings 0 .",
-		"lint:bot-repro": "node --test lint-bot-repro.test.mjs e2e/google-picker-e2e-guard.test.mjs sync-state-ownership-guard.test.mjs && node lint-bot-repro.mjs",
+		"lint:bot-repro": "node --test lint-bot-repro.test.mjs e2e/google-picker-e2e-guard.test.mjs sync-state-ownership-guard.test.mjs sync-admission-authority-guard.test.mjs && node lint-bot-repro.mjs",
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"test:coverage": "vitest run --coverage",
