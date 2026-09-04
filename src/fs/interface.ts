@@ -111,15 +111,15 @@ export interface IFileSystem {
 /**
  * A backend's incremental-sync capability: a delta cursor for change detection and a
  * crash-safe, atomically-committed checkpoint (ADR 0001). Exposed as one object on
- * {@link IFileSystem.checkpoint} so the four core methods travel together — a backend
+ * {@link IFileSystem.checkpoint} so the five core methods travel together — a backend
  * that can detect deltas (`getChangedPaths`) MUST also expose the full checkpoint
- * lifecycle (`hasCheckpoint`/`resetCheckpoint`/`commitCheckpoint`), because a
+ * lifecycle (`hasCheckpoint`/`abortWorkingView`/`resetCheckpoint`/`commitCheckpoint`), because a
  * half-implementation would silently degrade crash recovery. The type enforces
- * all-or-nothing for those four (B1-3).
+ * all-or-nothing for those five (B1-3).
  *
  * `getScopeFingerprint` is a later, orthogonal addition and stays OPTIONAL: real
  * backends (`CachingRemoteFs`) always implement it, but a test double that only
- * needs the original four methods can omit it — the sync engine treats a missing
+ * needs the core five methods can omit it — the sync engine treats a missing
  * `getScopeFingerprint` as "this capability doesn't track scope", not as a
  * mismatched fingerprint, and skips the scope-change check entirely rather than
  * forcing a spurious cold reconcile.
@@ -152,6 +152,13 @@ export interface IncrementalCheckpoint {
 	 * stored with the backend's own cache (not in settings), so this is async.
 	 */
 	hasCheckpoint(): Promise<boolean>;
+
+	/**
+	 * Discard only the uncommitted in-memory cache/cursor/scope view. The durable
+	 * checkpoint and provider are unchanged; the next ordinary access restores the
+	 * last committed checkpoint, or performs a fresh scan when none exists.
+	 */
+	abortWorkingView(): Promise<void>;
 
 	/**
 	 * Discard the committed checkpoint (delta cursor + any derived cache) so the next

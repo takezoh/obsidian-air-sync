@@ -1,0 +1,369 @@
+artifact: design-plan-spine
+version: 2
+granularity_profile: boundary-complete
+
+scope_expansion_signals:
+  - id: scope-signal-checkpoint-abort-api
+    kind: shared_boundary
+    target_ref: contract-working-view-lifecycle
+    witness: A required abortWorkingView operation changes every checkpoint-capable implementation and test double.
+    requirement_refs: [FR-WV-001, FR-WV-006, NFR-WV-001]
+    authority_refs:
+      - /home/take/.dev-skills/design/remote-working-view-abort/artifacts/planning-source.txt
+      - docs/adr/0001-metadata-cache-is-subordinate-to-commit-last.md
+  - id: scope-signal-executor-settlement
+    kind: shared_boundary
+    target_ref: contract-fatal-settlement
+    witness: Delaying an existing aggregate rejection until its scheduled siblings settle changes shared executor terminal timing while preserving error selection.
+    requirement_refs: [FR-WV-003, FR-WV-004]
+    authority_refs:
+      - /home/take/.dev-skills/design/remote-working-view-abort/artifacts/critique.json
+
+requirements:
+  - id: FR-WV-001
+    type: functional
+    priority: must
+    statement: An incomplete checkpoint-capable attempt shall invoke a required idempotent live-only abort and leave provider state and the durable checkpoint unchanged.
+  - id: FR-WV-002
+    type: invariant
+    priority: must
+    statement: Finalization shall commit exactly a wholly safe cycle, abort every incomplete result, and abort after commit rejection before propagation.
+  - id: FR-WV-003
+    type: functional
+    priority: must
+    statement: Observation through execution exceptions shall abort before classification or retry, while post-closeout backend-state or settings errors shall not issue a second abort.
+  - id: FR-WV-004
+    type: invariant
+    priority: must
+    statement: AuthError and InternalFreshInvariantError shall invalidate queued work, settle scheduled siblings, and rethrow the exact rejection selected by the existing aggregate before discard.
+  - id: FR-WV-005
+    type: invariant
+    priority: must
+    statement: Equivalent durable and current facts shall converge through ordinary COLD, WARM, or HOT acquisition without prior-error state.
+  - id: FR-WV-006
+    type: functional
+    priority: must
+    statement: Checkpoint presence and scope queries shall read durable metadata only and conservatively return false or null on absence or read failure, while reset alone remains destructive.
+  - id: FR-WV-007
+    type: functional
+    priority: must
+    statement: Priority invalidation or checkpointBlocked shall abort, while an exact completed pull superseded by priority remains terminal for a clean commit.
+  - id: FR-WV-008
+    type: functional
+    priority: must
+    statement: Google Drive, Dropbox, and OneDrive shall run one shared observable abort and replay contract without provider-specific recovery policy.
+  - id: NFR-WV-001
+    type: non_functional
+    priority: must
+    statement: The change shall add no durable authority, schema, migration, recovery ledger, intermediate correctness state, or replacement orchestrator field.
+  - id: NFR-WV-002
+    type: non_functional
+    priority: must
+    statement: Tests shall distinguish live from durable facts and fail when abort is absent, a no-op, or races scheduled siblings.
+
+components:
+  - id: component-checkpoint-owner
+    kind: existing
+    contract_refs: [contract-working-view-lifecycle]
+    paths:
+      - src/fs/interface.ts
+      - src/fs/caching/remote-fs.ts
+      - src/store/metadata-store.ts
+  - id: component-cycle-boundary
+    kind: existing
+    contract_refs: [contract-cycle-closeout, contract-temperature-convergence]
+    paths:
+      - src/sync/orchestrator.ts
+      - src/sync/sync-cycle-finalization.ts
+      - src/sync/change-detector.ts
+  - id: component-executor-settlement
+    kind: existing
+    contract_refs: [contract-fatal-settlement]
+    paths:
+      - src/sync/plan-executor.ts
+      - src/sync/priority-batch-state.ts
+      - src/queue/async-queue.ts
+  - id: component-provider-contracts
+    kind: existing
+    contract_refs: [contract-provider-replay]
+    paths:
+      - tests/fs/contracts/caching-remote-fs.contract.ts
+      - tests/fs/remote-backend-contracts.test.ts
+      - tests/fs/googledrive/caching-remote-fs.contract-harness.ts
+      - tests/fs/dropbox/caching-remote-fs.contract-harness.ts
+      - tests/fs/onedrive/caching-remote-fs.contract-harness.ts
+      - src/__mocks__/sync-test-helpers.ts
+
+contracts:
+  - id: contract-working-view-lifecycle
+    dimension: state_lifecycle
+    owner: component-checkpoint-owner
+    requirement_refs: [FR-WV-001, FR-WV-002, FR-WV-006, NFR-WV-001, NFR-WV-002]
+    unit_refs: [unit-1-checkpoint-lifecycle]
+    adr_refs: [adr-remote-working-view-abort-boundary]
+    verification:
+      - id: verify-working-view-abort
+        tier: T0
+        command: npm test -- tests/fs/remote-backend-contracts.test.ts
+      - id: verify-durable-query-fallback
+        tier: T1
+        command: npm test -- tests/fs/remote-backend-contracts.test.ts
+      - id: verify-commit-failure-scope
+        tier: T1
+        command: npm test -- src/sync/sync-cycle-finalization.test.ts src/sync/orchestrator.test.ts
+      - id: verify-reset-separation
+        tier: T1
+        command: npm test -- tests/fs/remote-backend-contracts.test.ts src/sync/orchestrator.test.ts
+  - id: contract-cycle-closeout
+    dimension: control_flow
+    owner: component-cycle-boundary
+    requirement_refs: [FR-WV-002, FR-WV-003, FR-WV-007, NFR-WV-001]
+    unit_refs: [unit-3-cycle-closeout]
+    adr_refs: [adr-remote-working-view-abort-boundary]
+    verification:
+      - id: verify-returned-partition
+        tier: T0
+        command: npm test -- src/sync/sync-cycle-finalization.test.ts
+      - id: verify-exception-order
+        tier: T1
+        command: npm test -- src/sync/orchestrator.test.ts
+      - id: verify-post-closeout-exclusion
+        tier: T1
+        command: npm test -- src/sync/orchestrator.test.ts
+      - id: verify-no-capability
+        tier: T1
+        command: npm test -- src/sync/orchestrator.test.ts src/sync/sync-cycle-finalization.test.ts
+    partition:
+      outcomes: [determinate, unknown, inconclusive]
+      default_policy: A proved clean result commits; every returned incomplete or checkpoint-blocked result aborts; pre-closeout exceptions abort before propagation; absent capability performs neither operation.
+  - id: contract-fatal-settlement
+    dimension: concurrency
+    owner: component-executor-settlement
+    requirement_refs: [FR-WV-003, FR-WV-004, FR-WV-007, NFR-WV-002]
+    unit_refs: [unit-2-executor-settlement, unit-3-cycle-closeout]
+    adr_refs: [adr-remote-working-view-abort-boundary]
+    verification:
+      - id: verify-auth-fatal-settlement
+        tier: T0
+        command: npm test -- src/sync/plan-executor.test.ts
+      - id: verify-invariant-fatal-settlement
+        tier: T0
+        command: npm test -- src/sync/plan-executor.test.ts
+      - id: verify-mixed-rejection-identity
+        tier: T1
+        command: npm test -- src/sync/plan-executor.test.ts
+      - id: verify-no-later-work
+        tier: T1
+        command: npm test -- src/sync/plan-executor.test.ts src/sync/orchestrator.test.ts
+  - id: contract-temperature-convergence
+    dimension: failure_recovery
+    owner: component-cycle-boundary
+    requirement_refs: [FR-WV-003, FR-WV-005, FR-WV-006, FR-WV-007, NFR-WV-001, NFR-WV-002]
+    unit_refs: [unit-3-cycle-closeout]
+    adr_refs: [adr-remote-working-view-abort-boundary]
+    verification:
+      - id: verify-cold-convergence
+        tier: T0
+        command: npm test -- src/sync/orchestrator.test.ts
+      - id: verify-warm-convergence
+        tier: T0
+        command: npm test -- src/sync/orchestrator.test.ts
+      - id: verify-hot-convergence
+        tier: T0
+        command: npm test -- src/sync/orchestrator.test.ts
+      - id: verify-read-failure-cold
+        tier: T1
+        command: npm test -- src/sync/orchestrator.test.ts
+    partition:
+      outcomes: [determinate, unknown, inconclusive]
+      default_policy: Acquisition uses only durable and current facts; a durable query read failure yields false or null and conservatively enters ordinary COLD without creating recovery state.
+  - id: contract-provider-replay
+    dimension: integration_contract
+    owner: component-provider-contracts
+    requirement_refs: [FR-WV-001, FR-WV-005, FR-WV-006, FR-WV-008, NFR-WV-002]
+    unit_refs: [unit-1-checkpoint-lifecycle, unit-4-architecture-and-gates]
+    adr_refs: [adr-remote-working-view-abort-boundary]
+    verification:
+      - id: verify-three-provider-registration
+        tier: T0
+        command: npm test -- tests/fs/remote-backend-contracts.test.ts
+      - id: verify-provider-same-instance-replay
+        tier: T1
+        command: npm test -- tests/fs/remote-backend-contracts.test.ts
+      - id: verify-provider-folder-rename
+        tier: T1
+        command: npm test -- tests/fs/remote-backend-contracts.test.ts
+      - id: verify-provider-arbitrary-prefix
+        tier: T1
+        command: npm test -- tests/fs/remote-backend-contracts.test.ts
+    partition:
+      outcomes: [determinate, unknown, inconclusive]
+      default_policy: A provider failure may leave any prefix including none in the live derived view; abort invalidates the whole view and replay begins at the durable cursor.
+
+adrs:
+  - id: adr-remote-working-view-abort-boundary
+    status: accepted
+    decision_input_refs:
+      - decision-input-user-no-special-recovery
+      - decision-input-commit-last
+      - decision-input-explicit-abort-api
+      - decision-input-implicit-alternatives
+      - decision-input-provider-partial-delta
+      - issue-fatal-class-abort-gap
+      - issue-provider-partial-delta-overreach
+      - issue-error-precedence-untraced
+      - issue-committed-query-read-error-gap
+
+units:
+  - title: unit-1-checkpoint-lifecycle
+    chunk: checkpoint-api-and-contract
+    contract_refs: [contract-working-view-lifecycle, contract-provider-replay]
+    files:
+      - src/fs/interface.ts
+      - src/fs/caching/remote-fs.ts
+      - src/store/metadata-store.ts
+      - src/__mocks__/sync-test-helpers.ts
+      - src/fs/backend-manager.test.ts
+      - tests/fs/contracts/caching-remote-fs.contract.ts
+      - tests/fs/googledrive/caching-remote-fs.contract-harness.ts
+      - tests/fs/dropbox/caching-remote-fs.contract-harness.ts
+      - tests/fs/onedrive/caching-remote-fs.contract-harness.ts
+    acceptance:
+      - abortWorkingView is required, idempotent, live-only, mutex-serialized, and leaves provider and MetadataStore state unchanged.
+      - Durable getters return false or null on absence and read failure, never expose a live candidate, and remain unchanged by an uncommitted fresh scan.
+      - The same object replays deletions and folder renames from the prior durable cursor after abort.
+    objective: Close the checkpoint-owned live view without adding state and prove the observable contract through all three caching providers.
+    output_format: TypeScript API and owner implementation plus stateful shared contract and harness updates.
+    tool_guidance: Use fake-indexeddb and stateful provider scripts; a no-op abort spy or always-repeating delta fake is not sufficient.
+    task_boundaries: Do not change provider wire APIs, MetadataStore schema/version, resetCheckpoint semantics, or add committed/live tracking fields.
+    decision_closure_reason: The existing checkpoint owner already owns the fields, mutex, store, commit, and reset; only private factoring remains discretionary.
+  - title: unit-2-executor-settlement
+    chunk: executor-fence
+    contract_refs: [contract-fatal-settlement]
+    files:
+      - src/sync/plan-executor.ts
+      - src/sync/plan-executor.test.ts
+      - src/sync/priority-batch-state.ts
+      - src/sync/priority-batch-state.test.ts
+    acceptance:
+      - AuthError and InternalFreshInvariantError both enter the existing aborting phase before permit release and leave nonfatal classifications unchanged.
+      - Every existing parallel aggregate remains the rejection selector, scheduled siblings settle, and the exact captured rejection object is rethrown afterward.
+      - Started siblings may finish and commit their per-file records; queued siblings perform no provider I/O and no later phase starts.
+    objective: Make executor rejection a reliable settlement fence without changing error precedence.
+    output_format: Stack-local settlement wrapper, existing batch-phase integration, and deferred-promise tests.
+    tool_guidance: Use controlled promises and event logs; compare rejection object identity and observable ordering rather than elapsed time.
+    task_boundaries: Do not alter pool limits, action retry policy, per-file commit authority, phase ordering, or cancel already-started effects.
+    decision_closure_reason: The fatal set and original aggregate selector are fixed; helper spelling is implementation-local.
+  - title: unit-3-cycle-closeout
+    chunk: orchestrator-boundary
+    contract_refs: [contract-cycle-closeout, contract-fatal-settlement, contract-temperature-convergence]
+    files:
+      - src/sync/orchestrator.ts
+      - src/sync/orchestrator.test.ts
+      - src/sync/sync-cycle-finalization.ts
+      - src/sync/sync-cycle-finalization.test.ts
+      - src/sync/change-detector.ts
+    depends_on: [unit-1-checkpoint-lifecycle, unit-2-executor-settlement]
+    acceptance:
+      - recoverViaColdScan, needsColdRecovery, and recovery-oriented assignments and comments are absent with no replacement state.
+      - Every unsafe returned result, pre-closeout exception, and commit rejection aborts before retry or return; clean results commit.
+      - Post-closeout backend-state/settings failure does not second-abort, and abort failure itself propagates rather than becoming a completed retry.
+      - Stateful COLD, WARM, and HOT cases converge to equal endpoint bytes and records after an aborted attempt.
+    objective: Express every attempt as observation and execution followed by an exhaustive checkpoint commit-or-abort boundary.
+    output_format: Orchestrator and finalizer integration plus adversarial lifecycle tests.
+    tool_guidance: The checkpoint fake must keep durable and live cursor/cache/scope separate so omission or misordering of abort fails.
+    task_boundaries: Do not add outcome recovery facts, change retry/backoff, change tracker acknowledgment, or move priority work outside its existing serialization.
+    decision_closure_reason: The lifecycle table fixes each branch; structural private helper extraction remains discretionary.
+  - title: unit-4-architecture-and-gates
+    chunk: documentation-and-verification
+    contract_refs: [contract-provider-replay]
+    files:
+      - docs/adr/0001-metadata-cache-is-subordinate-to-commit-last.md
+      - docs/sync-pipeline.md
+      - AGENTS.md
+      - docs/code-enforcement.md
+      - tests/fs/remote-backend-contracts.test.ts
+      - sync-state-ownership-guard.test.mjs
+    depends_on: [unit-1-checkpoint-lifecycle, unit-2-executor-settlement, unit-3-cycle-closeout]
+    acceptance:
+      - ADR 0001 is revised in place to describe two durable authorities and an attempt-bounded checkpoint-owned live view.
+      - The central registry runs the same shared contract for exactly Google Drive, Dropbox, and OneDrive without provider-specific timing assumptions.
+      - Ownership guards and the full gate pass with no new writer, store, schema, migration, recovery state, or orchestrator field.
+    objective: Align architecture and enforcement evidence with the explicit lifecycle boundary.
+    output_format: Revised accepted documentation, provider registration proof, and green repository gates.
+    tool_guidance: Run focused tests before npm run lint, npm run lint:bot-repro, npm run build, and npm run test:coverage.
+    task_boundaries: Do not weaken guard inventories or remove crash, reset, atomicity, pagination, or rename tests.
+    decision_closure_reason: This unit records and verifies the already selected boundary; it makes no new product decision.
+
+acceptance:
+  - id: AC-WV-001
+    criteria: Admission rejection, failed or blocked execution, missing proof, and checkpointBlocked each abort exactly once and never commit.
+    requirement_refs: [FR-WV-002, FR-WV-007]
+  - id: AC-WV-002
+    criteria: Observation, preparation, Admission, execution, and checkpoint exceptions abort before classification, retry, delay, notification, or return.
+    requirement_refs: [FR-WV-002, FR-WV-003]
+  - id: AC-WV-003
+    criteria: A failed checkpoint leaves old durable cursor and scope, clears the live attempt, and replays the same delta on the same filesystem instance.
+    requirement_refs: [FR-WV-001, FR-WV-002, FR-WV-006]
+  - id: AC-WV-004
+    criteria: Post-closeout readBackendState and saveSettings failures cause no second abort and preserve the completed checkpoint result.
+    requirement_refs: [FR-WV-003]
+  - id: AC-WV-005
+    criteria: A filesystem without checkpoint capability invokes neither commit nor abort and retains ordinary list/stat behavior.
+    requirement_refs: [FR-WV-001, FR-WV-002]
+  - id: AC-WV-006
+    criteria: Stateful COLD, WARM, and HOT cases rediscover uncommitted remote work and converge without prior-error state.
+    requirement_refs: [FR-WV-005, NFR-WV-001, NFR-WV-002]
+  - id: AC-WV-007
+    criteria: Each fatal class settles started siblings, blocks queued I/O and later phases, and rethrows the exact object selected by the original aggregate.
+    requirement_refs: [FR-WV-004, NFR-WV-002]
+  - id: AC-WV-008
+    criteria: A priority-completed exact superseded pull permits commit, while invalidation or checkpointBlocked aborts and replays from durable facts.
+    requirement_refs: [FR-WV-007]
+  - id: AC-WV-009
+    criteria: Durable getter absence and read failure return false or null, never echo live values, and select ordinary COLD without mutation.
+    requirement_refs: [FR-WV-006]
+  - id: AC-WV-010
+    criteria: Every provider registration passes arbitrary-prefix pagination failure, fresh scan, checkpoint failure, and folder-rename replay using the same shared contract.
+    requirement_refs: [FR-WV-008, NFR-WV-002]
+  - id: AC-WV-011
+    criteria: Source and ownership guards show recoverViaColdScan removed with no successor field, store, schema, writer, or changed commit authority.
+    requirement_refs: [NFR-WV-001]
+  - id: AC-WV-012
+    criteria: If live-only abort violates its invariant and rejects, that rejection propagates and retry does not proceed as if the boundary closed.
+    requirement_refs: [FR-WV-001, FR-WV-003]
+
+dispositions:
+  - decision_input_ref: decision-input-user-no-special-recovery
+    disposition: Accepted; incomplete attempts rebuild from durable and current facts after checkpoint-owned abort, with no history-dependent recovery branch.
+    adr_refs: [adr-remote-working-view-abort-boundary]
+    contract_refs: [contract-cycle-closeout, contract-temperature-convergence]
+  - decision_input_ref: decision-input-commit-last
+    disposition: Retained; abort performs no persistence, clean cursor/cache/scope commit remains atomic, and successful per-file records remain independently valid.
+    adr_refs: [adr-remote-working-view-abort-boundary]
+    contract_refs: [contract-working-view-lifecycle, contract-cycle-closeout]
+  - decision_input_ref: decision-input-explicit-abort-api
+    disposition: Selected as the smallest coherent boundary because IncrementalCheckpoint already owns the live fields, mutex, store, commit, and reset.
+    adr_refs: [adr-remote-working-view-abort-boundary]
+    contract_refs: [contract-working-view-lifecycle]
+  - decision_input_ref: decision-input-implicit-alternatives
+    disposition: Rejected reset, filesystem reconstruction, copy-on-write, acquisition rollback, and implicit destructor alternatives because they destroy durable data, widen ownership, add state, or cannot observe the final cycle result.
+    adr_refs: [adr-remote-working-view-abort-boundary]
+  - decision_input_ref: issue-fatal-class-abort-gap
+    disposition: Resolved; the complete cycle-fatal set is exactly AuthError and InternalFreshInvariantError and both enter the existing aborting phase.
+    contract_refs: [contract-fatal-settlement]
+  - decision_input_ref: issue-provider-partial-delta-overreach
+    disposition: Resolved provider-neutrally; failure may leave any live prefix including none, and all providers must invalidate and replay the whole working view.
+    contract_refs: [contract-provider-replay]
+  - decision_input_ref: issue-error-precedence-untraced
+    disposition: Resolved by retaining each existing Promise.all as rejection selector and rethrowing its exact captured reason only after sibling settlement.
+    contract_refs: [contract-fatal-settlement]
+  - decision_input_ref: issue-committed-query-read-error-gap
+    disposition: Resolved by the latest governing decision; durable read failure conservatively returns false or null and selects ordinary COLD without new state.
+    contract_refs: [contract-working-view-lifecycle, contract-temperature-convergence]
+  - decision_input_ref: decision-input-provider-registration
+    disposition: Resolved by the central composition root; Google Drive, Dropbox, and OneDrive register the same shared caching contract.
+    contract_refs: [contract-provider-replay]
+  - decision_input_ref: decision-input-provider-partial-delta
+    disposition: Kept abstract; no provider-specific page-application timing is promoted without source authority.
+    contract_refs: [contract-provider-replay]

@@ -59,13 +59,14 @@ depend on that repair being complete.
 
 5. Admission failure is visible and non-clean: status is `partial_error`, notifications
    count failed components, structured logs identify reasons/evidence/scope/paths, the
-   checkpoint and scope fingerprint do not advance, and the next normal trigger uses a
-   COLD reevaluation without a tight retry loop.
+   checkpoint and scope fingerprint do not advance, and finalization aborts the live
+   remote working view without a tight retry loop.
 
 6. Crash recovery persists no operation intent. A failed cycle leaves the prior
-   checkpoint and baseline unchanged; the next same-session trigger performs COLD
-   observation. Unresolved tracker input is acknowledged only after a clean terminal
-   cycle. After restart, current facts may reconstruct an unambiguous case-only local
+   checkpoint and baseline unchanged; same-process retry and restart both reload that
+   checkpoint and select ordinary COLD, WARM, or HOT observation from durable/current
+   facts. Unresolved tracker input is acknowledged only after a clean terminal cycle.
+   After restart, current facts may reconstruct an unambiguous case-only local
    relation, but general rename identity is never guessed. Finalization owns only the
    clean checkpoint commit.
 

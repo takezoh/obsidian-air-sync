@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import type { MetadataStore } from "../../../src/store/metadata-store";
 import type { CachingRemoteFs } from "../../../src/fs/caching/remote-fs";
 
@@ -18,6 +18,8 @@ export interface CachingRemoteFsHarness<TFile> {
 	seedFolderWithChild(folderPath: string, childName: string): void;
 	/** Stage a remote deletion of `path` that the next delta will report. */
 	stageRemoteDelete(path: string): void;
+	/** Make the next delta fail on page two after the first page has been fetched. */
+	failNextDeltaAfterFirstPage(): void;
 	/**
 	 * Stage a remote rename of a previously-seeded path that the next delta will report.
 	 * For a folder (`opts.isFolder`), descendants move with it. Each backend emits its
@@ -34,20 +36,11 @@ export interface CachingRemoteFsHarness<TFile> {
  * backend that inherits the base inherits the guarantees too (and a new backend
  * verifies them in one line).
  *
- * **Scope — read this before relying on it for a new backend.** ADR 0001 has *two*
- * convergence paths and this contract covers them asymmetrically, on purpose:
- *
- * - **Path 1 (crash ⇒ fresh FS object replays from the committed cursor)** is fully
- *   guaranteed here — it is entirely an FS property, so the contract asserts it.
- * - **Path 2 (same-session failure ⇒ state C)** is NOT, and cannot be, closed by the
- *   FS alone: a live FS that already advanced its in-memory cursor past un-committed
- *   work will not re-surface it (the `does NOT self-heal` test below pins exactly this
- *   FS-observable boundary). Recovery is the orchestrator's job via
- *   `recoverViaColdScan` (force the next cycle cold). So a backend that runs this
- *   contract gets path-1 coverage for free but MUST ALSO be exercised at the
- *   orchestrator level for path-2 — see `orchestrator.test.ts` "forces a cold
- *   reconcile on the cycle after a failure" and ADR 0001 (state C). Parameterizing
- *   that orchestrator-level test by backend is the B3 follow-up.
+ * The same lifecycle covers process restart and same-process retry: committed state
+ * is the only reload source, while an incomplete attempt discards its live working
+ * view with `abortWorkingView()`. The contract therefore verifies both replay paths
+ * at the FS boundary; the orchestrator only decides whether an attempt completed
+ * cleanly enough to commit or must abort.
  */
 export function runCachingRemoteFsContract<TFile>(
 	name: string,
@@ -63,9 +56,9 @@ export function runCachingRemoteFsContract<TFile>(
 			expect(await fs.hasCheckpoint()).toBe(false);
 			// Initial sync: a fresh full scan captured "now", so there is no delta.
 			expect(await fs.getChangedPaths()).toBeNull();
-			// The fresh scan acquired a cursor, committed atomically only at checkpoint —
-			// but the in-memory cursor now makes hasCheckpoint() true.
-			expect(await fs.hasCheckpoint()).toBe(true);
+			// The fresh scan acquired a live cursor, but only a successful durable
+			// checkpoint may make the committed-state query true.
+			expect(await fs.hasCheckpoint()).toBe(false);
 			await store.close();
 		});
 
@@ -111,15 +104,7 @@ export function runCachingRemoteFsContract<TFile>(
 			await store.close();
 		});
 
-		it("does NOT self-heal an un-committed change in-session (path 2 is the orchestrator's job)", async () => {
-			// The flip side of the crash test, and the reason `recoverViaColdScan` exists.
-			// A live FS that detected a change advanced its IN-MEMORY cursor past it (state
-			// C). Without a commit, a SECOND pass on the SAME FS does not re-surface it —
-			// the FS cannot self-recover in-session. So an orchestrator that re-ran only
-			// the live FS after a failed cycle would silently drop the work; that gap is
-			// closed at the orchestrator level (force-cold next cycle), NOT here. Pinning
-			// this FS-observable boundary keeps a new backend from assuming the contract
-			// covers path 2.
+		it("replays an uncommitted change in-session after aborting the working view", async () => {
 			const h = makeHarness();
 			h.seedFile("a.md");
 			const store = h.makeStore("contract-no-self-heal");
@@ -132,10 +117,75 @@ export function runCachingRemoteFsContract<TFile>(
 			const first = await fs.getChangedPaths();
 			expect(first?.deleted).toContain("a.md"); // detected once; in-memory cursor advanced
 
-			// No commit ⇒ committed cursor still behind. The live FS does NOT re-report it.
+			await fs.abortWorkingView();
+
+			// Abort invalidates only the live view. The same FS reloads the durable
+			// checkpoint and replays the uncommitted deletion from its cursor.
 			const second = await fs.getChangedPaths();
-			expect(second?.deleted ?? []).not.toContain("a.md");
-			expect(await fs.hasCheckpoint()).toBe(true); // in-memory cursor present, unchanged
+			expect(second?.deleted).toContain("a.md");
+			expect(await fs.hasCheckpoint()).toBe(true);
+			await store.close();
+		});
+
+		it("replays a paginated delta after a later page fails", async () => {
+			const h = makeHarness();
+			h.seedFile("a.md");
+			h.seedFile("b.md");
+			const store = h.makeStore("contract-abort-page-failure");
+			const fs = h.makeFs(store);
+			await fs.list();
+			await fs.commitCheckpoint();
+
+			h.stageRemoteDelete("a.md");
+			h.stageRemoteDelete("b.md");
+			h.failNextDeltaAfterFirstPage();
+			await expect(fs.getChangedPaths()).rejects.toThrow("injected later page failure");
+
+			await fs.abortWorkingView();
+			const replay = await fs.getChangedPaths();
+			expect(new Set(replay?.deleted)).toEqual(new Set(["a.md", "b.md"]));
+			await store.close();
+		});
+
+		it("aborts a fresh working view without creating or clearing a durable checkpoint", async () => {
+			const h = makeHarness();
+			h.seedFile("a.md");
+			const store = h.makeStore("contract-abort-fresh");
+			const clear = vi.spyOn(store, "clear");
+			const fs = h.makeFs(store);
+
+			await fs.list();
+			expect(await fs.hasCheckpoint()).toBe(false);
+			h.stageRemoteDelete("a.md");
+			// The acquired first-scan view is intentionally stale until its attempt is
+			// closed. This makes abort load-bearing rather than a no-op assertion.
+			expect(await fs.stat("a.md")).not.toBeNull();
+			await fs.abortWorkingView();
+
+			expect(clear).not.toHaveBeenCalled();
+			expect(await fs.hasCheckpoint()).toBe(false);
+			expect(await fs.stat("a.md")).toBeNull();
+			await store.close();
+		});
+
+		it("restores committed scope and replay after a checkpoint write fails", async () => {
+			const h = makeHarness();
+			h.seedFile("a.md");
+			const store = h.makeStore("contract-commit-failure-abort");
+			const fs = h.makeFs(store);
+
+			await fs.list();
+			await fs.commitCheckpoint({ scopeFingerprint: "scope-1" });
+			h.stageRemoteDelete("a.md");
+			expect((await fs.getChangedPaths())?.deleted).toContain("a.md");
+			vi.spyOn(store, "saveAll").mockRejectedValueOnce(new Error("persist failed"));
+
+			await expect(fs.commitCheckpoint({ scopeFingerprint: "scope-2" }))
+				.rejects.toThrow("persist failed");
+			await fs.abortWorkingView();
+
+			expect(await fs.getScopeFingerprint()).toBe("scope-1");
+			expect((await fs.getChangedPaths())?.deleted).toContain("a.md");
 			await store.close();
 		});
 
@@ -217,6 +267,20 @@ export function runCachingRemoteFsContract<TFile>(
 			await store.close();
 		});
 
+		it("treats an unreadable durable checkpoint as absent", async () => {
+			const h = makeHarness();
+			h.seedFile("a.md");
+			const store = h.makeStore("contract-unreadable-checkpoint");
+			const fs = h.makeFs(store);
+			await fs.list();
+			await fs.commitCheckpoint({ scopeFingerprint: "fp-1" });
+			vi.spyOn(store, "getMeta").mockRejectedValue(new Error("read failed"));
+
+			expect(await fs.hasCheckpoint()).toBe(false);
+			expect(await fs.getScopeFingerprint()).toBeNull();
+			await store.close();
+		});
+
 		// ── Remote rename detection (ADR 0006) ──
 		// A remote rename must surface as a single `renamed` pair, not a delete+add the
 		// engine can't coalesce. Each backend's harness emits its own faithful delta;
@@ -257,6 +321,28 @@ export function runCachingRemoteFsContract<TFile>(
 			expect(d?.deleted).toContain("dir");
 			// The folder moved as a unit: the child now lives under the new path.
 			expect((await fs.stat("papers"))?.isDirectory).toBe(true);
+			expect(await fs.stat("papers/b.md")).not.toBeNull();
+			expect(await fs.stat("dir/b.md")).toBeNull();
+			await store.close();
+		});
+
+		it("replays a folder rename and descendant snapshot after working-view abort", async () => {
+			const h = makeHarness();
+			h.seedFolderWithChild("dir", "b.md");
+			const store = h.makeStore("contract-abort-folder-rename");
+			const fs = h.makeFs(store);
+			await fs.list();
+			await fs.commitCheckpoint();
+
+			h.stageRemoteRename("dir", "papers", { isFolder: true });
+			expect((await fs.getChangedPaths())?.renamed).toEqual([
+				{ oldPath: "dir", newPath: "papers", isFolder: true },
+			]);
+			await fs.abortWorkingView();
+
+			expect((await fs.getChangedPaths())?.renamed).toEqual([
+				{ oldPath: "dir", newPath: "papers", isFolder: true },
+			]);
 			expect(await fs.stat("papers/b.md")).not.toBeNull();
 			expect(await fs.stat("dir/b.md")).toBeNull();
 			await store.close();

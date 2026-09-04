@@ -78,7 +78,7 @@ export interface ExecutionContext {
 	/** Consume the active cycle's exact-object scheduler state; never chooses another action. */
 	beginAction?: (action: SyncAction) => "run" | "superseded" | "invalidated";
 	/** Publish a fatal terminal state before releasing the action permit. */
-	onActionFatal?: (action: SyncAction, error: AuthError) => void;
+	onActionFatal?: (action: SyncAction, error: Error) => void;
 	mutationBarrier?: LocalMutationBarrier;
 	onPhaseChange?: (phase: "transfer" | "conflict" | "structural") => void;
 	/** Test seam and dependency boundary for the configured resolver. */
@@ -235,7 +235,7 @@ export async function executePlan(
 	// than all at once (a cold scan can emit thousands of matches).
 	const transferPool = new AdaptivePool(ctx.transferPool ?? DESKTOP_TRANSFER_POOL);
 	const statePool = new AsyncPool(STATE_COMMIT_CONCURRENCY);
-	await Promise.all([
+	await settleScheduled([
 		...transfers.map((action) =>
 			transferPool.run(
 				() =>
@@ -264,23 +264,46 @@ export async function executePlan(
 	// they share no mutable state — safe to overlap. Within each lane: renames first
 	// (serial — a rename has two endpoints and folder renames rewrite subtrees), then
 	// deletes pooled (the bulk-folder-delete win). Each lane has its OWN delete pool.
+	const structuralFailure: FirstFailure = { observed: false, error: undefined };
 	const runLane = async (renames: SyncAction[], deletes: SyncAction[]) => {
 		for (const action of renames) {
 			await executeAction(action, ctx, result, reportProgress);
 		}
 		const pool = new AsyncPool(DELETE_CONCURRENCY);
-		await Promise.all(
+		await settleScheduled(
 			deletes.map((action) =>
 				pool.run(() => executeAction(action, ctx, result, reportProgress))
-			)
+			),
+			structuralFailure,
 		);
 	};
-	await Promise.all([
+	await settleScheduled([
 		runLane(renameRemote, deleteRemote),
 		runLane(renameLocal, deleteLocal),
-	]);
+	], structuralFailure);
 
 	return result;
+}
+
+interface FirstFailure {
+	observed: boolean;
+	error: unknown;
+}
+
+/** Preserve the first observed rejection while waiting for every scheduled peer. */
+async function settleScheduled(
+	tasks: Promise<unknown>[],
+	firstFailure: FirstFailure = { observed: false, error: undefined },
+): Promise<void> {
+	const observed = tasks.map((task) => task.catch((err: unknown) => {
+		if (!firstFailure.observed) {
+			firstFailure.observed = true;
+			firstFailure.error = err;
+		}
+		throw err;
+	}));
+	await Promise.allSettled(observed);
+	if (firstFailure.observed) throw firstFailure.error;
 }
 
 /**
@@ -363,7 +386,10 @@ async function executeAction(
 			: await execute();
 		result.succeeded.push({ action, localEntity, remoteEntity, terminalFreshProof });
 	} catch (err) {
-		if (err instanceof InternalFreshInvariantError) throw err;
+		if (err instanceof InternalFreshInvariantError) {
+			ctx.onActionFatal?.(action, err);
+			throw err;
+		}
 		if (err instanceof ConflictPreparationError && err.kind === "proof_mismatch") {
 			result.blocked.push({ action, reason: err.message });
 			return;
@@ -825,7 +851,10 @@ async function executeConflictAction(
 		result.conflicts.push({ action, resolution, localEntity, remoteEntity, terminalFreshProof });
 		result.succeeded.push({ action, localEntity, remoteEntity, terminalFreshProof });
 	} catch (err) {
-		if (err instanceof InternalFreshInvariantError) throw err;
+		if (err instanceof InternalFreshInvariantError) {
+			ctx.onActionFatal?.(action, err);
+			throw err;
+		}
 		if (err instanceof ConflictPreparationError && err.kind === "proof_mismatch") {
 			result.blocked.push({ action, reason: err.message });
 			return;

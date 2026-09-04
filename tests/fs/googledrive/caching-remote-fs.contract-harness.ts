@@ -14,19 +14,34 @@ vi.mock("obsidian");
 // mock backend), via a minimal GoogleDriveClient stub over an in-memory remote — a baseline
 // of Google Drive files plus an append-only changes.list log. This proves the A1 lift kept
 // Google Drive's ADR 0001 path-1 behaviour intact through the new seams, and answers
-// "the contract is only ever run by the mock". Path 2 (state C) is the orchestrator's
-// job and stays pinned by orchestrator.test.ts (see the contract's scope note).
+// "the contract is only ever run by the mock". The same shared lifecycle covers
+// restart and same-process abort/reload.
 function makeGoogleDriveHarness(): CachingRemoteFsHarness<GoogleDriveFile> {
 	const baseline = new Map<string, GoogleDriveFile>();
 	const events: GoogleDriveChange[] = [];
 	let idSeq = 0;
+	let failAfterFirstPage = false;
 	const head = () => `c${events.length}`;
 
 	const client = {
 		listAllFiles: () => Promise.resolve([...baseline.values()]),
+		getFile: (id: string) => Promise.resolve({
+			id, name: "root", mimeType: FOLDER_MIME, parents: [],
+			modifiedTime: "2024-01-01T00:00:00.000Z",
+		}),
 		getChangesStartToken: () => Promise.resolve(head()),
-		listChanges: (from: string) => {
+		listChanges: (from: string, pageToken?: string) => {
+			if (pageToken === "contract-second-page") {
+				failAfterFirstPage = false;
+				return Promise.reject(new Error("injected later page failure"));
+			}
 			const idx = from.startsWith("c") ? Number(from.slice(1)) : 0;
+			if (failAfterFirstPage) {
+				return Promise.resolve({
+					changes: events.slice(idx, idx + 1),
+					nextPageToken: "contract-second-page",
+				});
+			}
 			return Promise.resolve({ changes: events.slice(idx), newStartPageToken: head() });
 		},
 	} as unknown as GoogleDriveClient;
@@ -50,6 +65,7 @@ function makeGoogleDriveHarness(): CachingRemoteFsHarness<GoogleDriveFile> {
 			baseline.delete(entry.id);
 			events.push({ type: "file", fileId: entry.id, removed: true });
 		},
+		failNextDeltaAfterFirstPage: () => { failAfterFirstPage = true; },
 		// Google Drive is id-addressed: a rename is a SINGLE change carrying the file's new
 		// name. A folder's children keep their parent id (their paths are derived), so they
 		// are NOT re-emitted — the cache reparents them from the one folder change.

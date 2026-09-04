@@ -198,6 +198,7 @@ export function createMockFs(
 			// pre-capability mock, which had no hasCheckpoint and short-circuited to false).
 			// Flipping this to false would silently force every default test cold.
 			hasCheckpoint: () => Promise.resolve(true),
+			abortWorkingView: () => Promise.resolve(),
 			resetCheckpoint: () => Promise.resolve(),
 			commitCheckpoint: () => Promise.resolve(),
 		},

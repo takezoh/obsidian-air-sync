@@ -76,7 +76,13 @@ central `tests/fs/remote-backend-contracts.test.ts` unit composition root.
   Never persist evidence, Admission dispositions/failure reasons (including
   `identity_postcondition_unproven`), pending work, or recovery instructions. Do not add
   another in-memory correctness owner: keep only bounded execution bookkeeping that is
-  discarded with the cycle.
+	  discarded with the cycle.
+- **Every remote working view is attempt-bounded.** A checkpoint-capable attempt must
+  finish with exactly one lifecycle result: commit only after a wholly clean cycle, or
+  abort on every incomplete outcome/exception before classification or retry. Abort may
+  clear only live derived cache/cursor/scope state; it must not clear the durable
+  checkpoint or mutate the provider. Wait for scheduled sibling effects to settle before
+  aborting. Never add a prior-failure/recovery field to compensate for an unclosed view.
 - **Re-evaluate current facts; do not add stopped-state recovery branches.** COLD,
   WARM, and HOT are acquisition strategies only. They must produce the same Admission
   decision for the same complete component facts. A decision may depend on that

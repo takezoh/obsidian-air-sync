@@ -46,6 +46,7 @@ export class PriorityBatchState {
 	}
 
 	beginAction(action: SyncAction): "run" | "superseded" | "invalidated" {
+		if (this.phase === "aborting") return "invalidated";
 		if (this.superseded.has(action)) return "superseded";
 		if (this.invalidated.has(action)) return "invalidated";
 		return this.pending.delete(action) ? "run" : "invalidated";

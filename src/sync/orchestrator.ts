@@ -22,7 +22,7 @@ import {
 	logSyncCyclePlan,
 	prepareSyncCycleSnapshot,
 } from "./sync-cycle-planning";
-import { finalizeSyncCycle } from "./sync-cycle-finalization";
+import { finalizeSyncCycle, WorkingViewAbortError } from "./sync-cycle-finalization";
 import { admitBatchObservation } from "./plan-admission";
 import { PriorityCoordinator } from "./priority-coordinator";
 import { LocalMutationBarrier } from "./local-mutation-barrier";
@@ -58,17 +58,17 @@ export interface SyncOrchestratorDeps {
 
 const MAX_RETRIES = 3;
 
+class PostCloseoutError extends Error {
+	constructor(readonly original: unknown) {
+		super(original instanceof Error ? original.message : String(original));
+		this.name = "PostCloseoutError";
+	}
+}
+
 export class SyncOrchestrator {
 	private syncMutex = new AsyncMutex();
 	private stateStore: SyncStateStore;
 	private syncPending = false;
-	/**
-	 * A cycle that ended with failures may have advanced the backend's in-memory
-	 * delta cursor past work it never committed (the committed checkpoint is held
-	 * back, but the live FS cursor is not re-seeded same-process). Force the next
-	 * cycle cold — a full list × baseline join recovers it regardless of cursor.
-	 */
-	private recoverViaColdScan = false;
 	private readonly priorityCoordinator = new PriorityCoordinator();
 	private readonly localMutationBarrier = new LocalMutationBarrier();
 	private activeBatch: PriorityBatchState | null = null;
@@ -103,7 +103,6 @@ export class SyncOrchestrator {
 		await this.syncMutex.run(async () => {
 			this.deps.logger?.info("Clearing sync state");
 			await this.stateStore.clear();
-			this.recoverViaColdScan = false;
 			this.syncPending = false;
 		});
 	}
@@ -199,43 +198,24 @@ export class SyncOrchestrator {
 				// detection and the acknowledge (see TrackerSnapshot for why).
 				const snapshot = this.deps.localTracker.snapshot();
 
-				// Force a full cold reconcile when delta-based detection can't be
-				// trusted: no committed remote checkpoint (last sync never completed
-				// or was reset), the previous cycle failed (its in-memory cursor
-				// may have advanced past un-committed work), or the sync SCOPE
-				// changed since the last clean cycle (a settings change widened
-				// scope to include remote paths the delta cursor already passed —
-				// see scope-fingerprint.ts). Cold recovers all three via a full
-				// list × baseline join. The checkpoint (delta cursor + fingerprint)
-				// lives in the backend's own store now, so this is an async FS query.
-				const noCheckpoint = remoteFs.checkpoint
-					? !(await remoteFs.checkpoint.hasCheckpoint())
-					: false;
 				const scopeFingerprint = await computeScopeFingerprint(
 					this.deps.getSettings(),
 					this.deps.configDir(),
 					this.deps.pluginId(),
 				);
-				// A checkpoint capability without getScopeFingerprint doesn't track
-				// scope at all — skip the check rather than force a spurious cold
-				// reconcile every cycle. When it IS present, a committed `null`
-				// (checkpoint predates this field, or was never committed) compares
-				// unequal to any real fingerprint — this doubles as the one-time
-				// back-fill cold reconcile for existing checkpoints.
+				const noCheckpoint = remoteFs.checkpoint
+					? !(await remoteFs.checkpoint.hasCheckpoint())
+					: false;
 				const scopeChanged = remoteFs.checkpoint?.getScopeFingerprint
 					? (await remoteFs.checkpoint.getScopeFingerprint()) !== scopeFingerprint
 					: false;
-				const forceFullScan = noCheckpoint || this.recoverViaColdScan || scopeChanged;
-				this.deps.logger?.info("Sync started", { forceFullScan, scopeChanged });
-
-				const result = await this.executeWithRetry(forceFullScan, snapshot, scopeFingerprint);
+				const forceFullScan = noCheckpoint || scopeChanged;
+				const result = await this.executeWithRetry(
+					forceFullScan, scopeChanged, snapshot, scopeFingerprint,
+				);
 				if (!result) return; // Fatal error already handled
 
 				const { succeeded, failed, blocked, conflicts } = result;
-				// failed cycle では cursor が committed state より先に進んでいる可能性がある。
-				// ただし cold recovery を一度支払い済みの local-origin action だけが
-				// quarantine 対象なら、次 cycle の cold scan は不要。
-				this.recoverViaColdScan = this.needsColdRecovery(result.outcome);
 				if (failed > 0 || blocked > 0) {
 					this.deps.onStatusChange("partial_error");
 					this.deps.logger?.warn("Sync completed with errors", {
@@ -286,6 +266,7 @@ export class SyncOrchestrator {
 	 */
 	private async executeWithRetry(
 		forceFullScan: boolean,
+		scopeChanged: boolean,
 		snapshot: TrackerSnapshot,
 		scopeFingerprint: string,
 	): Promise<SyncCycleResult | null> {
@@ -294,6 +275,7 @@ export class SyncOrchestrator {
 
 		for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
 			try {
+				this.deps.logger?.info("Sync started", { forceFullScan, scopeChanged, attempt });
 				lastOutcome = await this.executeSyncOnce(forceFullScan, snapshot, scopeFingerprint);
 				const { execution, admissionFailures } = lastOutcome;
 				return {
@@ -304,16 +286,22 @@ export class SyncOrchestrator {
 					conflicts: execution.conflicts.length,
 				};
 			} catch (err) {
-				lastError = err;
+				if (err instanceof WorkingViewAbortError) throw err.original;
+				const postCloseout = err instanceof PostCloseoutError;
+				const original = postCloseout ? err.original : err;
+				if (!postCloseout) {
+					await this.deps.remoteFs()?.checkpoint?.abortWorkingView();
+				}
+				lastError = original;
 				// Classification is the backend's job (it knows its own error shapes,
 				// e.g. that Google 403 can mean rate-limit); the retry POLICY is the
 				// engine's and stays backend-neutral. Fall back to the generic HTTP
 				// classifier for backends that don't override it.
 				const provider = this.deps.backendProvider();
-				const classification = provider?.classifyError?.(err) ?? classifyHttpError(err);
+				const classification = provider?.classifyError?.(original) ?? classifyHttpError(original);
 				this.deps.logger?.error(
 					`Sync error (attempt ${attempt}/${MAX_RETRIES})`,
-					{ kind: classification.kind, message: err instanceof Error ? err.message : String(err) },
+					{ kind: classification.kind, message: original instanceof Error ? original.message : String(original) },
 				);
 
 				const decision = decideRetry(classification, attempt, MAX_RETRIES, Math.random);
@@ -396,10 +384,7 @@ export class SyncOrchestrator {
 		const namespace = (provider?.getIdentity?.(settings) ?? settings.lastSyncedIdentity) ||
 			`${settings.backendType}:${settings.vaultId}`;
 
-		let changeSet: ChangeSet;
-		let planning: ReturnType<typeof prepareSyncCycleSnapshot>;
-		try {
-			changeSet = await collectChanges({
+		const changeSet: ChangeSet = await collectChanges({
 				localFs,
 				remoteFs,
 				stateStore: this.stateStore,
@@ -407,20 +392,16 @@ export class SyncOrchestrator {
 			}, {
 				forceFullScan,
 			});
-			const { renamePairs } = snapshot;
+		const { renamePairs } = snapshot;
 
-			const isMobile = this.deps.isMobile();
-			const maxBytes = settings.mobileMaxFileSizeMB * 1024 * 1024;
-			planning = prepareSyncCycleSnapshot(changeSet, namespace, {
+		const isMobile = this.deps.isMobile();
+		const maxBytes = settings.mobileMaxFileSizeMB * 1024 * 1024;
+		const planning = prepareSyncCycleSnapshot(changeSet, namespace, {
 				isExcluded: (path) => this.isExcluded(path),
 				mobileMaxBytes: isMobile ? maxBytes : undefined,
 			}, this.deps.logger);
-			const visiblePaths = new Set(planning.snapshot.scope.byEndpoint.keys());
-			logChangeDetection(changeSet, renamePairs, this.deps.logger, visiblePaths);
-		} catch (err) {
-			this.recoverViaColdScan = true;
-			throw err;
-		}
+		const visiblePaths = new Set(planning.snapshot.scope.byEndpoint.keys());
+		logChangeDetection(changeSet, renamePairs, this.deps.logger, visiblePaths);
 
 		// This call is the authorization cut point. Exceptions from this line onward
 		// are not reclassified as evidence-acquisition recovery.
@@ -496,22 +477,21 @@ export class SyncOrchestrator {
 					checkpoint: remoteFs.checkpoint, scopeFingerprint,
 					checkpointBlocked: this.activeBatch?.isCheckpointBlocked,
 				});
-				if (provider?.readBackendState) {
-					settings.backendData = {
-						...settings.backendData,
-						...provider.readBackendState(),
-					};
+				try {
+					if (provider?.readBackendState) {
+						settings.backendData = {
+							...settings.backendData,
+							...provider.readBackendState(),
+						};
+					}
+					await this.deps.saveSettings();
+				} catch (err) {
+					throw new PostCloseoutError(err);
 				}
-				await this.deps.saveSettings();
 			});
 			return outcome;
 		} finally {
 			this.activeBatch = null;
 		}
-	}
-
-	private needsColdRecovery(outcome: SyncCycleOutcome): boolean {
-		return outcome.admissionFailures.length > 0 || outcome.execution.failed.length > 0 ||
-			outcome.execution.blocked.length > 0;
 	}
 }

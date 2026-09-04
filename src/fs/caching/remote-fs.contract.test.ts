@@ -111,6 +111,7 @@ class FakeRemote {
 
 class MockRemoteFs extends CachingRemoteFs<MockFile> {
 	readonly name = "mock";
+	private failAfterFirstChange = false;
 
 	constructor(private remote: FakeRemote, store: MetadataStore<MockFile>) {
 		super(remote.rootId, new MockCache(remote.rootId), store);
@@ -119,12 +120,13 @@ class MockRemoteFs extends CachingRemoteFs<MockFile> {
 	protected getStartCursor(): Promise<string> { return Promise.resolve(this.remote.head()); }
 	protected fullList(): Promise<MockFile[]> { return Promise.resolve(this.remote.list()); }
 	protected assertRootAlive(): Promise<void> { return Promise.resolve(); }
+	requestLaterPageFailure(): void { this.failAfterFirstChange = true; }
 
 	protected fetchChanges(cursor: string): Promise<IncrementalChangesResult> {
 		const { changes, newCursor } = this.remote.changesSince(cursor);
 		const changedPaths = new Set<string>();
 		const renamedPaths: RenamePair[] = [];
-		for (const ch of changes) {
+		for (const [index, ch] of changes.entries()) {
 			if (ch.kind === "delete") {
 				const path = this.cache.getPathById(ch.id);
 				if (path) {
@@ -141,6 +143,10 @@ class MockRemoteFs extends CachingRemoteFs<MockFile> {
 					renamedPaths.push({ oldPath, newPath, isFolder: wasFolder || undefined });
 					if (wasFolder) for (const nd of this.cache.collectDescendants(newPath)) changedPaths.add(nd);
 				}
+			}
+			if (index === 0 && this.failAfterFirstChange) {
+				this.failAfterFirstChange = false;
+				throw new Error("injected later page failure");
 			}
 		}
 		return Promise.resolve({ needsFullScan: false, newToken: newCursor, changedPaths, renamedPaths });
@@ -184,12 +190,17 @@ class MockRemoteFs extends CachingRemoteFs<MockFile> {
 
 function makeMockHarness(): CachingRemoteFsHarness<MockFile> {
 	const remote = new FakeRemote();
+	let fs: MockRemoteFs | null = null;
 	return {
 		makeStore: (id) => new MetadataStore<MockFile>(id, { dbNamePrefix: "air-sync-mock", version: 1 }),
-		makeFs: (store) => new MockRemoteFs(remote, store),
+		makeFs: (store) => {
+			fs = new MockRemoteFs(remote, store);
+			return fs;
+		},
 		seedFile: (path) => remote.seed(path),
 		seedFolderWithChild: (folderPath, childName) => remote.seedFolderWithChild(folderPath, childName),
 		stageRemoteDelete: (path) => remote.stageDelete(path),
+		failNextDeltaAfterFirstPage: () => fs?.requestLaterPageFailure(),
 		stageRemoteRename: (oldPath, newPath, opts) => remote.stageRename(oldPath, newPath, opts),
 	};
 }

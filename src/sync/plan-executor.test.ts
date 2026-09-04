@@ -785,7 +785,8 @@ describe("executePlan", () => {
 		);
 
 		it("fails fast on a resolver invariant contradiction", async () => {
-			const ctx = makeCtx({ conflictStrategy: "duplicate" });
+			const fatal = vi.fn();
+			const ctx = makeCtx({ conflictStrategy: "duplicate", onActionFatal: fatal });
 			const { action } = await arrangeFreshConflict(ctx);
 			ctx.conflictResolver = () => Promise.resolve({
 				action: "duplicated",
@@ -798,6 +799,7 @@ describe("executePlan", () => {
 			await expect(executePlan(makePlan([action]), ctx)).rejects.toThrow(
 				"Fresh resolver omitted target content",
 			);
+			expect(fatal).toHaveBeenCalledOnce();
 		});
 
 		it("publishes and aborts through the existing auth path for typed resolver auth failure", async () => {
@@ -890,15 +892,23 @@ describe("executePlan", () => {
 			expect(result.succeeded[0]!.action.path).toBe("good.md");
 		});
 
-		it("aborts immediately on AuthError during a push (transfer phase)", async () => {
-			const ctx = makeCtx();
+		it("waits for scheduled transfer siblings before propagating AuthError", async () => {
+			let aborted = false;
+			const fatal = vi.fn().mockImplementation(() => { aborted = true; });
+			const ctx = makeCtx({
+				onActionFatal: fatal,
+				beginAction: () => aborted ? "invalidated" : "run",
+				transferPool: { min: 1, start: 2, max: 2, rampAfter: 100 },
+			});
 			const authErr = new AuthError("Unauthorized", 401);
+			let releaseSibling!: () => void;
+			const siblingGate = new Promise<void>((resolve) => { releaseSibling = resolve; });
 
 			const localFs = ctx.localFs as MockFileSystem;
 			// Use path-based logic so the correct file triggers AuthError regardless of concurrency order
-			vi.spyOn(localFs, "read").mockImplementation((path: string) => {
+			const read = vi.spyOn(localFs, "read").mockImplementation((path: string) => {
 				if (path === "auth-fail.md") return Promise.reject(authErr);
-				return Promise.resolve(new ArrayBuffer(0));
+				return siblingGate.then(() => new ArrayBuffer(0));
 			});
 
 			const plan = makePlan([
@@ -912,9 +922,58 @@ describe("executePlan", () => {
 					action: "push",
 					local: { path: "other.md", isDirectory: false, size: 13, mtime: 1000, hash: "" },
 				},
+				{
+					path: "queued.md",
+					action: "push",
+					local: { path: "queued.md", isDirectory: false, size: 6, mtime: 1000, hash: "" },
+				},
 			]);
 
-			await expect(executePlan(plan, ctx)).rejects.toThrow(AuthError);
+			const execution = executePlan(plan, ctx);
+			let rejected = false;
+			void execution.catch(() => { rejected = true; });
+			await vi.waitFor(() => expect(fatal).toHaveBeenCalledWith(expect.anything(), authErr));
+			expect(rejected).toBe(false);
+
+			releaseSibling();
+			await expect(execution).rejects.toBe(authErr);
+			expect(read).not.toHaveBeenCalledWith("queued.md");
+		});
+
+		it("preserves the first structural rejection across nested sibling settlement", async () => {
+			const ctx = makeCtx();
+			const remoteFs = ctx.remoteFs as MockFileSystem;
+			const localFs = ctx.localFs as MockFileSystem;
+			addFile(remoteFs, "first.md", "first");
+			addFile(remoteFs, "slow.md", "slow");
+			addFile(localFs, "second.md", "second");
+			const first = new AuthError("first", 401);
+			const second = new AuthError("second", 401);
+			let signalFirst!: () => void;
+			const firstObserved = new Promise<void>((resolve) => { signalFirst = resolve; });
+			let releaseSlow!: () => void;
+			const slow = new Promise<void>((resolve) => { releaseSlow = resolve; });
+			const remoteDelete = remoteFs.delete.bind(remoteFs);
+			vi.spyOn(remoteFs, "delete").mockImplementation((path) => {
+				if (path === "first.md") {
+					signalFirst();
+					return Promise.reject(first);
+				}
+				return slow.then(() => remoteDelete(path));
+			});
+			vi.spyOn(localFs, "delete").mockImplementation(() =>
+				firstObserved.then(() => Promise.reject(second)));
+
+			const execution = executePlan(makePlan([
+				{ path: "first.md", action: "delete_remote" },
+				{ path: "slow.md", action: "delete_remote" },
+				{ path: "second.md", action: "delete_local" },
+			]), ctx);
+			await firstObserved;
+			await Promise.resolve();
+			releaseSlow();
+
+			await expect(execution).rejects.toBe(first);
 		});
 
 		it("aborts the cycle on AuthError during a remote delete (structural phase)", async () => {

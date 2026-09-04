@@ -198,6 +198,8 @@ describe("SyncOrchestrator", () => {
 			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
 			const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
 			remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
+			const abortWorkingView = vi.fn().mockResolvedValue(undefined);
+			remoteFs.checkpoint!.abortWorkingView = abortWorkingView;
 			const remoteWrite = vi.spyOn(remoteFs, "write");
 			const remoteDelete = vi.spyOn(remoteFs, "delete");
 			const remoteList = vi.spyOn(remoteFs, "list");
@@ -231,7 +233,8 @@ describe("SyncOrchestrator", () => {
 			expect(remoteList).not.toHaveBeenCalled();
 
 			await orchestrator.runSync();
-			expect(remoteList).toHaveBeenCalledTimes(1);
+			expect(remoteList).not.toHaveBeenCalled();
+			expect(abortWorkingView).toHaveBeenCalledTimes(2);
 			await orchestrator.close();
 		});
 
@@ -1910,21 +1913,29 @@ describe("SyncOrchestrator", () => {
 		 * succeeds. A cycle with a failed action must NOT advance the committed
 		 * changesStartPageToken, so the next run still re-detects the un-pulled work.
 		 */
-		it("forces a cold reconcile on the cycle after a failure (in-memory cursor may have advanced past the committed one)", async () => {
+		it("replays from the committed cursor after aborting a failed working view", async () => {
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();
 			addFile(localFs, "synced.md", "kept", 1000);
-			addFile(localFs, "push.md", "body", 1000); // local-only → push, fails in cycle 1
 			addFile(remoteFs, "synced.md", "kept", 1000);
-			addFile(remoteFs, "orphan.md", "left behind", 1000); // remote-only → invisible to WARM
+			addFile(remoteFs, "orphan.md", "left behind", 1000);
 
 			const settings = baseMockSettings({
 				backendType: "test",
 				vaultId: `test-${Math.random()}`,
 			});
-			// A committed checkpoint exists, so hasCheckpoint stays true throughout —
-			// the recovery must come from the post-failure cold flag, not from hasCheckpoint.
 			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
+			let deltaConsumed = false;
+			remoteFs.checkpoint!.getChangedPaths = vi.fn().mockImplementation(() => {
+				if (deltaConsumed) return Promise.resolve({ modified: [], deleted: [] });
+				deltaConsumed = true;
+				return Promise.resolve({ modified: ["orphan.md"], deleted: [] });
+			});
+			const abortWorkingView = vi.fn().mockImplementation(() => {
+				deltaConsumed = false;
+				return Promise.resolve();
+			});
+			remoteFs.checkpoint!.abortWorkingView = abortWorkingView;
 
 			const deps = createDeps({
 				getSettings: () => settings,
@@ -1943,19 +1954,103 @@ describe("SyncOrchestrator", () => {
 				syncedAt: 900,
 			});
 
-			// Cycle 1: WARM (hasCheckpoint true). push.md's push fails → partial_error;
-			// orphan.md is invisible to WARM (empty remote delta). The error is PERSISTENT so
-			// the per-action in-cycle retry (withIoRetry) exhausts rather than self-healing a
-			// one-shot transient — the failed cycle is what forces cycle 2 cold.
-			vi.spyOn(remoteFs, "write").mockRejectedValue(new Error("network dropped"));
+			const originalRead = remoteFs.read.bind(remoteFs);
+			const readSpy = vi.spyOn(remoteFs, "read")
+				.mockRejectedValue(new Error("network dropped"));
 			await orchestrator.runSync();
 			expect(localFs.files.has("orphan.md")).toBe(false);
+			expect(abortWorkingView).toHaveBeenCalledOnce();
 
-			// Cycle 2 (same long-lived orchestrator): the prior failure must force a cold
-			// reconcile that rediscovers orphan.md, even though hasCheckpoint is still true.
+			readSpy.mockImplementation(originalRead);
 			await orchestrator.runSync();
 			expect(localFs.files.has("orphan.md")).toBe(true);
 			expect(await orchestrator.state.get("orphan.md")).toBeDefined();
+			await orchestrator.close();
+		});
+
+		it("repeats an ordinary cold scan after aborting an uncommitted first scan", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			addFile(remoteFs, "cold-orphan.md", "remote", 1000);
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(false);
+			const abortWorkingView = vi.fn().mockResolvedValue(undefined);
+			remoteFs.checkpoint!.abortWorkingView = abortWorkingView;
+			const readError = new Error("read failed");
+			const read = vi.spyOn(remoteFs, "read")
+				.mockRejectedValueOnce(readError)
+				.mockRejectedValueOnce(readError)
+				.mockRejectedValueOnce(readError);
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`,
+			});
+			const deps = createDeps({
+				getSettings: () => settings,
+				localFs: () => localFs,
+				remoteFs: () => remoteFs,
+				backendProvider: () => mockProvider({}),
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+
+			await orchestrator.runSync();
+			expect(localFs.files.has("cold-orphan.md")).toBe(false);
+			await orchestrator.runSync();
+
+			expect(read).toHaveBeenCalledTimes(4);
+			expect(abortWorkingView).toHaveBeenCalledOnce();
+			expect(readText(localFs, "cold-orphan.md")).toBe("remote");
+			await orchestrator.close();
+		});
+
+		it("replays remote delta and retained tracker input after aborting a hot attempt", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			addFile(localFs, "synced.md", "kept", 1000);
+			addFile(remoteFs, "synced.md", "kept", 1000);
+			addFile(remoteFs, "hot-orphan.md", "remote", 1000);
+			const tracker = new LocalChangeTracker();
+			tracker.acknowledge(tracker.snapshot());
+			tracker.markDirty("ghost.md");
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
+			let deltaConsumed = false;
+			const getChangedPaths = vi.fn().mockImplementation(() => {
+				if (deltaConsumed) return Promise.resolve({ modified: [], deleted: [] });
+				deltaConsumed = true;
+				return Promise.resolve({ modified: ["hot-orphan.md"], deleted: [] });
+			});
+			remoteFs.checkpoint!.getChangedPaths = getChangedPaths;
+			const abortWorkingView = vi.fn().mockImplementation(() => {
+				deltaConsumed = false;
+				return Promise.resolve();
+			});
+			remoteFs.checkpoint!.abortWorkingView = abortWorkingView;
+			const readError = new Error("read failed");
+			vi.spyOn(remoteFs, "read")
+				.mockRejectedValueOnce(readError)
+				.mockRejectedValueOnce(readError)
+				.mockRejectedValueOnce(readError);
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`,
+			});
+			const deps = createDeps({
+				getSettings: () => settings,
+				localFs: () => localFs,
+				remoteFs: () => remoteFs,
+				localTracker: tracker,
+				backendProvider: () => mockProvider({}),
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			await orchestrator.state.put({
+				path: "synced.md", hash: "", localMtime: 1000, remoteMtime: 1000,
+				localSize: 4, remoteSize: 4, syncedAt: 900,
+			});
+
+			await orchestrator.runSync();
+			expect(tracker.getDirtyPaths()).toContain("ghost.md");
+			await orchestrator.runSync();
+
+			expect(getChangedPaths).toHaveBeenCalledTimes(2);
+			expect(abortWorkingView).toHaveBeenCalledOnce();
+			expect(readText(localFs, "hot-orphan.md")).toBe("remote");
 			await orchestrator.close();
 		});
 
@@ -1972,6 +2067,8 @@ describe("SyncOrchestrator", () => {
 				showSyncNotifications: true,
 			});
 			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
+			const abortWorkingView = vi.fn().mockResolvedValue(undefined);
+			remoteFs.checkpoint!.abortWorkingView = abortWorkingView;
 
 			const deps = createDeps({
 				getSettings: () => settings,
@@ -2011,7 +2108,8 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.runSync();
 
 			expect(writeSpy).toHaveBeenCalledTimes(3);
-			expect(remoteListSpy).toHaveBeenCalledTimes(2);
+			expect(remoteListSpy).not.toHaveBeenCalled();
+			expect(abortWorkingView).toHaveBeenCalledTimes(3);
 			expect(deps.onStatusChange).toHaveBeenCalledWith("partial_error");
 			expect(deps.notify).toHaveBeenLastCalledWith("Sync: 1 error");
 			await orchestrator.close();
@@ -2175,6 +2273,8 @@ describe("SyncOrchestrator", () => {
 
 			const commitCheckpoint = vi.fn().mockRejectedValue(new Error("IndexedDB write failed"));
 			remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
+			const abortWorkingView = vi.fn().mockResolvedValue(undefined);
+			remoteFs.checkpoint!.abortWorkingView = abortWorkingView;
 			// readBackendState persists token state AFTER the checkpoint; a failed flush
 			// must abort before it runs, so the cursor (committed inside commitCheckpoint)
 			// is never advanced.
@@ -2201,13 +2301,154 @@ describe("SyncOrchestrator", () => {
 
 			await orchestrator.runSync();
 
-			expect(commitCheckpoint).toHaveBeenCalled();
+			expect(commitCheckpoint).toHaveBeenCalledTimes(3);
+			expect(abortWorkingView).toHaveBeenCalledTimes(3);
 			// The flush threw → the post-checkpoint persist step never ran, and the cycle
 			// surfaces an error rather than silently reporting success.
 			expect(readBackendState).not.toHaveBeenCalled();
 			expect(deps.onStatusChange).toHaveBeenCalledWith("error");
 			await orchestrator.close();
 		});
+
+		it("aborts an observation attempt before classifying its error", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			addFile(localFs, "synced.md", "kept", 1000);
+			addFile(remoteFs, "synced.md", "kept", 1000);
+
+			const settings = baseMockSettings({
+				backendType: "test",
+				vaultId: `test-${Math.random()}`,
+			});
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
+			const order: string[] = [];
+			remoteFs.checkpoint!.getChangedPaths = vi.fn().mockRejectedValue(
+				Object.assign(new Error("delta failed"), { permanent: true }),
+			);
+			remoteFs.checkpoint!.abortWorkingView = vi.fn().mockImplementation(() => {
+				order.push("abort");
+				return Promise.resolve();
+			});
+			const classifyError = vi.fn().mockImplementation(() => {
+				order.push("classify");
+				return { kind: "permanent" as const };
+			});
+			const deps = createDeps({
+				getSettings: () => settings,
+				localFs: () => localFs,
+				remoteFs: () => remoteFs,
+				backendProvider: () => mockProvider({ classifyError }),
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			await orchestrator.state.put({
+				path: "synced.md", hash: "", localMtime: 1000, remoteMtime: 1000,
+				localSize: 4, remoteSize: 4, syncedAt: 900,
+			});
+
+			await orchestrator.runSync();
+
+			expect(order).toEqual(["abort", "classify"]);
+			expect(deps.onStatusChange).toHaveBeenCalledWith("error");
+			await orchestrator.close();
+		});
+
+		it("propagates an abort failure without retrying or aborting twice", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			addFile(localFs, "push.md", "body", 1000);
+			vi.spyOn(remoteFs, "write").mockRejectedValue(new Error("write failed"));
+			const abortError = new Error("abort invariant failed");
+			const abortWorkingView = vi.fn().mockRejectedValue(abortError);
+			remoteFs.checkpoint!.abortWorkingView = abortWorkingView;
+			const classifyError = vi.fn().mockReturnValue({ kind: "transient" });
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`,
+			});
+			const deps = createDeps({
+				getSettings: () => settings,
+				localFs: () => localFs,
+				remoteFs: () => remoteFs,
+				backendProvider: () => mockProvider({ classifyError }),
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+
+			await expect(orchestrator.runSync()).rejects.toBe(abortError);
+
+			expect(abortWorkingView).toHaveBeenCalledOnce();
+			// The action's own bounded I/O retry classified the write failure three times;
+			// the abort failure itself must add no cycle-level classification or retry.
+			expect(classifyError).toHaveBeenCalledTimes(3);
+			await orchestrator.close();
+		});
+
+		it("keeps the initial cold acquisition mode across an in-call retry", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			const hasCheckpoint = vi.fn().mockResolvedValue(false);
+			remoteFs.checkpoint!.hasCheckpoint = hasCheckpoint;
+			remoteFs.checkpoint!.commitCheckpoint = vi.fn()
+				.mockRejectedValueOnce(new Error("commit failed"))
+				.mockResolvedValue(undefined);
+			const remoteList = vi.spyOn(remoteFs, "list");
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`,
+			});
+			const deps = createDeps({
+				getSettings: () => settings,
+				localFs: () => localFs,
+				remoteFs: () => remoteFs,
+				backendProvider: () => mockProvider({}),
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+
+			await orchestrator.runSync();
+
+			expect(hasCheckpoint).toHaveBeenCalledOnce();
+			expect(remoteList).toHaveBeenCalledTimes(2);
+			await orchestrator.close();
+		});
+
+		it.each(["backend state", "settings"] as const)(
+			"does not abort a committed working view when %s persistence fails",
+			async (failurePoint) => {
+				const localFs = createMockLocalFs();
+				const remoteFs = createMockRemoteFs();
+				const settings = baseMockSettings({
+					backendType: "test",
+					vaultId: `test-${Math.random()}`,
+				});
+				remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
+				const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+				const abortWorkingView = vi.fn().mockResolvedValue(undefined);
+				remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
+				remoteFs.checkpoint!.abortWorkingView = abortWorkingView;
+				const persistenceError = Object.assign(new Error(`${failurePoint} failed`), { permanent: true });
+				const readBackendState = failurePoint === "backend state"
+					? vi.fn().mockImplementation(() => { throw persistenceError; })
+					: vi.fn().mockReturnValue({});
+				const saveSettings = failurePoint === "settings"
+					? vi.fn().mockRejectedValue(persistenceError)
+					: vi.fn().mockResolvedValue(undefined);
+				const deps = createDeps({
+					getSettings: () => settings,
+					saveSettings,
+					localFs: () => localFs,
+					remoteFs: () => remoteFs,
+					backendProvider: () => mockProvider({
+						readBackendState,
+						classifyError: () => ({ kind: "permanent" }),
+					}),
+				});
+				const orchestrator = new SyncOrchestrator(deps);
+
+				await orchestrator.runSync();
+
+				expect(commitCheckpoint).toHaveBeenCalledOnce();
+				expect(abortWorkingView).not.toHaveBeenCalled();
+				expect(deps.onStatusChange).toHaveBeenCalledWith("error");
+				await orchestrator.close();
+			},
+		);
 	});
 
 	describe("scope-fingerprint forces a cold reconcile on scope change", () => {

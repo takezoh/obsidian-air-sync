@@ -53,9 +53,9 @@ Persist only verified successful-unit `SyncRecord` bundles and the clean-cycle r
 checkpoint. Do not persist or replay observation, rename evidence, operation intent,
 debt, pending/deferred work, startup resume instructions, or failure quarantine.
 
-Rename evidence belongs only to the current Observation snapshot. After failure,
-`recoverViaColdScan` forces current-state planning in the same process; after restart,
-the last committed cursor/baseline is restored and endpoints are observed again. A
+Rename evidence belongs only to the current Observation snapshot. After failure, the
+checkpoint owner aborts its live working view; same-process retry and restart therefore
+both restore the last committed cursor/baseline and observe endpoints again. A
 general rename whose evidence is gone falls back to ordinary new-path transfer and
 old-path delete/conflict logic. Rename plus local content change is not itself a
 conflict; a remote change from the baseline is.
@@ -110,8 +110,9 @@ mechanisms.
    Dropbox settlement and rollback stay inside one invocation and expose no temp/pending
    model to the engine.
 4. **Commit/finalization** persists successful unit facts and, only for a clean cycle,
-   the remote checkpoint. On failure it retains the old checkpoint and requests COLD
-   observation; it writes no recovery instruction.
+   the remote checkpoint. On failure it aborts the live derived view, retains the old
+   checkpoint, and writes no recovery instruction. The next ordinary acquisition chooses
+   COLD, WARM, or HOT from durable/current facts only.
 
 ## Consequences
 

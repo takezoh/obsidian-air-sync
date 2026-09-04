@@ -18,13 +18,14 @@ const ROOT_ID = "root";
  * plus a monotonic, append-only delta log keyed by a numeric cursor token. A stale
  * cursor is honoured by serving the events after it; the terminal page carries a new
  * deltaLink token. This proves OneDrive's ADR 0001 path-1 behaviour through the
- * OneDrive seams (getStartCursor / fullList / fetchDelta). Path 2 (state C) is the
- * orchestrator's job (see the contract's scope note).
+ * OneDrive seams (getStartCursor / fullList / fetchDelta), including same-process
+ * abort/reload.
  */
 function makeOneDriveHarness(): CachingRemoteFsHarness<OneDriveItem> {
 	const baseline = new Map<string, { id: string; item: OneDriveItem }>(); // path → item
 	const events: OneDriveItem[] = []; // delta items (deletes / upserts), append-only
 	let idSeq = 0;
+	let failAfterFirstPage = false;
 	const cursorAt = (n: number): string => `c${n}`;
 
 	const client = {
@@ -33,7 +34,17 @@ function makeOneDriveHarness(): CachingRemoteFsHarness<OneDriveItem> {
 			Promise.resolve({ id: ROOT_ID, name: "root", folder: { childCount: 0 } }),
 		fullList: (): Promise<OneDriveItem[]> => Promise.resolve([...baseline.values()].map((e) => e.item)),
 		fetchDelta: (_rootId: string, link: string): Promise<OneDriveDeltaResponse> => {
+			if (link === "contract-second-page") {
+				failAfterFirstPage = false;
+				return Promise.reject(new Error("injected later page failure"));
+			}
 			const from = link.startsWith("c") ? Number(link.slice(1)) : 0;
+			if (failAfterFirstPage) {
+				return Promise.resolve({
+					value: events.slice(from, from + 1),
+					"@odata.nextLink": "contract-second-page",
+				});
+			}
 			return Promise.resolve({
 				value: events.slice(from),
 				"@odata.deltaLink": `https://g/delta?token=${cursorAt(events.length)}`,
@@ -60,6 +71,7 @@ function makeOneDriveHarness(): CachingRemoteFsHarness<OneDriveItem> {
 			baseline.delete(path);
 			events.push(odDeleted(entry.id));
 		},
+		failNextDeltaAfterFirstPage: () => { failAfterFirstPage = true; },
 		// OneDrive is id-addressed: a rename re-emits the item with its new name (the
 		// parentReference id is unchanged). A folder's children keep their parent id, so
 		// only the folder item is re-emitted — the cache reparents the subtree.

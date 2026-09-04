@@ -80,5 +80,6 @@ describe("PriorityBatchState", () => {
 		const batch = new PriorityBatchState(admission);
 		batch.abort();
 		expect(batch.priorityTarget(action.path)).toEqual({ kind: "defer" });
+		expect(batch.beginAction(action)).toBe("invalidated");
 	});
 });

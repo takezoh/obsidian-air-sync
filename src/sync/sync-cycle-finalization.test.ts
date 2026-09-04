@@ -9,13 +9,18 @@ import {
 import { finalizeSyncCycle } from "./sync-cycle-finalization";
 import type { PathObservation, ScopeProjection, SyncAction } from "./types";
 
-function checkpoint(commitCheckpoint: IncrementalCheckpoint["commitCheckpoint"]): IncrementalCheckpoint {
-	return {
+function checkpoint(commitCheckpoint: IncrementalCheckpoint["commitCheckpoint"]): {
+	value: IncrementalCheckpoint;
+	abortWorkingView: ReturnType<typeof vi.fn>;
+} {
+	const abortWorkingView = vi.fn().mockResolvedValue(undefined);
+	return { value: {
 		getChangedPaths: vi.fn().mockResolvedValue(null),
 		hasCheckpoint: vi.fn().mockResolvedValue(true),
+		abortWorkingView,
 		resetCheckpoint: vi.fn().mockResolvedValue(undefined),
 		commitCheckpoint,
-	};
+	}, abortWorkingView };
 }
 
 function admission(
@@ -38,6 +43,7 @@ describe("finalizeSyncCycle", () => {
 			});
 			const admittedAction = admitted.executable.actions[0]!;
 			const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+			const cycleCheckpoint = checkpoint(commitCheckpoint);
 			const result: ExecutionResult = {
 				succeeded: [], superseded: [], conflicts: [],
 				failed: outcome === "failed"
@@ -50,10 +56,11 @@ describe("finalizeSyncCycle", () => {
 
 			await finalizeSyncCycle({
 				admission: admitted, result,
-				checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
+				checkpoint: cycleCheckpoint.value, scopeFingerprint: "scope",
 			});
 
 			expect(commitCheckpoint).not.toHaveBeenCalled();
+			expect(cycleCheckpoint.abortWorkingView).toHaveBeenCalledOnce();
 		},
 	);
 
@@ -64,15 +71,17 @@ describe("finalizeSyncCycle", () => {
 			[{ kind: "unknown", side: "local", requestedPath: "note.md", reason: "not_observed" }],
 		);
 		const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+		const cycleCheckpoint = checkpoint(commitCheckpoint);
 
 		expect(failedAdmission.failures).toHaveLength(1);
 		await finalizeSyncCycle({
 			admission: failedAdmission,
 			result: { succeeded: [], superseded: [], conflicts: [], failed: [], blocked: [] },
-			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
+			checkpoint: cycleCheckpoint.value, scopeFingerprint: "scope",
 		});
 
 		expect(commitCheckpoint).not.toHaveBeenCalled();
+		expect(cycleCheckpoint.abortWorkingView).toHaveBeenCalledOnce();
 	});
 
 	it("requires terminal proof before committing a fresh rename", async () => {
@@ -85,6 +94,7 @@ describe("finalizeSyncCycle", () => {
 		});
 		const admittedAction = admitted.executable.actions[0]!;
 		const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+		const cycleCheckpoint = checkpoint(commitCheckpoint);
 
 		await finalizeSyncCycle({
 			admission: admitted,
@@ -92,10 +102,11 @@ describe("finalizeSyncCycle", () => {
 				succeeded: [{ action: admittedAction }], superseded: [], conflicts: [],
 				failed: [], blocked: [],
 			},
-			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
+			checkpoint: cycleCheckpoint.value, scopeFingerprint: "scope",
 		});
 
 		expect(commitCheckpoint).not.toHaveBeenCalled();
+		expect(cycleCheckpoint.abortWorkingView).toHaveBeenCalledOnce();
 	});
 
 	it("commits only after every admitted action reaches terminal success", async () => {
@@ -105,6 +116,7 @@ describe("finalizeSyncCycle", () => {
 		});
 		const admittedAction = admitted.executable.actions[0]!;
 		const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+		const cycleCheckpoint = checkpoint(commitCheckpoint);
 
 		await finalizeSyncCycle({
 			admission: admitted,
@@ -112,24 +124,37 @@ describe("finalizeSyncCycle", () => {
 				succeeded: [{ action: admittedAction }], superseded: [], conflicts: [],
 				failed: [], blocked: [],
 			},
-			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
+			checkpoint: cycleCheckpoint.value, scopeFingerprint: "scope",
 		});
 
 		expect(commitCheckpoint).toHaveBeenCalledOnce();
+		expect(cycleCheckpoint.abortWorkingView).not.toHaveBeenCalled();
 	});
 
 	it("does not commit when detached evidence invalidated an actionless cycle", async () => {
 		const admitted = admission([], { byEndpoint: new Map() });
 		const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+		const cycleCheckpoint = checkpoint(commitCheckpoint);
 
 		await finalizeSyncCycle({
 			admission: admitted,
 			result: { succeeded: [], superseded: [], conflicts: [], failed: [], blocked: [] },
-			checkpoint: checkpoint(commitCheckpoint), scopeFingerprint: "scope",
+			checkpoint: cycleCheckpoint.value, scopeFingerprint: "scope",
 			checkpointBlocked: true,
 		});
 
 		expect(commitCheckpoint).not.toHaveBeenCalled();
+		expect(cycleCheckpoint.abortWorkingView).toHaveBeenCalledOnce();
+	});
+
+	it("is a no-op when the filesystem has no checkpoint capability", async () => {
+		const admitted = admission([], { byEndpoint: new Map() });
+
+		await expect(finalizeSyncCycle({
+			admission: admitted,
+			result: { succeeded: [], superseded: [], conflicts: [], failed: [], blocked: [] },
+			checkpoint: undefined, scopeFingerprint: "scope",
+		})).resolves.toBeUndefined();
 	});
 
 	it("propagates checkpoint persistence failure", async () => {
@@ -138,7 +163,7 @@ describe("finalizeSyncCycle", () => {
 		await expect(finalizeSyncCycle({
 			admission: admitted,
 			result: { succeeded: [], superseded: [], conflicts: [], failed: [], blocked: [] },
-			checkpoint: checkpoint(vi.fn().mockRejectedValue(new Error("checkpoint failed"))),
+			checkpoint: checkpoint(vi.fn().mockRejectedValue(new Error("checkpoint failed"))).value,
 			scopeFingerprint: "scope",
 		})).rejects.toThrow("checkpoint failed");
 	});

@@ -1001,7 +1001,7 @@ describe("GoogleDriveFs cursor consolidation (crash safety)", () => {
 		expect(listAllFiles).toHaveBeenCalledOnce(); // rebuilt via a fresh full scan
 		expect(delta).toBeNull(); // fresh scan ⇒ no replay warranted
 		expect(fs.changesPageToken).toBe("token-fresh"); // freshly acquired, not the stale "token-X"
-		expect(await fs.hasCheckpoint()).toBe(true); // now initialized with a fresh cursor
+		expect(await fs.hasCheckpoint()).toBe(false); // the fresh cursor is still live-only
 
 		await store.close();
 	});

@@ -251,7 +251,7 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 
 	/**
 	 * Every CachingRemoteFs IS its own incremental-checkpoint capability — it implements
-	 * all four methods directly. Exposing `this` (typed down to {@link IncrementalCheckpoint})
+	 * all core methods directly. Exposing `this` (typed down to {@link IncrementalCheckpoint})
 	 * is what lets the sync engine treat the bundle as one all-or-nothing capability
 	 * (`fs.checkpoint?.…`) without a downcast.
 	 */
@@ -266,10 +266,9 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	async commitCheckpoint(context?: { scopeFingerprint?: string }): Promise<void> {
 		if (!this.metadataStore) return;
 		await this.cacheMutex.run(async () => {
-			if (context?.scopeFingerprint !== undefined) {
-				this._scopeFingerprint = context.scopeFingerprint;
-			}
-			await this.commitCache();
+			const scopeFingerprint = context?.scopeFingerprint ?? this._scopeFingerprint;
+			await this.commitCache(scopeFingerprint);
+			this._scopeFingerprint = scopeFingerprint;
 		});
 	}
 
@@ -279,28 +278,22 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	 * This keeps the cache a complete, derived projection co-committed with the cursor;
 	 * commit correctness never depends on tracking individual mutation paths.
 	 */
-	private async commitCache(): Promise<void> {
+	private async commitCache(scopeFingerprint: string | null): Promise<void> {
 		const store = this.metadataStore;
 		if (!store) return;
 		await store.open();
 		const meta = new Map<string, string>();
 		if (this._changesPageToken !== null) meta.set(CURSOR_META_KEY, this._changesPageToken);
-		if (this._scopeFingerprint !== null) meta.set(SCOPE_FINGERPRINT_META_KEY, this._scopeFingerprint);
+		if (scopeFingerprint !== null) meta.set(SCOPE_FINGERPRINT_META_KEY, scopeFingerprint);
 		await store.saveAll(this.cache.exportRecords(), meta);
 	}
 
 	/**
-	 * Read a meta key's committed value: the in-memory field once initialized (the
-	 * common case — no store round-trip), otherwise peek IndexedDB directly without
-	 * mutating any in-memory state. Shared by {@link hasCheckpoint} and
-	 * {@link getScopeFingerprint}, which differ only in which key/field they read and
-	 * how they fall back when nothing is there.
+	 * Read a meta key from the durable checkpoint without consulting the live working
+	 * view. Missing or unreadable storage is conservatively treated as no committed
+	 * value, which routes the next cycle through the ordinary cold path.
 	 */
-	private async peekMeta(
-		key: string,
-		inMemoryValue: string | null,
-	): Promise<string | null> {
-		if (this.initialized) return inMemoryValue;
+	private async peekCommittedMeta(key: string): Promise<string | null> {
 		if (!this.metadataStore) return null;
 		try {
 			await this.metadataStore.open();
@@ -316,7 +309,19 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	 * is co-located with the cache, so its presence is the checkpoint.
 	 */
 	async hasCheckpoint(): Promise<boolean> {
-		return this.cacheMutex.run(() => this.initialized ? Promise.resolve(this._changesPageToken !== null) : this.loadFromCache());
+		return this.cacheMutex.run(async () => this.initialized
+			? (await this.peekCommittedMeta(CURSOR_META_KEY)) !== null
+			: this.loadFromCache());
+	}
+
+	/** Discard the live working view without mutating the durable checkpoint. */
+	async abortWorkingView(): Promise<void> {
+		await this.cacheMutex.run(() => {
+			this._changesPageToken = null;
+			this._scopeFingerprint = null;
+			this.cache.clear();
+			this.initialized = false;
+		});
 	}
 
 	/**
@@ -342,11 +347,14 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 
 	/**
 	 * The scope fingerprint committed with the last clean cycle, or `null` if none was
-	 * ever committed. Shares {@link peekMeta}'s in-memory-vs-peek-the-store split with
-	 * {@link hasCheckpoint}.
+	 * ever committed. Like {@link hasCheckpoint}, this reports durable state rather than
+	 * the current attempt's live working view.
 	 */
 	async getScopeFingerprint(): Promise<string | null> {
-		return this.peekMeta(SCOPE_FINGERPRINT_META_KEY, this._scopeFingerprint);
+		return this.cacheMutex.run(async () => {
+			if (!this.initialized && !(await this.loadFromCache())) return null;
+			return this.peekCommittedMeta(SCOPE_FINGERPRINT_META_KEY);
+		});
 	}
 
 	// ── Incremental replay + 410 full-scan-and-diff fallback ──
