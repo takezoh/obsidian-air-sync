@@ -15,7 +15,7 @@ consequences:
   neutral:
   - Native rename evidence remains a current-cycle optimization, not correctness state.
 confirmation: Production has no operation journal or cross-cycle failure quarantine;
-  failure/restart convergence tests and the repository gate pass.
+  failure/restart convergence tests, versioned cold-start tests, and the repository gate pass.
 tags: []
 owners: []
 relations:
@@ -31,7 +31,7 @@ source_paths:
 - src/fs/dropbox/index.ts
 - src/store/metadata-store.ts
 summary: Persist terminal facts only; after any error, re-observe current endpoints and replan.
-updated: '2026-09-03'
+updated: '2026-09-04'
 ---
 
 ## Context
@@ -59,6 +59,14 @@ the last committed cursor/baseline is restored and endpoints are observed again.
 general rename whose evidence is gone falls back to ordinary new-path transfer and
 old-path delete/conflict logic. Rename plus local content change is not itself a
 conflict; a remote change from the baseline is.
+
+Schema invalidation remains the one-time exception to restoring an old baseline. When
+persisted semantics are incompatible, each database owner uses the project-wide
+drop-and-recreate policy. The 2026-09-04 repair applies that policy to metadata cache
+v3→v4 and SyncState v7→v8 because retaining v7 path identity can preserve a component
+created by the defective checkpoint projection. This stores no recovery instruction:
+the next ordinary no-checkpoint, no-baseline COLD cycle observes current endpoints and
+re-establishes terminal facts.
 
 A case-only relation may be reconstructed without history only from an unambiguous
 case-folded baseline/current pair. The local path must be the actual resolved spelling;

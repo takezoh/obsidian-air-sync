@@ -25,6 +25,7 @@ scope:
 - AGENTS.md — repository operating rule
 - docs/adr/0001-metadata-cache-is-subordinate-to-commit-last.md — governing decision
 - docs/adr/0008-logical-identity-admission-fails-closed.md — v8 baseline invalidation rationale
+- docs/adr/adr-20260903-stateless-current-state-recovery.md — schema invalidation boundary
 - docs/code-enforcement.md — mechanical enforcement contract
 non_goals:
 - New Admission or identity algorithm
@@ -64,6 +65,7 @@ source_paths:
 - docs/code-enforcement.md
 - docs/adr/0001-metadata-cache-is-subordinate-to-commit-last.md
 - docs/adr/0008-logical-identity-admission-fails-closed.md
+- docs/adr/adr-20260903-stateless-current-state-recovery.md
 summary: Persist a complete subordinate remote cache only with a clean cursor checkpoint,
   cold-start affected persisted state once, and guard the exact two-authority boundary.
 updated: '2026-09-04'
