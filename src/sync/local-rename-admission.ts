@@ -2,38 +2,68 @@ import type { AdmissionComponent } from "./plan-admission-graph";
 import { renameEvidenceKey } from "./identity-evidence";
 import { hasRemoteChanged } from "./change-compare";
 import { contentKey, sameContent } from "./content-identity";
+import {
+	localCaseAliasCandidate,
+	normalizeLocalCaseAlias,
+	type LocalRenameCandidate,
+} from "./case-alias-admission";
 import type { FileEntity } from "../fs/types";
-import type { LocalRenameEvidence, ScopeProjection, SyncAction, SyncRecord } from "./types";
+import type {
+	LocalRenameEvidence,
+	ScopeProjection,
+	SyncRecord,
+} from "./types";
 
 type VersionRelation = "unchanged" | "changed";
 type ContentRelation = "same" | "different" | "unproven";
 type ExactRemote = { readonly path: string; readonly entity: FileEntity };
 type ForeignRemote = ExactRemote & { readonly identityKey: string };
 export type EvidenceUnknownReason =
+	| "case_alias_incomplete"
 	| "local_candidate_incomplete"
 	| "scope_or_authority_missing"
 	| "remote_endpoint_unobserved"
 	| "remote_identity_missing";
 export type EvidenceContradictionReason =
+	| "case_alias_content_mismatch"
 	| "tracked_identity_multiple_occurrences"
 	| "tracked_identity_observation_conflict";
 
-interface NormalizedRenameBase {
-	readonly candidate: LocalRenameEvidence;
+interface TrackedRenameBase {
+	readonly candidate: LocalRenameCandidate;
 	readonly baseline: SyncRecord;
 	readonly local: FileEntity;
 }
 
-export type NormalizedRenameState = NormalizedRenameBase & (
+export type NormalizedRenameState =
+	| {
+		readonly kind: "untracked_case_alias";
+		readonly candidate: LocalRenameCandidate;
+		readonly local: FileEntity;
+		readonly remote: FileEntity;
+	}
+	| (TrackedRenameBase & (
 	| { readonly kind: "baseline_at_old_vacant_target"; readonly source: ExactRemote; readonly relation: VersionRelation }
 	| { readonly kind: "baseline_at_new"; readonly target: ExactRemote; readonly relation: VersionRelation; readonly localRelation: ContentRelation }
 	| { readonly kind: "baseline_at_third_vacant_target"; readonly source: ExactRemote; readonly relation: VersionRelation }
 	| { readonly kind: "baseline_at_third_foreign_target"; readonly primary: ExactRemote; readonly additional: ForeignRemote; readonly relation: VersionRelation }
 	| { readonly kind: "baseline_absent_foreign_target"; readonly additional: ForeignRemote }
 	| { readonly kind: "baseline_absent_vacant_target" }
-	| { readonly kind: "evidence_unknown"; readonly reason: EvidenceUnknownReason }
-	| { readonly kind: "evidence_contradicted"; readonly reason: EvidenceContradictionReason }
-);
+))
+	| {
+		readonly kind: "evidence_unknown";
+		readonly reason: EvidenceUnknownReason;
+		readonly candidate: LocalRenameCandidate;
+		readonly baseline?: SyncRecord;
+		readonly local?: FileEntity;
+	}
+	| {
+		readonly kind: "evidence_contradicted";
+		readonly reason: EvidenceContradictionReason;
+		readonly candidate: LocalRenameCandidate;
+		readonly baseline?: SyncRecord;
+		readonly local?: FileEntity;
+	};
 
 export type DeterminateNormalizedRenameState = Exclude<NormalizedRenameState,
 	{ kind: "evidence_unknown" | "evidence_contradicted" }>;
@@ -54,80 +84,6 @@ export function classifyNonBindingLocalRenames(
 		for (const candidate of candidates) nonBinding.add(renameEvidenceKey(candidate));
 	}
 	return nonBinding;
-}
-
-/**
- * Replace the ordinary no-baseline pull+push proposal only when the current
- * snapshot independently proves one local case-only rename. This is recovery
- * from a COLD observation, not a stored intermediate sync state.
- */
-export function shapeBaselineFreeCaseRename(
-	component: AdmissionComponent,
-	scope: ScopeProjection,
-): SyncAction | undefined {
-	const candidates = component.evidence.filter((item): item is LocalRenameEvidence =>
-		item.kind === "rename" && item.side === "local" && !item.isFolder &&
-		item.authority === "current_state");
-	if (candidates.length !== 1 || component.actions.length !== 2 ||
-		component.actions.some((action) => action.baseline !== undefined)) return undefined;
-	const candidate = candidates[0]!;
-	if (candidate.oldPath === candidate.newPath ||
-		candidate.oldPath.toLowerCase() !== candidate.newPath.toLowerCase() ||
-		scope.byEndpoint.get(candidate.oldPath) !== "included" ||
-		scope.byEndpoint.get(candidate.newPath) !== "included") return undefined;
-
-	const pull = component.actions.find((action) =>
-		action.action === "pull" && action.path === candidate.oldPath);
-	const push = component.actions.find((action) =>
-		action.action === "push" && action.path === candidate.newPath);
-	if (!pull?.remote || !push?.local || pull.local || push.remote ||
-		pull.remote.path !== candidate.oldPath || push.local.path !== candidate.newPath ||
-		!pull.remote.identityKey || pull.remote.size !== push.local.size ||
-		!sameContent(pull.remote, push.local)) return undefined;
-
-	const localOld = observations(component, "local", candidate.oldPath);
-	const localNew = observations(component, "local", candidate.newPath);
-	const remoteOld = observations(component, "remote", candidate.oldPath);
-	const remoteNew = observations(component, "remote", candidate.newPath);
-	if (localOld.length === 0 || !localOld.every((item) =>
-		item.kind === "alias" && item.resolvedPath === candidate.newPath) ||
-		localNew.length === 0 || !localNew.every((item) =>
-			item.kind === "exact" && item.entity.path === candidate.newPath &&
-			item.entity.size === push.local!.size && sameContent(item.entity, push.local!)) ||
-		remoteOld.length === 0 || !remoteOld.every((item) =>
-			item.kind === "exact" && item.entity.path === candidate.oldPath &&
-			item.entity.identityKey === pull.remote!.identityKey &&
-			item.entity.size === pull.remote!.size && sameContent(item.entity, pull.remote!)) ||
-		remoteNew.length === 0 || !remoteNew.every((item) =>
-			item.kind === "absent" && item.authority === "stat")) return undefined;
-
-	const identityPaths = new Set(component.observations.flatMap((item) =>
-		item.side === "remote" && (item.kind === "exact" || item.kind === "alias") &&
-		item.entity.identityKey === pull.remote!.identityKey
-			? [item.kind === "alias" ? item.resolvedPath : item.requestedPath]
-			: []));
-	if (identityPaths.size !== 1 || !identityPaths.has(candidate.oldPath) ||
-		component.evidence.some((item) => item.kind === "stable_identity" &&
-			item.identityKey === pull.remote!.identityKey &&
-			new Set(item.occurrences.filter((entry) => entry.phase === "current")
-				.map((entry) => entry.path)).size > 1)) return undefined;
-
-	return {
-		action: "rename_remote",
-		oldPath: candidate.oldPath,
-		path: candidate.newPath,
-		local: push.local,
-		remote: pull.remote,
-	};
-}
-
-function observations(
-	component: AdmissionComponent,
-	side: "local" | "remote",
-	path: string,
-) {
-	return component.observations.filter((item) =>
-		item.side === side && item.requestedPath === path);
 }
 
 function isNonBindingComponent(
@@ -167,17 +123,42 @@ function hasOnlyObservation(
 	return observations.length > 0 && observations.every((item) => item.kind === kind);
 }
 
-/** Sole legal-state producer for one fresh local file rename candidate. */
-export function normalizeFreshLocalRename(
+/** Sole legal-state producer for one local file move candidate. */
+export function normalizeLocalMove(
 	component: AdmissionComponent,
 	scope: ScopeProjection,
 ): NormalizedRenameState | undefined {
-	const candidates = component.evidence.filter((item): item is LocalRenameEvidence =>
+	const reportedCandidates = component.evidence.filter((item): item is LocalRenameEvidence =>
 		item.kind === "rename" && item.side === "local" && !item.isFolder);
-	if (candidates.length !== 1) return undefined;
-	const candidate = candidates[0]!;
-	const baseline = component.actions.find((action) => action.baseline?.path === candidate.oldPath)?.baseline;
-	if (!baseline) return undefined;
+	const caseAliasCandidate = reportedCandidates.length === 0 &&
+		!component.evidence.some((item) => item.kind === "rename")
+		? localCaseAliasCandidate(component, scope)
+		: undefined;
+	const caseAlias = caseAliasCandidate
+		? normalizeLocalCaseAlias(component, scope)
+		: undefined;
+	const candidate = reportedCandidates.length === 1
+		? reportedCandidates[0]!
+		: caseAliasCandidate;
+	if (!candidate) return undefined;
+	const baseline = caseAlias?.baseline ??
+		component.entries.find((entry) => entry.path === candidate.oldPath)?.prevSync ??
+		component.actions.find((action) => action.baseline?.path === candidate.oldPath)?.baseline;
+	if (!baseline) {
+		if (!caseAliasCandidate) return undefined;
+		if (!caseAlias) return {
+			kind: "evidence_unknown", reason: "case_alias_incomplete", candidate,
+		};
+		if (caseAlias.local.size !== caseAlias.remote.size ||
+			!sameContent(caseAlias.local, caseAlias.remote)) return {
+				kind: "evidence_contradicted", reason: "case_alias_content_mismatch",
+				candidate, local: caseAlias.local,
+			};
+		return {
+			kind: "untracked_case_alias", candidate,
+			local: caseAlias.local, remote: caseAlias.remote,
+		};
+	}
 	const localOld = observation(component, "local", candidate.oldPath);
 	const localNew = observation(component, "local", candidate.newPath);
 	if (!localNew) return undefined;
@@ -189,8 +170,10 @@ export function normalizeFreshLocalRename(
 			? { kind: "evidence_unknown", reason: "local_candidate_incomplete", candidate, baseline, local }
 			: undefined;
 	}
-	if (local.hash === baseline.hash) return undefined;
-	if (localOld?.kind !== "absent" || scope.byEndpoint.get(candidate.oldPath) !== "included" ||
+	if (local.hash === baseline.hash && !caseAlias) return undefined;
+	const localSourceVacant = localOld?.kind === "absent" ||
+		(localOld?.kind === "alias" && localOld.resolvedPath === candidate.newPath);
+	if (!localSourceVacant || scope.byEndpoint.get(candidate.oldPath) !== "included" ||
 		scope.byEndpoint.get(candidate.newPath) !== "included" || !baseline.remoteIdentityKey) {
 		return { kind: "evidence_unknown", reason: "scope_or_authority_missing", candidate, baseline, local };
 	}
@@ -291,7 +274,8 @@ function observation(component: AdmissionComponent, side: "local" | "remote", pa
 }
 
 function actionEntity(component: AdmissionComponent, side: "local" | "remote", path: string) {
-	return component.actions.map((action) => action[side]).find((entity) => entity?.path === path);
+	return component.entries.map((entry) => entry[side]).find((entity) => entity?.path === path) ??
+		component.actions.map((action) => action[side]).find((entity) => entity?.path === path);
 }
 
 function isExactOrAbsent(value: ReturnType<typeof observation>): value is Exclude<NonNullable<typeof value>,

@@ -13,7 +13,7 @@ const CONTENT_STORE_NAME = "sync-content";
 // decisions derive only from terminal records and current observations.
 // v8 cold-starts v7 path identity after the metadata-cache checkpoint defect:
 // retaining those records can relate the already-converged old and new casing
-// forever, so the ordinary baseline-free cycle must rebuild them from current facts.
+// forever, so ordinary collection and Admission rebuild from current facts.
 const DB_VERSION = 8;
 
 /** Persistent store for sync records using IndexedDB */

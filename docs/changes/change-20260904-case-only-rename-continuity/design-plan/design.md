@@ -14,11 +14,11 @@ The repair returns the engine to ADR 0001's original simple ownership model.
 3. Existing affected installations cold-start both persistence databases by bumping
    `METADATA_CACHE_VERSION` from 3 to 4 and `SyncStateStore` from 7 to 8. Current local
    and remote facts rebuild the subordinate projection and terminal records.
-4. A vault that has already cold-started v8 is recovered from current facts only:
-   `LocalFs` resolves stale case-colliding index entries against the raw adapter;
-   Observation proposes a file-level case-only relation only from exact endpoints,
-   unique remote identity, absent remote target, and equal bytes; Admission independently
-   revalidates the proof before shaping `pull(old)+push(new)` into `rename_remote`.
+4. Every ordinary cycle reconstructs the case-alias decision from current component
+   facts. `LocalFs` resolves stale case-colliding index entries against the raw adapter;
+   Observation records endpoint, alias, identity, absence, and content facts only;
+   Admission normalizes those facts and alone authorizes an explicit
+   `case_alias_canonicalization`/`rename_remote` protocol.
 5. `identity_postcondition_unproven` remains an existing cycle-local failure reason,
    never persisted state. No new status or cross-cycle relation is introduced.
 6. The authority catalog and the reviewed `SyncOrchestrator` instance-field inventory
@@ -45,7 +45,7 @@ cycle not clean or checkpoint save fails
   -> no additional pending state
   -> existing failure/retry/COLD behavior only
 
-baseline-free COLD case alias
+current component contains a local case alias
   -> LocalFs raw adapter proves one physical local spelling
   -> Observation proves exact/absent endpoints + unique remote identity + equal bytes
   -> Admission revalidates hash/size/scope and authorizes rename_remote
@@ -88,11 +88,13 @@ dropped and recreated as version 8. The following sync uses the existing no-chec
 no-baseline COLD flow; neither database migrates old state.
 
 <!-- anchor: fr-ccr-05 -->
-### FR-CCR-05 — Strict baseline-free case-only recovery
+### FR-CCR-05 — Current-fact case-alias canonicalization
 
-Only a complete current snapshot may recover the case-only relation removed by the v8
-cold-start. Observation acquires facts; Admission alone authorizes the remote rename.
-Incomplete or contradictory evidence remains fail-closed. Evidence, dispositions, and
+Only complete current component facts may authorize a case-only remote rename.
+Observation acquires facts without inferring identity or action; Admission alone
+normalizes and decides the component. The same facts produce the same result in COLD,
+WARM, and HOT cycles regardless of unrelated records or earlier failures. Incomplete or
+contradictory evidence is an explicit fail-closed decision. Evidence, dispositions, and
 `identity_postcondition_unproven` stay cycle-local and are never persisted.
 
 <!-- anchor: nfr-ccr-01 -->
@@ -129,14 +131,16 @@ fields with the reviewed exact list, checks the two-item authority declaration, 
 rejects reintroduced pending-cache fields. The test is enforcement, not a new runtime
 registry or owner.
 
-<!-- anchor: component-current-case-recovery -->
-### Current case-recovery boundary
+<!-- anchor: component-case-alias-canonicalization -->
+### Case-alias canonicalization boundary
 
-`src/fs/local/` owns physical-path casing resolution. `change-detector.ts` invokes the
-isolated `current-state-case-rename.ts` acquisition/content proof. The
-`local-rename-admission.ts` boundary owns validation and action shaping. Executor owns
-only pre-effect/terminal re-observation and returns no new state; Orchestrator gains no
-decision or state ownership.
+`src/fs/local/` owns physical-path casing resolution. `change-detector.ts` and
+`change-hash-enrichment.ts` publish current observations and content facts only.
+`case-alias-admission.ts` parses the fact-only alias component, while
+`local-rename-admission.ts` owns typed move-state normalization. `plan-admission.ts`
+owns the exhaustive decision and turns only an admitted result into an explicit
+cycle-local action protocol. Executor owns pre-effect/terminal re-observation and returns no new state;
+Orchestrator gains no decision or state ownership.
 
 ## Implementation contracts
 
@@ -179,28 +183,41 @@ no-checkpoint path performs a provider full scan.
 **Owner and evolution.** `component-file-commit` changes SyncState 7→8. Its existing
 `onUpgrade` independently drops and recreates terminal record and merge-base stores.
 
-**Rule.** The first open has no terminal baseline, so normal orchestration uses its
-baseline-free decision rules, including the narrow current case-recovery contract
-below. There is no migration, persisted relation, cross-database transaction, or
-special first-cycle status.
+**Rule.** The first open has no terminal baseline, so normal orchestration rebuilds from
+current facts. The same Admission rules also apply to partial and established state.
+There is no migration, persisted relation, cross-database transaction, or special
+first-cycle status.
 
 **Observables.** A seeded v7 old-casing `SyncRecord` and merge base are absent after v8
 open. The first clean cycle can write current terminal records plus a complete new
 projection and cursor.
 
-<!-- anchor: contract-current-case-recovery -->
-### Contract: current case-only recovery
+<!-- anchor: contract-case-alias-canonicalization -->
+### Contract: case-alias canonicalization
 
 **Observation.** Resolve case-fold collisions from the vault index against segment-wise
-raw-adapter listings. Keep genuine case-sensitive siblings. A baseline-free candidate
-requires local old→new alias, exact local new, exact remote old with a unique identity,
-stat-absent remote new, and byte-identical direct reads. Publish only ordinary
-`authority: current_state` evidence and SHA-256 entities in the immutable cycle snapshot.
+raw-adapter listings and keep genuine case-sensitive siblings. Publish only local
+old→new alias, exact/absent endpoints, remote identity, SHA-256, and size facts in the
+immutable cycle snapshot. Do not publish rename evidence or an action, and do not read
+cycle temperature, whole-store record count, prior failure, or database version.
 
-**Admission.** Require exactly one file candidate, included old/new scope, no baseline,
-the ordinary `pull(old)+push(new)` proposal, the same endpoint and identity facts, and
-equal SHA-256 plus size. Only then shape one `rename_remote`. Otherwise retain the
-existing fail-closed result.
+**Admission.** Normalize one component from its entries, observations, scope, and
+component-local baseline. For an unbaselined alias require local old→new alias, exact local new, exact and unique
+remote old identity, stat-absent remote new, included scope, and equal SHA-256 plus
+size. Complete proof yields one explicitly tagged `case_alias_canonicalization` action
+whose effect is `rename_remote`; incomplete or contradictory proof yields an explicit
+reject and cannot fall through to unrelated path-local rules.
+
+For an unbaselined component, equal content does not prove historical identity. The
+rule is a declared canonicalization policy for an otherwise indistinguishable current
+state: the raw adapter proves there is one local physical file, its actual spelling is
+canonical, and the one remote stable identity moves to that spelling without replacing
+either file's content.
+
+A baseline-backed alias enters the existing typed fresh-reconciliation state table.
+The baseline-relative relation may yield rename/write, conflict, or settled; it never
+uses the unbaselined equal-content protocol and Executor still receives only Admission's
+explicit chosen action.
 
 **Execution.** Re-observe the exact endpoints, expected remote identity, vacancy, size,
 and byte equality immediately before the move. Afterward prove old absence, exact new
@@ -262,8 +279,8 @@ persisted.
   longer a correctness state when every clean checkpoint writes the complete snapshot.
 - **Chosen:** bump metadata cache 3→4 and SyncState 7→8 under their existing drop/recreate
   policy. The incompatible old path identity is discarded; this is not migration.
-- **Chosen:** recover the already-reset vault only from the narrow current-state
-  case-only proof above, with authorization remaining in Admission.
+- **Chosen:** make the narrow current-fact case-alias proof an acquisition-temperature-
+  independent Admission rule, with Observation restricted to facts.
 - **Rejected:** general COLD rename pairing, content heuristics, or an ambiguous
   Admission status. These cannot prove identity and would add correctness state.
 
@@ -280,11 +297,11 @@ Admission rule.
 Bump metadata cache 3→4 and SyncState 7→8, pin both drop/recreate behaviors, and prove
 v7 old-casing records do not survive.
 
-### Unit 3 — Current case-only recovery
+### Unit 3 — Current-fact case-alias canonicalization
 
-Repair LocalFs casing observation, acquire the strict cycle-local proof, and shape the
-action only inside Admission. Pin positive and counterexample tests at all three
-boundaries.
+Repair LocalFs casing observation, acquire the strict cycle-local facts, and normalize
+and shape the action only inside Admission. Pin temperature/whole-store invariance plus
+positive and counterexample tests at all three boundaries.
 
 ### Unit 4 — State ownership enforcement and integration
 
@@ -295,7 +312,8 @@ guard; run focused tests and the complete repository gate.
 
 T1 tests cover final snapshot recreation across all caching backends, checkpoint
 transaction failure, both versioned upgrades, discarded v7 SyncRecords, actual-casing
-resolution, strict baseline-free Admission, end-to-end convergence, and the
+resolution, strict case-alias Admission, temperature/record-count invariance,
+end-to-end convergence, and the
 state-boundary source guard. The complete gate is
 `npm run lint && npm run lint:bot-repro && npm run build && npm run test:coverage`.
 Credential-gated E2E remains optional T2 fidelity evidence.

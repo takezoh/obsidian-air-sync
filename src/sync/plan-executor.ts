@@ -3,6 +3,7 @@ import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
 import type { ConflictStrategy, RenameAction, SyncAction, SyncActionType } from "./types";
 import {
+	isCaseAliasCanonicalizationAction,
 	isFreshRenameAction,
 	type AuthorizedSyncPlan,
 	type FreshRenameAction,
@@ -385,7 +386,7 @@ async function executeAction(
 }
 
 function localMutationPaths(action: SyncAction): string[] {
-	if (action.action === "rename_remote" && !action.baseline && !action.isFolder) {
+	if (isCaseAliasCanonicalizationAction(action)) {
 		return [action.path];
 	}
 	if (action.action === "pull" || action.action === "delete_local" || action.action === "conflict") {
@@ -401,6 +402,9 @@ async function runActionIO(
 	ctx: ExecutionContext,
 ): Promise<{ localEntity?: FileEntity; remoteEntity?: FileEntity }> {
 	if (isFreshRenameAction(action)) return runFreshRenameIO(action, ctx);
+	if (isCaseAliasCanonicalizationAction(action)) {
+		return runCaseAliasCanonicalizationIO(action, ctx);
+	}
 	const { localFs, remoteFs } = ctx;
 	const { path } = action;
 
@@ -430,9 +434,6 @@ async function runActionIO(
 		}
 
 		case "rename_remote": {
-			if (!action.baseline && !action.isFolder) {
-				return runBaselineFreeCaseRenameIO(action, ctx);
-			}
 			await remoteFs.rename(action.oldPath, path);
 			const remoteEntity = await remoteFs.stat(path);
 			const localEntity = await localFs.stat(path) ?? action.local;
@@ -466,14 +467,14 @@ async function runActionIO(
 	}
 }
 
-async function runBaselineFreeCaseRenameIO(
+async function runCaseAliasCanonicalizationIO(
 	action: RenameAction,
 	ctx: ExecutionContext,
 ): Promise<{ localEntity?: FileEntity; remoteEntity?: FileEntity }> {
 	const { localFs, remoteFs } = ctx;
 	if (!action.local || !action.remote?.identityKey) {
 		throw new ConflictPreparationError(
-			"proof_mismatch", `Baseline-free case rename proof missing: ${action.oldPath}`,
+			"proof_mismatch", `Case-alias protocol proof missing: ${action.oldPath}`,
 		);
 	}
 	const [localBefore, oldBefore, newBefore, localBytes, remoteBytes] = await Promise.all([
@@ -488,7 +489,7 @@ async function runBaselineFreeCaseRenameIO(
 		oldBefore.size !== remoteBytes.byteLength ||
 		!buffersEqual(localBytes, remoteBytes)) {
 		throw new ConflictPreparationError(
-			"proof_mismatch", `Baseline-free case rename precondition changed: ${action.oldPath}`,
+			"proof_mismatch", `Case-alias protocol precondition changed: ${action.oldPath}`,
 		);
 	}
 
@@ -505,7 +506,7 @@ async function runBaselineFreeCaseRenameIO(
 		newAfter.size !== finalRemoteBytes.byteLength ||
 		!buffersEqual(finalLocalBytes, finalRemoteBytes)) {
 		throw new ConflictPreparationError(
-			"proof_mismatch", `Baseline-free case rename terminal proof failed: ${action.path}`,
+			"proof_mismatch", `Case-alias protocol terminal proof failed: ${action.path}`,
 		);
 	}
 	return { localEntity: localAfter, remoteEntity: newAfter };

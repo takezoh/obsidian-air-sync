@@ -6,6 +6,7 @@ import type { TrackerSnapshot } from "./local-tracker";
 import { hasChanged, hasRemoteChanged } from "./change-compare";
 import {
 	enrichHashesForInitialMatch,
+	enrichHashesForLocalCaseAliases,
 	enrichHashesForRenames,
 	type HashEnrichmentResult,
 } from "./change-hash-enrichment";
@@ -24,7 +25,6 @@ import {
 	exactEntity,
 	observePath,
 } from "./path-observation";
-import { inferCurrentStateLocalCaseRenames } from "./current-state-case-rename";
 
 export interface ChangeSet {
 	entries: MixedEntity[];
@@ -69,7 +69,6 @@ export async function collectChanges(
 	const { changes, stateStore } = deps;
 
 	let changeSet: ChangeSet;
-
 	// Determine temperature
 	if (!opts.forceFullScan && changes.initialized && changes.dirtyPaths.size > 0 &&
 		changes.folderRenamePairs.size === 0) {
@@ -105,13 +104,11 @@ export async function collectChanges(
 	// side is missing before planning; a thrown stat aborts rather than becoming absence.
 	if (changeSet.temperature !== "hot") {
 		await confirmEntryAbsences(changeSet, deps.localFs, deps.remoteFs);
-		changeSet.identityEvidence.unshift(...await inferCurrentStateLocalCaseRenames(
-			changeSet.entries,
-			changeSet.observations,
-			deps.localFs,
-			deps.remoteFs,
-		));
 	}
+	await enrichHashesForLocalCaseAliases(
+		changeSet.entries, changeSet.observations, changeSet.identityEvidence,
+		deps.localFs, deps.remoteFs,
+	);
 	// Hash enrichment operates only on exact entries and cannot upgrade observations.
 	changeSet.hashEnrichment = await enrichHashesForInitialMatch(changeSet.entries, deps.localFs);
 	const renameView = renameOptimizerView(changeSet.identityEvidence);

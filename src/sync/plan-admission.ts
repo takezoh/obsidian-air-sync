@@ -8,8 +8,7 @@ import {
 } from "./sync-cycle-planning";
 import {
 	classifyNonBindingLocalRenames,
-	normalizeFreshLocalRename,
-	shapeBaselineFreeCaseRename,
+	normalizeLocalMove,
 	type DeterminateNormalizedRenameState,
 	type EvidenceContradictionReason,
 	type EvidenceUnknownReason,
@@ -28,7 +27,7 @@ import {
 } from "./identity-component-decision";
 import { coalesceLocalFolderRenames, optimizeLocalFileRenames } from "./optimize-local-renames";
 import { coalesceRemoteFolderRenames, optimizeRemoteFileRenames } from "./optimize-remote-renames";
-import { reconstructCaseAliasChildRenames } from "./case-alias-recovery";
+import { reconstructCaseAliasChildRenames } from "./case-alias-planning";
 import type { FileEntity } from "../fs/types";
 import type {
 	IdentityEvidence,
@@ -69,9 +68,10 @@ export function captureCycleAdmissionSnapshot(
 	namespace: string,
 	baselinePaths: readonly string[] = plan.actions.flatMap((action) =>
 		action.baseline ? [action.baseline.path] : []),
+	entries: readonly MixedEntity[] = [],
 ): AdmissionSnapshot {
 	const observation = captureBatchObservation(
-		[], identityEvidence, observations, scope, namespace,
+		entries, identityEvidence, observations, scope, namespace,
 		baselinePaths,
 	);
 	return bindAdmissionPlan(observation, plan);
@@ -101,8 +101,22 @@ export type FreshRenameAction = SyncAction & {
 	readonly normalizedRenameState: DeterminateNormalizedRenameState;
 };
 
+export type CaseAliasCanonicalizationAction = SyncAction & {
+	readonly action: "rename_remote";
+	readonly protocol: "case_alias_canonicalization";
+	readonly oldPath: string;
+	readonly local: FileEntity;
+	readonly remote: FileEntity;
+};
+
 export function isFreshRenameAction(action: SyncAction): action is FreshRenameAction {
 	return "freshRenameState" in action;
+}
+
+export function isCaseAliasCanonicalizationAction(
+	action: SyncAction,
+): action is CaseAliasCanonicalizationAction {
+	return "protocol" in action && action.protocol === "case_alias_canonicalization";
 }
 
 interface AdmissionComponentDisposition {
@@ -173,13 +187,14 @@ export function admitDestructivePlan(
 	const observedEvidence = snapshot.evidence.map((item) => item.evidence);
 	const components = buildAdmissionComponents(
 		snapshot.plan, observedEvidence, snapshot.observations, snapshot.scope,
+		snapshot.entries,
 	);
 	const authorizedActions: SyncAction[] = [];
 	const dispositions: AdmissionDisposition[] = [];
 	for (const component of components) {
-		const normalizedRenameState = normalizeFreshLocalRename(component, snapshot.scope);
+		const normalizedRenameState = normalizeLocalMove(component, snapshot.scope);
 		if (normalizedRenameState) {
-			const decision = decideFreshRename(normalizedRenameState);
+			const decision = decideLocalMove(normalizedRenameState);
 			const action = decision.kind === "authorized" ? decision.action : undefined;
 			const shared = {
 				paths: [...component.paths].sort(), actions: action ? [action] : [],
@@ -206,19 +221,15 @@ export function admitDestructivePlan(
 			}
 			continue;
 		}
-		const baselineFreeCaseRename = shapeBaselineFreeCaseRename(component, snapshot.scope);
-		const proposalComponent: AdmissionComponent = baselineFreeCaseRename
-			? { ...component, actions: [baselineFreeCaseRename] }
-			: component;
 		const nonBindingCandidates = classifyNonBindingLocalRenames(
-			[proposalComponent], snapshot.baselinePaths, snapshot.scope,
+			[component], snapshot.baselinePaths, snapshot.scope,
 		);
-		const effectiveEvidence = proposalComponent.evidence.filter((item) =>
+		const effectiveEvidence = component.evidence.filter((item) =>
 			item.kind !== "rename" || item.side !== "local" ||
 			!nonBindingCandidates.has(renameEvidenceKey(item)));
 		const decidedComponent: AdmissionComponent = {
-			...proposalComponent,
-			actions: shapeIdentityComponentActions(proposalComponent.actions, effectiveEvidence),
+			...component,
+			actions: shapeIdentityComponentActions(component.actions, effectiveEvidence),
 			evidence: effectiveEvidence,
 		};
 		const shared = {
@@ -275,23 +286,35 @@ function actionCoversRename(
 		evidence.newPath === `${newPrefix}${evidence.oldPath.slice(oldPrefix.length)}`;
 }
 
-type FreshRenameDecision =
-	| { readonly kind: "authorized"; readonly action: FreshRenameAction }
+type LocalMoveDecision =
+	| { readonly kind: "authorized"; readonly action: FreshRenameAction | CaseAliasCanonicalizationAction }
 	| { readonly kind: "resolved_no_action" }
 	| { readonly kind: "evidence_unknown"; readonly reason: EvidenceUnknownReason }
 	| { readonly kind: "evidence_contradicted"; readonly reason: EvidenceContradictionReason };
 
-function decideFreshRename(state: NormalizedRenameState): FreshRenameDecision {
+function decideLocalMove(state: NormalizedRenameState): LocalMoveDecision {
 	if (state.kind === "evidence_unknown") {
 		return { kind: state.kind, reason: state.reason };
 	}
 	if (state.kind === "evidence_contradicted") {
 		return { kind: state.kind, reason: state.reason };
 	}
+	if (state.kind === "untracked_case_alias") {
+		return {
+			kind: "authorized",
+			action: {
+				action: "rename_remote", protocol: "case_alias_canonicalization",
+				oldPath: state.candidate.oldPath, path: state.candidate.newPath,
+				local: state.local, remote: state.remote,
+			},
+		};
+	}
 	return { kind: "authorized", action: freshRenameAction(state) };
 }
 
-function freshRenameAction(state: DeterminateNormalizedRenameState): FreshRenameAction {
+function freshRenameAction(
+	state: Exclude<DeterminateNormalizedRenameState, { kind: "untracked_case_alias" }>,
+): FreshRenameAction {
 	const shared = {
 		path: state.candidate.newPath,
 		oldPath: state.candidate.oldPath,

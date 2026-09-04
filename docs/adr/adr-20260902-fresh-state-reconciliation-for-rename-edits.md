@@ -41,6 +41,7 @@ consequences:
   - SyncState v6 is not migrated; existing debt becomes candidate endpoint evidence only.
 confirmation: Exhaustive fresh-state, partial-effect restart, existing conflict-adapter,
   retryable-no-row, exact legacy release, and full project gate tests.
+updated: '2026-09-04'
 ---
 
 # Reconcile local rename edits from fresh state
@@ -61,6 +62,12 @@ Each invocation derives the component solely from current local state, committed
 4. remote identity/content/path changed;
 5. destination occupied by a distinct identity;
 6. required evidence unknown or contradictory.
+
+The same rule applies to a current local case alias with no baseline. Observation emits
+only the alias and endpoint/identity/content facts. Admission treats the local physical
+spelling as canonical only under complete proof and emits an explicit cycle-local
+protocol; otherwise it rejects the component. Acquisition temperature, global record
+count, schema version, and previous failure do not select a state.
 
 Admission authorizes one serial compound rename/write only for state 1, write-only for state 2, and state-only baseline repair for state 3. States 4–5 enter a narrow path-aware adapter to existing `auto_merge | duplicate`; no rename/write happens first. State 6 is a retryable current-invocation error with no action or pending row.
 

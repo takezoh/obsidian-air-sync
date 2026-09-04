@@ -1,8 +1,9 @@
-import type { IdentityEvidence, PathObservation, ScopeProjection, SyncAction } from "./types";
+import type { IdentityEvidence, MixedEntity, PathObservation, ScopeProjection, SyncAction } from "./types";
 
 export interface AdmissionComponent {
 	paths: Set<string>;
 	actions: SyncAction[];
+	entries: MixedEntity[];
 	evidence: IdentityEvidence[];
 	observations: PathObservation[];
 }
@@ -12,13 +13,16 @@ export function buildAdmissionComponents(
 	identityEvidence: readonly IdentityEvidence[],
 	observations: readonly PathObservation[],
 	scope: ScopeProjection,
+	entries: readonly MixedEntity[] = [],
 ): AdmissionComponent[] {
 	const graph = new PathGraph();
 	const actionPathSets = plan.actions.map(actionPaths);
 	const evidencePathSets = identityEvidence.map(evidencePaths);
 	const observationPathSets = observations.map(observationPaths);
+	const entryPathSets = entries.map((entry) => [entry.path]);
 	const knownPaths = new Set([
 		...actionPathSets.flat(), ...evidencePathSets.flat(), ...observationPathSets.flat(),
+		...entryPathSets.flat(),
 		...scope.byEndpoint.keys(),
 	]);
 	const sortedKnownPaths = [...knownPaths].sort();
@@ -30,6 +34,7 @@ export function buildAdmissionComponents(
 			: paths);
 	}
 	for (const paths of observationPathSets) graph.connect(paths);
+	for (const paths of entryPathSets) graph.connect(paths);
 
 	const byRoot = new Map<string, AdmissionComponent>();
 	for (const path of graph.paths()) {
@@ -45,6 +50,7 @@ export function buildAdmissionComponents(
 	for (const observation of observations) {
 		componentFor(byRoot, graph, observationPaths(observation)).observations.push(observation);
 	}
+	for (const entry of entries) componentFor(byRoot, graph, [entry.path]).entries.push(entry);
 	return [...byRoot.values()].filter((component) =>
 		component.actions.length > 0 || component.evidence.length > 0 ||
 		component.observations.some((observation) =>
@@ -99,7 +105,7 @@ function observationPaths(observation: PathObservation): string[] {
 }
 
 function emptyComponent(): AdmissionComponent {
-	return { paths: new Set(), actions: [], evidence: [], observations: [] };
+	return { paths: new Set(), actions: [], entries: [], evidence: [], observations: [] };
 }
 
 function componentFor(

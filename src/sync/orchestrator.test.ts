@@ -387,6 +387,10 @@ describe("SyncOrchestrator", () => {
 			const remote = addFile(remoteFs, "Case.md", "baseline", 1000);
 			remote.identityKey = "R";
 			confirmMockPath(remoteFs, "Case.md");
+			const exactLocalStat = localFs.stat.bind(localFs);
+			localFs.stat = async (path) => path === "Case.md"
+				? { ...(await exactLocalStat("case.md"))!, path: "case.md", pathAuthority: "actual_resolved" }
+				: exactLocalStat(path);
 			const settings = baseMockSettings({
 				backendType: "test", vaultId: `test-${Math.random()}`, lastSyncedIdentity: "test:root",
 			});
@@ -424,7 +428,7 @@ describe("SyncOrchestrator", () => {
 			await restarted.close();
 		});
 
-		it("converges a baseline-free case-only alias when current contents and remote identity prove it", async () => {
+		it("converges an unbaselined case-only alias from current facts", async () => {
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();
 			addFile(localFs, "case.md", "same", 1000);

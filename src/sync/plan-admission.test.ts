@@ -14,6 +14,7 @@ import type {
 	ScopeProjection,
 	SyncAction,
 	SyncRecord,
+	MixedEntity,
 } from "./types";
 
 function entity(path: string, identityKey?: string): FileEntity {
@@ -33,9 +34,10 @@ function admit(
 	evidence: IdentityEvidence[] = [],
 	observations: PathObservation[] = [],
 	scope: ScopeProjection = projection({}),
+	entries: MixedEntity[] = [],
 ) {
 	return admitDestructivePlan(captureCycleAdmissionSnapshot(
-		{ actions }, evidence, observations, scope, "backend\0root",
+		{ actions }, evidence, observations, scope, "backend\0root", undefined, entries,
 	));
 }
 
@@ -45,6 +47,34 @@ function remoteRename(
 	return {
 		kind: "rename", side: "remote", oldPath: "A.md", newPath: "B.md",
 		isFolder: false, authority: "reported", identityKey: "X", ...overrides,
+	};
+}
+
+function caseAliasFixture(
+	local: FileEntity = entity("case.md"),
+	remote: FileEntity = entity("Case.md", "R"),
+) {
+	const actions: SyncAction[] = [
+		{ path: "Case.md", action: "pull", remote },
+		{ path: "case.md", action: "push", local },
+	];
+	const evidence: IdentityEvidence[] = [
+		{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md" },
+	];
+	const observations: PathObservation[] = [
+		{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md", entity: local },
+		{ kind: "exact", side: "local", requestedPath: "case.md", entity: local },
+		{ kind: "exact", side: "remote", requestedPath: "Case.md", entity: remote },
+		{ kind: "absent", side: "remote", requestedPath: "case.md", authority: "stat" },
+	];
+	const entries: MixedEntity[] = [
+		{ path: "Case.md", remote },
+		{ path: "case.md", local },
+	];
+	return {
+		local, remote, actions, evidence, observations,
+		scope: projection({ "Case.md": "included", "case.md": "included" }),
+		entries,
 	};
 }
 
@@ -493,7 +523,7 @@ describe("admitDestructivePlan", () => {
 		expect(result.failures).toEqual([]);
 	});
 
-	it("shapes a baseline-free case-only pull and push only from complete current facts", () => {
+	it("canonicalizes an unbaselined case alias only from complete current facts", () => {
 		const local = entity("case.md");
 		const remote = entity("Case.md", "R");
 		const result = admit(
@@ -501,13 +531,7 @@ describe("admitDestructivePlan", () => {
 				{ path: "Case.md", action: "pull", remote },
 				{ path: "case.md", action: "push", local },
 			],
-			[
-				{
-					kind: "rename", side: "local", oldPath: "Case.md", newPath: "case.md",
-					isFolder: false, authority: "current_state",
-				},
-				{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md" },
-			],
+			[{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md" }],
 			[
 				{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md", entity: local },
 				{ kind: "exact", side: "local", requestedPath: "case.md", entity: local },
@@ -515,15 +539,20 @@ describe("admitDestructivePlan", () => {
 				{ kind: "absent", side: "remote", requestedPath: "case.md", authority: "stat" },
 			],
 			projection({ "Case.md": "included", "case.md": "included" }),
+			[
+				{ path: "Case.md", remote },
+				{ path: "case.md", local },
+			],
 		);
 
 		expect(result.executable.actions).toEqual([{
-			action: "rename_remote", oldPath: "Case.md", path: "case.md", local, remote,
+			action: "rename_remote", protocol: "case_alias_canonicalization",
+			oldPath: "Case.md", path: "case.md", local, remote,
 		}]);
 		expect(result.failures).toEqual([]);
 	});
 
-	it("rejects a baseline-free case-only candidate whose contents are not proven equal", () => {
+	it("rejects a case-alias component whose contents are not proven equal", () => {
 		const local = freshEntity("case.md", "local");
 		const remote = freshEntity("Case.md", "remote", "R");
 		const result = admit(
@@ -531,13 +560,7 @@ describe("admitDestructivePlan", () => {
 				{ path: "Case.md", action: "pull", remote },
 				{ path: "case.md", action: "push", local },
 			],
-			[
-				{
-					kind: "rename", side: "local", oldPath: "Case.md", newPath: "case.md",
-					isFolder: false, authority: "current_state",
-				},
-				{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md" },
-			],
+			[{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md" }],
 			[
 				{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md", entity: local },
 				{ kind: "exact", side: "local", requestedPath: "case.md", entity: local },
@@ -545,10 +568,186 @@ describe("admitDestructivePlan", () => {
 				{ kind: "absent", side: "remote", requestedPath: "case.md", authority: "stat" },
 			],
 			projection({ "Case.md": "included", "case.md": "included" }),
+			[
+				{ path: "Case.md", remote },
+				{ path: "case.md", local },
+			],
+		);
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.failures[0]?.reasons).toEqual(["case_alias_content_mismatch"]);
+	});
+
+	it("keeps the case-alias decision unchanged when unrelated terminal state exists", () => {
+		const local = entity("case.md");
+		const remote = entity("Case.md", "R");
+		const unrelated: SyncRecord = {
+			path: "unrelated.md", hash: "h", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, syncedAt: 1,
+		};
+		const result = admit(
+			[
+				{ path: "Case.md", action: "pull", remote },
+				{ path: "case.md", action: "push", local },
+			],
+			[{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md" }],
+			[
+				{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md", entity: local },
+				{ kind: "exact", side: "local", requestedPath: "case.md", entity: local },
+				{ kind: "exact", side: "remote", requestedPath: "Case.md", entity: remote },
+				{ kind: "absent", side: "remote", requestedPath: "case.md", authority: "stat" },
+			],
+			projection({
+				"Case.md": "included", "case.md": "included", "unrelated.md": "included",
+			}),
+			[
+				{ path: "Case.md", remote },
+				{ path: "case.md", local },
+				{ path: "unrelated.md", prevSync: unrelated },
+			],
+		);
+
+		expect(result.executable.actions).toEqual([{
+			action: "rename_remote", protocol: "case_alias_canonicalization",
+			oldPath: "Case.md", path: "case.md", local, remote,
+		}]);
+		expect(result.failures).toEqual([]);
+	});
+
+	it("rejects a case alias whose remote source is present but unresolved", () => {
+		const fixture = caseAliasFixture();
+		fixture.observations[2] = {
+			kind: "present_unresolved", side: "remote", requestedPath: "Case.md",
+			returnedPath: "Case.md", entity: {
+				...fixture.remote, pathAuthority: "requested_echo",
+			}, source: "stat",
+		};
+
+		const result = admit(
+			fixture.actions, fixture.evidence, fixture.observations, fixture.scope, fixture.entries,
+		);
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.failures[0]?.reasons).toEqual(["case_alias_incomplete"]);
+	});
+
+	it("requires each alias endpoint fact and stat-authoritative target absence", () => {
+		const missingAliasObservation = caseAliasFixture();
+		missingAliasObservation.observations.splice(0, 1);
+
+		const unresolvedLocalTarget = caseAliasFixture();
+		unresolvedLocalTarget.observations[1] = {
+			kind: "present_unresolved", side: "local", requestedPath: "case.md",
+			returnedPath: "case.md", entity: {
+				...unresolvedLocalTarget.local, pathAuthority: "requested_echo",
+			}, source: "stat",
+		};
+
+		const nonStatRemoteAbsence = caseAliasFixture();
+		nonStatRemoteAbsence.observations[3] = {
+			kind: "absent", side: "remote", requestedPath: "case.md",
+			authority: "checkpoint_deleted",
+		};
+
+		for (const fixture of [
+			missingAliasObservation, unresolvedLocalTarget, nonStatRemoteAbsence,
+		]) {
+			const result = admit(
+				fixture.actions, fixture.evidence, fixture.observations,
+				fixture.scope, fixture.entries,
+			);
+			expect(result.executable.actions).toEqual([]);
+			expect(result.failures[0]?.reasons).toEqual(["case_alias_incomplete"]);
+		}
+	});
+
+	it("rejects a case alias when the remote identity has another current occurrence", () => {
+		const fixture = caseAliasFixture();
+		const duplicate = entity("other.md", "R");
+		fixture.evidence.push({
+			kind: "stable_identity", side: "remote", identityKey: "R", occurrences: [
+				{ side: "remote", phase: "current", path: "Case.md", identityKey: "R" },
+				{ side: "remote", phase: "current", path: "other.md", identityKey: "R" },
+			],
+		});
+		fixture.observations.push({
+			kind: "exact", side: "remote", requestedPath: "other.md", entity: duplicate,
+		});
+		fixture.entries.push({ path: "other.md", remote: duplicate });
+
+		const result = admit(
+			fixture.actions, fixture.evidence, fixture.observations, fixture.scope, fixture.entries,
+		);
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.failures[0]?.reasons).toEqual(["case_alias_incomplete"]);
+	});
+
+	it("rejects a case alias whose remote target is occupied by a foreign identity", () => {
+		const fixture = caseAliasFixture();
+		const foreign = entity("case.md", "F");
+		fixture.entries[1]!.remote = foreign;
+		fixture.observations[3] = {
+			kind: "exact", side: "remote", requestedPath: "case.md", entity: foreign,
+		};
+
+		const result = admit(
+			fixture.actions, fixture.evidence, fixture.observations, fixture.scope, fixture.entries,
+		);
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.failures[0]?.reasons).toEqual(["case_alias_incomplete"]);
+	});
+
+	it("rejects unproven or size-mismatched unbaselined case aliases", () => {
+		const unhashed = caseAliasFixture(
+			freshEntity("case.md", ""), freshEntity("Case.md", "", "R"),
+		);
+		const unproven = admit(
+			unhashed.actions, unhashed.evidence, unhashed.observations, unhashed.scope, unhashed.entries,
+		);
+		const mismatched = caseAliasFixture(
+			entity("case.md"), { ...entity("Case.md", "R"), size: 2 },
+		);
+		const differentSize = admit(
+			mismatched.actions, mismatched.evidence, mismatched.observations,
+			mismatched.scope, mismatched.entries,
+		);
+
+		expect(unproven.failures[0]?.reasons).toEqual(["case_alias_incomplete"]);
+		expect(differentSize.failures[0]?.reasons).toEqual(["case_alias_content_mismatch"]);
+	});
+
+	it("does not authorize a case alias with unknown scope", () => {
+		const fixture = caseAliasFixture();
+		const unknownScope = projection({ "Case.md": "included", "case.md": "unknown" });
+
+		const result = admit(
+			fixture.actions, fixture.evidence, fixture.observations, unknownScope, fixture.entries,
 		);
 
 		expect(result.executable.actions).toEqual([]);
 		expect(result.failures[0]?.reasons).toContain("alias_target_mutation");
+	});
+
+	it("uses ordinary baseline-backed fresh reconciliation for a changed case alias", () => {
+		const fixture = caseAliasFixture(
+			freshEntity("case.md", "local"), freshEntity("Case.md", "h", "R"),
+		);
+		fixture.entries[0]!.prevSync = {
+			path: "Case.md", hash: "h", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, syncedAt: 1, remoteIdentityKey: "R",
+		};
+
+		const result = admit(
+			fixture.actions, fixture.evidence, fixture.observations, fixture.scope, fixture.entries,
+		);
+
+		expect(result.executable.actions).toMatchObject([{
+			action: "rename_remote", freshRenameState: "old_path_baseline",
+			oldPath: "Case.md", path: "case.md",
+		}]);
+		expect(result.executable.actions[0]).not.toHaveProperty("protocol");
 	});
 
 	it("defers a native rename whose current destination identity contradicts the report", () => {

@@ -4,7 +4,7 @@ kind: adr
 title: Admission-owned local rename constraint lifecycle
 summary: Persist only Admission-classified local safety constraints and retire exact
   membership only after its successful consequence and checkpoint.
-status: accepted
+status: superseded
 created: '2026-08-31'
 decision_makers:
 - user
@@ -42,7 +42,7 @@ consequences:
 confirmation: Focused Admission, orchestrator, state, and finalization tests prove
   the positive additive witness, fail-closed counterexamples, upsert-before-I/O abort,
   current-scope authority, and consequence-bound post-checkpoint retirement.
-updated: '2026-08-31'
+updated: '2026-09-04'
 ---
 
 # Admission-owned local rename constraint lifecycle
@@ -149,3 +149,8 @@ the durable rename lifecycle membership consumed by the orchestrator and Finaliz
 Focused tests must prove the positive additive witness, current-scope authority over
 stale v6 hints, fail-closed counterexamples, upsert failure with zero executor/tracker
 side effects, and exact post-checkpoint retirement.
+
+
+{% transition from="accepted" to="superseded" date="2026-09-04" %}
+Superseded by ADR 20260903 stateless current-state recovery; case aliases are now cycle-local Admission facts.
+{% /transition %}

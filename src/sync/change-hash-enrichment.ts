@@ -2,7 +2,7 @@ import type { IFileSystem } from "../fs/interface";
 import { AsyncPool } from "../queue/async-queue";
 import { digest, isLocallyComputable, sha256 } from "../utils/hash";
 import { exactEntity, observePath, replaceObservation } from "./path-observation";
-import type { MixedEntity, PathObservation } from "./types";
+import type { IdentityEvidence, MixedEntity, PathObservation } from "./types";
 
 export interface HashEnrichmentResult {
 	candidates: number;
@@ -41,6 +41,46 @@ export async function enrichHashesForInitialMatch(
 		candidates: candidates.length,
 		matches: outcomes.filter(Boolean).length,
 	};
+}
+
+/** Acquire comparable content facts for local case aliases before Admission. */
+export async function enrichHashesForLocalCaseAliases(
+	entries: MixedEntity[],
+	observations: PathObservation[],
+	identityEvidence: readonly IdentityEvidence[],
+	localFs: IFileSystem,
+	remoteFs: IFileSystem,
+): Promise<void> {
+	const byPath = new Map(entries.map((entry) => [entry.path, entry]));
+	const candidates = new Map<string, { source: MixedEntity; target: MixedEntity }>();
+	for (const observation of observations) {
+		if (observation.kind !== "alias" || observation.side !== "local" ||
+			observation.requestedPath.toLowerCase() !== observation.resolvedPath.toLowerCase()) continue;
+		if (identityEvidence.some((item) => item.kind === "rename" &&
+			((item.oldPath === observation.requestedPath && item.newPath === observation.resolvedPath) ||
+				(item.oldPath === observation.resolvedPath && item.newPath === observation.requestedPath)))) continue;
+		const source = byPath.get(observation.requestedPath);
+		const target = byPath.get(observation.resolvedPath);
+		if (!source?.remote || source.local || !target?.local || target.remote ||
+			source.remote.isDirectory || target.local.isDirectory) continue;
+		candidates.set(`${source.path}\0${target.path}`, { source, target });
+	}
+	const pool = new AsyncPool(10);
+	await Promise.all([...candidates.values()].map(({ source, target }) => pool.run(async () => {
+		const [localContent, remoteContent] = await Promise.all([
+			localFs.read(target.path),
+			remoteFs.read(source.path),
+		]);
+		const [localHash, remoteHash] = await Promise.all([
+			sha256(localContent),
+			sha256(remoteContent),
+		]);
+		target.local = { ...target.local!, hash: localHash };
+		source.remote = { ...source.remote!, hash: remoteHash };
+		replaceObservation(observations, observePath("local", source.path, target.local));
+		replaceObservation(observations, observePath("local", target.path, target.local));
+		replaceObservation(observations, observePath("remote", source.path, source.remote));
+	})));
 }
 
 /** Resolve and hash rename destinations that came from hash-free listings. */

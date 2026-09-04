@@ -292,7 +292,7 @@ describe("executePlan", () => {
 	});
 
 	describe("rename_remote", () => {
-		it("does not commit a baseline-free case rename when content races after the move", async () => {
+		it("does not commit an unbaselined case-alias rename when content races after the move", async () => {
 			const ctx = makeCtx();
 			const localFs = ctx.localFs as MockFileSystem;
 			const remoteFs = ctx.remoteFs as MockFileSystem;
@@ -305,11 +305,6 @@ describe("executePlan", () => {
 				{ path: "case.md", action: "push", local },
 			];
 			const evidence = [
-				{
-					kind: "rename" as const, side: "local" as const,
-					oldPath: "Case.md", newPath: "case.md", isFolder: false,
-					authority: "current_state" as const,
-				},
 				{
 					kind: "alias" as const, side: "local" as const,
 					requestedPath: "Case.md", resolvedPath: "case.md",
@@ -325,6 +320,8 @@ describe("executePlan", () => {
 				{ actions }, evidence, observations,
 				{ byEndpoint: new Map([["Case.md", "included"], ["case.md", "included"]]) },
 				"executor-test",
+				undefined,
+				[{ path: "Case.md", remote }, { path: "case.md", local }],
 			)).executable;
 			const rename = remoteFs.rename.bind(remoteFs);
 			vi.spyOn(remoteFs, "rename").mockImplementation(async (oldPath, newPath) => {

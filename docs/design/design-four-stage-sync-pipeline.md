@@ -35,6 +35,11 @@ invariants:
     edges before BatchObservation; Admission and later stages cannot observe or branch
     on them.
   enforcement: test
+- id: INV-005
+  statement: Admission decisions depend only on current component facts and
+    component-local terminal baseline; acquisition temperature, global store state,
+    previous errors, and database version are not decision inputs.
+  enforcement: test
 boundaries:
   provides:
   - id: BOUNDARY-001
@@ -96,11 +101,14 @@ owners: []
 relations: []
 source_paths:
 - src/sync/sync-cycle-planning.ts
+- src/sync/case-alias-admission.ts
+- src/sync/local-rename-admission.ts
 - src/sync/plan-admission.ts
 - src/sync/plan-executor.ts
 - src/sync/sync-cycle-finalization.ts
 summary: Current responsibility and dependency boundaries for the four-stage sync
   pipeline.
+updated: '2026-09-04'
 ---
 
 ## Purpose
@@ -119,6 +127,13 @@ The pipeline is `Observation -> Admission -> Execution -> Commit/finalization`.
 ## Boundaries
 
 `BatchObservation` contains facts, never `SyncPlan` or another action carrier. `AuthorizedSyncPlan` can be created only by Admission. Execution and finalization consume that exact object and cannot call decision helpers.
+
+Observation may enrich facts such as content hashes, aliases, and stable identities,
+but it cannot turn them into rename evidence or action intent. Admission normalizes one
+connected component and decides it exhaustively. COLD/WARM/HOT are acquisition
+strategies only; whole-store record count, schema version, and prior failure are never
+policy inputs. Executor may select compound I/O only from an explicit protocol emitted
+by Admission, never by reverse-engineering absent baselines or action shape.
 
 Configured-scope filtering is the entrance to this boundary. Paths rejected by that
 filter, observations that disclose them, and identity edges with an excluded endpoint

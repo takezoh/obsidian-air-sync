@@ -231,9 +231,9 @@ describe("SyncStateStore", () => {
 		expect(store).not.toHaveProperty("clearRenameDebts");
 	});
 
-	it("schema upgrade drops v7 path identity so an existing case-only rename can cold-start", async () => {
+	it("schema upgrade drops v7 path identity so current facts can be collected normally", async () => {
 		await store.close();
-		const vaultId = `case-recovery-vault-${Math.random()}`;
+		const vaultId = `case-cold-start-vault-${Math.random()}`;
 		await seedVersion7Database(vaultId);
 		store = new SyncStateStore(vaultId);
 

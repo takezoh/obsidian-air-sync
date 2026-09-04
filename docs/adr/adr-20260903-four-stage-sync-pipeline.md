@@ -29,7 +29,7 @@ source_paths:
 - src/sync/sync-cycle-finalization.ts
 summary: Collapse proposal into Admission so the sync pipeline has four top-level
   responsibility owners.
-updated: '2026-09-03'
+updated: '2026-09-04'
 ---
 
 ## Context
@@ -43,6 +43,12 @@ The project owner approved the four-responsibility model on 2026-09-01 and subse
 Adopt exactly four top-level sync responsibilities: Observation acquisition, Admission decision, Effect execution, and Commit/finalization.
 
 Observation shall return facts only. Admission shall be the only production boundary allowed to invoke the path-local action decision helper and shall return the exact `AuthorizedSyncPlan`. Execution shall perform only that plan. Commit/finalization shall publish state only from exact terminal outcomes and shall retain checkpoint/debt on partial or invalidated completion.
+
+Consequently, Observation cannot fabricate rename evidence from a case alias, and
+Execution cannot infer a special protocol from a missing baseline. Admission must
+normalize each recognized component and decide it exhaustively from current
+component-local facts. COLD/WARM/HOT selection, global store population, prior error,
+and schema version are outside the decision boundary.
 
 The orchestrator sequences these owners but is not an additional policy layer. Priority coordination and rename-debt gates remain mechanisms inside these owners, not additional stages. No provider/checkpoint API, persistence schema, phase order, conflict rule, or user-visible outcome changes as part of this decision.
 

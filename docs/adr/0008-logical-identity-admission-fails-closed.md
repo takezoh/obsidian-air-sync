@@ -1,6 +1,6 @@
 # ADR 0008 — Logical-identity admission fails closed before sync-plan execution
 
-**Status:** Accepted · 2026-08-25 · **Revised 2026-09-04** (v8 cold-start discards incompatible v7 path identity; strict baseline-free case-alias proof remains cycle-local)
+**Status:** Accepted · 2026-08-25 · **Revised 2026-09-04** (v8 cold-start discards incompatible v7 path identity; current component facts reconstruct strict case-alias continuity in every acquisition mode)
 **Context area:** `sync/` — change evidence, scope projection, destructive admission, checkpoint lifecycle
 **Related:** [ADR 0001](0001-metadata-cache-is-subordinate-to-commit-last.md), [ADR 0002](0002-backends-verified-by-shared-behaviour-contracts.md), [ADR 0006](0006-remote-rename-detection-is-order-independent.md), [Issue #43](https://github.com/takezoh/obsidian-air-sync/issues/43), [Issue #45](https://github.com/takezoh/obsidian-air-sync/issues/45), [Issue #47](https://github.com/takezoh/obsidian-air-sync/issues/47)
 
@@ -69,17 +69,32 @@ depend on that repair being complete.
    relation, but general rename identity is never guessed. Finalization owns only the
    clean checkpoint commit.
 
-   If v8 invalidation has already removed the baseline, a file-level local case-only
-   relation may be proposed only when the raw local adapter proves old→new aliasing,
-   local new and remote old are exact, remote new is stat-authoritatively absent, the
-   remote identity occurs once, and direct reads prove identical bytes. Observation
-   adds SHA-256 to those snapshot entities. Admission independently requires that same
-   evidence, equal hash and size, included scope, and the ordinary no-baseline
-   `pull(old)+push(new)` proposal before shaping one `rename_remote`. Any missing fact
-   remains fail-closed. Execution re-observes the endpoints and equal bytes immediately
+   In every acquisition mode, an unbaselined file-level local case alias may be canonicalized only
+   when the raw local adapter proves old→new aliasing, local new and remote old are
+   exact, remote new is stat-authoritatively absent, the remote identity occurs once,
+   and direct reads prove identical bytes. Observation records these endpoint,
+   identity, SHA-256, and size facts without inferring a rename. Admission normalizes
+   the component and independently requires equal hash and size plus included scope
+   before shaping one explicit `case_alias_canonicalization`/`rename_remote` protocol.
+   Missing or contradictory facts produce an explicit fail-closed component result and
+   cannot fall through to unrelated path-local rules. Execution re-observes the endpoints and equal bytes immediately
    before the move, then proves old absence, exact new identity, and equal local/remote
    bytes before the normal `SyncRecord` commit. A race remains non-clean and commits no
-   record. The evidence and disposition are discarded after the cycle.
+   record. The same complete component facts yield the same decision in COLD, WARM, or
+   HOT acquisition and with unrelated records. Evidence and disposition are discarded
+   after the cycle.
+
+   A baseline-backed case alias is instead endpoint evidence for the ordinary typed
+   fresh-reconciliation states in rule 4. It may authorize rename/write, conflict, or
+   no action according to current local/baseline/remote content; it does not use the
+   unbaselined equal-content protocol.
+
+   With no baseline, those facts cannot distinguish a historical case-only rename from
+   two independently created same-content files whose names differ only by case. The
+   admitted result is therefore an explicit canonicalization policy, not inferred
+   historical identity: when the local adapter proves both requested spellings are one
+   physical local file, the local physical spelling wins and the unique remote object
+   is renamed without changing its stable identity.
 
 7. SyncState schema version 7 cold-starts the incompatible operation-intent shape.
    Version 8 cold-starts v7 path identity after the metadata-cache checkpoint defect:
@@ -98,9 +113,9 @@ depend on that repair being complete.
 - Local and remote rename shaping helpers are private to Admission. There is no
   standalone whole-plan optimizer or second component build; a failed native
   projection fails unless another complete component outcome is independently proved.
-  Case-alias replay reconstruction is limited to the fully observed unchanged
-  baseline state or the strict baseline-free proof in rule 6; it is never inferred
-  from spelling or content alone.
+  Case-alias canonicalization is limited to the fully observed component proof in rule
+  6; it is never inferred from spelling or content alone, nor selected by acquisition
+  temperature or whole-store state.
 - Issue #46 can be fixed without changing this boundary. Better cache causality should
   reduce ambiguity, while this admission policy remains the safety net.
 

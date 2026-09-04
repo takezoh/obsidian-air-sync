@@ -71,7 +71,7 @@ source_paths:
 - src/sync/sync-cycle-finalization.ts
 summary: Add a narrow detached priority pull to the PR54 Admission pipeline without
   runtime replanning.
-updated: '2026-09-01'
+updated: '2026-09-04'
 ---
 
 ## Summary
@@ -79,3 +79,7 @@ updated: '2026-09-01'
 PR #54 の Admission-centered pipeline を正本として保ち、file-open を detached observation と exact singleton pull の置換に限定した priority operation として統合する。通常 action の再 Admission、runtime reroute、epoch/receipt は導入しない。
 
 ## Closure Notes
+
+The 2026-09-04 case-alias protocol does not change priority ownership: only an ordinary
+Admission-marked singleton pull can become `priorityPullAction`; component-level rename
+and canonicalization actions remain in the normal authorized batch.

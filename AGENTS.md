@@ -71,12 +71,18 @@ central `tests/fs/remote-backend-contracts.test.ts` unit composition root.
   Any intentional new cursor/`SyncStateStore` writer, persistent-store owner, or
   orchestrator field requires the guard fixture plus ADR 0001 and enforcement-document
   updates in the same change.
-- **Cycle evidence never becomes another state owner.** Observation may derive an
-  immutable current-cycle identity candidate; Admission alone may authorize its action.
+- **Cycle evidence never becomes another state owner.** Observation records only
+  current facts; Admission alone may normalize an identity candidate and authorize its action.
   Never persist evidence, Admission dispositions/failure reasons (including
   `identity_postcondition_unproven`), pending work, or recovery instructions. Do not add
   another in-memory correctness owner: keep only bounded execution bookkeeping that is
   discarded with the cycle.
+- **Re-evaluate current facts; do not add stopped-state recovery branches.** COLD,
+  WARM, and HOT are acquisition strategies only. They must produce the same Admission
+  decision for the same complete component facts. A decision may depend on that
+  component's current endpoints and committed `SyncRecord`, never on a prior error,
+  Admission failure, database version, global record count, or recovery marker. A
+  schema cold-start uses the same rules as any vault with those current facts.
 - No migration code — on IndexedDB schema changes, cold-start (drop all stores and
   recreate). Settings schema changes use sensible defaults for missing fields via
   `Object.assign({}, DEFAULT_SETTINGS, stored)`.

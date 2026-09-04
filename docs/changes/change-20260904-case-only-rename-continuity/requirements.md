@@ -12,10 +12,10 @@ functional_requirements:
   statement: Remove touchedPaths and pendingFullPersist without replacing them with affected-path, pending-full, receipt, or recovery correctness state.
   priority: must
 - id: FR-CCR-04
-  statement: On first open by the repair, cold-start metadata cache version 3 as version 4 and SyncState version 7 as version 8 so existing affected vaults rebuild from current facts.
+  statement: On first open by the repair, cold-start metadata cache version 3 as version 4 and SyncState version 7 as version 8; do not add another reset to compensate for a prior failed attempt.
   priority: must
 - id: FR-CCR-05
-  statement: Recover a baseline-free local case-only rename only when current observations prove one exact physical local target, one exact remote source identity, an absent remote target, and equal content; Admission must revalidate and authorize it without persisted state.
+  statement: For every cycle, normalize a local case alias from current component facts only when they prove one exact physical local target, one unique exact remote source identity, an absent remote target, included scope, and equal content; Admission must decide it exhaustively without persisted intermediate state.
   priority: must
 - id: NFR-CCR-01
   statement: Close the authoritative owner set and reviewed SyncOrchestrator state-field inventory through ADR, AGENTS, code-enforcement, and a mechanical source guard.
@@ -62,31 +62,43 @@ receipt, recovery debt, or relation state. If Admission, execution, or checkpoin
 persistence prevents a clean cycle, the durable cursor and cache projection shall stay
 at their prior clean boundary; successful file `SyncRecord`s may remain committed.
 
-### FR-CCR-04 — Versioned COLD recovery
+### FR-CCR-04 — One versioned cold-start
 
 When the repaired release first opens metadata cache version 3, the existing IndexedDB
 upgrade policy shall drop and recreate that derived cache as version 4. When it opens
 SyncState version 7, the same project-wide schema policy shall drop and recreate its
-terminal record and merge-base stores as version 8. The following cycle shall use the
-ordinary no-checkpoint, no-baseline COLD path to rebuild from current local and remote
-facts; no legacy migration or persisted recovery state shall run. If the vault has
-already opened v8, the absent baseline shall not itself prevent recovery covered by
-FR-CCR-05.
+terminal record and merge-base stores as version 8. The following cycle uses ordinary
+collection and Admission to rebuild from current local and remote facts. A build that
+already created version 8 shall not be reset again: correctness must not depend on
+which earlier attempt failed, on a zero-record store, or on a recovery marker.
 
-### FR-CCR-05 — Strict cycle-local recovery after COLD invalidation
+### FR-CCR-05 — Current-fact case-alias canonicalization
 
 During WARM/COLD collection, `LocalFs.list()` shall resolve only case-fold-colliding
 vault-index spellings against the raw adapter and discard spellings that resolve to the
 same physical path; genuinely distinct case-sensitive paths shall remain. `stat()` shall
 return adapter-resolved actual casing as authoritative endpoint evidence.
 
-With no `SyncRecord`, Observation may propose a local case-only rename only when the old
-local spelling aliases exactly to the new spelling, the new local path and old remote
-path are exact, the new remote path is stat-authoritatively absent, the old remote
-identity occurs once, and direct reads prove equal bytes. Admission shall independently
-require the corresponding no-baseline `pull(old)+push(new)` shape, equal SHA-256 and
-size, included scope, and the same endpoint/identity facts before authorizing one
-`rename_remote`. Otherwise it shall retain the ordinary fail-closed behavior.
+Observation shall record only current alias, exact endpoint, absence, identity, hash,
+and size facts. It shall not infer rename identity or authorize an action. Admission
+shall form one typed component from those facts and any component-local `SyncRecord`.
+When the old local spelling resolves to exactly the new physical spelling, the local
+new path and remote old path are exact, the remote new path is stat-authoritatively
+absent, the remote old identity is unique, both paths are included by scope, and direct
+reads prove equal SHA-256 and size, Admission shall explicitly choose the local spelling
+as canonical and authorize one `rename_remote` preserving the remote stable identity.
+
+That equal-content canonicalization protocol is the no-baseline case. When the
+component has a terminal baseline, the alias is only endpoint evidence for the ordinary
+typed fresh-reconciliation table: local-only change may rename/write, both-changed may
+conflict, and already-converged content may settle. Admission still owns the one
+exhaustive result; Execution does not reinterpret the alias.
+
+This decision is independent of COLD/WARM/HOT acquisition, global `SyncRecord` count,
+database version, previous failure reason, and prior Admission result. With the same
+complete component facts, all acquisition temperatures produce the same decision. A
+recognized alias component with incomplete or contradictory proof must produce an
+explicit fail-closed decision; it must not fall through to unrelated path-local rules.
 
 Immediately before the effect, Execution shall re-observe exact local new, exact remote
 old identity, vacant remote new, and equal direct-read bytes. After the move it shall
@@ -117,7 +129,8 @@ green. The same guard shall prevent reintroduction of `touchedPaths`,
 - Treating “checkpoint” as state distinct from the cursor fails FR-CCR-01.
 - Restoring a stale pre-rename path after a clean restart fails FR-CCR-02.
 - Replacing removed bookkeeping with another pending write-set fails FR-CCR-03.
-- Retaining v7 path identity, migrating it, or adding recovery-specific state fails FR-CCR-04.
-- Inferring a general rename, accepting unequal/unhashed content, or persisting the
-  candidate/result under any name fails FR-CCR-05.
+- Adding a v8-to-v9 reset, migrating path identity, or adding recovery-specific state fails FR-CCR-04.
+- Having Observation infer a rename, accepting unequal/unhashed content, persisting the
+  candidate/result, conditioning it on acquisition temperature or whole-store state,
+  or allowing a recognized alias component to fall through fails FR-CCR-05.
 - Adding an unreviewed authority owner or `SyncOrchestrator` field fails NFR-CCR-01.

@@ -67,7 +67,7 @@ export interface RenameEvidence {
 	oldPath: string;
 	newPath: string;
 	isFolder: boolean;
-	authority: "reported" | "current_state";
+	authority: "reported";
 	identityKey?: string;
 }
 

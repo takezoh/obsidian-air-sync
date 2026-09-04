@@ -36,7 +36,7 @@ requirements:
   - id: FR-CCR-05
     type: compatibility
     priority: must
-    statement: Recover only a baseline-free file-level local case rename proven by exact current endpoints, unique remote identity, stat-absent remote target, and equal content, with final authorization in Admission and no persisted state.
+    statement: In every cycle, normalize a file-level local case alias from exact current component facts and decide it exhaustively in Admission, independent of acquisition temperature, whole-store state, and prior failures.
   - id: NFR-CCR-01
     type: maintainability
     priority: must
@@ -69,17 +69,22 @@ components:
       - docs/code-enforcement.md
       - src/sync/orchestrator.ts
       - src/sync/state-boundary.test.ts
-  - id: component-current-case-recovery
+  - id: component-case-alias-canonicalization
     kind: existing
-    contract_refs: [contract-current-case-recovery]
+    contract_refs: [contract-case-alias-canonicalization]
     paths:
       - src/fs/local/index.ts
       - src/fs/local/dot-path-adapter.ts
       - src/sync/change-detector.ts
+      - src/sync/change-hash-enrichment.ts
+      - src/sync/case-alias-admission.ts
+      - src/sync/case-alias-planning.ts
       - src/sync/current-state-case-rename.ts
+      - src/sync/plan-admission-graph.ts
       - src/sync/local-rename-admission.ts
       - src/sync/plan-admission.ts
       - src/sync/plan-executor.ts
+      - src/sync/types.ts
 
 contracts:
   - id: contract-complete-cache-checkpoint
@@ -146,7 +151,7 @@ contracts:
     dimension: one-time incompatible path-identity reset
     owner: component-file-commit
     requirement_refs: [FR-CCR-04, FR-CCR-05]
-    unit_refs: ["Unit 2 — Versioned persistence cold-start", "Unit 3 — Current case-only recovery", "Unit 4 — State ownership enforcement and integration"]
+    unit_refs: ["Unit 2 — Versioned persistence cold-start", "Unit 3 — Current-fact case-alias canonicalization", "Unit 4 — State ownership enforcement and integration"]
     adr_refs: [adr-0001-commit-last-cache, adr-0008-fail-closed-identity]
     verification:
       - id: verify-sync-record-reset
@@ -157,13 +162,13 @@ contracts:
         command: npm test -- --run src/sync/orchestrator.test.ts
     partition:
       outcomes: [determinate, inconclusive]
-      default_policy: Drop and recreate v7 terminal state; recover a case-only alias only through the strict current-fact contract, otherwise remain fail-closed.
+      default_policy: Drop and recreate v7 terminal state once; all later decisions use the same current-fact Admission rule regardless of store population.
     discretion: []
-  - id: contract-current-case-recovery
-    dimension: baseline-free case-only convergence from complete current proof
-    owner: component-current-case-recovery
+  - id: contract-case-alias-canonicalization
+    dimension: current-fact case-alias convergence in every acquisition mode
+    owner: component-case-alias-canonicalization
     requirement_refs: [FR-CCR-04, FR-CCR-05]
-    unit_refs: ["Unit 3 — Current case-only recovery", "Unit 4 — State ownership enforcement and integration"]
+    unit_refs: ["Unit 3 — Current-fact case-alias canonicalization", "Unit 4 — State ownership enforcement and integration"]
     adr_refs: [adr-0008-fail-closed-identity]
     verification:
       - id: verify-local-actual-casing
@@ -275,16 +280,20 @@ units:
     tool_guidance: Seed both databases independently, open the repaired versions, and assert both reset without migration or cross-store coordination.
     task_boundaries: No migration, dual-store transaction, persisted relation, recovery state, or first-run status.
     decision_closure_reason: The reset target, retained authority, and ordinary recovery path are fixed with no implementation discretion.
-  - title: "Unit 3 — Current case-only recovery"
-    chunk: current-case-recovery
-    contract_refs: [contract-current-case-recovery]
+  - title: "Unit 3 — Current-fact case-alias canonicalization"
+    chunk: case-alias-canonicalization
+    contract_refs: [contract-case-alias-canonicalization]
     files:
       - src/fs/local/index.ts
       - src/fs/local/dot-path-adapter.ts
       - src/fs/local/local-fs.test.ts
       - src/__mocks__/obsidian.ts
       - src/sync/change-detector.ts
+      - src/sync/change-hash-enrichment.ts
+      - src/sync/case-alias-admission.ts
+      - src/sync/case-alias-planning.ts
       - src/sync/current-state-case-rename.ts
+      - src/sync/plan-admission-graph.ts
       - src/sync/change-detector.test.ts
       - src/sync/local-rename-admission.ts
       - src/sync/plan-admission.ts
@@ -292,17 +301,19 @@ units:
       - src/sync/plan-executor.ts
       - src/sync/plan-executor.test.ts
       - src/sync/orchestrator.test.ts
+      - src/sync/types.ts
     depends_on: ["Unit 2 — Versioned persistence cold-start"]
     acceptance:
       - Stale case-colliding vault-index aliases resolve to one adapter-proven physical spelling while genuine case-sensitive siblings remain.
-      - Equal-byte, unique-identity current facts emit one cycle-local case-only candidate; unequal bytes emit none.
-      - Admission independently revalidates exact endpoints, absent remote target, identity, scope, hash, size, and no-baseline proposal before one rename_remote.
+      - Observation emits only endpoint, alias, identity, absence, hash, and size facts; it emits no rename identity or action.
+      - Admission normalizes exact endpoints, absent remote target, identity, scope, hash, size, and component-local baseline before one explicit case-alias protocol.
+      - The same complete facts yield the same decision in COLD, WARM, and HOT acquisition and with unrelated SyncRecords.
       - Executor re-observes before the effect and requires terminal old-absence, new-identity, and equal-byte proof before SyncRecord commit.
       - The candidate and decision add no persistent store, SyncRecord field, status, or Orchestrator field.
-    objective: Restore convergence for an already-reset vault from strict current proof without creating another state owner.
+    objective: Canonicalize case aliases from current component facts without creating another state owner or recovery branch.
     output_format: Narrow TypeScript observation/admission changes and focused Vitest regressions.
     tool_guidance: Prove physical casing at LocalFs, acquire candidate facts in Observation, authorize only in Admission, and keep counterexamples fail-closed.
-    task_boundaries: No general rename inference, folder inference, status/action vocabulary extension, persistent evidence, or executor-side action invention.
+    task_boundaries: No Observation-side rename inference, folder inference, persisted status, persistent evidence, or executor-side action invention.
     decision_closure_reason: The exact recoverable shape, authority boundary, negative cases, and state prohibition are fixed.
   - title: "Unit 4 — State ownership enforcement and integration"
     chunk: state-boundary-enforcement
@@ -313,7 +324,7 @@ units:
       - docs/code-enforcement.md
       - src/sync/orchestrator.ts
       - src/sync/state-boundary.test.ts
-    depends_on: ["Unit 1 — Complete final cache snapshot", "Unit 2 — Versioned persistence cold-start", "Unit 3 — Current case-only recovery"]
+    depends_on: ["Unit 1 — Complete final cache snapshot", "Unit 2 — Versioned persistence cold-start", "Unit 3 — Current-fact case-alias canonicalization"]
     acceptance:
       - All three governing documents name exactly cursor and SyncRecord as authorities and checkpoint as an operation.
       - The source guard accepts only the reviewed SyncOrchestrator instance fields and rejects an added field.
@@ -336,7 +347,7 @@ acceptance:
     criteria: Metadata cache v3 is recreated as v4 and SyncState v7 is recreated as empty v8 state.
     requirement_refs: [FR-CCR-04]
   - id: AC-CCR-04
-    criteria: A baseline-free case alias converges only from complete current proof; incomplete or conflicting proof remains fail-closed and no result is persisted.
+    criteria: A case alias converges from complete current component proof in COLD, WARM, and HOT acquisition; incomplete or conflicting proof remains fail-closed and no result is persisted.
     requirement_refs: [FR-CCR-05]
   - id: AC-CCR-05
     criteria: Documentation and the source contract reject a third authority, a new SyncOrchestrator field, or restored pending cache state.
@@ -356,9 +367,9 @@ dispositions:
     adr_refs: [adr-0001-commit-last-cache]
     contract_refs: [contract-metadata-cache-cold-start, contract-syncstate-cold-start]
   - decision_input_ref: decision-input-admission-scope
-    disposition: Keep authorization in Admission; accept only the exact baseline-free case-only proof, retain existing fail-closed reasons otherwise, and persist neither evidence nor result.
+    disposition: Keep normalization and authorization in Admission; accept only exact current component proof independent of acquisition temperature or whole-store state, reject recognized incomplete aliases explicitly, and persist neither evidence nor result.
     adr_refs: [adr-0008-fail-closed-identity]
-    contract_refs: [contract-syncstate-cold-start, contract-current-case-recovery, contract-state-boundary-enforcement]
+    contract_refs: [contract-syncstate-cold-start, contract-case-alias-canonicalization, contract-state-boundary-enforcement]
   - decision_input_ref: decision-input-provider-coverage
     disposition: Verify the shared complete-snapshot behavior through the central Google Drive, Dropbox, and OneDrive contract matrix plus the focused Google restart witness.
     adr_refs: [adr-0002-shared-backends]

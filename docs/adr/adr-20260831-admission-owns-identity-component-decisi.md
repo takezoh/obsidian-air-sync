@@ -35,7 +35,7 @@ consequences:
 confirmation: Lint keeps Admission internals pure and private; focused Admission,
   convergence, crash-safety, and provider contract tests plus the full project gate
   verify the boundary.
-updated: '2026-09-01'
+updated: '2026-09-04'
 ---
 
 # Admission owns identity-component decision
@@ -78,6 +78,10 @@ required.
 - Component state is never persisted. Construction is deterministic, uses linear
   auxiliary memory, and performs one sort plus bounded union/find and prefix-index
   work; there is no per-outcome rebuild or provider branch.
+- A local case alias is represented by current endpoint/alias/identity/content facts,
+  not by Observation-inferred rename evidence. Admission normalizes the component and
+  alone chooses the explicit canonicalization action or a fail-closed result. The
+  decision cannot branch on COLD/WARM/HOT, whole-store state, or a prior failure.
 - `AuthorizedSyncPlan`, executor phases, SyncState v6 `RenameDebt`, provider
   interfaces, and checkpoint-before-retirement remain unchanged.
 

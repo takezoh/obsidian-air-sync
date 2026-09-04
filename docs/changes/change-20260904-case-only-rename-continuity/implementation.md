@@ -28,19 +28,19 @@ recreation exactly as represented in the final live snapshot. Remove speculative
 Admission/self-echo RED tests introduced for this incident because this unit fixes the
 proven persistence cause without changing Admission.
 
-### Unit 2 — Cold-start incompatible persisted sync state
+### Unit 2 — Cold-start incompatible persisted sync state once
 
 Bump `METADATA_CACHE_VERSION` from 3 to 4 and prove that the existing upgrade handler
-drops and recreates its stores. Bump SyncState from 7 to 8 so the same cold-start policy
-drops old path-keyed `SyncRecord` and sync-content rows which can otherwise keep an
-already-converged old/new casing identity component alive. Do not add migration,
-dual-store coordination, legacy record inspection, or first-COLD special behavior.
+drops and recreates its stores. Keep the already-established SyncState 7-to-8
+cold-start; do not add a version 9 reset to recover from a prior implementation attempt.
+Do not add migration, dual-store coordination, legacy record inspection, or first-COLD
+special behavior.
 
 Verify that opening the new metadata version has no checkpoint, performs the ordinary
-provider full scan, and that opening SyncState v7 as v8 removes the legacy casing
-identity. Then preserve recovery for vaults which already opened v8 through Unit 3.
+provider full scan, and that opening SyncState v7 as v8 removes incompatible old path
+identity. Unit 3 must work for empty, partial, and established stores alike.
 
-### Unit 3 — Reconcile stale local casing from current facts
+### Unit 3 — Canonicalize case aliases from current component facts
 
 Make `DotPathAdapter` resolve actual casing one segment at a time through raw-adapter
 directory listings. In `LocalFs.list()`, pay that I/O only for case-fold collisions and
@@ -48,19 +48,23 @@ discard an indexed spelling only when multiple requested spellings resolve to on
 actual path. Route `LocalFs.stat()` through this authoritative resolution. Preserve
 both names when the adapter proves a genuine case-sensitive collision.
 
-In COLD/WARM Observation, recognize only the baseline-free local case-only shape where
-the old local stat aliases the exact new local path, remote old is exact with one
-identity, remote new is stat-absent, and direct content reads are byte-identical. Hash
-those two entities and emit ordinary `authority: current_state` rename evidence.
+Observation records the local old-to-new alias, exact remote old endpoint, absent remote
+new endpoint, unique remote identity, and direct content hashes. It must not emit rename
+evidence or inspect acquisition temperature, global record count, prior errors, or
+database versions.
 
-Keep authorization in Admission. Revalidate the complete observation, identity,
-scope, content hash/size, and no-baseline `pull(old)+push(new)` proposal before shaping
-one `rename_remote`. Any missing or contradictory fact leaves the component on its
-existing fail-closed path. For this baseline-free action, have Executor revalidate the
-same endpoint/content preconditions immediately before the move and prove old absence,
-new identity, and equal local/remote bytes after it. Commit the normal `SyncRecord` only
-after that terminal proof; a race is blocked and keeps the cycle non-clean. Add no
-status or persistent/cross-cycle state.
+Admission is the sole decision owner. It normalizes the component's current facts and
+component-local baseline, then exhaustively chooses execute, settled, or reject. A
+complete unbaselined alias becomes one explicitly tagged cycle-local
+`case_alias_canonicalization` action whose effect is `rename_remote`; incomplete or
+contradictory alias proof rejects instead of falling through to unrelated path-local
+rules. The tag is an action protocol, not a persisted status or intermediate state.
+
+Executor uses that explicit protocol to revalidate endpoint/content preconditions
+immediately before the move and to prove old absence, new identity, and equal
+local/remote bytes afterward. Commit the normal `SyncRecord` only after terminal proof;
+a race blocks the cycle. The same complete component facts must produce the same
+Admission result in COLD, WARM, and HOT cycles and in the presence of unrelated records.
 
 ### Unit 4 — Pin the state boundary
 
@@ -91,5 +95,7 @@ Then run all focused tests and the complete repository gate.
 
 Do not add a second checkpoint, per-operation cache persistence, general rename
 inference, folder identity aggregation, journal, receipt, recovery status, or persistent
-relation. Do not weaken Admission or extend action/status vocabularies. The only new
-identity path is the strict file-level case-only proof in Unit 3.
+relation. Do not weaken Admission or extend persisted status vocabularies. The only new
+protocol is the strict file-level case-alias canonicalization action derived by
+Admission from current component facts; it must never key off acquisition temperature,
+whole-store emptiness, a past error, or a stopped status.
