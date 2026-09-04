@@ -424,6 +424,39 @@ describe("SyncOrchestrator", () => {
 			await restarted.close();
 		});
 
+		it("converges a baseline-free case-only alias when current contents and remote identity prove it", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			addFile(localFs, "case.md", "same", 1000);
+			confirmMockPath(localFs, "case.md");
+			const remote = addFile(remoteFs, "Case.md", "same", 1000);
+			remote.identityKey = "R";
+			confirmMockPath(remoteFs, "Case.md");
+			const exactLocalStat = localFs.stat.bind(localFs);
+			localFs.stat = async (path) => path === "Case.md"
+				? { ...(await exactLocalStat("case.md"))!, path: "case.md", pathAuthority: "actual_resolved" }
+				: exactLocalStat(path);
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`, lastSyncedIdentity: "test:root",
+			});
+			const deps = createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+				localTracker: new LocalChangeTracker(),
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			const renameRemote = vi.spyOn(remoteFs, "rename");
+			const writeRemote = vi.spyOn(remoteFs, "write");
+
+			await orchestrator.runSync();
+
+			expect(renameRemote).toHaveBeenCalledWith("Case.md", "case.md");
+			expect(writeRemote).not.toHaveBeenCalled();
+			expect(remoteFs.files.has("Case.md")).toBe(false);
+			expect(remoteFs.files.has("case.md")).toBe(true);
+			expect(deps.onStatusChange).toHaveBeenLastCalledWith("idle");
+			await orchestrator.close();
+		});
+
 		it("preserves third-path R and destination Y once through runSync", async () => {
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();

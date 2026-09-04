@@ -20,6 +20,7 @@ describe("DotPathAdapter", () => {
 	describe("stat", () => {
 		it("resolves the actual spelling from the parent listing", async () => {
 			const { vault, adapter } = createAdapter();
+			await vault.adapter.mkdir(".airsync");
 			await vault.adapter.writeBinary(".airsync/a.md", new Uint8Array([1]).buffer);
 
 			const entity = await adapter.stat(".airsync/a.md");

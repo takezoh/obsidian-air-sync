@@ -493,6 +493,64 @@ describe("admitDestructivePlan", () => {
 		expect(result.failures).toEqual([]);
 	});
 
+	it("shapes a baseline-free case-only pull and push only from complete current facts", () => {
+		const local = entity("case.md");
+		const remote = entity("Case.md", "R");
+		const result = admit(
+			[
+				{ path: "Case.md", action: "pull", remote },
+				{ path: "case.md", action: "push", local },
+			],
+			[
+				{
+					kind: "rename", side: "local", oldPath: "Case.md", newPath: "case.md",
+					isFolder: false, authority: "current_state",
+				},
+				{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md" },
+			],
+			[
+				{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md", entity: local },
+				{ kind: "exact", side: "local", requestedPath: "case.md", entity: local },
+				{ kind: "exact", side: "remote", requestedPath: "Case.md", entity: remote },
+				{ kind: "absent", side: "remote", requestedPath: "case.md", authority: "stat" },
+			],
+			projection({ "Case.md": "included", "case.md": "included" }),
+		);
+
+		expect(result.executable.actions).toEqual([{
+			action: "rename_remote", oldPath: "Case.md", path: "case.md", local, remote,
+		}]);
+		expect(result.failures).toEqual([]);
+	});
+
+	it("rejects a baseline-free case-only candidate whose contents are not proven equal", () => {
+		const local = freshEntity("case.md", "local");
+		const remote = freshEntity("Case.md", "remote", "R");
+		const result = admit(
+			[
+				{ path: "Case.md", action: "pull", remote },
+				{ path: "case.md", action: "push", local },
+			],
+			[
+				{
+					kind: "rename", side: "local", oldPath: "Case.md", newPath: "case.md",
+					isFolder: false, authority: "current_state",
+				},
+				{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md" },
+			],
+			[
+				{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md", entity: local },
+				{ kind: "exact", side: "local", requestedPath: "case.md", entity: local },
+				{ kind: "exact", side: "remote", requestedPath: "Case.md", entity: remote },
+				{ kind: "absent", side: "remote", requestedPath: "case.md", authority: "stat" },
+			],
+			projection({ "Case.md": "included", "case.md": "included" }),
+		);
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.failures[0]?.reasons).toContain("alias_target_mutation");
+	});
+
 	it("defers a native rename whose current destination identity contradicts the report", () => {
 		const action: SyncAction = {
 			path: "B.md", oldPath: "A.md", action: "rename_local",

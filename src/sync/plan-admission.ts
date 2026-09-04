@@ -9,6 +9,7 @@ import {
 import {
 	classifyNonBindingLocalRenames,
 	normalizeFreshLocalRename,
+	shapeBaselineFreeCaseRename,
 	type DeterminateNormalizedRenameState,
 	type EvidenceContradictionReason,
 	type EvidenceUnknownReason,
@@ -205,15 +206,19 @@ export function admitDestructivePlan(
 			}
 			continue;
 		}
+		const baselineFreeCaseRename = shapeBaselineFreeCaseRename(component, snapshot.scope);
+		const proposalComponent: AdmissionComponent = baselineFreeCaseRename
+			? { ...component, actions: [baselineFreeCaseRename] }
+			: component;
 		const nonBindingCandidates = classifyNonBindingLocalRenames(
-			[component], snapshot.baselinePaths, snapshot.scope,
+			[proposalComponent], snapshot.baselinePaths, snapshot.scope,
 		);
-		const effectiveEvidence = component.evidence.filter((item) =>
+		const effectiveEvidence = proposalComponent.evidence.filter((item) =>
 			item.kind !== "rename" || item.side !== "local" ||
 			!nonBindingCandidates.has(renameEvidenceKey(item)));
 		const decidedComponent: AdmissionComponent = {
-			...component,
-			actions: shapeIdentityComponentActions(component.actions, effectiveEvidence),
+			...proposalComponent,
+			actions: shapeIdentityComponentActions(proposalComponent.actions, effectiveEvidence),
 			evidence: effectiveEvidence,
 		};
 		const shared = {

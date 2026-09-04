@@ -15,7 +15,7 @@ functional_requirements:
   statement: On first open by the repair, cold-start metadata cache version 3 as version 4 and SyncState version 7 as version 8 so existing affected vaults rebuild from current facts.
   priority: must
 - id: FR-CCR-05
-  statement: Preserve identity_postcondition_unproven solely as an existing cycle-local Admission failure reason, without changing identity decisions or persisting the reason.
+  statement: Recover a baseline-free local case-only rename only when current observations prove one exact physical local target, one exact remote source identity, an absent remote target, and equal content; Admission must revalidate and authorize it without persisted state.
   priority: must
 - id: NFR-CCR-01
   statement: Close the authoritative owner set and reviewed SyncOrchestrator state-field inventory through ADR, AGENTS, code-enforcement, and a mechanical source guard.
@@ -69,15 +69,35 @@ upgrade policy shall drop and recreate that derived cache as version 4. When it 
 SyncState version 7, the same project-wide schema policy shall drop and recreate its
 terminal record and merge-base stores as version 8. The following cycle shall use the
 ordinary no-checkpoint, no-baseline COLD path to rebuild from current local and remote
-facts; no legacy migration, persisted recovery state, or inferred rename shall run.
+facts; no legacy migration or persisted recovery state shall run. If the vault has
+already opened v8, the absent baseline shall not itself prevent recovery covered by
+FR-CCR-05.
 
-### FR-CCR-05 — Existing fail-closed decision remains cycle-local
+### FR-CCR-05 — Strict cycle-local recovery after COLD invalidation
 
-`identity_postcondition_unproven` shall remain an existing cycle-local Admission failure
-reason. It shall not be persisted as status, intent, or recovery instruction. This
-change shall add no Admission evidence, graph edge, identity rule, action disposition,
-or COLD relation reconstruction. Any unrelated identity defect requires its own proven
-regression and change.
+During WARM/COLD collection, `LocalFs.list()` shall resolve only case-fold-colliding
+vault-index spellings against the raw adapter and discard spellings that resolve to the
+same physical path; genuinely distinct case-sensitive paths shall remain. `stat()` shall
+return adapter-resolved actual casing as authoritative endpoint evidence.
+
+With no `SyncRecord`, Observation may propose a local case-only rename only when the old
+local spelling aliases exactly to the new spelling, the new local path and old remote
+path are exact, the new remote path is stat-authoritatively absent, the old remote
+identity occurs once, and direct reads prove equal bytes. Admission shall independently
+require the corresponding no-baseline `pull(old)+push(new)` shape, equal SHA-256 and
+size, included scope, and the same endpoint/identity facts before authorizing one
+`rename_remote`. Otherwise it shall retain the ordinary fail-closed behavior.
+
+Immediately before the effect, Execution shall re-observe exact local new, exact remote
+old identity, vacant remote new, and equal direct-read bytes. After the move it shall
+prove remote old absent, local/remote new exact, expected remote identity, and equal
+bytes/size. A mismatch shall make the cycle non-clean and shall not commit a
+`SyncRecord`.
+
+The evidence and decision are immutable cycle snapshots and shall be discarded after
+the cycle. `identity_postcondition_unproven` remains an existing cycle-local failure
+reason, not a persisted status, intent, or recovery instruction. No new status,
+`SyncRecord` field, store, Orchestrator field, or cross-cycle relation is permitted.
 
 ### NFR-CCR-01 — Mechanically closed state boundary
 
@@ -98,5 +118,6 @@ green. The same guard shall prevent reintroduction of `touchedPaths`,
 - Restoring a stale pre-rename path after a clean restart fails FR-CCR-02.
 - Replacing removed bookkeeping with another pending write-set fails FR-CCR-03.
 - Retaining v7 path identity, migrating it, or adding recovery-specific state fails FR-CCR-04.
-- Adding or persisting an identity result, even under a different name, fails FR-CCR-05.
+- Inferring a general rename, accepting unequal/unhashed content, or persisting the
+  candidate/result under any name fails FR-CCR-05.
 - Adding an unreviewed authority owner or `SyncOrchestrator` field fails NFR-CCR-01.

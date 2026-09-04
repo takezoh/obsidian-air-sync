@@ -68,13 +68,17 @@ created by the defective checkpoint projection. This stores no recovery instruct
 the next ordinary no-checkpoint, no-baseline COLD cycle observes current endpoints and
 re-establishes terminal facts.
 
-A case-only relation may be reconstructed without history only from an unambiguous
-case-folded baseline/current pair. The local path must be the actual resolved spelling;
-remote old must retain expected stable identity and baseline version/content; remote new
-must be vacant or the same-id casing alias; provider canonical/display spelling must
-distinguish exact old/new/temp. For folders, current-cycle tracker evidence may be
-coalesced from managed descendants; excluded descendants never enter the evidence
-surface.
+A case-only relation may be reconstructed without operation history from an
+unambiguous baseline/current pair. After a schema cold-start has removed even that
+baseline, the file-only exception requires the raw local adapter to prove old→new
+aliasing, exact local new and remote old, stat-authoritative remote-new absence, one
+remote identity occurrence, and byte-identical direct reads. Observation publishes
+only a cycle-local candidate and SHA-256 entities; Admission revalidates the complete
+facts, equal size, included scope, and no-baseline `pull(old)+push(new)` shape before
+authorizing `rename_remote`. This is not general content-based identity inference and
+persists nothing. Provider canonical/display spelling must still distinguish exact
+old/new/temp. For folders, current-cycle tracker evidence may be coalesced from managed
+descendants; excluded descendants never enter the evidence surface.
 
 Dropbox retains its non-atomic `old -> temp -> new` implementation only inside one
 provider invocation. On a returned second-leg error it re-observes old/new/temp by stable

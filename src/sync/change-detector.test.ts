@@ -685,6 +685,39 @@ describe("collectChanges — temperature selection", () => {
 			});
 		});
 
+		it("infers a baseline-free case-only rename from one exact local alias and equal content", async () => {
+			addFile(localFs, "case.md", "same", 1000);
+			const remote = addFile(remoteFs, "Case.md", "same", 1000);
+			remote.identityKey = "R";
+			const exactLocalStat = localFs.stat.bind(localFs);
+			localFs.stat = async (path) => path === "Case.md"
+				? { ...(await exactLocalStat("case.md"))!, path: "case.md", pathAuthority: "actual_resolved" }
+				: exactLocalStat(path);
+
+			const result = await collectChanges(makeDeps(), { forceFullScan: true });
+
+			expect(result.identityEvidence).toContainEqual({
+				kind: "rename", side: "local", oldPath: "Case.md", newPath: "case.md",
+				isFolder: false, authority: "current_state",
+			});
+		});
+
+		it("does not infer a baseline-free case-only rename when contents differ", async () => {
+			addFile(localFs, "case.md", "local", 1000);
+			const remote = addFile(remoteFs, "Case.md", "remote", 1000);
+			remote.identityKey = "R";
+			const exactLocalStat = localFs.stat.bind(localFs);
+			localFs.stat = async (path) => path === "Case.md"
+				? { ...(await exactLocalStat("case.md"))!, path: "case.md", pathAuthority: "actual_resolved" }
+				: exactLocalStat(path);
+
+			const result = await collectChanges(makeDeps(), { forceFullScan: true });
+
+			expect(result.identityEvidence).not.toContainEqual(expect.objectContaining({
+				kind: "rename", side: "local", oldPath: "Case.md", newPath: "case.md",
+			}));
+		});
+
 		it("does not infer a case-only local rename when the baseline remote changed", async () => {
 			addFile(localFs, "case.md", "local edit", 2000);
 			const remote = addFile(remoteFs, "Case.md", "remote edit", 2000);

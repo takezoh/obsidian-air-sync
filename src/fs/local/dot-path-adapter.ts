@@ -42,7 +42,7 @@ export class DotPathAdapter {
 	async stat(path: string): Promise<FileEntity | null> {
 		const s = await this.vault.adapter.stat(path);
 		if (!s) return null;
-		const actualPath = await this.resolveActualPath(path);
+		const actualPath = (await this.resolveActualPaths([path])).get(path) ?? null;
 		const pathAuthority = actualPath ? "actual_resolved" : "requested_echo";
 		const resolvedPath = actualPath ?? path;
 		if (s.type === "folder") {
@@ -53,14 +53,38 @@ export class DotPathAdapter {
 		return { path: resolvedPath, pathAuthority, isDirectory: false, size: s.size, mtime: s.mtime, hash };
 	}
 
-	private async resolveActualPath(path: string): Promise<string | null> {
-		const separator = path.lastIndexOf("/");
-		const parent = separator === -1 ? "" : path.substring(0, separator);
-		const listed = await this.vault.adapter.list(parent);
-		const candidates = [...listed.folders, ...listed.files];
-		if (candidates.includes(path)) return path;
-		const aliases = candidates.filter((candidate) => candidate.toLowerCase() === path.toLowerCase());
-		return aliases.length === 1 ? aliases[0]! : null;
+	/** Resolve display casing from the raw adapter, sharing directory reads within one call. */
+	async resolveActualPaths(paths: readonly string[]): Promise<Map<string, string>> {
+		const listingCache = new Map<string, Promise<string[]>>();
+		const resolved = new Map<string, string>();
+		await Promise.all(paths.map(async (path) => {
+			let parent = "";
+			for (const segment of path.split("/")) {
+				const candidates = await this.listCandidates(parent, listingCache);
+				const exact = candidates.filter((candidate) => basename(candidate) === segment);
+				const matches = exact.length > 0 ? exact : candidates.filter((candidate) =>
+					basename(candidate).toLowerCase() === segment.toLowerCase());
+				if (matches.length !== 1) return;
+				parent = matches[0]!;
+			}
+			resolved.set(path, parent);
+		}));
+		return resolved;
+	}
+
+	private listCandidates(
+		parent: string,
+		cache: Map<string, Promise<string[]>>,
+	): Promise<string[]> {
+		let pending = cache.get(parent);
+		if (!pending) {
+			pending = this.vault.adapter.list(parent).then((listed) => [
+				...listed.folders,
+				...listed.files,
+			]);
+			cache.set(parent, pending);
+		}
+		return pending;
 	}
 
 	async read(path: string): Promise<ArrayBuffer> {
@@ -139,4 +163,9 @@ export class DotPathAdapter {
 			await this.vault.adapter.remove(oldPath);
 		}
 	}
+}
+
+function basename(path: string): string {
+	const separator = path.lastIndexOf("/");
+	return separator === -1 ? path : path.substring(separator + 1);
 }

@@ -1,7 +1,7 @@
-/* eslint max-lines: ["error", 850] -- design keeps fresh compound effects, destructive re-observation, private terminal proof, and proof-gated commit routing in the executor owner. */
+/* eslint max-lines: ["error", 900] -- the executor owns fresh compound effects, destructive re-observation, cycle-local terminal proof, and proof-gated commit routing. */
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
-import type { ConflictStrategy, SyncAction, SyncActionType } from "./types";
+import type { ConflictStrategy, RenameAction, SyncAction, SyncActionType } from "./types";
 import {
 	isFreshRenameAction,
 	type AuthorizedSyncPlan,
@@ -385,6 +385,9 @@ async function executeAction(
 }
 
 function localMutationPaths(action: SyncAction): string[] {
+	if (action.action === "rename_remote" && !action.baseline && !action.isFolder) {
+		return [action.path];
+	}
 	if (action.action === "pull" || action.action === "delete_local" || action.action === "conflict") {
 		return [action.path];
 	}
@@ -427,6 +430,9 @@ async function runActionIO(
 		}
 
 		case "rename_remote": {
+			if (!action.baseline && !action.isFolder) {
+				return runBaselineFreeCaseRenameIO(action, ctx);
+			}
 			await remoteFs.rename(action.oldPath, path);
 			const remoteEntity = await remoteFs.stat(path);
 			const localEntity = await localFs.stat(path) ?? action.local;
@@ -458,6 +464,55 @@ async function runActionIO(
 			return {};
 		}
 	}
+}
+
+async function runBaselineFreeCaseRenameIO(
+	action: RenameAction,
+	ctx: ExecutionContext,
+): Promise<{ localEntity?: FileEntity; remoteEntity?: FileEntity }> {
+	const { localFs, remoteFs } = ctx;
+	if (!action.local || !action.remote?.identityKey) {
+		throw new ConflictPreparationError(
+			"proof_mismatch", `Baseline-free case rename proof missing: ${action.oldPath}`,
+		);
+	}
+	const [localBefore, oldBefore, newBefore, localBytes, remoteBytes] = await Promise.all([
+		localFs.stat(action.path), remoteFs.stat(action.oldPath), remoteFs.stat(action.path),
+		localFs.read(action.path), remoteFs.read(action.oldPath),
+	]);
+	if (!isExactPath(localBefore, action.path) ||
+		!isExactPath(oldBefore, action.oldPath) || newBefore ||
+		oldBefore.identityKey !== action.remote.identityKey ||
+		localBefore.size !== oldBefore.size ||
+		localBefore.size !== localBytes.byteLength ||
+		oldBefore.size !== remoteBytes.byteLength ||
+		!buffersEqual(localBytes, remoteBytes)) {
+		throw new ConflictPreparationError(
+			"proof_mismatch", `Baseline-free case rename precondition changed: ${action.oldPath}`,
+		);
+	}
+
+	await remoteFs.rename(action.oldPath, action.path);
+	const [localAfter, oldAfter, newAfter, finalLocalBytes, finalRemoteBytes] = await Promise.all([
+		localFs.stat(action.path), remoteFs.stat(action.oldPath), remoteFs.stat(action.path),
+		localFs.read(action.path), remoteFs.read(action.path),
+	]);
+	if (!isExactPath(localAfter, action.path) || oldAfter ||
+		!isExactPath(newAfter, action.path) ||
+		newAfter.identityKey !== action.remote.identityKey ||
+		localAfter.size !== newAfter.size ||
+		localAfter.size !== finalLocalBytes.byteLength ||
+		newAfter.size !== finalRemoteBytes.byteLength ||
+		!buffersEqual(finalLocalBytes, finalRemoteBytes)) {
+		throw new ConflictPreparationError(
+			"proof_mismatch", `Baseline-free case rename terminal proof failed: ${action.path}`,
+		);
+	}
+	return { localEntity: localAfter, remoteEntity: newAfter };
+}
+
+function isExactPath(entity: FileEntity | null, path: string): entity is FileEntity {
+	return entity?.path === path && entity.pathAuthority === "actual_resolved";
 }
 
 async function runFreshRenameIO(

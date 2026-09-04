@@ -35,7 +35,7 @@ export class LocalFs implements IFileSystem {
 	 * be in a layout-ready-gated context.
 	 */
 	async list(): Promise<FileEntity[]> {
-		const entities: FileEntity[] = [];
+		let entities: FileEntity[] = [];
 		const allFiles = this.vault.getAllLoadedFiles();
 
 		for (const file of allFiles) {
@@ -49,9 +49,10 @@ export class LocalFs implements IFileSystem {
 					isDirectory: false,
 					size: file.stat.size,
 					mtime: file.stat.mtime,
-					// hash is "" by design: list() must stay I/O-free, and computing a hash
-					// means reading the file. Change detection falls back to mtime+size for
-					// list-sourced entries; stat() pays the read when a hash is needed (ADR 0005).
+					// hash is "" by design: listing never reads file content. Change detection
+					// falls back to mtime+size for list-sourced entries; stat() pays the content
+					// read when a hash is needed (ADR 0005). Only casing collisions below add
+					// raw-adapter directory listings.
 					hash: "",
 				});
 			} else if (file instanceof TFolder) {
@@ -65,6 +66,7 @@ export class LocalFs implements IFileSystem {
 				});
 			}
 		}
+		entities = await this.removeStaleCaseAliases(entities);
 
 		// Dot-prefixed paths are excluded from Vault index; scan via adapter
 		await this.dotPath.listAll(entities);
@@ -72,47 +74,56 @@ export class LocalFs implements IFileSystem {
 		return entities;
 	}
 
+	/**
+	 * A case-only rename can briefly leave both spellings in Obsidian's index even
+	 * though the adapter has one entry. Resolve only those collisions against disk;
+	 * the normal listing path remains I/O-free, and genuinely distinct case-sensitive
+	 * paths remain distinct because each resolves to itself.
+	 */
+	private async removeStaleCaseAliases(entities: FileEntity[]): Promise<FileEntity[]> {
+		const groups = new Map<string, FileEntity[]>();
+		for (const entity of entities) {
+			const key = entity.path.toLowerCase();
+			const group = groups.get(key) ?? [];
+			group.push(entity);
+			groups.set(key, group);
+		}
+		const collisions = [...groups.values()].filter((group) =>
+			new Set(group.map((entity) => entity.path)).size > 1);
+		if (collisions.length === 0) return entities;
+
+		const candidatePaths = collisions.flatMap((group) =>
+			[...new Set(group.map((entity) => entity.path))]);
+		const resolved = await this.dotPath.resolveActualPaths(candidatePaths);
+		const stalePaths = new Set<string>();
+		for (const group of collisions) {
+			const pathsByActual = new Map<string, string[]>();
+			for (const path of new Set(group.map((entity) => entity.path))) {
+				const actualPath = resolved.get(path);
+				if (!actualPath) throw new Error(`Cannot resolve local path casing: ${path}`);
+				const aliases = pathsByActual.get(actualPath) ?? [];
+				aliases.push(path);
+				pathsByActual.set(actualPath, aliases);
+			}
+			for (const [actualPath, aliases] of pathsByActual) {
+				if (aliases.length === 1) continue;
+				if (!aliases.includes(actualPath)) {
+					throw new Error(`Vault index omits resolved local path casing: ${actualPath}`);
+				}
+				for (const alias of aliases) {
+					if (alias !== actualPath) stalePaths.add(alias);
+				}
+			}
+		}
+		return entities.filter((entity) => !stalePaths.has(entity.path));
+	}
+
 	async stat(path: string): Promise<FileEntity | null> {
 		path = normalizeSyncPath(path);
-		const file = this.vault.getAbstractFileByPath(path);
-		if (!file && isDotPrefixed(path)) {
-			// Hidden paths are never in the vault index — read via the adapter.
-			return this.dotPath.stat(path);
-		}
-		if (!file) {
-			// A normal path may simply not be loaded into the index yet, so confirm
-			// against the raw adapter (absence is what drives deletions). The adapter
-			// stat is regime-independent, so the dot-path adapter's identical impl
-			// serves both routes — no separate non-dot helper needed.
-			return this.dotPath.stat(path);
-		}
-
-		if (file instanceof TFile) {
-			// stat() pays the I/O that list() avoids: read the content and hash it, so the
-			// caller gets an authoritative content fingerprint (ADR 0005). Only the HOT
-			// path's dirty files reach here, so the read cost is bounded.
-			const content = await this.vault.readBinary(file);
-			const hash = await sha256(content);
-			return {
-				path: file.path,
-				pathAuthority: "actual_resolved",
-				isDirectory: false,
-				size: file.stat.size,
-				mtime: file.stat.mtime,
-				hash,
-			};
-		} else if (file instanceof TFolder) {
-			return {
-				path: file.path,
-				pathAuthority: "actual_resolved",
-				isDirectory: true,
-				size: 0,
-				mtime: 0,
-				hash: "",
-			};
-		}
-
-		return null;
+		// stat() is the authoritative absence/casing check. Obsidian's in-memory
+		// index may be missing an entry or retain a stale alias after a case-only
+		// rename, so resolve through the raw adapter for every path.
+		return this.dotPath.stat(path);
 	}
 
 	async read(path: string): Promise<ArrayBuffer> {

@@ -14,13 +14,18 @@ The repair returns the engine to ADR 0001's original simple ownership model.
 3. Existing affected installations cold-start both persistence databases by bumping
    `METADATA_CACHE_VERSION` from 3 to 4 and `SyncStateStore` from 7 to 8. Current local
    and remote facts rebuild the subordinate projection and terminal records.
-4. Admission and identity behavior do not change. `identity_postcondition_unproven`
-   remains an existing cycle-local failure reason, never persisted state.
-5. The authority catalog and the reviewed `SyncOrchestrator` instance-field inventory
+4. A vault that has already cold-started v8 is recovered from current facts only:
+   `LocalFs` resolves stale case-colliding index entries against the raw adapter;
+   Observation proposes a file-level case-only relation only from exact endpoints,
+   unique remote identity, absent remote target, and equal bytes; Admission independently
+   revalidates the proof before shaping `pull(old)+push(new)` into `rename_remote`.
+5. `identity_postcondition_unproven` remains an existing cycle-local failure reason,
+   never persisted state. No new status or cross-cycle relation is introduced.
+6. The authority catalog and the reviewed `SyncOrchestrator` instance-field inventory
    are mechanically pinned so another owner cannot appear as an incidental fix.
 
-No COLD relation reconstruction, coordinated two-store transaction, new status, journal, receipt,
-affected-path tracker, or pending-full flag is introduced.
+No general rename reconstruction, coordinated two-store transaction, new status,
+journal, receipt, affected-path tracker, or pending-full flag is introduced.
 
 ## Responsibility and state boundaries
 
@@ -39,6 +44,12 @@ cycle not clean or checkpoint save fails
   -> no cursor/cache transaction
   -> no additional pending state
   -> existing failure/retry/COLD behavior only
+
+baseline-free COLD case alias
+  -> LocalFs raw adapter proves one physical local spelling
+  -> Observation proves exact/absent endpoints + unique remote identity + equal bytes
+  -> Admission revalidates hash/size/scope and authorizes rename_remote
+  -> evidence discarded after cycle                              [no new authority]
 ```
 
 The existing scope fingerprint is a validity tag attached to the cursor checkpoint,
@@ -77,11 +88,12 @@ dropped and recreated as version 8. The following sync uses the existing no-chec
 no-baseline COLD flow; neither database migrates old state.
 
 <!-- anchor: fr-ccr-05 -->
-### FR-CCR-05 — Admission remains unchanged and cycle-local
+### FR-CCR-05 — Strict baseline-free case-only recovery
 
-`identity_postcondition_unproven` remains an existing cycle-local fail-closed result.
-This repair does not add evidence, graph edges, identity decisions, dispositions, or
-persisted identity state.
+Only a complete current snapshot may recover the case-only relation removed by the v8
+cold-start. Observation acquires facts; Admission alone authorizes the remote rename.
+Incomplete or contradictory evidence remains fail-closed. Evidence, dispositions, and
+`identity_postcondition_unproven` stay cycle-local and are never persisted.
 
 <!-- anchor: nfr-ccr-01 -->
 ### NFR-CCR-01 — Closed and guarded state ownership
@@ -116,6 +128,15 @@ source-contract test parses production source, compares `SyncOrchestrator` insta
 fields with the reviewed exact list, checks the two-item authority declaration, and
 rejects reintroduced pending-cache fields. The test is enforcement, not a new runtime
 registry or owner.
+
+<!-- anchor: component-current-case-recovery -->
+### Current case-recovery boundary
+
+`src/fs/local/` owns physical-path casing resolution. `change-detector.ts` invokes the
+isolated `current-state-case-rename.ts` acquisition/content proof. The
+`local-rename-admission.ts` boundary owns validation and action shaping. Executor owns
+only pre-effect/terminal re-observation and returns no new state; Orchestrator gains no
+decision or state ownership.
 
 ## Implementation contracts
 
@@ -159,12 +180,36 @@ no-checkpoint path performs a provider full scan.
 `onUpgrade` independently drops and recreates terminal record and merge-base stores.
 
 **Rule.** The first open has no terminal baseline, so normal orchestration uses its
-existing baseline-free decision rules. There is no migration, relation inference,
-cross-database transaction, or special first-cycle decision.
+baseline-free decision rules, including the narrow current case-recovery contract
+below. There is no migration, persisted relation, cross-database transaction, or
+special first-cycle status.
 
 **Observables.** A seeded v7 old-casing `SyncRecord` and merge base are absent after v8
 open. The first clean cycle can write current terminal records plus a complete new
 projection and cursor.
+
+<!-- anchor: contract-current-case-recovery -->
+### Contract: current case-only recovery
+
+**Observation.** Resolve case-fold collisions from the vault index against segment-wise
+raw-adapter listings. Keep genuine case-sensitive siblings. A baseline-free candidate
+requires local old→new alias, exact local new, exact remote old with a unique identity,
+stat-absent remote new, and byte-identical direct reads. Publish only ordinary
+`authority: current_state` evidence and SHA-256 entities in the immutable cycle snapshot.
+
+**Admission.** Require exactly one file candidate, included old/new scope, no baseline,
+the ordinary `pull(old)+push(new)` proposal, the same endpoint and identity facts, and
+equal SHA-256 plus size. Only then shape one `rename_remote`. Otherwise retain the
+existing fail-closed result.
+
+**Execution.** Re-observe the exact endpoints, expected remote identity, vacancy, size,
+and byte equality immediately before the move. Afterward prove old absence, exact new
+identity, and equal local/remote bytes and size. Only this terminal proof reaches normal
+`SyncRecord` commit; a race is blocked and the cycle remains non-clean.
+
+**State.** Persist none of the candidate, proof, disposition, or failure. Successful
+execution writes only the normal terminal `SyncRecord`; a wholly clean cycle may then
+commit the normal cursor checkpoint.
 
 <!-- anchor: contract-state-boundary-enforcement -->
 ### Contract: state boundary enforcement
@@ -200,10 +245,12 @@ central registry. The implementation belongs in the shared cache owner, with pro
 tests only where a real mutation shape needs a witness.
 
 <!-- anchor: adr-0008-fail-closed-identity -->
-### Existing fail-closed identity
+### Fail-closed identity and current proof
 
-ADR 0008 continues to govern Admission. `identity_postcondition_unproven` is a negative
-cycle result, not persisted state and not a repair mechanism for the cache defect.
+ADR 0008 continues to govern Admission. Observation may produce evidence, but Admission
+alone turns complete current proof into an executable rename. Missing proof produces an
+existing negative cycle result such as `identity_postcondition_unproven`; no result is
+persisted.
 
 ## Decisions and rejected alternatives
 
@@ -213,13 +260,12 @@ cycle result, not persisted state and not a repair mechanism for the cache defec
   owner whose incompleteness caused this defect.
 - **Rejected:** retain `pendingFullPersist`. Full versus incremental persistence is no
   longer a correctness state when every clean checkpoint writes the complete snapshot.
-- **Chosen:** bump metadata cache 3→4 only. The cache is disposable; `SyncRecord` is an
-  authority and must remain.
-- **Rejected:** bump SyncState 7→8 or reset both databases. It destroys authority B and
-  requires new baseline-free identity policy.
-- **Rejected:** change Admission, resolve reported self echoes, or infer a COLD relation.
-  Those are different decision algorithms and are not needed to repair the proven
-  cache projection defect.
+- **Chosen:** bump metadata cache 3→4 and SyncState 7→8 under their existing drop/recreate
+  policy. The incompatible old path identity is discarded; this is not migration.
+- **Chosen:** recover the already-reset vault only from the narrow current-state
+  case-only proof above, with authorization remaining in Admission.
+- **Rejected:** general COLD rename pairing, content heuristics, or an ambiguous
+  Admission status. These cannot prove identity and would add correctness state.
 
 ## Implementation order
 
@@ -234,7 +280,13 @@ Admission rule.
 Bump metadata cache 3→4 and SyncState 7→8, pin both drop/recreate behaviors, and prove
 v7 old-casing records do not survive.
 
-### Unit 3 — State ownership enforcement and integration
+### Unit 3 — Current case-only recovery
+
+Repair LocalFs casing observation, acquire the strict cycle-local proof, and shape the
+action only inside Admission. Pin positive and counterexample tests at all three
+boundaries.
+
+### Unit 4 — State ownership enforcement and integration
 
 Update ADR 0001, `AGENTS.md`, and `docs/code-enforcement.md`; add the source-contract
 guard; run focused tests and the complete repository gate.
@@ -242,8 +294,9 @@ guard; run focused tests and the complete repository gate.
 ## Verification strategy
 
 T1 tests cover final snapshot recreation across all caching backends, checkpoint
-transaction failure, both versioned upgrades, discarded v7 SyncRecords, ordinary COLD
-selection, and the state-boundary source guard. The complete gate is
+transaction failure, both versioned upgrades, discarded v7 SyncRecords, actual-casing
+resolution, strict baseline-free Admission, end-to-end convergence, and the
+state-boundary source guard. The complete gate is
 `npm run lint && npm run lint:bot-repro && npm run build && npm run test:coverage`.
 Credential-gated E2E remains optional T2 fidelity evidence.
 
@@ -251,5 +304,6 @@ Credential-gated E2E remains optional T2 fidelity evidence.
 
 Implementation may choose the private snapshot helper and the source-test parsing
 mechanism. Escalate if the fix requires any production field, public API, per-path
-bookkeeping, SyncState change beyond the specified 7→8 cold-start, Admission/identity edit, second persistence boundary, or
-exception that weakens the exact guard.
+bookkeeping, SyncState change beyond the specified 7→8 cold-start, identity behavior
+beyond the strict case-only contract, second persistence boundary, or exception that
+weakens the exact guard.

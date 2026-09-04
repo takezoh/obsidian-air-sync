@@ -24,6 +24,7 @@ import {
 	exactEntity,
 	observePath,
 } from "./path-observation";
+import { inferCurrentStateLocalCaseRenames } from "./current-state-case-rename";
 
 export interface ChangeSet {
 	entries: MixedEntity[];
@@ -104,7 +105,12 @@ export async function collectChanges(
 	// side is missing before planning; a thrown stat aborts rather than becoming absence.
 	if (changeSet.temperature !== "hot") {
 		await confirmEntryAbsences(changeSet, deps.localFs, deps.remoteFs);
-		changeSet.identityEvidence.unshift(...inferCurrentStateLocalCaseRenames(changeSet.entries));
+		changeSet.identityEvidence.unshift(...await inferCurrentStateLocalCaseRenames(
+			changeSet.entries,
+			changeSet.observations,
+			deps.localFs,
+			deps.remoteFs,
+		));
 	}
 	// Hash enrichment operates only on exact entries and cannot upgrade observations.
 	changeSet.hashEnrichment = await enrichHashesForInitialMatch(changeSet.entries, deps.localFs);
@@ -120,48 +126,6 @@ export async function collectChanges(
 	);
 
 	return changeSet;
-}
-
-/**
- * Recover only the rename relation that current state proves without guessing:
- * a baseline path and one local path differ solely by casing, the unchanged
- * baseline remote still occupies the old spelling, and the new remote spelling
- * has no independent entry. General old/new path pairing remains event-driven.
- */
-function inferCurrentStateLocalCaseRenames(entries: readonly MixedEntity[]): IdentityEvidence[] {
-	const localByFoldedPath = new Map<string, MixedEntity[]>();
-	for (const entry of entries) {
-		if (!entry.local || entry.path === entry.prevSync?.path) continue;
-		const key = entry.path.toLowerCase();
-		const candidates = localByFoldedPath.get(key) ?? [];
-		candidates.push(entry);
-		localByFoldedPath.set(key, candidates);
-	}
-
-	const inferred: IdentityEvidence[] = [];
-	for (const source of entries) {
-		const baseline = source.prevSync;
-		if (!baseline || source.local || !source.remote ||
-			hasRemoteChanged(source.remote, baseline)) continue;
-		if (baseline.remoteIdentityKey &&
-			source.remote.identityKey !== baseline.remoteIdentityKey) continue;
-		const candidates = (localByFoldedPath.get(baseline.path.toLowerCase()) ?? [])
-			.filter((target) =>
-				target.path !== baseline.path &&
-				target.path.toLowerCase() === baseline.path.toLowerCase() &&
-				!target.remote);
-		if (candidates.length !== 1) continue;
-		const target = candidates[0]!;
-		inferred.push({
-			kind: "rename",
-			side: "local",
-			oldPath: baseline.path,
-			newPath: target.path,
-			isFolder: false,
-			authority: "current_state",
-		});
-	}
-	return inferred;
 }
 
 async function collectHot(

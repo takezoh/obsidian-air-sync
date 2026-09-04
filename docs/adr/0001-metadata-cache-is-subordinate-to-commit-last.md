@@ -125,6 +125,12 @@ been committed against that defective projection. Each database uses its ordinar
 drop-and-recreate schema policy independently. This is not a cross-store transaction,
 migration, recovery status, or third authority; the following no-checkpoint,
 no-baseline cycle reconstructs both authorities from current local and remote facts.
+If Windows/Obsidian still exposes the pre-rename casing as a vault-index alias, the raw
+local adapter first resolves the one physical spelling. Observation may then propose a
+file-level case-only relation only from exact endpoints, stat-authoritative remote
+target absence, unique remote identity, and identical direct-read bytes; Admission
+independently revalidates hash, size, scope, and proposal shape before authorizing the
+remote rename. This proof is cycle-local and adds no durable or in-memory state owner.
 
 On a backend/folder switch or disconnect the store — cursor **and** cache together — is
 cleared alongside `settings.backendData` and SecretStorage, so no stale checkpoint

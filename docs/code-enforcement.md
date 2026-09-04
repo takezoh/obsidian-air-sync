@@ -282,6 +282,7 @@ these green when touching the pipeline:
 | **#3 delta-first** — the hot path stats only dirty paths and never calls `list()` (full scans are cold-start only) | `sync/delta-first.test.ts` |
 | **#5 crash-safe** — an interrupted action commits no baseline and re-syncs to convergence | `sync/crash-safety.test.ts`, `sync/convergence.test.ts` |
 | **Fresh recovery uses existing state only** — retryable unknowns stay visible without a pending-operation presentation; exact legacy rename rows are released only after a clean checkpoint, and same-session failure still forces COLD | `sync/sync-notification.test.ts`, `sync/sync-cycle-finalization.test.ts`, `sync/orchestrator.test.ts` |
+| **Cycle-local case recovery adds no owner** — a baseline-free case alias requires raw-adapter actual casing, exact/absent endpoints, unique remote identity, equal bytes/hash/size, and Admission authorization; incomplete proof stays fail-closed and nothing is persisted | `fs/local/local-fs.test.ts`, `sync/change-detector.test.ts`, `sync/plan-admission.test.ts`, `sync/orchestrator.test.ts` |
 | **Command-ID immutability** — registered command IDs are a stable, published API | `main-commands.test.ts` (snapshot — update only for a genuinely new command, never to rename a shipped ID) |
 | **Coverage floors** — ratchet thresholds (lines 76 / statements 75 / functions 70 / branches 65) | `vitest.config.ts`, enforced by `npm run test:coverage` in CI. Raise as coverage improves; never lower to make CI pass |
 
@@ -298,6 +299,11 @@ durable owner, persistent-store owner, or in-memory recovery owner a deliberate 
 event rather than an incidental field or write. The cache checkpoint must serialize the
 complete final live cache under its mutex with the cursor; do not add touched-path,
 pending-flush, receipt, journal, or other intermediate correctness state.
+Observation evidence and Admission dispositions/failure reasons are immutable
+cycle-local values only. Do not persist them, add them to `SyncRecord`, or introduce an
+Orchestrator field to carry them across cycles. A current-state recovery rule must keep
+fact acquisition in Observation and final action authority in Admission, with explicit
+negative tests for every destructive precondition.
 
 This is an ordinary architectural primitive/owner inventory, not a malicious-code sandbox:
 it is deliberately conservative for ordinary TypeScript ownership forms, and semantic

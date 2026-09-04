@@ -38,9 +38,31 @@ dual-store coordination, legacy record inspection, or first-COLD special behavio
 
 Verify that opening the new metadata version has no checkpoint, performs the ordinary
 provider full scan, and that opening SyncState v7 as v8 removes the legacy casing
-identity so ordinary baseline-free reconciliation can establish current records.
+identity. Then preserve recovery for vaults which already opened v8 through Unit 3.
 
-### Unit 3 — Pin the state boundary
+### Unit 3 — Reconcile stale local casing from current facts
+
+Make `DotPathAdapter` resolve actual casing one segment at a time through raw-adapter
+directory listings. In `LocalFs.list()`, pay that I/O only for case-fold collisions and
+discard an indexed spelling only when multiple requested spellings resolve to one
+actual path. Route `LocalFs.stat()` through this authoritative resolution. Preserve
+both names when the adapter proves a genuine case-sensitive collision.
+
+In COLD/WARM Observation, recognize only the baseline-free local case-only shape where
+the old local stat aliases the exact new local path, remote old is exact with one
+identity, remote new is stat-absent, and direct content reads are byte-identical. Hash
+those two entities and emit ordinary `authority: current_state` rename evidence.
+
+Keep authorization in Admission. Revalidate the complete observation, identity,
+scope, content hash/size, and no-baseline `pull(old)+push(new)` proposal before shaping
+one `rename_remote`. Any missing or contradictory fact leaves the component on its
+existing fail-closed path. For this baseline-free action, have Executor revalidate the
+same endpoint/content preconditions immediately before the move and prove old absence,
+new identity, and equal local/remote bytes after it. Commit the normal `SyncRecord` only
+after that terminal proof; a race is blocked and keeps the cycle non-clean. Add no
+status or persistent/cross-cycle state.
+
+### Unit 4 — Pin the state boundary
 
 Clarify ADR 0001, `AGENTS.md`, and `docs/code-enforcement.md` with the same closed rules:
 
@@ -61,12 +83,13 @@ expected list must be visibly harder than accidentally adding a field.
 ### Dependency order
 
 Unit 1 precedes Unit 2 so the first version-4 checkpoint cannot persist the old partial
-projection. Unit 3 follows the settled implementation so its inventory describes the
-actual boundary. Then run all focused tests and the complete repository gate.
+projection. Unit 3 restores convergence after Unit 2 removed the old baseline. Unit 4
+follows the settled implementation so its inventory describes the actual boundary.
+Then run all focused tests and the complete repository gate.
 
 ### Implementation exclusions
 
-Do not modify Admission, identity evidence, identity-component graphs, action/status
-vocabularies, or Orchestrator behavior. Apart from the one-time SyncState schema bump,
-do not add a second checkpoint, per-operation cache persistence, COLD relation inference, folder
-identity aggregation, journal, receipt, or recovery status.
+Do not add a second checkpoint, per-operation cache persistence, general rename
+inference, folder identity aggregation, journal, receipt, recovery status, or persistent
+relation. Do not weaken Admission or extend action/status vocabularies. The only new
+identity path is the strict file-level case-only proof in Unit 3.

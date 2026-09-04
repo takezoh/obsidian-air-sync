@@ -36,7 +36,7 @@ requirements:
   - id: FR-CCR-05
     type: compatibility
     priority: must
-    statement: Keep identity_postcondition_unproven as an unchanged cycle-local Admission reason and add no identity or Admission algorithm.
+    statement: Recover only a baseline-free file-level local case rename proven by exact current endpoints, unique remote identity, stat-absent remote target, and equal content, with final authorization in Admission and no persisted state.
   - id: NFR-CCR-01
     type: maintainability
     priority: must
@@ -69,13 +69,24 @@ components:
       - docs/code-enforcement.md
       - src/sync/orchestrator.ts
       - src/sync/state-boundary.test.ts
+  - id: component-current-case-recovery
+    kind: existing
+    contract_refs: [contract-current-case-recovery]
+    paths:
+      - src/fs/local/index.ts
+      - src/fs/local/dot-path-adapter.ts
+      - src/sync/change-detector.ts
+      - src/sync/current-state-case-rename.ts
+      - src/sync/local-rename-admission.ts
+      - src/sync/plan-admission.ts
+      - src/sync/plan-executor.ts
 
 contracts:
   - id: contract-complete-cache-checkpoint
     dimension: complete subordinate projection at the clean cursor boundary
     owner: component-cache-checkpoint
     requirement_refs: [FR-CCR-01, FR-CCR-02, FR-CCR-03]
-    unit_refs: ["Unit 1 — Complete final cache snapshot", "Unit 3 — State ownership enforcement and integration"]
+    unit_refs: ["Unit 1 — Complete final cache snapshot", "Unit 4 — State ownership enforcement and integration"]
     adr_refs: [adr-0001-commit-last-cache, adr-0002-shared-backends]
     verification:
       - id: verify-cache-projection-shared
@@ -121,7 +132,7 @@ contracts:
     dimension: one-time derived metadata reset
     owner: component-cache-checkpoint
     requirement_refs: [FR-CCR-04]
-    unit_refs: ["Unit 2 — Versioned persistence cold-start", "Unit 3 — State ownership enforcement and integration"]
+    unit_refs: ["Unit 2 — Versioned persistence cold-start", "Unit 4 — State ownership enforcement and integration"]
     adr_refs: [adr-0001-commit-last-cache, adr-0008-fail-closed-identity]
     verification:
       - id: verify-metadata-version-drop
@@ -135,7 +146,7 @@ contracts:
     dimension: one-time incompatible path-identity reset
     owner: component-file-commit
     requirement_refs: [FR-CCR-04, FR-CCR-05]
-    unit_refs: ["Unit 2 — Versioned persistence cold-start", "Unit 3 — State ownership enforcement and integration"]
+    unit_refs: ["Unit 2 — Versioned persistence cold-start", "Unit 3 — Current case-only recovery", "Unit 4 — State ownership enforcement and integration"]
     adr_refs: [adr-0001-commit-last-cache, adr-0008-fail-closed-identity]
     verification:
       - id: verify-sync-record-reset
@@ -146,13 +157,33 @@ contracts:
         command: npm test -- --run src/sync/orchestrator.test.ts
     partition:
       outcomes: [determinate, inconclusive]
-      default_policy: Drop and recreate v7 terminal state so ordinary baseline-free COLD reconciliation rebuilds it from current facts.
+      default_policy: Drop and recreate v7 terminal state; recover a case-only alias only through the strict current-fact contract, otherwise remain fail-closed.
+    discretion: []
+  - id: contract-current-case-recovery
+    dimension: baseline-free case-only convergence from complete current proof
+    owner: component-current-case-recovery
+    requirement_refs: [FR-CCR-04, FR-CCR-05]
+    unit_refs: ["Unit 3 — Current case-only recovery", "Unit 4 — State ownership enforcement and integration"]
+    adr_refs: [adr-0008-fail-closed-identity]
+    verification:
+      - id: verify-local-actual-casing
+        tier: T1
+        command: npm test -- --run src/fs/local/local-fs.test.ts
+      - id: verify-current-case-evidence
+        tier: T1
+        command: npm test -- --run src/sync/change-detector.test.ts
+      - id: verify-current-case-admission
+        tier: T1
+        command: npm test -- --run src/sync/plan-admission.test.ts src/sync/orchestrator.test.ts
+    partition:
+      outcomes: [determinate, inconclusive, conflicting]
+      default_policy: Shape one rename_remote only when exact current endpoint, identity, scope, hash, and size proof is complete; otherwise preserve the existing fail-closed decision.
     discretion: []
   - id: contract-state-boundary-enforcement
     dimension: closed authority and orchestrator state inventory
     owner: component-state-boundary-guard
     requirement_refs: [FR-CCR-01, FR-CCR-03, FR-CCR-05, NFR-CCR-01]
-    unit_refs: ["Unit 3 — State ownership enforcement and integration"]
+    unit_refs: ["Unit 4 — State ownership enforcement and integration"]
     adr_refs: [adr-0001-commit-last-cache, adr-0008-fail-closed-identity]
     verification:
       - id: verify-state-boundary-source-contract
@@ -166,7 +197,7 @@ contracts:
       default_policy: Reject authority-catalog, SyncOrchestrator-field, or pending-cache-owner drift until the governing architecture is revised explicitly.
     discretion:
       - id: discretion-source-parser
-        unit_ref: "Unit 3 — State ownership enforcement and integration"
+        unit_ref: "Unit 4 — State ownership enforcement and integration"
         question: Choose a deterministic source parsing mechanism for the exact instance-field inventory.
         scope:
           files: [src/sync/state-boundary.test.ts]
@@ -213,15 +244,13 @@ units:
       - tests/fs/contracts/caching-remote-fs.contract.ts
       - tests/fs/remote-backend-contracts.test.ts
       - src/fs/googledrive/index.test.ts
-      - src/sync/identity-evidence.test.ts
-      - src/sync/plan-admission.test.ts
       - src/sync/orchestrator.test.ts
     depends_on: []
     acceptance:
       - Every clean checkpoint persists the complete final live cache with the cursor.
       - Restart after executor rename restores no stale old-casing path.
       - touchedPaths and pendingFullPersist are absent and no equivalent pending field is added.
-      - Speculative Admission regressions for this incident are removed without production Admission changes.
+      - Cache persistence adds no Admission or identity behavior.
     objective: Replace origin-sensitive incremental cache bookkeeping with the one complete clean-boundary snapshot required by ADR 0001.
     output_format: Shared TypeScript cache change and focused/shared Vitest regressions.
     tool_guidance: Start from the Google restart failure, simplify commitCheckpoint to one complete snapshot, then run the central backend contract.
@@ -240,13 +269,42 @@ units:
     acceptance:
       - Opening metadata version 3 as version 4 drops and recreates only metadata stores.
       - Opening SyncState version 7 as version 8 drops and recreates terminal record and merge-base stores.
-      - The missing checkpoint and baseline select ordinary COLD without special recovery logic.
+      - The missing checkpoint and baseline select ordinary COLD acquisition.
     objective: Discard the known-bad projection and incompatible path identity once, each through its existing schema owner.
     output_format: Two version constant changes and focused persistence/orchestration tests.
     tool_guidance: Seed both databases independently, open the repaired versions, and assert both reset without migration or cross-store coordination.
-    task_boundaries: No migration, dual-store transaction, identity rule, recovery state, or first-run branch.
+    task_boundaries: No migration, dual-store transaction, persisted relation, recovery state, or first-run status.
     decision_closure_reason: The reset target, retained authority, and ordinary recovery path are fixed with no implementation discretion.
-  - title: "Unit 3 — State ownership enforcement and integration"
+  - title: "Unit 3 — Current case-only recovery"
+    chunk: current-case-recovery
+    contract_refs: [contract-current-case-recovery]
+    files:
+      - src/fs/local/index.ts
+      - src/fs/local/dot-path-adapter.ts
+      - src/fs/local/local-fs.test.ts
+      - src/__mocks__/obsidian.ts
+      - src/sync/change-detector.ts
+      - src/sync/current-state-case-rename.ts
+      - src/sync/change-detector.test.ts
+      - src/sync/local-rename-admission.ts
+      - src/sync/plan-admission.ts
+      - src/sync/plan-admission.test.ts
+      - src/sync/plan-executor.ts
+      - src/sync/plan-executor.test.ts
+      - src/sync/orchestrator.test.ts
+    depends_on: ["Unit 2 — Versioned persistence cold-start"]
+    acceptance:
+      - Stale case-colliding vault-index aliases resolve to one adapter-proven physical spelling while genuine case-sensitive siblings remain.
+      - Equal-byte, unique-identity current facts emit one cycle-local case-only candidate; unequal bytes emit none.
+      - Admission independently revalidates exact endpoints, absent remote target, identity, scope, hash, size, and no-baseline proposal before one rename_remote.
+      - Executor re-observes before the effect and requires terminal old-absence, new-identity, and equal-byte proof before SyncRecord commit.
+      - The candidate and decision add no persistent store, SyncRecord field, status, or Orchestrator field.
+    objective: Restore convergence for an already-reset vault from strict current proof without creating another state owner.
+    output_format: Narrow TypeScript observation/admission changes and focused Vitest regressions.
+    tool_guidance: Prove physical casing at LocalFs, acquire candidate facts in Observation, authorize only in Admission, and keep counterexamples fail-closed.
+    task_boundaries: No general rename inference, folder inference, status/action vocabulary extension, persistent evidence, or executor-side action invention.
+    decision_closure_reason: The exact recoverable shape, authority boundary, negative cases, and state prohibition are fixed.
+  - title: "Unit 4 — State ownership enforcement and integration"
     chunk: state-boundary-enforcement
     contract_refs: [contract-complete-cache-checkpoint, contract-metadata-cache-cold-start, contract-syncstate-cold-start, contract-state-boundary-enforcement]
     files:
@@ -255,12 +313,12 @@ units:
       - docs/code-enforcement.md
       - src/sync/orchestrator.ts
       - src/sync/state-boundary.test.ts
-    depends_on: ["Unit 1 — Complete final cache snapshot", "Unit 2 — Versioned persistence cold-start"]
+    depends_on: ["Unit 1 — Complete final cache snapshot", "Unit 2 — Versioned persistence cold-start", "Unit 3 — Current case-only recovery"]
     acceptance:
       - All three governing documents name exactly cursor and SyncRecord as authorities and checkpoint as an operation.
       - The source guard accepts only the reviewed SyncOrchestrator instance fields and rejects an added field.
       - The source guard rejects reintroduced pending cache state.
-      - Focused checks and the full repository gate pass with no Admission or identity production diff.
+      - Focused checks and the full repository gate pass with only the declared cycle-local case-only identity diff.
     objective: Make silent growth of sync state ownership a mechanical failure in the normal development gate.
     output_format: Narrow architecture documentation, a deterministic source-contract test, and recorded gate evidence.
     tool_guidance: Derive the exact field list from the final source, make mutation counterexamples fail, then run the full gate.
@@ -278,7 +336,7 @@ acceptance:
     criteria: Metadata cache v3 is recreated as v4 and SyncState v7 is recreated as empty v8 state.
     requirement_refs: [FR-CCR-04]
   - id: AC-CCR-04
-    criteria: No Admission or identity behavior changes and identity_postcondition_unproven remains cycle-local only.
+    criteria: A baseline-free case alias converges only from complete current proof; incomplete or conflicting proof remains fail-closed and no result is persisted.
     requirement_refs: [FR-CCR-05]
   - id: AC-CCR-05
     criteria: Documentation and the source contract reject a third authority, a new SyncOrchestrator field, or restored pending cache state.
@@ -294,13 +352,13 @@ dispositions:
     adr_refs: [adr-0001-commit-last-cache]
     contract_refs: [contract-complete-cache-checkpoint]
   - decision_input_ref: decision-input-existing-vault-recovery
-    disposition: Bump metadata cache 3 to 4 and SyncState 7 to 8; rebuild each through ordinary no-checkpoint and no-baseline reconciliation.
+    disposition: Bump metadata cache 3 to 4 and SyncState 7 to 8; rebuild from current facts and use strict cycle-local case proof when the removed baseline is needed only to establish casing continuity.
     adr_refs: [adr-0001-commit-last-cache]
     contract_refs: [contract-metadata-cache-cold-start, contract-syncstate-cold-start]
   - decision_input_ref: decision-input-admission-scope
-    disposition: Make no Admission or identity change; keep identity_postcondition_unproven as the existing cycle-local fail-closed reason.
+    disposition: Keep authorization in Admission; accept only the exact baseline-free case-only proof, retain existing fail-closed reasons otherwise, and persist neither evidence nor result.
     adr_refs: [adr-0008-fail-closed-identity]
-    contract_refs: [contract-syncstate-cold-start, contract-state-boundary-enforcement]
+    contract_refs: [contract-syncstate-cold-start, contract-current-case-recovery, contract-state-boundary-enforcement]
   - decision_input_ref: decision-input-provider-coverage
     disposition: Verify the shared complete-snapshot behavior through the central Google Drive, Dropbox, and OneDrive contract matrix plus the focused Google restart witness.
     adr_refs: [adr-0002-shared-backends]

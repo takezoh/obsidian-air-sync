@@ -71,6 +71,12 @@ central `tests/fs/remote-backend-contracts.test.ts` unit composition root.
   Any intentional new cursor/`SyncStateStore` writer, persistent-store owner, or
   orchestrator field requires the guard fixture plus ADR 0001 and enforcement-document
   updates in the same change.
+- **Cycle evidence never becomes another state owner.** Observation may derive an
+  immutable current-cycle identity candidate; Admission alone may authorize its action.
+  Never persist evidence, Admission dispositions/failure reasons (including
+  `identity_postcondition_unproven`), pending work, or recovery instructions. Do not add
+  another in-memory correctness owner: keep only bounded execution bookkeeping that is
+  discarded with the cycle.
 - No migration code — on IndexedDB schema changes, cold-start (drop all stores and
   recreate). Settings schema changes use sensible defaults for missing fields via
   `Object.assign({}, DEFAULT_SETTINGS, stored)`.
@@ -86,11 +92,16 @@ central `tests/fs/remote-backend-contracts.test.ts` unit composition root.
 
 ### Project-specific gotchas
 
-- **The vault index can under-report before layout-ready.** Read it only via
+- **The vault index can under-report before layout-ready and can retain stale casing
+  aliases after a case-only rename.** Read it only via
   `LocalFs.list()` (lint-enforced — `getAllLoadedFiles()` is restricted outside
   `src/fs/local/`). `LocalFs.list()` does NOT gate on layout-ready itself — it's a
   pure low-level read; the **gate is the orchestrator** (`runSync`/`shouldSync`
   early-return until `isLayoutReady`), and the only path to `list()` runs through it.
+  For case-fold collisions, `LocalFs.list()` resolves actual spelling through the raw
+  adapter and removes only aliases that resolve to the same physical path; it must keep
+  genuinely distinct case-sensitive siblings. `LocalFs.stat()` likewise uses the raw
+  adapter as the authoritative casing/absence boundary.
   Any new caller of `list()` must likewise be in a layout-ready-gated context. Also
   never derive a deletion from listing-absence alone — confirm against the
   authoritative `LocalFs.stat()` (falls back to the adapter).

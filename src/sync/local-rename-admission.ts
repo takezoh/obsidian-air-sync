@@ -3,7 +3,7 @@ import { renameEvidenceKey } from "./identity-evidence";
 import { hasRemoteChanged } from "./change-compare";
 import { contentKey, sameContent } from "./content-identity";
 import type { FileEntity } from "../fs/types";
-import type { LocalRenameEvidence, ScopeProjection, SyncRecord } from "./types";
+import type { LocalRenameEvidence, ScopeProjection, SyncAction, SyncRecord } from "./types";
 
 type VersionRelation = "unchanged" | "changed";
 type ContentRelation = "same" | "different" | "unproven";
@@ -54,6 +54,80 @@ export function classifyNonBindingLocalRenames(
 		for (const candidate of candidates) nonBinding.add(renameEvidenceKey(candidate));
 	}
 	return nonBinding;
+}
+
+/**
+ * Replace the ordinary no-baseline pull+push proposal only when the current
+ * snapshot independently proves one local case-only rename. This is recovery
+ * from a COLD observation, not a stored intermediate sync state.
+ */
+export function shapeBaselineFreeCaseRename(
+	component: AdmissionComponent,
+	scope: ScopeProjection,
+): SyncAction | undefined {
+	const candidates = component.evidence.filter((item): item is LocalRenameEvidence =>
+		item.kind === "rename" && item.side === "local" && !item.isFolder &&
+		item.authority === "current_state");
+	if (candidates.length !== 1 || component.actions.length !== 2 ||
+		component.actions.some((action) => action.baseline !== undefined)) return undefined;
+	const candidate = candidates[0]!;
+	if (candidate.oldPath === candidate.newPath ||
+		candidate.oldPath.toLowerCase() !== candidate.newPath.toLowerCase() ||
+		scope.byEndpoint.get(candidate.oldPath) !== "included" ||
+		scope.byEndpoint.get(candidate.newPath) !== "included") return undefined;
+
+	const pull = component.actions.find((action) =>
+		action.action === "pull" && action.path === candidate.oldPath);
+	const push = component.actions.find((action) =>
+		action.action === "push" && action.path === candidate.newPath);
+	if (!pull?.remote || !push?.local || pull.local || push.remote ||
+		pull.remote.path !== candidate.oldPath || push.local.path !== candidate.newPath ||
+		!pull.remote.identityKey || pull.remote.size !== push.local.size ||
+		!sameContent(pull.remote, push.local)) return undefined;
+
+	const localOld = observations(component, "local", candidate.oldPath);
+	const localNew = observations(component, "local", candidate.newPath);
+	const remoteOld = observations(component, "remote", candidate.oldPath);
+	const remoteNew = observations(component, "remote", candidate.newPath);
+	if (localOld.length === 0 || !localOld.every((item) =>
+		item.kind === "alias" && item.resolvedPath === candidate.newPath) ||
+		localNew.length === 0 || !localNew.every((item) =>
+			item.kind === "exact" && item.entity.path === candidate.newPath &&
+			item.entity.size === push.local!.size && sameContent(item.entity, push.local!)) ||
+		remoteOld.length === 0 || !remoteOld.every((item) =>
+			item.kind === "exact" && item.entity.path === candidate.oldPath &&
+			item.entity.identityKey === pull.remote!.identityKey &&
+			item.entity.size === pull.remote!.size && sameContent(item.entity, pull.remote!)) ||
+		remoteNew.length === 0 || !remoteNew.every((item) =>
+			item.kind === "absent" && item.authority === "stat")) return undefined;
+
+	const identityPaths = new Set(component.observations.flatMap((item) =>
+		item.side === "remote" && (item.kind === "exact" || item.kind === "alias") &&
+		item.entity.identityKey === pull.remote!.identityKey
+			? [item.kind === "alias" ? item.resolvedPath : item.requestedPath]
+			: []));
+	if (identityPaths.size !== 1 || !identityPaths.has(candidate.oldPath) ||
+		component.evidence.some((item) => item.kind === "stable_identity" &&
+			item.identityKey === pull.remote!.identityKey &&
+			new Set(item.occurrences.filter((entry) => entry.phase === "current")
+				.map((entry) => entry.path)).size > 1)) return undefined;
+
+	return {
+		action: "rename_remote",
+		oldPath: candidate.oldPath,
+		path: candidate.newPath,
+		local: push.local,
+		remote: pull.remote,
+	};
+}
+
+function observations(
+	component: AdmissionComponent,
+	side: "local" | "remote",
+	path: string,
+) {
+	return component.observations.filter((item) =>
+		item.side === side && item.requestedPath === path);
 }
 
 function isNonBindingComponent(

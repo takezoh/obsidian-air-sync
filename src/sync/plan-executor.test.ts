@@ -292,6 +292,54 @@ describe("executePlan", () => {
 	});
 
 	describe("rename_remote", () => {
+		it("does not commit a baseline-free case rename when content races after the move", async () => {
+			const ctx = makeCtx();
+			const localFs = ctx.localFs as MockFileSystem;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
+			addFile(localFs, "case.md", "same");
+			addFile(remoteFs, "Case.md", "same").identityKey = "R";
+			const local = (await localFs.stat("case.md"))!;
+			const remote = (await remoteFs.stat("Case.md"))!;
+			const actions: SyncAction[] = [
+				{ path: "Case.md", action: "pull", remote },
+				{ path: "case.md", action: "push", local },
+			];
+			const evidence = [
+				{
+					kind: "rename" as const, side: "local" as const,
+					oldPath: "Case.md", newPath: "case.md", isFolder: false,
+					authority: "current_state" as const,
+				},
+				{
+					kind: "alias" as const, side: "local" as const,
+					requestedPath: "Case.md", resolvedPath: "case.md",
+				},
+			];
+			const observations: PathObservation[] = [
+				{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md", entity: local },
+				{ kind: "exact", side: "local", requestedPath: "case.md", entity: local },
+				{ kind: "exact", side: "remote", requestedPath: "Case.md", entity: remote },
+				{ kind: "absent", side: "remote", requestedPath: "case.md", authority: "stat" },
+			];
+			const plan = admitDestructivePlan(captureCycleAdmissionSnapshot(
+				{ actions }, evidence, observations,
+				{ byEndpoint: new Map([["Case.md", "included"], ["case.md", "included"]]) },
+				"executor-test",
+			)).executable;
+			const rename = remoteFs.rename.bind(remoteFs);
+			vi.spyOn(remoteFs, "rename").mockImplementation(async (oldPath, newPath) => {
+				await rename(oldPath, newPath);
+				addFile(localFs, "case.md", "raced");
+			});
+
+			const result = await executePlan(plan, ctx);
+
+			expect(result.blocked).toHaveLength(1);
+			expect(result.succeeded).toEqual([]);
+			expect((ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>)
+				.records.size).toBe(0);
+		});
+
 		it("runs an admitted fresh rename-write as one commit-last action", async () => {
 			const ctx = makeCtx();
 			const { local, remoteFs, stateStore, action } = await arrangeFreshRename(ctx);
@@ -1434,6 +1482,10 @@ describe("withIoRetry (per-action in-cycle retry)", () => {
 			action: "rename_remote",
 			oldPath: "old.md",
 			local: { path: "new.md", isDirectory: false, size: 5, mtime: 1000, hash: "h" },
+			baseline: {
+				path: "old.md", hash: "h", localMtime: 1, remoteMtime: 1,
+				localSize: 5, remoteSize: 5, syncedAt: 1,
+			},
 		}]), ctx);
 
 		// rename tier is excluded from withIoRetry: re-running rename(oldPath, …) would hit a
