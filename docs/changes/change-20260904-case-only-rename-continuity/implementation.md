@@ -28,16 +28,17 @@ recreation exactly as represented in the final live snapshot. Remove speculative
 Admission/self-echo RED tests introduced for this incident because this unit fixes the
 proven persistence cause without changing Admission.
 
-### Unit 2 — Cold-start only the derived cache
+### Unit 2 — Cold-start incompatible persisted sync state
 
 Bump `METADATA_CACHE_VERSION` from 3 to 4 and prove that the existing upgrade handler
-drops and recreates its stores. Keep the SyncState version at 7 and preserve all
-`SyncRecord` and sync-content rows. Do not add migration, dual-store coordination,
-legacy record inspection, or first-COLD special behavior.
+drops and recreates its stores. Bump SyncState from 7 to 8 so the same cold-start policy
+drops old path-keyed `SyncRecord` and sync-content rows which can otherwise keep an
+already-converged old/new casing identity component alive. Do not add migration,
+dual-store coordination, legacy record inspection, or first-COLD special behavior.
 
 Verify that opening the new metadata version has no checkpoint, performs the ordinary
-provider full scan, and can commit a replacement cache/cursor while the retained
-SyncRecords remain available to normal reconciliation.
+provider full scan, and that opening SyncState v7 as v8 removes the legacy casing
+identity so ordinary baseline-free reconciliation can establish current records.
 
 ### Unit 3 — Pin the state boundary
 
@@ -66,6 +67,6 @@ actual boundary. Then run all focused tests and the complete repository gate.
 ### Implementation exclusions
 
 Do not modify Admission, identity evidence, identity-component graphs, action/status
-vocabularies, `SyncStateStore` schema/version, or Orchestrator behavior. Do not add a
-second checkpoint, per-operation cache persistence, COLD relation inference, folder
+vocabularies, or Orchestrator behavior. Apart from the one-time SyncState schema bump,
+do not add a second checkpoint, per-operation cache persistence, COLD relation inference, folder
 identity aggregation, journal, receipt, or recovery status.

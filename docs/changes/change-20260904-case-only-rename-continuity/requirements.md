@@ -12,7 +12,7 @@ functional_requirements:
   statement: Remove touchedPaths and pendingFullPersist without replacing them with affected-path, pending-full, receipt, or recovery correctness state.
   priority: must
 - id: FR-CCR-04
-  statement: On first open by the repair, cold-start only metadata cache version 3 as version 4 while retaining SyncState version 7 and all SyncRecords.
+  statement: On first open by the repair, cold-start metadata cache version 3 as version 4 and SyncState version 7 as version 8 so existing affected vaults rebuild from current facts.
   priority: must
 - id: FR-CCR-05
   statement: Preserve identity_postcondition_unproven solely as an existing cycle-local Admission failure reason, without changing identity decisions or persisting the reason.
@@ -62,13 +62,14 @@ receipt, recovery debt, or relation state. If Admission, execution, or checkpoin
 persistence prevents a clean cycle, the durable cursor and cache projection shall stay
 at their prior clean boundary; successful file `SyncRecord`s may remain committed.
 
-### FR-CCR-04 — Metadata-cache-only COLD recovery
+### FR-CCR-04 — Versioned COLD recovery
 
 When the repaired release first opens metadata cache version 3, the existing IndexedDB
-upgrade policy shall drop and recreate only that derived cache as version 4. The
-`SyncStateStore` database shall remain version 7 and all existing `SyncRecord`s shall be
-retained. The following cycle shall use the ordinary no-checkpoint COLD path to rebuild
-remote metadata; no legacy migration or inferred rename shall run.
+upgrade policy shall drop and recreate that derived cache as version 4. When it opens
+SyncState version 7, the same project-wide schema policy shall drop and recreate its
+terminal record and merge-base stores as version 8. The following cycle shall use the
+ordinary no-checkpoint, no-baseline COLD path to rebuild from current local and remote
+facts; no legacy migration, persisted recovery state, or inferred rename shall run.
 
 ### FR-CCR-05 — Existing fail-closed decision remains cycle-local
 
@@ -96,6 +97,6 @@ green. The same guard shall prevent reintroduction of `touchedPaths`,
 - Treating “checkpoint” as state distinct from the cursor fails FR-CCR-01.
 - Restoring a stale pre-rename path after a clean restart fails FR-CCR-02.
 - Replacing removed bookkeeping with another pending write-set fails FR-CCR-03.
-- Bumping SyncState or deleting/migrating `SyncRecord`s fails FR-CCR-04.
+- Retaining v7 path identity, migrating it, or adding recovery-specific state fails FR-CCR-04.
 - Adding or persisting an identity result, even under a different name, fails FR-CCR-05.
 - Adding an unreviewed authority owner or `SyncOrchestrator` field fails NFR-CCR-01.

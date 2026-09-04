@@ -42,6 +42,25 @@ async function seedVersion6Database(vaultId: string): Promise<void> {
 	});
 }
 
+async function seedVersion7Database(vaultId: string): Promise<void> {
+	const dbName = `air-sync-${sanitizeDbName(vaultId)}`;
+	await new Promise<void>((resolve, reject) => {
+		const request = indexedDB.open(dbName, 7);
+		request.onupgradeneeded = () => {
+			const db = request.result;
+			const records = db.createObjectStore("sync-records", { keyPath: "path" });
+			records.put(makeRecord("Templates/a.md", { remoteIdentityKey: "remote-a" }));
+			const contents = db.createObjectStore("sync-content", { keyPath: "path" });
+			contents.put({ path: "Templates/a.md", content: new Uint8Array([1, 2, 3]).buffer });
+		};
+		request.onerror = () => reject(request.error ?? new Error("Failed to seed version 7 database"));
+		request.onsuccess = () => {
+			request.result.close();
+			resolve();
+		};
+	});
+}
+
 describe("SyncStateStore", () => {
 	let store: SyncStateStore;
 
@@ -210,6 +229,18 @@ describe("SyncStateStore", () => {
 		expect(store).not.toHaveProperty("upsertRenameDebts");
 		expect(store).not.toHaveProperty("deleteRenameDebts");
 		expect(store).not.toHaveProperty("clearRenameDebts");
+	});
+
+	it("schema upgrade drops v7 path identity so an existing case-only rename can cold-start", async () => {
+		await store.close();
+		const vaultId = `case-recovery-vault-${Math.random()}`;
+		await seedVersion7Database(vaultId);
+		store = new SyncStateStore(vaultId);
+
+		await store.open();
+
+		expect(await store.getAll()).toEqual([]);
+		expect(await store.getContent("Templates/a.md")).toBeUndefined();
 	});
 
 	it("clear removes terminal records and content", async () => {

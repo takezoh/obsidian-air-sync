@@ -11,15 +11,15 @@ The repair returns the engine to ADR 0001's original simple ownership model.
    clean checkpoint serializes the complete final live cache and atomically replaces
    the durable projection with the cursor. `touchedPaths` and `pendingFullPersist` are
    deleted and receive no replacement.
-3. Existing affected installations cold-start only the metadata projection by bumping
-   `METADATA_CACHE_VERSION` from 3 to 4. `SyncStateStore` stays at version 7 and retains
-   every `SyncRecord`.
+3. Existing affected installations cold-start both persistence databases by bumping
+   `METADATA_CACHE_VERSION` from 3 to 4 and `SyncStateStore` from 7 to 8. Current local
+   and remote facts rebuild the subordinate projection and terminal records.
 4. Admission and identity behavior do not change. `identity_postcondition_unproven`
    remains an existing cycle-local failure reason, never persisted state.
 5. The authority catalog and the reviewed `SyncOrchestrator` instance-field inventory
    are mechanically pinned so another owner cannot appear as an incidental fix.
 
-No COLD relation reconstruction, two-store reset, new status, journal, receipt,
+No COLD relation reconstruction, coordinated two-store transaction, new status, journal, receipt,
 affected-path tracker, or pending-full flag is introduced.
 
 ## Responsibility and state boundaries
@@ -70,11 +70,11 @@ without per-path bookkeeping.
 no new write-set, pending operation, receipt, recovery debt, or relation state.
 
 <!-- anchor: fr-ccr-04 -->
-### FR-CCR-04 — Metadata-only cold-start
+### FR-CCR-04 — Versioned cold-start
 
-Metadata cache version 3 is dropped and recreated as version 4. SyncState version 7 and
-all `SyncRecord`/sync-content rows remain unchanged. The following sync uses the
-existing no-checkpoint COLD flow.
+Metadata cache version 3 is dropped and recreated as version 4. SyncState version 7 is
+dropped and recreated as version 8. The following sync uses the existing no-checkpoint,
+no-baseline COLD flow; neither database migrates old state.
 
 <!-- anchor: fr-ccr-05 -->
 ### FR-CCR-05 — Admission remains unchanged and cycle-local
@@ -142,19 +142,28 @@ Recreating after a failed checkpoint restores the prior clean projection and cur
 **Cost.** Clean checkpoint persistence is O(current cache size). That deliberate simple
 cost replaces the correctness-sensitive affected-path state machine.
 
-<!-- anchor: contract-metadata-only-cold-start -->
-### Contract: metadata-only cold-start
+<!-- anchor: contract-metadata-cache-cold-start -->
+### Contract: metadata-cache cold-start
 
-**Owner and evolution.** `component-cache-checkpoint` changes only
-`METADATA_CACHE_VERSION` 3→4. The existing metadata-store `onUpgrade` drops and
-recreates the derived stores. `SyncStateStore` remains version 7.
+**Owner and evolution.** `component-cache-checkpoint` changes
+`METADATA_CACHE_VERSION` 3→4. Its existing `onUpgrade` independently drops and
+recreates the derived cache and checkpoint stores.
 
-**Rule.** The first open has no metadata checkpoint, so normal orchestration selects its
-existing COLD provider full scan. Retained `SyncRecord`s remain the per-file baseline.
-There is no migration, relation inference, or special first-cycle decision.
+**Observables.** A seeded v3 metadata cache is empty after v4 open, so the ordinary
+no-checkpoint path performs a provider full scan.
 
-**Observables.** A seeded v3 metadata cache is empty after v4 open. A separately seeded
-v7 `SyncRecord` is still present. The first clean cycle can write a complete new
+<!-- anchor: contract-syncstate-cold-start -->
+### Contract: SyncState cold-start
+
+**Owner and evolution.** `component-file-commit` changes SyncState 7→8. Its existing
+`onUpgrade` independently drops and recreates terminal record and merge-base stores.
+
+**Rule.** The first open has no terminal baseline, so normal orchestration uses its
+existing baseline-free decision rules. There is no migration, relation inference,
+cross-database transaction, or special first-cycle decision.
+
+**Observables.** A seeded v7 old-casing `SyncRecord` and merge base are absent after v8
+open. The first clean cycle can write current terminal records plus a complete new
 projection and cursor.
 
 <!-- anchor: contract-state-boundary-enforcement -->
@@ -220,10 +229,10 @@ Remove both pending fields and convert the existing checkpoint to one complete s
 Update shared cache and Google restart tests. Remove incident tests that presuppose a new
 Admission rule.
 
-### Unit 2 — Metadata-only versioned cold-start
+### Unit 2 — Versioned persistence cold-start
 
-Bump metadata cache 3→4, pin its drop/recreate behavior, and prove SyncState v7 records
-survive.
+Bump metadata cache 3→4 and SyncState 7→8, pin both drop/recreate behaviors, and prove
+v7 old-casing records do not survive.
 
 ### Unit 3 — State ownership enforcement and integration
 
@@ -233,7 +242,7 @@ guard; run focused tests and the complete repository gate.
 ## Verification strategy
 
 T1 tests cover final snapshot recreation across all caching backends, checkpoint
-transaction failure, metadata-only upgrade, retained SyncRecords, ordinary COLD
+transaction failure, both versioned upgrades, discarded v7 SyncRecords, ordinary COLD
 selection, and the state-boundary source guard. The complete gate is
 `npm run lint && npm run lint:bot-repro && npm run build && npm run test:coverage`.
 Credential-gated E2E remains optional T2 fidelity evidence.
@@ -242,5 +251,5 @@ Credential-gated E2E remains optional T2 fidelity evidence.
 
 Implementation may choose the private snapshot helper and the source-test parsing
 mechanism. Escalate if the fix requires any production field, public API, per-path
-bookkeeping, SyncState change, Admission/identity edit, second persistence boundary, or
+bookkeeping, SyncState change beyond the specified 7→8 cold-start, Admission/identity edit, second persistence boundary, or
 exception that weakens the exact guard.

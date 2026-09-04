@@ -32,7 +32,7 @@ requirements:
   - id: FR-CCR-04
     type: event_driven
     priority: must
-    statement: On first open by the repaired release, cold-start metadata cache version 3 as version 4 while preserving SyncState version 7 and all SyncRecords.
+    statement: On first open by the repaired release, cold-start metadata cache version 3 as version 4 and SyncState version 7 as version 8 so current facts rebuild both stores.
   - id: FR-CCR-05
     type: compatibility
     priority: must
@@ -45,7 +45,7 @@ requirements:
 components:
   - id: component-cache-checkpoint
     kind: existing
-    contract_refs: [contract-complete-cache-checkpoint, contract-metadata-only-cold-start]
+    contract_refs: [contract-complete-cache-checkpoint, contract-metadata-cache-cold-start]
     paths:
       - src/fs/caching/remote-fs.ts
       - src/store/metadata-store.ts
@@ -55,7 +55,7 @@ components:
       - src/store/metadata-store.test.ts
   - id: component-file-commit
     kind: existing
-    contract_refs: [contract-state-boundary-enforcement]
+    contract_refs: [contract-syncstate-cold-start, contract-state-boundary-enforcement]
     paths:
       - src/sync/state-committer.ts
       - src/sync/state.ts
@@ -117,17 +117,28 @@ contracts:
           runtime_risk: data_loss
           coupling: independent
           grounding: evidenced
-  - id: contract-metadata-only-cold-start
-    dimension: one-time derived metadata reset with authoritative baseline retention
+  - id: contract-metadata-cache-cold-start
+    dimension: one-time derived metadata reset
     owner: component-cache-checkpoint
-    requirement_refs: [FR-CCR-04, FR-CCR-05]
-    unit_refs: ["Unit 2 — Metadata-only versioned cold-start", "Unit 3 — State ownership enforcement and integration"]
+    requirement_refs: [FR-CCR-04]
+    unit_refs: ["Unit 2 — Versioned persistence cold-start", "Unit 3 — State ownership enforcement and integration"]
     adr_refs: [adr-0001-commit-last-cache, adr-0008-fail-closed-identity]
     verification:
       - id: verify-metadata-version-drop
         tier: T1
         command: npm test -- --run src/store/metadata-store.test.ts
-      - id: verify-sync-record-retention
+    partition:
+      outcomes: [determinate, inconclusive]
+      default_policy: Drop and recreate prior-version derived metadata so the ordinary no-checkpoint COLD path rebuilds it.
+    discretion: []
+  - id: contract-syncstate-cold-start
+    dimension: one-time incompatible path-identity reset
+    owner: component-file-commit
+    requirement_refs: [FR-CCR-04, FR-CCR-05]
+    unit_refs: ["Unit 2 — Versioned persistence cold-start", "Unit 3 — State ownership enforcement and integration"]
+    adr_refs: [adr-0001-commit-last-cache, adr-0008-fail-closed-identity]
+    verification:
+      - id: verify-sync-record-reset
         tier: T1
         command: npm test -- --run src/sync/state.test.ts
       - id: verify-ordinary-cold-rebuild
@@ -135,7 +146,7 @@ contracts:
         command: npm test -- --run src/sync/orchestrator.test.ts
     partition:
       outcomes: [determinate, inconclusive]
-      default_policy: Drop and recreate only prior-version derived metadata; retain SyncState and enter the existing no-checkpoint COLD path.
+      default_policy: Drop and recreate v7 terminal state so ordinary baseline-free COLD reconciliation rebuilds it from current facts.
     discretion: []
   - id: contract-state-boundary-enforcement
     dimension: closed authority and orchestrator state inventory
@@ -216,9 +227,9 @@ units:
     tool_guidance: Start from the Google restart failure, simplify commitCheckpoint to one complete snapshot, then run the central backend contract.
     task_boundaries: Do not change provider operations, cursor timing, Admission, SyncState, or Orchestrator behavior.
     decision_closure_reason: Owner, clean boundary, complete snapshot, failure behavior, and forbidden replacement state are fixed; only private helper shape remains.
-  - title: "Unit 2 — Metadata-only versioned cold-start"
-    chunk: metadata-cold-start
-    contract_refs: [contract-metadata-only-cold-start]
+  - title: "Unit 2 — Versioned persistence cold-start"
+    chunk: persistence-cold-start
+    contract_refs: [contract-metadata-cache-cold-start, contract-syncstate-cold-start]
     files:
       - src/store/metadata-store.ts
       - src/store/metadata-store.test.ts
@@ -228,23 +239,23 @@ units:
     depends_on: ["Unit 1 — Complete final cache snapshot"]
     acceptance:
       - Opening metadata version 3 as version 4 drops and recreates only metadata stores.
-      - SyncState remains version 7 and seeded SyncRecords remain readable.
-      - The missing metadata checkpoint selects ordinary COLD without special recovery logic.
-    objective: Discard the known-bad subordinate projection once while preserving both authoritative states.
-    output_format: One metadata version constant change and focused persistence/orchestration tests.
-    tool_guidance: Seed both databases independently, open the repaired versions, and assert metadata reset plus SyncRecord retention.
-    task_boundaries: No SyncState bump, migration, dual-store transaction, identity rule, or first-run branch.
+      - Opening SyncState version 7 as version 8 drops and recreates terminal record and merge-base stores.
+      - The missing checkpoint and baseline select ordinary COLD without special recovery logic.
+    objective: Discard the known-bad projection and incompatible path identity once, each through its existing schema owner.
+    output_format: Two version constant changes and focused persistence/orchestration tests.
+    tool_guidance: Seed both databases independently, open the repaired versions, and assert both reset without migration or cross-store coordination.
+    task_boundaries: No migration, dual-store transaction, identity rule, recovery state, or first-run branch.
     decision_closure_reason: The reset target, retained authority, and ordinary recovery path are fixed with no implementation discretion.
   - title: "Unit 3 — State ownership enforcement and integration"
     chunk: state-boundary-enforcement
-    contract_refs: [contract-complete-cache-checkpoint, contract-metadata-only-cold-start, contract-state-boundary-enforcement]
+    contract_refs: [contract-complete-cache-checkpoint, contract-metadata-cache-cold-start, contract-syncstate-cold-start, contract-state-boundary-enforcement]
     files:
       - docs/adr/0001-metadata-cache-is-subordinate-to-commit-last.md
       - AGENTS.md
       - docs/code-enforcement.md
       - src/sync/orchestrator.ts
       - src/sync/state-boundary.test.ts
-    depends_on: ["Unit 1 — Complete final cache snapshot", "Unit 2 — Metadata-only versioned cold-start"]
+    depends_on: ["Unit 1 — Complete final cache snapshot", "Unit 2 — Versioned persistence cold-start"]
     acceptance:
       - All three governing documents name exactly cursor and SyncRecord as authorities and checkpoint as an operation.
       - The source guard accepts only the reviewed SyncOrchestrator instance fields and rejects an added field.
@@ -264,7 +275,7 @@ acceptance:
     criteria: A failed cycle or checkpoint advances no cursor/cache transaction and uses no pending cache correctness state.
     requirement_refs: [FR-CCR-01, FR-CCR-03]
   - id: AC-CCR-03
-    criteria: Metadata cache v3 is recreated as v4 while SyncState stays v7 and existing SyncRecords remain.
+    criteria: Metadata cache v3 is recreated as v4 and SyncState v7 is recreated as empty v8 state.
     requirement_refs: [FR-CCR-04]
   - id: AC-CCR-04
     criteria: No Admission or identity behavior changes and identity_postcondition_unproven remains cycle-local only.
@@ -283,13 +294,13 @@ dispositions:
     adr_refs: [adr-0001-commit-last-cache]
     contract_refs: [contract-complete-cache-checkpoint]
   - decision_input_ref: decision-input-existing-vault-recovery
-    disposition: Bump metadata cache 3 to 4 only; retain SyncState 7 and ordinary reconciliation against existing SyncRecords.
+    disposition: Bump metadata cache 3 to 4 and SyncState 7 to 8; rebuild each through ordinary no-checkpoint and no-baseline reconciliation.
     adr_refs: [adr-0001-commit-last-cache]
-    contract_refs: [contract-metadata-only-cold-start]
+    contract_refs: [contract-metadata-cache-cold-start, contract-syncstate-cold-start]
   - decision_input_ref: decision-input-admission-scope
     disposition: Make no Admission or identity change; keep identity_postcondition_unproven as the existing cycle-local fail-closed reason.
     adr_refs: [adr-0008-fail-closed-identity]
-    contract_refs: [contract-metadata-only-cold-start, contract-state-boundary-enforcement]
+    contract_refs: [contract-syncstate-cold-start, contract-state-boundary-enforcement]
   - decision_input_ref: decision-input-provider-coverage
     disposition: Verify the shared complete-snapshot behavior through the central Google Drive, Dropbox, and OneDrive contract matrix plus the focused Google restart witness.
     adr_refs: [adr-0002-shared-backends]

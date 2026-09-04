@@ -1,6 +1,6 @@
 # ADR 0008 — Logical-identity admission fails closed before sync-plan execution
 
-**Status:** Accepted · 2026-08-25 · **Revised 2026-09-03** (excluded listing entries do not enter Admission)
+**Status:** Accepted · 2026-08-25 · **Revised 2026-09-04** (v8 cold-start discards incompatible v7 path identity)
 **Context area:** `sync/` — change evidence, scope projection, destructive admission, checkpoint lifecycle
 **Related:** [ADR 0001](0001-metadata-cache-is-subordinate-to-commit-last.md), [ADR 0002](0002-backends-verified-by-shared-behaviour-contracts.md), [ADR 0006](0006-remote-rename-detection-is-order-independent.md), [Issue #43](https://github.com/takezoh/obsidian-air-sync/issues/43), [Issue #45](https://github.com/takezoh/obsidian-air-sync/issues/45), [Issue #47](https://github.com/takezoh/obsidian-air-sync/issues/47)
 
@@ -69,9 +69,12 @@ depend on that repair being complete.
    relation, but general rename identity is never guessed. Finalization owns only the
    clean checkpoint commit.
 
-7. SyncState schema version 7 cold-starts the incompatible baseline shape. Old
-   `SyncRecord` and merge-base stores are dropped rather than field-migrated; the first
-   no-baseline cycle is COLD and cannot derive deletion from legacy baseline absence.
+7. SyncState schema version 7 cold-starts the incompatible operation-intent shape.
+   Version 8 cold-starts v7 path identity after the metadata-cache checkpoint defect:
+   retaining an old-casing `SyncRecord` can otherwise keep an already-converged
+   old/new component alive. Old `SyncRecord` and merge-base stores are dropped rather
+   than field-migrated; the first no-baseline cycle is COLD and cannot derive deletion
+   from legacy baseline absence.
 
 ## Consequences
 

@@ -11,7 +11,10 @@ const CONTENT_STORE_NAME = "sync-content";
 // cold-start drops old un-prefixed entries so they re-baseline compressed.
 // v6 added persisted rename intent. v7 removes it and cold-starts so future
 // decisions derive only from terminal records and current observations.
-const DB_VERSION = 7;
+// v8 cold-starts v7 path identity after the metadata-cache checkpoint defect:
+// retaining those records can relate the already-converged old and new casing
+// forever, so the ordinary baseline-free cycle must rebuild them from current facts.
+const DB_VERSION = 8;
 
 /** Persistent store for sync records using IndexedDB */
 export class SyncStateStore {

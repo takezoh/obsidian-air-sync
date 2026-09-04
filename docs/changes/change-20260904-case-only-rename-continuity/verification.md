@@ -16,8 +16,8 @@ role: verification
 | Final cache projection, all backends | T1 | `npm test -- --run tests/fs/remote-backend-contracts.test.ts` | Google Drive, Dropbox, and OneDrive recreate the final live metadata snapshot after executor write/parent/rename/delete/subtree mutations. |
 | Google restart causality | T1 | `npm test -- --run src/fs/googledrive/index.test.ts` | A clean `Templates`→`TemplateS` checkpoint restores only final-casing cache paths after recreation. |
 | Checkpoint failure safety | T1 | `npm test -- --run src/fs/caching/remote-fs.contract.test.ts` | A failed snapshot transaction advances neither durable projection nor cursor and requires no retry write-set. |
-| Metadata-only version reset | T1 | `npm test -- --run src/store/metadata-store.test.ts src/sync/state.test.ts` | Version 3 metadata stores are recreated as version 4; SyncState remains version 7 and seeded `SyncRecord`s remain. |
-| Ordinary COLD rebuild | T1 | `npm test -- --run src/sync/orchestrator.test.ts` | A cleared metadata checkpoint selects the ordinary full-scan path and reconciles against retained SyncRecords without a recovery-specific branch. |
+| Versioned persistence reset | T1 | `npm test -- --run src/store/metadata-store.test.ts src/sync/state.test.ts` | Version 3 metadata stores are recreated as version 4; SyncState v7 path identity and merge bases are recreated as empty v8 stores. |
+| Ordinary COLD rebuild | T1 | `npm test -- --run src/sync/orchestrator.test.ts` | A cleared checkpoint and baseline select ordinary full-scan reconciliation without a recovery-specific branch. |
 | State-boundary guard | T1 | `npm test -- --run src/sync/state-boundary.test.ts` | Exactly two authoritative durable states and the reviewed `SyncOrchestrator` instance-field inventory are accepted; removed cache pending-state identifiers are absent. |
 
 The shared backend contract remains registered only through
@@ -33,8 +33,7 @@ The shared backend contract remains registered only through
   safety test must fail.
 - Reintroduce `touchedPaths`, `pendingFullPersist`, or equivalent pending correctness
   state: the state-boundary guard and source review must fail.
-- Change SyncState version or delete a seeded `SyncRecord`: the metadata-only reset test
-  must fail.
+- Retain a seeded v7 casing `SyncRecord`: the versioned reset test must fail.
 - Add a `SyncOrchestrator` instance field without revising the architectural contract:
   the exact inventory test must fail.
 - Add Admission/identity behavior or persist `identity_postcondition_unproven`: scoped
@@ -52,8 +51,8 @@ npm run test:coverage
 ```
 
 All commands must pass. Diff inspection must confirm that the implementation contains
-one complete snapshot at the existing checkpoint, only the metadata version bump, no
-SyncState reset, no new state field, and no Admission/identity change.
+one complete snapshot at the existing checkpoint, only the two one-time schema bumps,
+no migration or recovery state, no new state field, and no Admission/identity change.
 
 ### Optional provider fidelity
 
