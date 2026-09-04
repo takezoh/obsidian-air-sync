@@ -66,13 +66,19 @@ required.
 - Each relevant component produces exactly one `authorized`, `resolved_no_action`, or
   `deferred` outcome. Missing, conflicting, multiply applicable, or incomplete proof
   selects deferral; execution never chooses a fallback.
+- Component normalizers are candidate builders, not additional outcome owners. Every
+  shaped candidate passes once through the final identity-component evaluator, which
+  alone produces the complete fail-closed reason set and therefore controls the single
+  disposition. Parent folder mapping proves a descendant stable identity only for its
+  exact current occurrence to that identity's unique committed baseline occurrence.
 - Native local rename shaping retains the baseline/hash proof. Native remote rename
   shaping retains the backend-reported edge and opaque same-root identity proof.
   Folder mappings must be complete and destination occupancy must be safe.
-- A fresh proved additive local report creates no debt. An already loaded matching v6
-  debt may be released only after its proved no-action or additive consequence and a
-  clean checkpoint. Safety-binding local candidates are persisted before I/O and
-  released only after their successful consequence and checkpoint.
+- The original implementation described rename debt and deferred work here. That
+  lifecycle was removed and is superseded by the accepted stateless-current-state
+  decision in `adr-20260903-stateless-current-state-recovery`: Admission persists no
+  candidate, disposition, reason, or recovery instruction. Retry re-observes current
+  facts from the last clean checkpoint and committed per-file records.
 - The standalone `refinePlan` stage and module are retired. Local and remote shaping
   helpers are private implementation details of Admission, not independently callable
   whole-plan policy stages.
@@ -87,8 +93,9 @@ required.
   Admission preserves edited content as ordinary child work, removes only redundant
   child casing effects, and emits one existing parent folder rename. This remains one
   component decision; the executor does not reconstruct an ancestor operation.
-- `AuthorizedSyncPlan`, executor phases, SyncState v6 `RenameDebt`, provider
-  interfaces, and checkpoint-before-retirement remain unchanged.
+- `AuthorizedSyncPlan`, executor phases, provider interfaces, per-file successful-unit
+  commit, and clean-cycle checkpoint publication remain unchanged. Historical SyncState
+  v6 `RenameDebt` wording above is not an active authority.
 
 ## Rejected alternatives
 

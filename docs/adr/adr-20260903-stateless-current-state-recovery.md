@@ -88,6 +88,11 @@ enter the evidence surface.
 When a terminal baseline exists, the alias feeds the ordinary fresh-reconciliation
 table instead: baseline-relative local and remote changes determine rename/write,
 conflict, or settlement. This remains current-fact Admission, not a recovery branch.
+Candidate normalization does not decide the terminal outcome: the shaped component
+always passes through Admission's single final identity evaluator. A complete parent
+rename may cover a cross-path stable identity only when its descendant mapping contains
+the exact current occurrence to that identity's unique committed baseline occurrence.
+This proof is recomputed from the current cycle and is never persisted as recovery state.
 
 Dropbox retains its non-atomic `old -> temp -> new` implementation only inside one
 provider invocation. On a returned second-leg error it re-observes old/new/temp by stable

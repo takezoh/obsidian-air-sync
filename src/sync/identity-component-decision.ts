@@ -1,5 +1,11 @@
+/* eslint max-lines: ["error", 420] -- the final identity verdict keeps its cycle-local topology proof and all fail-closed predicates together as one Admission authority. */
 import { projectRenameScope, type RenameScopeConsequence } from "./scope-projection";
 import type { AdmissionComponent } from "./plan-admission-graph";
+import type {
+	EvidenceContradictionReason,
+	EvidenceUnknownReason,
+	NormalizedRenameState,
+} from "./local-rename-admission";
 import type {
 	IdentityEvidence,
 	PathObservation,
@@ -17,13 +23,18 @@ export type AdmissionFailureReason =
 	| "present_unresolved"
 	| "rename_mismatch"
 	| "unknown_observation"
-	| "unknown_scope";
+	| "unknown_scope"
+	| EvidenceUnknownReason
+	| EvidenceContradictionReason;
 
 export function evaluateIdentityComponent(
 	component: AdmissionComponent,
 	scope: ScopeProjection,
+	additionalReasons: readonly AdmissionFailureReason[] = [],
 ): AdmissionFailureReason[] {
-	const reasons = new Set<AdmissionFailureReason>();
+	const reasons = new Set<AdmissionFailureReason>(additionalReasons);
+	if (reasons.size > 0) return [...reasons].sort();
+	const coverage = deriveTopologyCoverage(component, scope);
 	if (component.observations.some((item) => item.kind === "present_unresolved")) {
 		reasons.add("present_unresolved");
 	}
@@ -32,17 +43,17 @@ export function evaluateIdentityComponent(
 	}
 	if (hasConflictingIdentity(component)) reasons.add("conflicting_identity");
 	if (hasOpposingDeletes(component.actions)) reasons.add("opposing_deletes");
-	if (hasAliasTargetMutation(component, scope)) reasons.add("alias_target_mutation");
+	if (hasAliasTargetMutation(component, coverage)) reasons.add("alias_target_mutation");
 
 	const renames = component.evidence.filter((item): item is RenameEvidence => item.kind === "rename");
 	const resolvedNoAction = component.actions.length === 0 && renames.length > 0 &&
 		renames.every((rename) => resolvedAtBothSides(rename, component.observations));
 	if (renames.length > 0 && reasons.size === 0) {
-		const renameReason = evaluateRenames(component, renames, scope, resolvedNoAction);
+		const renameReason = matchesNormalizedLocalMove(component, renames)
+			? undefined : evaluateRenames(component, renames, scope, resolvedNoAction);
 		if (renameReason) reasons.add(renameReason);
 	} else if (renames.length === 0 && reasons.size === 0 &&
-			component.evidence.some((item) => item.kind === "stable_identity" &&
-				new Set(item.occurrences.map((occurrence) => occurrence.path)).size > 1)) {
+			hasUncoveredStableIdentity(component, coverage)) {
 		reasons.add("identity_postcondition_unproven");
 	}
 	if (reasons.size === 0 && hasUnprovenStandaloneDelete(component)) {
@@ -209,44 +220,135 @@ function hasOpposingDeletes(actions: readonly SyncAction[]): boolean {
 
 function hasAliasTargetMutation(
 	component: AdmissionComponent,
-	scope: ScopeProjection,
+	coverage: TopologyCoverage,
 ): boolean {
 	return component.evidence.some((evidence) => evidence.kind === "alias" &&
-		!component.actions.some((action) =>
-			isMatchingAliasRename(component, action, evidence, scope)));
+		!isMatchingAliasRename(component, evidence, coverage));
 }
 
 function isMatchingAliasRename(
-	component: AdmissionComponent, action: SyncAction,
+	component: AdmissionComponent,
 	alias: Extract<IdentityEvidence, { kind: "alias" }>,
-	scope: ScopeProjection,
+	coverage: TopologyCoverage,
 ): boolean {
-	if (action.action !== "rename_local" && action.action !== "rename_remote") return false;
-	const matchingPaths = (oldPath: string, newPath: string) => (
-		alias.requestedPath === oldPath && alias.resolvedPath === newPath) || (
-		alias.requestedPath === newPath && alias.resolvedPath === oldPath);
-	const pair = matchingPaths(action.oldPath, action.path)
-		? { oldPath: action.oldPath, newPath: action.path }
-		: action.descendants?.find((candidate) => matchingPaths(candidate.oldPath, candidate.newPath));
-	if (!pair) return false;
-	if (component.evidence.some((evidence) => evidence.kind === "rename" &&
-		evidence.oldPath === pair.oldPath && evidence.newPath === pair.newPath &&
-		action.action === (evidence.side === "local" ? "rename_remote" : "rename_local"))) {
-		return true;
+	const forward = coverage.byPair.get(pairKey(alias.requestedPath, alias.resolvedPath)) ?? [];
+	const reverse = coverage.byPair.get(pairKey(alias.resolvedPath, alias.requestedPath)) ?? [];
+	return [...forward, ...reverse].some((entry) => {
+		if (entry.action.action !== "rename_local" && entry.action.action !== "rename_remote") {
+			return false;
+		}
+		if ("protocol" in entry.action &&
+			entry.action.protocol === "case_alias_canonicalization") return true;
+		if ("normalizedRenameState" in entry.action) return true;
+		if (component.evidence.some((evidence) => evidence.kind === "rename" &&
+			evidence.oldPath === entry.oldPath && evidence.newPath === entry.newPath &&
+			entry.action.action === (evidence.side === "local" ? "rename_remote" : "rename_local"))) {
+			return true;
+		}
+		return alias.side === "local" && entry.action.action === "rename_remote" &&
+			entry.action.isFolder === true && entry.complete && entry.remoteTopologyObserved;
+	});
+}
+
+interface CoverageEntry {
+	readonly action: SyncAction;
+	readonly oldPath: string;
+	readonly newPath: string;
+	readonly complete: boolean;
+	readonly remoteTopologyObserved: boolean;
+}
+
+interface TopologyCoverage {
+	readonly byPair: ReadonlyMap<string, readonly CoverageEntry[]>;
+}
+
+function deriveTopologyCoverage(
+	component: AdmissionComponent,
+	scope: ScopeProjection,
+): TopologyCoverage {
+	const byPair = new Map<string, CoverageEntry[]>();
+	for (const action of component.actions) {
+		if (action.action !== "rename_local" && action.action !== "rename_remote") {
+			if ("normalizedRenameState" in action && "oldPath" in action) {
+				addCoverageEntry(byPair, {
+					action, oldPath: action.oldPath, newPath: action.path,
+					complete: false, remoteTopologyObserved: false,
+				});
+			}
+			continue;
+		}
+		const complete = action.isFolder === true && folderMappingComplete(action, {
+			kind: "rename", side: action.action === "rename_remote" ? "local" : "remote",
+			oldPath: action.oldPath, newPath: action.path, isFolder: true, authority: "reported",
+		}, scope);
+		const remoteTopologyObserved = action.action === "rename_remote" &&
+			component.observations.some((observation) => observation.kind === "exact" &&
+				observation.side === "remote" && observation.requestedPath === action.oldPath &&
+				observation.entity.isDirectory) &&
+			component.observations.some((observation) => observation.kind === "absent" &&
+				observation.side === "remote" && observation.requestedPath === action.path &&
+				observation.authority === "stat");
+		addCoverageEntry(byPair, {
+			action, oldPath: action.oldPath, newPath: action.path,
+			complete, remoteTopologyObserved,
+		});
+		for (const pair of action.descendants ?? []) {
+			addCoverageEntry(byPair, {
+				action, oldPath: pair.oldPath, newPath: pair.newPath,
+				complete, remoteTopologyObserved,
+			});
+		}
 	}
-	if (alias.side !== "local" || action.action !== "rename_remote" || !action.isFolder) {
-		return false;
-	}
-	const oldRemote = component.observations.some((observation) =>
-		observation.kind === "exact" && observation.side === "remote" &&
-		observation.requestedPath === action.oldPath && observation.entity.isDirectory);
-	const newRemoteAbsent = component.observations.some((observation) =>
-		observation.kind === "absent" && observation.side === "remote" &&
-		observation.requestedPath === action.path && observation.authority === "stat");
-	return oldRemote && newRemoteAbsent && folderMappingComplete(action, {
-		kind: "rename", side: "local", oldPath: action.oldPath, newPath: action.path,
-		isFolder: true, authority: "reported",
-	}, scope);
+	return { byPair };
+}
+
+function matchesNormalizedLocalMove(
+	component: AdmissionComponent,
+	renames: readonly RenameEvidence[],
+): boolean {
+	return component.actions.length === 1 && component.actions.every((action) =>
+		"normalizedRenameState" in action && "oldPath" in action &&
+		renames.some((rename) => rename.side === "local" && !rename.isFolder &&
+			rename.oldPath === action.oldPath && rename.newPath === action.path));
+}
+
+function addCoverageEntry(
+	byPair: Map<string, CoverageEntry[]>,
+	entry: CoverageEntry,
+): void {
+	const key = pairKey(entry.oldPath, entry.newPath);
+	const entries = byPair.get(key) ?? [];
+	entries.push(entry);
+	byPair.set(key, entries);
+}
+
+function pairKey(oldPath: string, newPath: string): string {
+	return `${oldPath}\0${newPath}`;
+}
+
+function hasUncoveredStableIdentity(
+	component: AdmissionComponent,
+	coverage: TopologyCoverage,
+): boolean {
+	return component.evidence.some((evidence) => {
+		if (evidence.kind !== "stable_identity" || evidence.side !== "remote") return false;
+		if (component.actions.some((action) => {
+			if (!("normalizedRenameState" in action)) return false;
+			const state = action.normalizedRenameState as NormalizedRenameState;
+			return typeof state === "object" && state !== null && "baseline" in state &&
+				state.baseline?.remoteIdentityKey === evidence.identityKey;
+		})) return false;
+		const current = evidence.occurrences.filter((item) => item.phase === "current");
+		const baseline = evidence.occurrences.filter((item) => item.phase === "baseline");
+		const spansPaths = new Set(evidence.occurrences.map((item) => item.path)).size > 1;
+		if (!spansPaths) return false;
+		if (current.length !== 1 || baseline.length !== 1 ||
+			current[0]!.identityKey !== evidence.identityKey ||
+			baseline[0]!.identityKey !== evidence.identityKey) return true;
+		const entries = coverage.byPair.get(pairKey(current[0]!.path, baseline[0]!.path)) ?? [];
+		return !entries.some((entry) => entry.action.action === "rename_remote" &&
+			entry.action.isFolder === true && entry.complete && entry.remoteTopologyObserved);
+	});
 }
 
 function hasConflictingIdentity(component: AdmissionComponent): boolean {

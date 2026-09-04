@@ -2,155 +2,159 @@
 change: change-20260904-case-alias-parent-transition
 role: implementation
 contracts:
-- contract-production-shape-gate
-- contract-provider-resolved-topology
-- contract-admission-parent-transition
-- contract-exact-execution-and-checkpoint
+- contract-fresh-evidence-and-regression
+- contract-single-final-postcondition
+- contract-exact-topology-coverage
+- contract-current-fact-convergence
 contract_projections:
-- id: contract-production-shape-gate
+- id: contract-fresh-evidence-and-regression
   verifications:
-  - verify-cold-production-shape
-  - verify-provider-paired-controls
+  - verify-fresh-dependency-surface
+  - verify-production-shaped-red-and-negatives
+  - verify-pre-evaluator-terminal-rejection
   discretion: []
-- id: contract-provider-resolved-topology
+- id: contract-single-final-postcondition
   verifications:
-  - verify-google-provider-topology
-  - verify-onedrive-provider-topology
-  - verify-dropbox-provider-topology
-  - verify-three-backend-cache-contract
+  - verify-one-final-verdict
+  - verify-no-pre-evaluator-terminal-authorization
+  - verify-admission-production-cut
   discretion: []
-- id: contract-admission-parent-transition
+- id: contract-exact-topology-coverage
   verifications:
-  - verify-same-cycle-mixed-admission
-  - verify-temperature-independent-decision
-  discretion: []
-- id: contract-exact-execution-and-checkpoint
+  - verify-exact-baseline-occurrence-coverage
+  - verify-covered-plus-uncovered-partition
+  - verify-native-and-single-file-compatibility
+  - verify-linear-single-derivation
+  discretion:
+  - discretion-private-coverage-representation
+- id: contract-current-fact-convergence
   verifications:
-  - verify-executor-phase-order
-  - verify-checkpoint-last
+  - verify-cold-warm-hot-equivalence
+  - verify-execution-and-finalization-unchanged
   - verify-state-ownership-guard
-  - verify-full-repository-gate
+  - verify-full-project-gate
   discretion: []
 adrs:
-- adr-0001-commit-last-cache
-- adr-0008-fail-closed-identity
-- adr-four-stage-sync-pipeline
+- adr-20260831-admission-owns-identity-component-decisi
+- adr-0008-logical-identity-admission-fails-closed
+- adr-20260903-four-stage-sync-pipeline
+- adr-20260903-stateless-current-state-recovery
+- adr-0001-metadata-cache-is-subordinate-to-commit-last
 decision_dispositions:
-- decision_input_ref: input-requested-echo
-  disposition: 'adopted: Requested echo is retained only as an untrusted lookup or
-    caller echo and is prohibited from proving or re-keying topology.'
+- decision_input_ref: input-final-proof-owner
+  disposition: adopted; evaluateIdentityComponent is the sole final postcondition
+    owner after all component-local candidate shaping, and no normalizer may emit
+    a terminal disposition.
   adr_refs:
-  - adr-0008-fail-closed-identity
+  - adr-20260831-admission-owns-identity-component-decisi
+  - adr-20260903-four-stage-sync-pipeline
   contract_refs:
-  - contract-provider-resolved-topology
-- decision_input_ref: input-backend-only
-  disposition: 'rejected: Provider targeting is necessary but cannot replace the explicit
-    parent topology effect or make mutually invalidating child topology actions jointly
-    executable.'
-  contract_refs:
-  - contract-provider-resolved-topology
-  - contract-admission-parent-transition
-- decision_input_ref: input-admission-owns-topology
-  disposition: 'adopted: Admission remains the sole owner that converts complete component
-    evidence into authorized topology actions.'
+  - contract-single-final-postcondition
+- decision_input_ref: input-exact-descendant-coverage
+  disposition: adopted; only the exact current occurrence to unique committed baseline
+    occurrence pair of the same opaque identity inside one complete validated parent
+    rename_remote mapping establishes coverage; intended-only endpoints are rejected.
   adr_refs:
-  - adr-0008-fail-closed-identity
+  - adr-0008-logical-identity-admission-fails-closed
   contract_refs:
-  - contract-admission-parent-transition
-- decision_input_ref: input-executor-exact-actions
-  disposition: 'adopted: Execution retains the existing exact-plan transfer, serial-conflict,
-    and structural phases without inference.'
+  - contract-exact-topology-coverage
+- decision_input_ref: input-temperature-equivalence
+  disposition: adopted; acquisition temperature remains outside Admission and equal
+    complete facts have one result.
   adr_refs:
-  - adr-four-stage-sync-pipeline
+  - adr-0008-logical-identity-admission-fails-closed
+  - adr-20260903-stateless-current-state-recovery
   contract_refs:
-  - contract-exact-execution-and-checkpoint
-- decision_input_ref: input-no-third-authority
-  disposition: 'adopted: The design uses only cycle evidence, per-file SyncRecords,
-    and the clean remote checkpoint; no state owner is added.'
+  - contract-current-fact-convergence
+- decision_input_ref: input-no-recovery-authority
+  disposition: adopted; no persistent or correctness-critical in-memory recovery authority
+    is permitted.
   adr_refs:
-  - adr-0001-commit-last-cache
+  - adr-20260903-stateless-current-state-recovery
+  - adr-0001-metadata-cache-is-subordinate-to-commit-last
   contract_refs:
-  - contract-exact-execution-and-checkpoint
-- decision_input_ref: decision-input-repair-topology
-  disposition: 'adopted: The repair is one same-cycle Admission normalization plus
-    a subordinate provider-truth boundary, not a recovery flow.'
-  contract_refs:
-  - contract-admission-parent-transition
-  - contract-provider-resolved-topology
-- decision_input_ref: decision-input-compound-protocol
-  disposition: 'rejected: Existing action types and phase barriers express the joint
-    plan without new partial-effect or resume semantics.'
+  - contract-current-fact-convergence
+- decision_input_ref: input-negative-boundary
+  disposition: adopted; every existing fail-closed category and exact reason boundary
+    is retained, with only the exact complete baseline-occurrence edge added as positive
+    proof.
   adr_refs:
-  - adr-four-stage-sync-pipeline
+  - adr-0008-logical-identity-admission-fails-closed
   contract_refs:
-  - contract-admission-parent-transition
-- decision_input_ref: decision-input-generic-dag
-  disposition: 'rejected: A dependency graph would duplicate Admission reasoning in
-    Execution and add bookkeeping not required by the single parent transition.'
+  - contract-exact-topology-coverage
+- decision_input_ref: input-native-and-single-file-compatibility
+  disposition: adopted; reported native rename, unbaselined single-file canonicalization,
+    and standalone delete paths remain distinct and unchanged.
+  contract_refs:
+  - contract-single-final-postcondition
+  - contract-exact-topology-coverage
+- decision_input_ref: input-stale-deferred-language
+  disposition: adopted as documentation reconciliation; stale deferred or rename-debt
+    wording is clarified against the accepted failed/stateless contract without a
+    new ADR.
   adr_refs:
-  - adr-four-stage-sync-pipeline
+  - adr-20260831-admission-owns-identity-component-decisi
+  - adr-20260903-stateless-current-state-recovery
   contract_refs:
-  - contract-exact-execution-and-checkpoint
-- decision_input_ref: decision-input-filesystem-only
-  disposition: 'rejected: The shared filesystem correction is necessary but the reproduced
-    control proves it is insufficient without Admission parent normalization.'
+  - contract-current-fact-convergence
+- decision_input_ref: input-dependency-freshness
+  disposition: adopted as a pre-implementation evidence gate; stale, unknown, or expanded
+    dependency evidence stops implementation.
   contract_refs:
-  - contract-provider-resolved-topology
-  - contract-admission-parent-transition
-- decision_input_ref: decision-input-new-state
-  disposition: 'rejected: Persisted intent, recovery status, pending work, and additional
-    correctness memory violate the closed authority model and are unnecessary.'
+  - contract-fresh-evidence-and-regression
+- decision_input_ref: alternative-local-stable-identity-bypass
+  disposition: rejected; fixture-specific suppression preserves split policy and can
+    authorize unrelated identities.
+  contract_refs:
+  - contract-single-final-postcondition
+  - contract-exact-topology-coverage
+- decision_input_ref: alternative-proof-token-or-recovery-state
+  disposition: rejected; a token, status, marker, or recovery branch creates another
+    authority instead of making the final proof compositional.
   adr_refs:
-  - adr-0001-commit-last-cache
-  - adr-0008-fail-closed-identity
+  - adr-20260903-stateless-current-state-recovery
   contract_refs:
-  - contract-exact-execution-and-checkpoint
-- decision_input_ref: decision-input-durable-authority
-  disposition: 'adopted: Per-file SyncRecords remain post-I/O authority and cursor
-    plus complete cache remain clean-cycle commit-last authority.'
-  adr_refs:
-  - adr-0001-commit-last-cache
+  - contract-current-fact-convergence
+- decision_input_ref: decision-input-single-final-owner
+  disposition: subsumed by input-final-proof-owner; candidate shaping is non-terminal
+    and the existing evaluator owns the only final reasons and verdict.
   contract_refs:
-  - contract-exact-execution-and-checkpoint
-- decision_input_ref: decision-input-cache-topology
-  disposition: 'adopted: The metadata cache remains a provider-derived working projection
-    and never records requested or intended topology as fact.'
-  adr_refs:
-  - adr-0001-commit-last-cache
+  - contract-single-final-postcondition
+- decision_input_ref: decision-input-stable-edge-coverage
+  disposition: subsumed by input-exact-descendant-coverage; baseline means the unique
+    committed baseline occurrence of the same identity, never a merely intended path.
   contract_refs:
-  - contract-provider-resolved-topology
-- decision_input_ref: decision-input-admission-owner
-  disposition: 'subsumed: Closed by input-admission-owns-topology and the same Admission
-    contract.'
+  - contract-exact-topology-coverage
+- decision_input_ref: decision-input-temperature
+  disposition: subsumed by input-temperature-equivalence; equal complete facts have
+    equal Admission meaning.
   contract_refs:
-  - contract-admission-parent-transition
-- decision_input_ref: decision-input-folder-component
-  disposition: 'adopted: A complete folder component is the current parent identity
-    plus the full managed descendant identity set, not a new persistent folder identity.'
-  adr_refs:
-  - adr-0008-fail-closed-identity
+  - contract-current-fact-convergence
+- decision_input_ref: decision-input-recovery-state
+  disposition: subsumed by input-no-recovery-authority; ordinary current-fact replanning
+    uses only existing durable facts.
   contract_refs:
-  - contract-admission-parent-transition
-- decision_input_ref: decision-input-executor-boundary
-  disposition: 'adopted: Executor performs authorized actions exactly and does not
-    infer ancestor renames or re-admit actions.'
-  adr_refs:
-  - adr-four-stage-sync-pipeline
+  - contract-current-fact-convergence
+- decision_input_ref: decision-input-helper-shape
+  disposition: implementation detail; only the private Set-versus-Map representation
+    of the single derived relation is delegated, while derivation count, complexity,
+    edge identity, and consumers are fixed.
   contract_refs:
-  - contract-exact-execution-and-checkpoint
-- decision_input_ref: decision-input-retry-model
-  disposition: 'adopted: Any incomplete attempt aborts its live view and the next
-    COLD, WARM, or HOT acquisition decides only from current facts and committed records.'
-  adr_refs:
-  - adr-0001-commit-last-cache
-  - adr-0008-fail-closed-identity
+  - contract-exact-topology-coverage
+- decision_input_ref: decision-input-dependency-freshness
+  disposition: subsumed by input-dependency-freshness; refresh is a hard evidence
+    gate before production editing.
   contract_refs:
-  - contract-exact-execution-and-checkpoint
+  - contract-fresh-evidence-and-regression
+- decision_input_ref: decision-input-stale-adr-wording
+  disposition: subsumed by input-stale-deferred-language; clarify the existing authority
+    without creating a new ADR or lifecycle.
+  contract_refs:
+  - contract-current-fact-convergence
 milestones:
-- id: test-only-evidence-gate
-- id: shared-filesystem-boundary
-- id: admission-normalization
-- id: integration-and-recurrence-guard
+- id: evidence-and-test-first
+- id: admission-policy-reduction
+- id: integration-and-conformance
 reference_algorithms: []
 ---
 
@@ -162,52 +166,55 @@ reference_algorithms: []
 
 ### Responsibility boundary
 
-- Observation supplies current endpoint and baseline facts only.
-- Admission owns complete-component authorization and emits existing action types only.
-- The cache-backed filesystem owns provider-resolved mutation targeting and the attempt-local derived projection; requested paths are untrusted addresses.
-- Execution runs the immutable authorized plan through the existing transfer, serial-conflict, and structural phases.
-- Existing state owners retain post-I/O per-file commits and wholly-clean cursor/cache commit-last.
+- Observation supplies immutable current endpoint, identity occurrence, committed baseline, scope, and proposal facts only.
+- Admission's local/native/case-alias helpers shape one component candidate but emit no terminal component disposition.
+- `evaluateIdentityComponent` derives one validated topology-coverage relation, applies every final negative predicate, and returns the only final reason set.
+- `admitDestructivePlan` maps that result to exactly one existing disposition and exposes actions only after an empty final reason set.
+- Execution, per-file `SyncRecord` commit, working-view abort, and clean-cycle checkpoint publication retain their current owners and behavior.
 
-### Unit 0 — production-shape gate
+### Unit 0 — fresh evidence and regression lock
 
-Files: `src/sync/orchestrator.test.ts`, `src/sync/plan-admission.test.ts`, and the Google Drive, OneDrive, and Dropbox adapter tests.
+Files: `src/sync/plan-admission.test.ts` and `src/sync/orchestrator.test.ts`.
 
-Before any production change, enter through the real COLD Observation→Decision→Admission path. Record the exact parent stable identity, complete managed descendant set, and proposed/admitted action subtypes for local-only, remote-only, conflict, unchanged, and topology-only children. Include a remote-only delta case that would be lost by a parent-only clean checkpoint.
+Before production edits, refresh current dependency/change-surface evidence for the declared Admission owner, producer, consumer, and test seams. Stop and return to design if another production caller, owner, or cross-boundary dependency appears.
 
-For every adapter, add paired controls: an alias lookup returning provider `Templates` must not re-key; an explicit rename response returning provider `TemplateS` must re-key. A manually constructed `AuthorizedSyncPlan` is not sufficient evidence. If required carriers are absent or controls conflict, stop before production edits and revise the design.
+Keep the production-shaped target-record RED and add four discriminators:
 
-### Unit 1 — provider-resolved topology
+- exact same-identity current-to-unique-baseline descendant coverage succeeds;
+- keeping the intended destination while removing or changing that identity's baseline occurrence fails with `identity_postcondition_unproven`;
+- a determinate `normalizeLocalMove` candidate with a second opaque identity key at the same remote-current slot produces exactly one failed `conflicting_identity` disposition and zero executable actions;
+- unrelated, absent, incomplete, crossed, duplicate, reversed, covered-plus-uncovered, unresolved, and conflicting edges retain exact existing reasons.
 
-Files: `src/fs/caching/metadata-cache.ts`, `src/fs/caching/path-authority.ts`, `src/fs/caching/remote-fs.ts`, the three backend implementations/tests, `tests/fs/contracts/caching-remote-fs.contract.ts`, and the central remote backend contract composition.
+The third fixture is mandatory because it fails only when the current pre-evaluator terminal branch remains: its candidate is locally determinate, but its final component fact is rejecting. Tests must assert disposition count and kind, exact reason, and executable action count.
 
-Keep requested spelling separate from effective provider topology. Resolve each previously unresolved parent segment once per attempt through the existing live cache. Resolve the existing child at most once per mutation. Use one provider-returned target lineage for identity/CAS, provider I/O, and the live projection. Later siblings reuse the resolved parent with zero additional parent lookups.
+### Unit 1 — unified final postcondition
 
-Requested echo never re-keys. Provider-resolved mutation metadata may update topology; when a provider returns sparse metadata, only the successful endpoint of an explicit rename may do so. A sparse write response refreshes the identity at its current path without moving it. Google Drive's single child lookup must expose enough cardinality to distinguish zero, one, and multiple results; ambiguity on any backend rejects the mutation. Do not prefetch, add a resolver cache, infer an ancestor rename, or fall back from ambiguous identity to create.
+Files: `src/sync/plan-admission.ts`, `src/sync/identity-component-decision.ts`, and focused Admission tests. `src/sync/plan-admission-case-alias.ts` changes only if needed to make its already-existing return explicitly candidate-only; its activation and mapping semantics remain unchanged.
 
-### Unit 2 — Admission parent transition
+Remove terminal disposition construction from the `normalizeLocalMove` branch of `admitDestructivePlan`. After all component-local shaping, construct one final `AdmissionComponent`, call `evaluateIdentityComponent` exactly once, and emit one existing disposition from its reasons and action count. No normalizer can append authorized actions, settle no-action, or return an independently final failure.
 
-Files: `src/sync/plan-admission.ts`, `src/sync/plan-admission-graph.ts`, `src/sync/plan-admission-case-alias.ts`, `src/sync/optimize-local-renames.ts`, `src/sync/types.ts`, and focused tests.
+Inside `identity-component-decision.ts`, validate candidate folder mappings and derive one read-only topology-coverage relation exactly once. For each no-reported-rename remote stable identity, require exactly one current occurrence and exactly one committed baseline occurrence for that same opaque identity. Enter only the exact directed descendant pair `currentOccurrence.path -> baselineOccurrence.path` from a complete validated parent `rename_remote`. An action destination or intended endpoint lacking that unique baseline occurrence never qualifies.
 
-Using the current immutable component evidence, prove one same-identity parent mapping, local/baseline case intent, inclusion scope, destination non-foreignness, and the complete managed descendant identity set. Preserve every `push`, `pull`, and `conflict` action. Remove only descendant `rename_remote` actions whose sole effect is the same parent casing transition. Emit exactly one existing parent `rename_remote(oldParent, newParent, isFolder=true)`.
+Alias and stable-identity predicates consume the same relation. Total evaluation is `O(A + D + E + S)` time and `O(D)` auxiliary storage, with no I/O; repeated per-edge action/descendant scans and a separately derived second relation are forbidden. A private `Set` or `Map` representation may be selected inside this file only. Escalate if the choice changes edge identity, reason precedence, complexity, consumers, file boundary, or lifetime.
 
-Any incomplete, crossed, ambiguous, foreign, recreated, or unclassified component retains existing fail-closed behavior. Do not create a parent-only defer, new disposition/status, action type, generic DAG, executor metadata, late re-admission, or state outside the cycle snapshot.
+Preserve all existing reason strings and precedence, reported native rename behavior, unbaselined single-file canonicalization, standalone deletion authority, and disconnected proposal order. Do not filter evidence or synthesize rename evidence to create success.
 
-### Unit 3 — convergence and enforcement
+### Unit 2 — convergence, documentation, and enforcement
 
-Files: integration tests, `sync-state-ownership-guard.test.mjs` at repository root, `AGENTS.md`, `docs/code-enforcement.md`, ADR 0001, ADR 0008, and the four-stage pipeline design.
+Files: `src/sync/plan-admission.test.ts`, `src/sync/orchestrator.test.ts`, existing executor/committer/finalizer tests, `sync-state-ownership-guard.test.mjs`, `docs/design/design-four-stage-sync-pipeline.md`, `docs/adr/adr-20260831-admission-owns-identity-component-decisi.md`, and `docs/adr/adr-20260903-stateless-current-state-recovery.md`.
 
-Prove exact provider event order: transfer content, serial conflict, structural parent rename, then clean cursor/cache publication. Prove a content or parent-rename failure prevents checkpoint publication while successful per-file records retain their existing semantics and an ordinary later COLD/WARM/HOT cycle re-evaluates current facts.
+Prove equal complete COLD/WARM/HOT facts yield identical Admission action, disposition, and reason projections. Prove child content precedes the structural parent rename, successful file records remain valid, any incomplete attempt leaves cursor/cache/scope unpublished and aborts its working view, and the next attempt uses ordinary current facts.
 
-Register the shared provider behavior for Google Drive, OneDrive, and Dropbox. Clarify the existing documents and guards in place; do not add an ADR, schema, runtime registry, state taxonomy, orchestrator field, or provider-specific recovery policy.
+Upsert the candidate-only/one-final-evaluator invariant into the active four-stage design. Clarify the existing Admission ownership ADR's stale deferred/rename-debt wording against the later accepted stateless ADR. Do not create a new ADR or change historical decision status.
 
 ### Dependency order
 
-`Unit 0 → Unit 1 → Unit 2 → Unit 3`. Unit 0 is a hard production-change gate. Units 1 and 2 may not be merged independently because provider target truth and Admission plan completeness are both necessary for convergence.
+`Unit 0 -> Unit 1 -> Unit 2`. Unit 0 is a hard production-change gate. Unit 1 is the only production repair. Unit 2 verifies integration and materializes the already-governing invariant; it cannot widen the production surface.
 
 ### Commit and abort semantics
 
-A successful child action may commit its own `SyncRecord`. Cursor plus complete derived cache remain unpublished until every authorized action, including the remote-only child and parent folder rename, has terminal success. Any missing proof, rejection, block, provider ambiguity, or precondition change makes the cycle non-clean and uses the existing working-view abort lifecycle. No compensation or recovery marker is added.
+A successful child action may commit its own `SyncRecord`. Cursor plus complete derived cache and scope remain unpublished until every authorized action has terminal success. Any missing proof, rejection, block, exception, or precondition change keeps the cycle non-clean, waits for scheduled sibling effects, and uses the existing working-view abort lifecycle. No compensation, recovery marker, prior-error input, or pending work is added.
 
 ### Design constraints
 
-The implementation must preserve `contract-production-shape-gate`, `contract-provider-resolved-topology`, `contract-admission-parent-transition`, and `contract-exact-execution-and-checkpoint` from the canonical design. There are no open architecture choices. Private helper placement and backend request syntax may vary only if the named verification observes identical action sets, failure behavior, provider-call counts, and checkpoint order.
+The implementation must preserve `contract-fresh-evidence-and-regression`, `contract-single-final-postcondition`, `contract-exact-topology-coverage`, and `contract-current-fact-convergence`. There are no open architecture choices. The only discretion is the file-private Set-versus-Map representation of the one coverage relation; it must preserve exact occurrence identity, single derivation, linear bound, reason partition, action/disposition observations, and cycle-local lifetime.

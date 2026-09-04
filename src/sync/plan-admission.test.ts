@@ -750,6 +750,31 @@ describe("admitDestructivePlan", () => {
 		expect(result.executable.actions[0]).not.toHaveProperty("protocol");
 	});
 
+	it("routes a determinate local-move candidate through the final identity verdict", () => {
+		const fixture = caseAliasFixture(
+			freshEntity("case.md", "local"), freshEntity("Case.md", "h", "R"),
+		);
+		fixture.entries[0]!.prevSync = {
+			path: "Case.md", hash: "h", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, syncedAt: 1, remoteIdentityKey: "R",
+		};
+		fixture.evidence.push({
+			kind: "stable_identity", side: "remote", identityKey: "foreign", occurrences: [{
+				side: "remote", phase: "current", path: "Case.md", identityKey: "foreign",
+			}],
+		});
+
+		const result = admit(
+			fixture.actions, fixture.evidence, fixture.observations, fixture.scope, fixture.entries,
+		);
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.dispositions).toHaveLength(1);
+		expect(result.dispositions[0]).toMatchObject({
+			kind: "failed", reasons: ["conflicting_identity"],
+		});
+	});
+
 	it("defers a native rename whose current destination identity contradicts the report", () => {
 		const action: SyncAction = {
 			path: "B.md", oldPath: "A.md", action: "rename_local",
@@ -1098,6 +1123,101 @@ describe("admitDestructivePlan", () => {
 		expect(result.executable.actions[0]).toMatchObject({
 			action: "rename_remote", oldPath: "Templates", path: "TemplateS", isFolder: true,
 		});
+	});
+
+	it("admits a COLD parent case alias after a child record committed at the target", () => {
+		const oldFolder: FileEntity = {
+			...entity("Templates", "folder-R"), isDirectory: true, size: 0,
+		};
+		const newFolder: FileEntity = {
+			...entity("TemplateS"), isDirectory: true, size: 0,
+		};
+		const localA = freshEntity("TemplateS/a.md", "local-A");
+		const localB = freshEntity("TemplateS/b.md", "B");
+		const remoteA = freshEntity("Templates/a.md", "A", "remote-A");
+		const remoteB = freshEntity("Templates/b.md", "B", "remote-B");
+		const previousA: SyncRecord = {
+			path: "Templates/a.md", hash: "A", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, remoteIdentityKey: "remote-A", syncedAt: 1,
+		};
+		const previousB: SyncRecord = {
+			path: "TemplateS/b.md", hash: "B", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, remoteIdentityKey: "remote-B", syncedAt: 1,
+		};
+		const entries: MixedEntity[] = [
+			{ path: "Templates/a.md", remote: remoteA, prevSync: previousA },
+			{ path: "TemplateS/a.md", local: localA },
+			{ path: "Templates/b.md", remote: remoteB },
+			{ path: "TemplateS/b.md", local: localB, prevSync: previousB },
+		];
+		const observations: PathObservation[] = [
+			{ kind: "alias", side: "local", requestedPath: "Templates", resolvedPath: "TemplateS", entity: newFolder },
+			{ kind: "exact", side: "local", requestedPath: "TemplateS", entity: newFolder },
+			{ kind: "exact", side: "remote", requestedPath: "Templates", entity: oldFolder },
+			{ kind: "absent", side: "remote", requestedPath: "TemplateS", authority: "stat" },
+			...[
+				["Templates/a.md", "TemplateS/a.md", localA, remoteA],
+				["Templates/b.md", "TemplateS/b.md", localB, remoteB],
+			].flatMap(([oldPath, newPath, local, remote]) => [
+				{ kind: "alias" as const, side: "local" as const, requestedPath: oldPath as string,
+					resolvedPath: newPath as string, entity: local as FileEntity },
+				{ kind: "exact" as const, side: "local" as const, requestedPath: newPath as string,
+					entity: local as FileEntity },
+				{ kind: "exact" as const, side: "remote" as const, requestedPath: oldPath as string,
+					entity: remote as FileEntity },
+				{ kind: "absent" as const, side: "remote" as const, requestedPath: newPath as string,
+					authority: "stat" as const },
+			]),
+		];
+		const evidence: IdentityEvidence[] = [
+			{ kind: "alias", side: "local", requestedPath: "Templates", resolvedPath: "TemplateS" },
+			{ kind: "alias", side: "local", requestedPath: "Templates/a.md", resolvedPath: "TemplateS/a.md" },
+			{ kind: "alias", side: "local", requestedPath: "Templates/b.md", resolvedPath: "TemplateS/b.md" },
+			{
+				kind: "stable_identity", side: "remote", identityKey: "remote-B", occurrences: [
+					{ side: "remote", phase: "baseline", path: "TemplateS/b.md", identityKey: "remote-B" },
+					{ side: "remote", phase: "current", path: "Templates/b.md", identityKey: "remote-B" },
+				],
+			},
+		];
+		const scope = projection({
+			Templates: "included", TemplateS: "included",
+			"Templates/a.md": "included", "TemplateS/a.md": "included",
+			"Templates/b.md": "included", "TemplateS/b.md": "included",
+		});
+
+		const result = admitBatchObservation(captureBatchObservation(
+			entries, evidence, observations, scope, "backend\0root",
+		));
+
+		expect(result.snapshot.plan.actions).toHaveLength(4);
+		expect(result.failures).toEqual([]);
+		expect(result.executable.actions).toEqual([
+			expect.objectContaining({
+				action: "push", path: "Templates/a.md", local: localA,
+			}),
+			expect.objectContaining({
+				action: "rename_remote", oldPath: "Templates", path: "TemplateS", isFolder: true,
+			}),
+		]);
+
+		const intendedOnlyEvidence = evidence.map((item): IdentityEvidence =>
+			item.kind === "stable_identity" ? {
+				...item,
+				occurrences: item.occurrences.map((occurrence) =>
+					occurrence.phase === "baseline"
+						? { ...occurrence, path: "Elsewhere/b.md" }
+						: occurrence),
+			} : item);
+		const intendedOnly = admitBatchObservation(captureBatchObservation(
+			entries, intendedOnlyEvidence, observations, projection({
+				...Object.fromEntries(scope.byEndpoint), "Elsewhere/b.md": "included",
+			}), "backend\0root",
+		));
+
+		expect(intendedOnly.executable.actions).toEqual([]);
+		expect(intendedOnly.failures).toHaveLength(1);
+		expect(intendedOnly.failures[0]?.reasons).toEqual(["identity_postcondition_unproven"]);
 	});
 
 	it("does not reconstruct an actionless case alias after the remote source changed", () => {

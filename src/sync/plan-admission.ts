@@ -126,6 +126,7 @@ interface AdmissionComponentDisposition {
 	paths: string[];
 	actions: SyncAction[];
 	evidence: IdentityEvidence[];
+	normalizedRenameState?: NormalizedRenameState;
 }
 
 export interface AuthorizedComponent extends AdmissionComponentDisposition {
@@ -146,9 +147,6 @@ export type AdmissionFailureReason =
 export interface AdmissionFailureComponent extends AdmissionComponentDisposition {
 	kind: "failed";
 	reasons: AdmissionFailureReason[];
-	normalizedRenameState?:
-		| Extract<NormalizedRenameState, { kind: "evidence_unknown" }>
-		| Extract<NormalizedRenameState, { kind: "evidence_contradicted" }>;
 }
 
 export type AdmissionDisposition =
@@ -210,57 +208,49 @@ export function admitDestructivePlan(
 			actions: parentActions ?? observedComponent.actions,
 		};
 		const normalizedRenameState = normalizeLocalMove(component, snapshot.scope);
+		let decidedComponent: AdmissionComponent;
+		let candidateReasons: AdmissionFailureReason[] = [];
 		if (normalizedRenameState) {
 			const decision = decideLocalMove(normalizedRenameState);
-			const action = decision.kind === "authorized" ? decision.action : undefined;
-			const shared = {
-				paths: [...component.paths].sort(), actions: action ? [action] : [],
-				evidence: [...component.evidence].sort(compareEvidence),
-				normalizedRenameState,
-			};
 			if (decision.kind === "authorized") {
-				authorizedActions.push(decision.action);
-				dispositions.push({ kind: "authorized", ...shared });
+				decidedComponent = { ...component, actions: [decision.action] };
 			} else if (decision.kind === "resolved_no_action") {
-				dispositions.push({ kind: "resolved_no_action", ...shared });
-			} else if (decision.kind === "evidence_unknown" &&
-				normalizedRenameState.kind === "evidence_unknown") {
-				dispositions.push({
-					kind: "failed", ...shared, reasons: [decision.reason], normalizedRenameState,
-				});
-			} else if (decision.kind === "evidence_contradicted" &&
-				normalizedRenameState.kind === "evidence_contradicted") {
-				dispositions.push({
-					kind: "failed", ...shared, reasons: [decision.reason], normalizedRenameState,
-				});
+				decidedComponent = { ...component, actions: [] };
+			} else if (decision.kind === normalizedRenameState.kind) {
+				decidedComponent = { ...component, actions: [] };
+				candidateReasons = [decision.reason];
 			} else {
 				throw new Error("Fresh rename decision/state invariant violated");
 			}
-			continue;
+		} else {
+			const nonBindingCandidates = classifyNonBindingLocalRenames(
+				[component], snapshot.baselinePaths, snapshot.scope,
+			);
+			const effectiveEvidence = component.evidence.filter((item) =>
+				item.kind !== "rename" || item.side !== "local" ||
+				!nonBindingCandidates.has(renameEvidenceKey(item)));
+			decidedComponent = {
+				...component,
+				actions: shapeIdentityComponentActions(component.actions, effectiveEvidence),
+				evidence: effectiveEvidence,
+			};
 		}
-		const nonBindingCandidates = classifyNonBindingLocalRenames(
-			[component], snapshot.baselinePaths, snapshot.scope,
-		);
-		const effectiveEvidence = component.evidence.filter((item) =>
-			item.kind !== "rename" || item.side !== "local" ||
-			!nonBindingCandidates.has(renameEvidenceKey(item)));
-		const decidedComponent: AdmissionComponent = {
-			...component,
-			actions: shapeIdentityComponentActions(component.actions, effectiveEvidence),
-			evidence: effectiveEvidence,
-		};
 		const shared = {
 			paths: [...component.paths].sort(),
 			actions: [...decidedComponent.actions],
 			evidence: [...component.evidence].sort(compareEvidence),
+			...(normalizedRenameState ? { normalizedRenameState } : {}),
 		};
-		const reasons = evaluateIdentityComponent(decidedComponent, snapshot.scope);
+		const reasons = evaluateIdentityComponent(
+			decidedComponent, snapshot.scope, candidateReasons,
+		);
 		if (reasons.length > 0) {
-			dispositions.push({
+			const failure: AdmissionFailureComponent = {
 				kind: "failed",
 				...shared,
 				reasons,
-			});
+			};
+			dispositions.push(failure);
 		} else if (decidedComponent.actions.length === 0) {
 			dispositions.push({ kind: "resolved_no_action", ...shared });
 		} else {

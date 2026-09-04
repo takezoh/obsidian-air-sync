@@ -40,6 +40,11 @@ invariants:
     terminal baseline; acquisition temperature, global store state, previous errors,
     and database version are not decision inputs.
   enforcement: test
+- id: INV-006
+  statement: Component-local normalization shapes a candidate only; every normalized
+    component reaches exactly one action-aware Admission evaluator before exactly one
+    disposition is emitted.
+  enforcement: test
 boundaries:
   provides:
   - id: BOUNDARY-001
@@ -130,7 +135,13 @@ The pipeline is `Observation -> Admission -> Execution -> Commit/finalization`.
 
 Observation may enrich facts such as content hashes, aliases, and stable identities,
 but it cannot turn them into rename evidence or action intent. Admission normalizes one
-connected component and decides it exhaustively. COLD/WARM/HOT are acquisition
+connected component and decides it exhaustively. Component-local normalizers construct
+candidate actions only: they cannot authorize, settle, or fail a component. After all
+candidate shaping, one final identity-component evaluator applies every fail-closed
+predicate and produces the sole reason set from which Admission emits exactly one
+disposition. A complete parent rename mapping can prove a descendant identity edge only
+for the exact current occurrence to that identity's unique committed baseline occurrence;
+an intended destination is not proof. COLD/WARM/HOT are acquisition
 strategies only; whole-store record count, schema version, and prior failure are never
 policy inputs. Executor may select compound I/O only from an explicit protocol emitted
 by Admission, never by reverse-engineering absent baselines or action shape.
