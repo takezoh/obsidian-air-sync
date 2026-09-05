@@ -1,0 +1,351 @@
+artifact: design-plan-spine
+version: 2
+granularity_profile: boundary-complete
+
+scope_expansion_signals:
+  - id: scope-signal-rotation-boundary
+    kind: shared_boundary
+    target_ref: contract-rotation-publication
+    witness: Required refresh publication moves from late cycle snapshots to shared token acquisition for every shared and detached manager.
+    requirement_refs: [req-rotation-publication, req-compatibility-security]
+    authority_refs: [investigation-2.json#hypothesis-d2-rotation-publication, approved-decisions.md]
+  - id: scope-signal-attempt-snapshot
+    kind: persistent_state
+    target_ref: contract-attempt-identity
+    witness: A nonsecret pending identity snapshot is persisted with state/verifier so authorize and exchange remain identical across settings edits and reload.
+    requirement_refs: [req-attempt-identity, req-compatibility-security]
+    authority_refs: [approved user direction, critique.json#issue-attempt-config-drift-open]
+  - id: scope-signal-pcloud-http-repair
+    kind: compatibility_operation
+    target_ref: contract-pcloud-wire
+    witness: Malformed pCloud HTTP-success bodies become fixed 502 failures while valid access-only and logical-error behavior remain compatible.
+    requirement_refs: [req-pcloud-wire, req-compatibility-security]
+    authority_refs: [recovery.json#discovered-legacy-pcloud-boundary]
+  - id: scope-signal-repo-owned-relay-tests
+    kind: operational_procedure
+    target_ref: contract-repository-verification
+    witness: The relay repository gains owned test/typecheck commands because accepted RED evidence otherwise exists only in an external harness.
+    requirement_refs: [req-source-verification]
+    authority_refs: [investigation-2.json#harness_gaps, approved-decisions.md]
+  - id: scope-signal-native-checklist
+    kind: operational_procedure
+    target_ref: acceptance-native-boundary
+    witness: Real-device restart evidence is separated from the synchronous readback guarantee because the native API supplies no physical-durability contract.
+    requirement_refs: [req-source-verification]
+    authority_refs: [approved-decisions.md, recovery.json#unknown-native-secret-persistence]
+  - id: scope-signal-denial-owner
+    kind: critic_induced_contract
+    target_ref: component-denial-policy
+    witness: One semantic owner fixes exact denial parity across four local enforcement sites and closes the reviewed owner split.
+    requirement_refs: [req-authorization-denial, req-compatibility-security]
+    authority_refs: [critique.json#issue-denial-owner-split, approved user direction]
+
+requirements:
+  - id: req-completion-publication
+    type: FR
+    priority: must
+    statement: All six refresh-based OAuth completions require immediate candidate-equal SecretStorage readback; an existing readable refresh satisfies an omitted replacement only.
+  - id: req-rotation-publication
+    type: FR
+    priority: must
+    statement: Changed refresh candidates from shared and detached managers publish before any state from that response is reusable, independently of sync closeout.
+  - id: req-attempt-identity
+    type: FR
+    priority: must
+    statement: Custom PKCE authorize and exchange use one start-time identity snapshot; missing or inconsistent snapshot data rejects before exchange.
+  - id: req-google-wire
+    type: FR
+    priority: must
+    statement: Both Google relay HTTP-success handlers validate the provider-local token shape before projection while preserving transport-exception behavior.
+  - id: req-authorization-denial
+    type: FR
+    priority: must
+    statement: Four callback ingresses detect denial before success gates and apply the same exact error-code projection without provider descriptions.
+  - id: req-static-state
+    type: FR
+    priority: must
+    statement: Static callback validates object/string state and own app membership while preserving both encodings and exact raw forwarding.
+  - id: req-pcloud-wire
+    type: FR
+    priority: must
+    statement: Legacy pCloud validates its distinct access-only success shape while retaining host, region, logical-error and refresh-free behavior.
+  - id: req-compatibility-security
+    type: NFR
+    priority: must
+    statement: Preserve secret namespaces, reload, Picker, detached-manager, diagnostics and mobile contracts; keep credentials and provider descriptions out of durable nonsecret state and output.
+  - id: req-source-verification
+    type: NFR
+    priority: must
+    statement: Both repositories own executable source tests and gates; deployment, CI workflow changes and physical restart durability remain separately authorized or evidenced.
+  - id: invariant-secrets-outside-settings
+    type: invariant
+    priority: must
+    statement: Credentials remain only in SecretStorage or ephemeral manager memory and never in settings, sync state, or diagnostic output.
+  - id: invariant-candidate-equality
+    type: invariant
+    priority: must
+    statement: Required publication succeeds only when synchronous immediate readback equals the exact nonempty candidate.
+
+components:
+  - id: component-secret-publication
+    kind: existing
+    contract_refs: [contract-secret-publication]
+    paths: [src/fs/token-store.ts, src/fs/secret-store.ts, src/fs/token-store.test.ts]
+  - id: component-auth-providers
+    kind: existing
+    contract_refs: [contract-completion-publication, contract-attempt-identity]
+    paths: [src/fs/googledrive/auth-provider-base.ts, src/fs/pkce-auth-provider.ts, src/fs/backend-manager.ts, src/fs/backend-auth-folder-pick.ts]
+  - id: component-token-manager
+    kind: existing
+    contract_refs: [contract-rotation-publication]
+    paths: [src/fs/oauth-pkce.ts, src/fs/googledrive/provider-base.ts, src/fs/pkce-app-folder-provider.ts]
+  - id: component-denial-policy
+    kind: planned
+    contract_refs: [contract-authorization-denial]
+    paths: [src/fs/oauth-callback-error.ts, src/main.ts, /tmp/obsidian-air-sync-auth/worker/src/oauth.ts, /tmp/obsidian-air-sync-auth/worker/src/pcloud.ts, /tmp/obsidian-air-sync-auth/docs/callback/index.html]
+  - id: component-google-relay
+    kind: existing
+    contract_refs: [contract-google-wire, contract-authorization-denial]
+    paths: [/tmp/obsidian-air-sync-auth/worker/src/oauth.ts, /tmp/obsidian-air-sync-auth/worker/src/index.ts]
+  - id: component-pcloud-relay
+    kind: existing
+    contract_refs: [contract-pcloud-wire, contract-authorization-denial]
+    paths: [/tmp/obsidian-air-sync-auth/worker/src/pcloud.ts, /tmp/obsidian-air-sync-auth/worker/src/index.ts]
+  - id: component-static-callback
+    kind: existing
+    contract_refs: [contract-static-state, contract-authorization-denial]
+    paths: [/tmp/obsidian-air-sync-auth/docs/callback/index.html]
+  - id: component-relay-harness
+    kind: planned
+    contract_refs: [contract-repository-verification]
+    paths: [/tmp/obsidian-air-sync-auth/worker/tests/oauth.test.mjs, /tmp/obsidian-air-sync-auth/worker/tests/pcloud.test.mjs, /tmp/obsidian-air-sync-auth/worker/tests/static-callback.test.mjs, /tmp/obsidian-air-sync-auth/worker/package.json]
+
+contracts:
+  - id: contract-secret-publication
+    dimension: required-secret-publication-postcondition
+    owner: component-secret-publication
+    requirement_refs: [req-completion-publication, req-rotation-publication, req-compatibility-security, invariant-secrets-outside-settings, invariant-candidate-equality]
+    unit_refs: [unit-auth-publication]
+    adr_refs: [adr-auth-publication-boundary, adr-sync-state-separation]
+    partition:
+      outcomes: [determinate, unknown, conflicting]
+      default_policy: Only exact immediate readback of the nonempty candidate succeeds; missing, unequal, throwing or unavailable readback fails safely.
+    verification:
+      - {id: verify-secret-publication, tier: T0, command: 'npm test -- --run src/fs/token-store.test.ts'}
+    discretion:
+      - id: discretion-publication-helper-factoring
+        unit_ref: unit-auth-publication
+        question: Name and locally factor the synchronous required-publication helper and fixtures.
+        scope:
+          files: [src/fs/token-store.ts, src/fs/token-store.test.ts]
+          component: component-secret-publication
+          visibility: private
+        escalate_when: [Changing key construction, equality, synchronous API shape, failure semantics, or credential ownership.]
+        constraints: [Preserve existing air-sync backend/name token keys and explicit clearing.]
+        preserves:
+          contract_refs: [contract-secret-publication]
+          invariant_refs: [invariant-secrets-outside-settings, invariant-candidate-equality]
+        verification_refs: [verify-secret-publication]
+  - id: contract-completion-publication
+    dimension: provisional-manager-completion-order
+    owner: component-auth-providers
+    requirement_refs: [req-completion-publication, req-compatibility-security]
+    unit_refs: [unit-auth-publication]
+    adr_refs: [adr-auth-publication-boundary]
+    partition:
+      outcomes: [determinate, unknown, conflicting]
+      default_policy: Missing initial refresh or unproved replacement rejects completion and discards the provisional manager before all success effects.
+    verification:
+      - {id: verify-six-completions, tier: T1, command: 'npm test -- --run src/fs/googledrive/auth-completion-audit.test.ts src/fs/dropbox/auth-completion-audit.test.ts src/fs/onedrive/auth-completion-audit.test.ts'}
+      - {id: verify-completion-side-effects, tier: T1, command: 'npm test -- --run src/fs/backend-manager.test.ts src/fs/backend-auth-folder-pick.test.ts'}
+  - id: contract-rotation-publication
+    dimension: publication-before-token-response-installation
+    owner: component-token-manager
+    requirement_refs: [req-rotation-publication, req-compatibility-security]
+    unit_refs: [unit-auth-publication]
+    adr_refs: [adr-auth-publication-boundary, adr-sync-state-separation]
+    partition:
+      outcomes: [determinate, unknown, conflicting]
+      default_policy: Unchanged or absent refresh keeps current behavior; changed refresh requires equal readback before installing any response state and otherwise fails closed.
+    verification:
+      - {id: verify-rotation-manager-order, tier: T1, command: 'npm test -- --run src/fs/oauth-pkce.test.ts src/fs/googledrive/auth-completion-audit.test.ts src/fs/dropbox/auth-completion-audit.test.ts src/fs/onedrive/auth-completion-audit.test.ts'}
+      - {id: verify-rotation-closeout-independence, tier: T1, command: 'npm test -- --run src/sync/orchestrator.test.ts'}
+  - id: contract-attempt-identity
+    dimension: persisted-attempt-scoped-client-identity
+    owner: component-auth-providers
+    requirement_refs: [req-attempt-identity, req-compatibility-security]
+    unit_refs: [unit-attempt-identity]
+    adr_refs: [adr-callback-trust-boundaries]
+    partition:
+      outcomes: [determinate, unknown, conflicting]
+      default_policy: A complete matching start-time identity snapshot is the sole exchange identity; missing or manager-mismatched snapshot rejects before network access.
+    verification:
+      - {id: verify-custom-attempt-identity, tier: T1, command: 'npm test -- --run src/fs/dropbox/auth-completion-audit.test.ts src/fs/onedrive/auth-completion-audit.test.ts src/fs/dropbox/auth.test.ts src/fs/onedrive/auth.test.ts'}
+  - id: contract-google-wire
+    dimension: provider-response-runtime-boundary
+    owner: component-google-relay
+    requirement_refs: [req-google-wire, req-compatibility-security]
+    unit_refs: [unit-relay-validation]
+    adr_refs: [adr-callback-trust-boundaries]
+    partition:
+      outcomes: [determinate, unknown]
+      default_policy: Invalid JSON or shape from an HTTP-success response becomes a fixed route-specific 502 without provider value projection; transport exceptions remain unchanged.
+    verification:
+      - {id: verify-google-relay-source, tier: T1, command: 'npm test --prefix /workspace/obsidian-air-sync-auth/worker'}
+  - id: contract-authorization-denial
+    dimension: exact-cross-runtime-denial-projection
+    owner: component-denial-policy
+    requirement_refs: [req-authorization-denial, req-compatibility-security]
+    unit_refs: [unit-relay-validation, unit-callback-ingress]
+    adr_refs: [adr-callback-trust-boundaries]
+    partition:
+      outcomes: [determinate, unknown, conflicting]
+      default_policy: access_denied maps to its fixed denial sentence; every other nonempty code maps to the fixed code-bearing sentence; plugin state unavailable or unequal produces no side effect.
+    verification:
+      - {id: verify-plugin-denial, tier: T1, command: 'npm test -- --run src/main-commands.test.ts src/fs/oauth-callback-error.test.ts'}
+      - {id: verify-relay-denial, tier: T1, command: 'npm test --prefix /workspace/obsidian-air-sync-auth/worker'}
+  - id: contract-static-state
+    dimension: callback-state-runtime-boundary
+    owner: component-static-callback
+    requirement_refs: [req-static-state, req-authorization-denial, req-compatibility-security]
+    unit_refs: [unit-callback-ingress]
+    adr_refs: [adr-callback-trust-boundaries]
+    partition:
+      outcomes: [determinate, unknown]
+      default_policy: Decode, parse, structural validation and own-entry allowlisting must all pass before redirect; every other state produces fixed bounded text without redirect or throw.
+    verification:
+      - {id: verify-static-production-script, tier: T1, command: 'npm test --prefix /workspace/obsidian-air-sync-auth/worker'}
+  - id: contract-pcloud-wire
+    dimension: provider-specific-access-token-boundary
+    owner: component-pcloud-relay
+    requirement_refs: [req-pcloud-wire, req-compatibility-security]
+    unit_refs: [unit-relay-validation]
+    adr_refs: [adr-callback-trust-boundaries]
+    partition:
+      outcomes: [determinate, unknown]
+      default_policy: Numeric nonzero result remains logical failure; malformed success or zero without nonempty access token becomes fixed bounded 502.
+    verification:
+      - {id: verify-pcloud-relay-source, tier: T1, command: 'npm test --prefix /workspace/obsidian-air-sync-auth/worker'}
+  - id: contract-repository-verification
+    dimension: source-owned-gates-and-claim-boundary
+    owner: component-relay-harness
+    requirement_refs: [req-source-verification, req-compatibility-security]
+    unit_refs: [unit-relay-validation, unit-callback-ingress, unit-final-verification]
+    adr_refs: [adr-shared-behaviour-tests, adr-live-e2e-boundary]
+    verification:
+      - {id: verify-plugin-gate, tier: T2, command: 'npm run lint && npm run lint:bot-repro && npm run build && npm run test:coverage'}
+      - {id: verify-relay-gate, tier: T2, command: 'npm test --prefix /workspace/obsidian-air-sync-auth/worker && npm run typecheck --prefix /workspace/obsidian-air-sync-auth/worker'}
+
+adrs:
+  - id: adr-sync-state-separation
+    status: accepted
+    decision_input_refs: [decision-input-secret-domain, decision-input-writers]
+  - id: adr-shared-behaviour-tests
+    status: accepted
+    decision_input_refs: [decision-input-adr]
+  - id: adr-live-e2e-boundary
+    status: accepted
+    decision_input_refs: [decision-input-native-proof, decision-input-deployment]
+  - id: adr-auth-publication-boundary
+    status: accepted
+    decision_input_refs: [decision-input-secret-publication, decision-input-completion-callers, decision-input-isolation, decision-input-writers]
+  - id: adr-callback-trust-boundaries
+    status: accepted
+    decision_input_refs: [decision-input-attempt-identity, decision-input-error-channels, decision-input-runtime-schemas, decision-input-denial-copy, decision-input-pcloud]
+
+units:
+  - title: unit-auth-publication
+    chunk: '1'
+    contract_refs: [contract-secret-publication, contract-completion-publication, contract-rotation-publication]
+    files: [src/fs/token-store.ts, src/fs/token-store.test.ts, src/fs/oauth-pkce.ts, src/fs/oauth-pkce.test.ts, src/fs/googledrive/auth-provider-base.ts, src/fs/googledrive/provider-base.ts, src/fs/pkce-auth-provider.ts, src/fs/pkce-app-folder-provider.ts, src/fs/googledrive/auth-completion-audit.test.ts, src/fs/dropbox/auth-completion-audit.test.ts, src/fs/onedrive/auth-completion-audit.test.ts, src/fs/backend-manager.test.ts, src/fs/backend-auth-folder-pick.test.ts, src/sync/orchestrator.test.ts, ARCHITECTURE.md, docs/google-drive-backend.md]
+    depends_on: []
+    acceptance: [All six completions reject unproved publication without success side effects or retained unpublished manager state., Four rotation routes publish before installation and remain independent of sync closeout., Late cycle refresh writes are removed without changing checkpoint ordering.]
+    objective: Establish one candidate-equal publication postcondition and move required rotation proof before token response reuse.
+    output_format: Production TypeScript, focused Vitest coverage, and ownership documentation.
+    tool_guidance: Use injected SecretStorage and real manager/provider code with controlled storage/request fixtures.
+    task_boundaries: No async secret API, journal, rollback, sync-state owner, extra provider request, migration, or durability claim.
+    decision_closure_reason: User approved immediate equality; provisional managers and pre-install hooks close retention and ordering.
+  - title: unit-attempt-identity
+    chunk: '2'
+    contract_refs: [contract-attempt-identity]
+    files: [src/fs/pkce-auth-provider.ts, src/fs/pkce-app-folder-provider.ts, src/fs/dropbox/provider-base.ts, src/fs/dropbox/provider-custom.ts, src/fs/onedrive/provider-base.ts, src/fs/onedrive/provider-custom.ts, src/fs/dropbox/auth.test.ts, src/fs/onedrive/auth.test.ts, src/fs/dropbox/auth-completion-audit.test.ts, src/fs/onedrive/auth-completion-audit.test.ts]
+    depends_on: [unit-auth-publication]
+    acceptance: [Start persists the exact nonsecret identity snapshot used by authorize., Callback/reload exchange uses that snapshot despite settings edits., Missing or inconsistent snapshot performs zero token requests.]
+    objective: Bind each PKCE authorize/exchange pair to one start-time identity snapshot.
+    output_format: Typed settings/lifecycle edits and production-path request-capture tests.
+    tool_guidance: Reuse custom-provider fixtures and assert actual authorize and token request identity.
+    task_boundaries: No secret copy, general identity cache, connected-settings redesign, or migration routine.
+    decision_closure_reason: The explicit user direction selects persisted start-time snapshot and pre-exchange rejection.
+  - title: unit-relay-validation
+    chunk: '2'
+    contract_refs: [contract-google-wire, contract-pcloud-wire, contract-authorization-denial, contract-repository-verification]
+    files: [/workspace/obsidian-air-sync-auth/worker/src/oauth.ts, /workspace/obsidian-air-sync-auth/worker/src/pcloud.ts, /workspace/obsidian-air-sync-auth/worker/src/index.ts, /workspace/obsidian-air-sync-auth/worker/src/html.ts, /workspace/obsidian-air-sync-auth/worker/tests/oauth.test.mjs, /workspace/obsidian-air-sync-auth/worker/tests/pcloud.test.mjs, /workspace/obsidian-air-sync-auth/worker/package.json, /workspace/obsidian-air-sync-auth/README.md]
+    depends_on: []
+    acceptance: [Malformed Google and pCloud successes reject with bounded route-specific failures., Denial is projected before exchange with exact semantic parity and no provider description., Owned test and typecheck scripts exercise production handlers.]
+    objective: Close relay trust boundaries with provider-local validators, exact denial projection, and owned tests.
+    output_format: Worker TypeScript, repository-owned Node tests/scripts, and corrected relay documentation.
+    tool_guidance: Mock only outbound fetch/environment; use no credentials or deployment.
+    task_boundaries: No deployment, CI workflow, Google transport-exception change, endpoint addition, universal OAuth schema, or pCloud refresh requirement.
+    decision_closure_reason: Exact denial messages and malformed-success classifications are fixed by approved scope and this contract.
+  - title: unit-callback-ingress
+    chunk: '3'
+    contract_refs: [contract-authorization-denial, contract-static-state, contract-repository-verification]
+    files: [src/main.ts, src/main-commands.test.ts, src/fs/oauth-callback-error.ts, src/fs/oauth-callback-error.test.ts, /workspace/obsidian-air-sync-auth/docs/callback/index.html, /workspace/obsidian-air-sync-auth/worker/tests/static-callback.test.mjs]
+    depends_on: [unit-relay-validation, unit-auth-publication]
+    acceptance: [Plugin Notice occurs only for exact current active pending-state match and denial causes no dispatch., Static malformed/prototype state fails without redirect or throw., Both encodings and exact raw state forwarding remain green.]
+    objective: Enforce denial correlation and structural state checks at browser/plugin ingress.
+    output_format: Lifecycle-thin plugin/static edits and production callback tests.
+    tool_guidance: Use one pure plugin helper and execute the actual inline static script.
+    task_boundaries: No callback framework, new deep-link wire format, provider-description reflection, state re-encoding, or pending-state clearing.
+    decision_closure_reason: Policy owner, exact projection, state source/time, and silent mismatch outcome are fixed.
+  - title: unit-final-verification
+    chunk: '4'
+    contract_refs: [contract-repository-verification]
+    files: [ARCHITECTURE.md, docs/google-drive-backend.md, /workspace/obsidian-air-sync-auth/README.md]
+    depends_on: [unit-auth-publication, unit-attempt-identity, unit-relay-validation, unit-callback-ingress]
+    acceptance: [Both source gates pass without external harnesses., Docs state immediate-readback and native-check limitations plus current/legacy callback paths., Deployment and unexecuted device checks remain explicitly unverified.]
+    objective: Verify seven repairs and preserve durable ownership and honest claim boundaries.
+    output_format: Gate evidence, scoped docs, promotion proposal, and native-checklist status.
+    tool_guidance: Run repository-owned commands; record executions and never infer deployed or native parity.
+    task_boundaries: No deployment, credential capture, CI edit, durability claim, or unrelated sync work.
+    decision_closure_reason: User approval explicitly separates source fixes from deployment and native persistence evidence.
+
+acceptance:
+  - id: acceptance-seven-roots
+    criteria: All seven accepted roots have discriminating green repository-owned tests and passing compatibility controls with no downstream success leakage.
+    requirement_refs: [req-completion-publication, req-rotation-publication, req-attempt-identity, req-google-wire, req-authorization-denial, req-static-state, req-pcloud-wire]
+  - id: acceptance-publication-before-reuse
+    criteria: Failed candidate readback discards completion managers or leaves refresh responses uninstalled, so later calls cannot reuse unpublished access and checkpoint outcome is irrelevant.
+    requirement_refs: [req-completion-publication, req-rotation-publication, req-compatibility-security]
+  - id: acceptance-attempt-snapshot
+    criteria: Settings edits cannot change an active attempt exchange identity; missing or inconsistent snapshots make zero token requests.
+    requirement_refs: [req-attempt-identity, req-compatibility-security]
+  - id: acceptance-denial-parity
+    criteria: Exact denial messages match across runtimes; plugin emits Notice only for current raw state equality, and no provider description or sentinel is exposed.
+    requirement_refs: [req-authorization-denial, req-compatibility-security]
+  - id: acceptance-owned-gates
+    criteria: Both source gates run without external harnesses, credentials, deployment, global packages or CI workflow changes.
+    requirement_refs: [req-source-verification]
+  - id: acceptance-native-boundary
+    criteria: Automated tests claim immediate equality only; restart durability has recorded device evidence or remains explicitly unverified.
+    requirement_refs: [req-source-verification, req-completion-publication, req-rotation-publication]
+
+dispositions:
+  - {decision_input_ref: decision-input-secret-publication, disposition: 'adopted: synchronous exact candidate readback; physical durability excluded', adr_refs: [adr-auth-publication-boundary], contract_refs: [contract-secret-publication]}
+  - {decision_input_ref: decision-input-secret-keys, disposition: 'adopted: preserve all existing namespaces, skip-empty and explicit clear', contract_refs: [contract-secret-publication]}
+  - {decision_input_ref: decision-input-secret-domain, disposition: 'adopted: SecretStorage remains credential authority outside settings and sync state', adr_refs: [adr-sync-state-separation], contract_refs: [contract-secret-publication]}
+  - {decision_input_ref: decision-input-completion-callers, disposition: 'adopted: reject before caller success effects and discard provisional manager', contract_refs: [contract-completion-publication]}
+  - {decision_input_ref: decision-input-isolation, disposition: 'adopted: preserve detached/shared instance isolation with the same publication contract', contract_refs: [contract-rotation-publication]}
+  - {decision_input_ref: decision-input-writers, disposition: 'adopted: publish at acquisition and remove late required-refresh writes', adr_refs: [adr-auth-publication-boundary], contract_refs: [contract-rotation-publication]}
+  - {decision_input_ref: decision-input-attempt-identity, disposition: 'adopted: persist and use the start-time nonsecret identity snapshot; reject missing or inconsistent snapshot before exchange', adr_refs: [adr-callback-trust-boundaries], contract_refs: [contract-attempt-identity]}
+  - {decision_input_ref: decision-input-state, disposition: 'adopted: preserve raw state, encodings, verifier correlation and reload with snapshot extension', contract_refs: [contract-attempt-identity, contract-static-state, contract-authorization-denial]}
+  - {decision_input_ref: decision-input-picker, disposition: 'adopted: preserve picked_file_ids and legacy hosted endpoint', contract_refs: [contract-google-wire, contract-completion-publication]}
+  - {decision_input_ref: decision-input-pcloud, disposition: 'adopted: retain access-only shape and regional/status semantics', contract_refs: [contract-pcloud-wire]}
+  - {decision_input_ref: decision-input-error-channels, disposition: 'adopted: change authorization denial/malformed success only; preserve other channels', contract_refs: [contract-authorization-denial, contract-google-wire, contract-pcloud-wire]}
+  - {decision_input_ref: decision-input-runtime-schemas, disposition: 'adopted: provider-local runtime predicates, no universal package', adr_refs: [adr-callback-trust-boundaries], contract_refs: [contract-google-wire, contract-static-state, contract-pcloud-wire]}
+  - {decision_input_ref: decision-input-static-docs, disposition: 'adopted: correct current versus legacy description without endpoint removal', contract_refs: [contract-static-state, contract-repository-verification]}
+  - {decision_input_ref: decision-input-denial-copy, disposition: 'adopted: access_denied fixed sentence; all other nonempty codes fixed code-bearing sentence; descriptions ignored', adr_refs: [adr-callback-trust-boundaries], contract_refs: [contract-authorization-denial]}
+  - {decision_input_ref: decision-input-native-proof, disposition: 'adopted evidence boundary: native restart checklist is separate and may remain unverified', contract_refs: [contract-secret-publication, contract-repository-verification]}
+  - {decision_input_ref: decision-input-deployment, disposition: 'rejected from scope: no Worker or Pages deployment or deployed-parity claim', contract_refs: [contract-repository-verification]}
+  - {decision_input_ref: decision-input-issue52, disposition: 'subsumed: test missing-candidate and failed-readback roots without claiming reporter attribution', contract_refs: [contract-completion-publication]}
+  - {decision_input_ref: decision-input-adr, disposition: 'adopted: accepted sync/test/e2e boundaries plus accepted user-approved auth ADRs', adr_refs: [adr-sync-state-separation, adr-shared-behaviour-tests, adr-live-e2e-boundary, adr-auth-publication-boundary, adr-callback-trust-boundaries], contract_refs: [contract-rotation-publication, contract-repository-verification]}

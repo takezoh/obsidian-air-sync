@@ -16,11 +16,10 @@ import { classifyGoogleDriveError } from "./errors";
 import { FOLDER_MIME } from "./types";
 import type { GoogleDriveFile } from "./types";
 import type { GoogleDriveBackendData } from "./provider";
-import { hasBackendSecret, clearBackendSecrets } from "../token-store";
+import { hasBackendSecret, clearBackendSecrets, setBackendSecret } from "../token-store";
 import {
 	GoogleDriveAuthProviderBase,
 	readGoogleDriveTokens,
-	storeGoogleDriveTokens,
 	GOOGLE_DRIVE_SECRET_NAMES,
 } from "./auth-provider-base";
 
@@ -101,13 +100,12 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 
 		// The delta cursor is no longer persisted in settings — it commits atomically
 		// with the file map in the metadata store (ADR 0001, via the FS's
-		// commitCheckpoint). Here we only persist the non-secret token expiry; the
-		// tokens themselves go to SecretStorage. (Token state is saved on every cycle,
-		// clean or not: a refresh that already succeeded should not be discarded just
-		// because a later file op failed.)
+		// commitCheckpoint). Required refresh publication already completed at token
+		// acquisition; this late snapshot retains only the optional access-token cache
+		// and non-secret expiry.
 		const tokens = this.auth.getTokenState();
-		if (tokens && tokens.refreshToken) {
-			storeGoogleDriveTokens(this.secretStore, this.type, tokens);
+		if (tokens && (tokens.refreshToken || tokens.accessToken)) {
+			setBackendSecret(this.secretStore, this.type, "access", tokens.accessToken);
 			result.accessTokenExpiry = tokens.accessTokenExpiry;
 		}
 

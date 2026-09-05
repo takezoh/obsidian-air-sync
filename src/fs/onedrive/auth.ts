@@ -105,7 +105,7 @@ export class OneDriveAuth extends BaseOAuthTokenManager {
 			throw new Error(`Token exchange failed: ${res.status} ${extractTokenErrorDetail(res)}`);
 		}
 		assertMicrosoftTokenResponse(res.json);
-		this.storeTokenResponse(res.json);
+		await this.storeTokenResponse(res.json);
 	}
 
 	protected async performRefresh(): Promise<string> {
@@ -138,7 +138,7 @@ export class OneDriveAuth extends BaseOAuthTokenManager {
 			throw new Error(`Token refresh failed: ${res.status} ${extractTokenErrorDetail(res)}`);
 		}
 		assertMicrosoftTokenResponse(res.json);
-		this.storeTokenResponse(res.json);
+		await this.storeTokenResponse(res.json);
 		return this.accessToken;
 	}
 }
@@ -159,6 +159,14 @@ export class OneDriveAuthProvider extends PkceAuthProvider<OneDriveAuth> {
 
 	protected createAuth(clientId: string, _backendData: Record<string, unknown>, logger?: Logger): OneDriveAuth {
 		return new OneDriveAuth(clientId, DEFAULT_ONEDRIVE_AUTHORITY, logger);
+	}
+
+	protected resolveAttemptAuthority(_backendData: Record<string, unknown>): string | undefined {
+		return DEFAULT_ONEDRIVE_AUTHORITY;
+	}
+
+	protected requiresAttemptAuthority(): boolean {
+		return true;
 	}
 
 	protected buildAuthorizeUrl(

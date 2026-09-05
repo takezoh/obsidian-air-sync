@@ -29,6 +29,7 @@ const DEFAULT_ONEDRIVE_CUSTOM_DATA: OneDriveCustomData = {
 	accessTokenExpiry: 0,
 	pendingCodeVerifier: "",
 	pendingAuthState: "",
+	pendingAuthIdentity: null,
 	pendingPickedFolderPath: "",
 	customClientId: "",
 	customAuthority: DEFAULT_ONEDRIVE_AUTHORITY,
@@ -66,6 +67,14 @@ export class OneDriveCustomAuthProvider extends PkceAuthProvider<OneDriveAuth> {
 
 	protected resolveClientId(backendData: Record<string, unknown>): string {
 		return (backendData.customClientId as string | undefined) ?? "";
+	}
+
+	protected resolveAttemptAuthority(backendData: Record<string, unknown>): string | undefined {
+		return resolveAuthority(backendData);
+	}
+
+	protected requiresAttemptAuthority(): boolean {
+		return true;
 	}
 
 	protected hasCredentials(backendData: Record<string, unknown>): boolean {

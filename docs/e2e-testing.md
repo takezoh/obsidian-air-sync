@@ -235,6 +235,23 @@ external-protocol navigation attempt, and passes the real Drive folder lookup. I
 display/profile/human is available, report the live criterion as unverified—do not treat it as
 skipped or green.
 
+## Manual SecretStorage restart check
+
+Automated tests can prove the synchronous Obsidian API boundary—`setSecret` followed by an
+exact `getSecret`—but cannot prove when the native credential backend has physically flushed
+data. For each representative desktop/mobile target, record only the platform, Obsidian and
+plugin versions, and pass/fail for this checklist (never record token values):
+
+1. Complete OAuth and confirm the backend is connected.
+2. Fully terminate and restart Obsidian; confirm the connection remains usable.
+3. Exercise a provider refresh that rotates the refresh token, when the provider/test account
+   makes that observable without exposing the token value.
+4. Fully terminate and restart again; confirm the connection remains usable.
+
+An unrun platform or an unobserved rotation remains `unverified`. A mock SecretStorage, a
+successful build, and immediate same-process readback must not be reported as OS-level restart
+durability evidence.
+
 ## Notes
 
 - **Dropbox mtime.** `DropboxFs` reports `server_modified` (the upload wall-clock) as `mtime`,

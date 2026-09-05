@@ -14,16 +14,7 @@ import { ScreenWakeLockManager } from "./sync/wake-lock";
 import { LocalChangeTracker } from "./sync/local-tracker";
 import { Logger, getDeviceName } from "./logging/logger";
 import { ConflictHistory } from "./sync/conflict-history";
-
-function protocolParamsEntries(params: unknown): Array<[string, string]> {
-	if (!params || typeof params !== "object") return [];
-	const entries: Array<[string, string]> = [];
-	for (const key of Object.keys(params)) {
-		const value = (params as Record<string, unknown>)[key];
-		if (typeof value === "string") entries.push([key, value]);
-	}
-	return entries;
-}
+import { handleOAuthProtocolCallback } from "./fs/oauth-callback-error";
 
 export default class AirSyncPlugin extends Plugin {
 	settings!: AirSyncSettings;
@@ -159,20 +150,14 @@ export default class AirSyncPlugin extends Plugin {
 		// OAuth callback via obsidian://air-sync-auth?access_token=...&state=... or ?code=...&state=...
 		// Google's top-level Picker also returns picked_file_ids on this callback.
 		this.registerObsidianProtocolHandler("air-sync-auth", (params) => {
-			if (!params.access_token && !params.code) {
-				new Notice("Authorization failed: no token or code received");
-				return;
-			}
-			// Synthetic URL to pass tokens/code to completeAuth(), which parses callback URL params
-			const url = new URL("https://callback");
-			for (const [key, value] of protocolParamsEntries(params)) {
-				url.searchParams.set(key, value);
-			}
-			if (params.picked_file_ids) {
-				void this.backendManager.completeBackendAuthFolderPick(url.toString(), params);
-			} else {
-				void this.backendManager.completeBackendConnect(url.toString());
-			}
+			const pendingState = this.settings.backendData.pendingAuthState;
+			handleOAuthProtocolCallback(params, pendingState, {
+				notify: (message) => { new Notice(message); },
+				completeConnect: (url) => { void this.backendManager.completeBackendConnect(url); },
+				completeFolderPick: (url, callbackParams) => {
+					void this.backendManager.completeBackendAuthFolderPick(url, callbackParams);
+				},
+			});
 		});
 
 		// Web folder-picker result via obsidian://air-sync-folder. Backend-agnostic:

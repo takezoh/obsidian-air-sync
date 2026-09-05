@@ -315,6 +315,15 @@ The remote delta cursor is crash-safe at the **filesystem** layer, not the provi
 
 `settings.backendData` is a single flat bag holding **only the active backend's** parameters (tokens live in `SecretStorage`, keyed per backend — never in `backendData`). Switching backends hard-resets it: all params are wiped and every registered backend's plugin-owned secrets are swept (`clearPluginSecrets`), so the new backend starts disconnected and can't reuse another's token under the wrong OAuth client.
 
+OAuth completion and refresh-token rotation publish required refresh credentials at
+the token-acquisition boundary. A nonempty candidate is successful only when the same
+SecretStorage key immediately reads back the exact candidate; until then, response
+access/expiry state and completion effects are not reusable. This synchronous check is
+the strongest boundary exposed by Obsidian's API, not proof of an OS-level disk flush.
+Dropbox/OneDrive custom PKCE attempts also persist a nonsecret client/authority snapshot
+beside their pending state and verifier so callback exchange cannot drift with settings
+edited after authorization started.
+
 Remote-vault binding is **explicit**, not automatic on connect. After auth the user either binds the convention folder `obsidian-air-sync/<Vault Name>` (`BackendManager.bindDefaultRemoteVault` → `resolveRemoteVault`, which find-or-creates it and migrates a legacy `obsidian-air-sync/<uuid>` vault if one matches) or picks any folder via Google Picker (`provider.picker`: current built-in versions use the top-level OAuth Picker and finish through `completeWebFolderPick`; older released versions retain their hosted PickerBuilder client). Custom OAuth has no Picker and takes an explicit folder ID. Dropbox and OneDrive use an in-app modal instead. The folder is the sole binding; there is no `.airsync/metadata.json`. See [docs/google-drive-backend.md](docs/google-drive-backend.md) for the Google Drive specifics.
 
 ### IAuthProvider (fs/auth.ts)

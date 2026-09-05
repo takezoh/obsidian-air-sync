@@ -67,6 +67,7 @@ describe("DropboxCustomAuthProvider.completeAuth", () => {
 			customClientId: "user-appkey",
 			pendingAuthState: "abc",
 			pendingCodeVerifier: "verifier-xyz",
+			pendingAuthIdentity: { backendType: "dropbox-custom", clientId: "user-appkey" },
 		});
 
 		const body = new URLSearchParams((spy.mock.calls[0]![0] as RequestUrlParam).body as string);
