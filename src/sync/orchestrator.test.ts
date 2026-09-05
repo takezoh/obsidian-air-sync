@@ -91,6 +91,55 @@ function mockProvider(
 }
 
 describe("SyncOrchestrator", () => {
+	it.each(["after-admission", "after-publication"] as const)(
+		"queues and syncs a local edit %s of an initial match", async (timing) => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs("actual_resolved");
+			const originalHash = await sha256(new TextEncoder().encode("original").buffer);
+			const modifiedHash = await sha256(new TextEncoder().encode("modified").buffer);
+			addFile(localFs, "note.md", "original", 1000);
+			addFile(remoteFs, "note.md", "original", 1000).remoteChecksum = { algo: "sha256", value: originalHash };
+			const records: Array<{ hash: string } | undefined> = [];
+			const settings = baseMockSettings({ vaultId: `test-${Math.random()}`, enableThreeWayMerge: false });
+			let edited = false;
+			const editAndQueue = () => {
+				if (edited) return;
+				edited = true;
+				// Same size and mtime: the retained dirty generation must drive a
+				// fresh hash comparison, not merely a metadata-only full scan.
+				addFile(localFs, "note.md", "modified", 1000);
+				deps.localTracker.markDirty("note.md");
+				void orchestrator.runSync(); // scheduler's debounced request, while locked
+			};
+			const info = vi.fn((message: string) => {
+				if (timing === "after-admission" && message === "Sync plan created") editAndQueue();
+			});
+			const deps = createDeps({
+				localFs: () => localFs, remoteFs: () => remoteFs, getSettings: () => settings,
+				logger: { debug: vi.fn(), info, warn: vi.fn(), error: vi.fn(), flush: vi.fn() } as unknown as Logger,
+				saveSettings: async () => {
+					records.push(await orchestrator.state.get("note.md"));
+					if (timing === "after-publication") editAndQueue();
+				},
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			try {
+				await orchestrator.runSync();
+				expect(edited).toBe(true);
+				expect(records).toHaveLength(2);
+				expect(records[0]).toMatchObject({ hash: originalHash });
+				expect(records[1]).toMatchObject({ hash: modifiedHash });
+				expect(readText(localFs, "note.md")).toBe("modified");
+				expect(readText(remoteFs, "note.md")).toBe("modified");
+				expect(deps.localTracker.getDirtyPaths().size).toBe(0);
+				expect(deps.onStatusChange).not.toHaveBeenCalledWith("partial_error");
+				expect(deps.onStatusChange).toHaveBeenLastCalledWith("idle");
+			} finally {
+				await orchestrator.close();
+			}
+		},
+	);
+
 	describe("cold hash-match diagnostics", () => {
 		it("reports checksum enrichment candidates and successful fast matches", async () => {
 			const localFs = createMockLocalFs();

@@ -279,6 +279,8 @@ describe("executePlan", () => {
 			const remote = (await ctx.remoteFs.stat("c.md"))!;
 			const localRead = vi.spyOn(ctx.localFs, "read");
 			const remoteRead = vi.spyOn(ctx.remoteFs, "read");
+			const localStat = vi.spyOn(ctx.localFs, "stat");
+			const remoteStat = vi.spyOn(ctx.remoteFs, "stat");
 
 			const plan = makePlan([{ path: "c.md", action: "match", local, remote }]);
 
@@ -288,6 +290,58 @@ describe("executePlan", () => {
 			expect(stateStore.records.has("c.md")).toBe(true);
 			expect(localRead).not.toHaveBeenCalled();
 			expect(remoteRead).not.toHaveBeenCalled();
+			expect(localStat).not.toHaveBeenCalled();
+			expect(remoteStat).not.toHaveBeenCalled();
+		});
+
+		it("publishes the admitted observation despite a later local edit", async () => {
+			const ctx = makeCtx();
+			addFile(ctx.localFs as MockFileSystem, "c.md", "original", 1000);
+			addFile(ctx.remoteFs as MockFileSystem, "c.md", "original", 1000);
+			const local = (await ctx.localFs.stat("c.md"))!;
+			const remote = (await ctx.remoteFs.stat("c.md"))!;
+			addFile(ctx.localFs as MockFileSystem, "c.md", "modified", 2000);
+			const result = await executePlan(makePlan([{ path: "c.md", action: "match", local, remote }]), ctx);
+			expect(result.blocked).toEqual([]);
+			expect(result.failed).toEqual([]);
+			expect(result.succeeded).toHaveLength(1);
+			expect(await ctx.committer.stateStore.get("c.md")).toMatchObject({ hash: local.hash, localMtime: 1000 });
+			expect(readText(ctx.localFs as MockFileSystem, "c.md")).toBe("modified");
+			expect(readText(ctx.remoteFs as MockFileSystem, "c.md")).toBe("original");
+		});
+
+		it("does not overwrite a newer SyncRecord when publishing an observation", async () => {
+			const ctx = makeCtx();
+			addFile(ctx.localFs as MockFileSystem, "c.md", "same");
+			addFile(ctx.remoteFs as MockFileSystem, "c.md", "same");
+			const local = (await ctx.localFs.stat("c.md"))!;
+			const remote = (await ctx.remoteFs.stat("c.md"))!;
+			const plan = makePlan([{ path: "c.md", action: "match", local, remote }]);
+			const newer = { ...buildSyncRecord(local, remote, "c.md"), hash: "newer" };
+			await ctx.committer.stateStore.put(newer);
+			const result = await executePlan(plan, ctx);
+			expect(result.succeeded).toEqual([]);
+			expect(result.failed.length + result.blocked.length).toBe(1);
+			expect(await ctx.committer.stateStore.get("c.md")).toEqual(newer);
+		});
+
+		it("retains endpoint verification and prefix blocking for ordered component matches", async () => {
+			const ctx = makeCtx();
+			const actions: SyncAction[] = [];
+			for (const path of ["folder/a.md", "folder/b.md"]) {
+				addFile(ctx.localFs as MockFileSystem, path, "original", 1000);
+				addFile(ctx.remoteFs as MockFileSystem, path, "original", 1000);
+				actions.push({ path, action: "match",
+					local: (await ctx.localFs.stat(path))!, remote: (await ctx.remoteFs.stat(path))! });
+			}
+			addFile(ctx.localFs as MockFileSystem, "folder/a.md", "modified", 2000);
+			const result = await executePlan(makePlan(actions, true), ctx);
+			expect(result.succeeded).toEqual([]);
+			expect(result.blocked.map(({ reason }) => reason)).toEqual([
+				"Endpoint changed before execution: folder/a.md", "component prefix did not publish",
+			]);
+			expect(await ctx.committer.stateStore.get("folder/a.md")).toBeUndefined();
+			expect(await ctx.committer.stateStore.get("folder/b.md")).toBeUndefined();
 		});
 	});
 
