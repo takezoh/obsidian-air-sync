@@ -46,13 +46,14 @@ describe("DropboxAuthProvider.startAuth", () => {
 
 		expect(typeof out.pendingCodeVerifier).toBe("string");
 		expect((out.pendingCodeVerifier as string).length).toBe(64);
-		// The CSRF state is the shared {app, nonce} blob, base64url-encoded
+		// The CSRF state is the shared {nonce} blob, base64url-encoded
 		// (URL-transit safe); normalize back to standard base64 to decode.
 		const raw = out.pendingAuthState as string;
 		expect(raw).not.toMatch(/[+/=]/);
 		const b64 = raw.replace(/-/g, "+").replace(/_/g, "/");
-		const state = JSON.parse(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4))) as { app: string };
-		expect(state.app).toBe("obsidian-plugin");
+		const state = JSON.parse(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4))) as { nonce: string; app?: unknown };
+		expect(state).not.toHaveProperty("app");
+		expect(typeof state.nonce).toBe("string");
 		expect(url.searchParams.get("state")).toBe(out.pendingAuthState);
 		expect(out.pendingAuthIdentity).toEqual({ backendType: "dropbox", clientId: "test-client-id" });
 	});

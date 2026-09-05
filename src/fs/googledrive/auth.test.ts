@@ -104,8 +104,8 @@ describe("GoogleAuth.getAuthorizationUrl", () => {
 		const b64 = state!.replace(/-/g, "+").replace(/_/g, "/");
 		const decoded = JSON.parse(
 			atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4)),
-		) as { app: string; nonce: string };
-		expect(decoded.app).toBe("obsidian-plugin");
+		) as { nonce: string; app?: unknown };
+		expect(decoded).not.toHaveProperty("app");
 		expect(typeof decoded.nonce).toBe("string");
 	});
 

@@ -16,9 +16,6 @@ const AUTH_FAILED_COOLDOWN_MS = 60_000;
 
 const RANDOM_CHARSET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
-/** The app identifier embedded in the OAuth `state` (matched by the auth relays). */
-const STATE_APP_ID = "obsidian-plugin";
-
 /** Convert a standard base64 string to base64url (URL-safe, unpadded, RFC 7636 §A). */
 export function base64ToBase64Url(b64: string): string {
 	return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -54,13 +51,12 @@ export async function computeS256Challenge(verifier: string): Promise<string> {
 
 /**
  * Build an OAuth CSRF `state` value: a base64url-encoded JSON payload carrying
- * the app id, a random nonce, and any extra fields (e.g. `{ custom: true }`).
+ * a random nonce and any extra fields (e.g. `{ custom: true }`).
  * base64url keeps it URL-safe so no redirect hop mangles a `+`/`/`/`=` and breaks
  * the strict comparison on return.
  */
 export function buildOAuthState(extra: Record<string, unknown> = {}): string {
 	const json = JSON.stringify({
-		app: STATE_APP_ID,
 		...extra,
 		nonce: generateRandomString(32),
 	});
