@@ -94,6 +94,11 @@ describe("OneDriveCustomAuthProvider.completeAuth", () => {
 			customAuthority: "organizations",
 			pendingAuthState: "abc",
 			pendingCodeVerifier: "verifier-xyz",
+			pendingAuthIdentity: {
+				backendType: "onedrive-custom",
+				clientId: "user-cid",
+				authority: "organizations",
+			},
 		});
 
 		const opts = spy.mock.calls[0]![0] as RequestUrlParam;

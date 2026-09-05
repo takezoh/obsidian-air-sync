@@ -87,7 +87,7 @@ export class DropboxAuth extends BaseOAuthTokenManager {
 			throw new Error(`Token exchange failed: ${res.status} ${extractTokenErrorDetail(res)}`);
 		}
 		assertDropboxTokenResponse(res.json);
-		this.storeTokenResponse(res.json);
+		await this.storeTokenResponse(res.json);
 	}
 
 	protected async performRefresh(): Promise<string> {
@@ -119,7 +119,7 @@ export class DropboxAuth extends BaseOAuthTokenManager {
 			throw new Error(`Token refresh failed: ${res.status} ${extractTokenErrorDetail(res)}`);
 		}
 		assertDropboxTokenResponse(res.json);
-		this.storeTokenResponse(res.json);
+		await this.storeTokenResponse(res.json);
 		return this.accessToken;
 	}
 

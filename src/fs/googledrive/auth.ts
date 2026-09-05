@@ -19,7 +19,7 @@ export interface IGoogleAuth {
 	 * otherwise be discarded with the instance — leaving the shared/stored token
 	 * stale and failing the next real refresh.
 	 */
-	setRefreshTokenRotatedHook(cb: (refreshToken: string) => void): void;
+	setRefreshTokenRotatedHook(cb: (refreshToken: string) => void | Promise<void>): void;
 	readonly isAuthenticated: boolean;
 	getAuthorizationUrl(): Promise<string>;
 	getAuthState(): string | null;
@@ -190,7 +190,7 @@ export class GoogleAuth extends GoogleAuthBase {
 
 			const token: unknown = response.json;
 			assertTokenResponse(token);
-			this.storeTokenResponse(token);
+			await this.storeTokenResponse(token);
 			return this.accessToken;
 		} catch (err) {
 			this.handleRefreshError(err);
@@ -289,7 +289,7 @@ export class GoogleAuthDirect extends GoogleAuthBase {
 
 			const token: unknown = response.json;
 			assertTokenResponse(token);
-			this.storeTokenResponse(token);
+			await this.storeTokenResponse(token);
 			this.clearAuthState();
 			this.logger?.debug("Token exchange successful");
 		} catch (err) {
@@ -316,7 +316,7 @@ export class GoogleAuthDirect extends GoogleAuthBase {
 
 			const token: unknown = response.json;
 			assertTokenResponse(token);
-			this.storeTokenResponse(token);
+			await this.storeTokenResponse(token);
 			return this.accessToken;
 		} catch (err) {
 			this.handleRefreshError(err);
