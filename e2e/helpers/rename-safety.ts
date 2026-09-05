@@ -79,9 +79,11 @@ export function runRenameSafetyE2E(label: string, options: RenameSafetyOptions):
 				await localFs.write("Drafts/nested/note.md", nestedContent, 1000);
 				tracker.markDirty("Drafts/nested/note.md");
 				await orchestrator.runSync();
-				expect((await remoteFs.stat("Drafts"))?.pathAuthority).toBe("requested_echo");
+				// Live mutation responses include provider-resolved topology. Preserve that
+				// stronger exact-slot proof instead of downgrading it to a request echo.
+				expect((await remoteFs.stat("Drafts"))?.pathAuthority).toBe("actual_resolved");
 				expect((await remoteFs.stat("Drafts/nested/note.md"))?.pathAuthority)
-					.toBe("requested_echo");
+					.toBe("actual_resolved");
 
 				await localFs.rename("Drafts", "Published");
 				tracker.markFolderRenamed("Published", "Drafts");
