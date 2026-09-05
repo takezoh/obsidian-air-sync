@@ -156,7 +156,8 @@ export async function executePlan(
 	await settleScheduled(independent.map((component) => {
 		const action = component.actions[0]!;
 		return action.action === "match"
-			? statePool.run(() => executeAction(action, ctx, result, reportProgress))
+			? statePool.run(() => executeAction(action, ctx, result, reportProgress,
+				undefined, publishObservedMatch))
 			: transferPool.run(() => executeAction(action, ctx, result, reportProgress,
 				() => transferPool.noteRateLimit()), transferSize(action));
 	}));
@@ -251,6 +252,7 @@ async function executeAction(
 	result: ExecutionResult,
 	reportProgress: () => void,
 	onRateLimit?: () => void,
+	publish: typeof executeVerifiedAction = executeVerifiedAction,
 ): Promise<void> {
 	const permit = await ctx.acquireActionPermit?.();
 	try {
@@ -263,23 +265,7 @@ async function executeAction(
 			result.blocked.push({ action, reason: "priority observation invalidated pending action" });
 			return;
 		}
-		// Retry only operations that replay safely: push/pull overwrite by path and
-		// delete is idempotent on our backends. A rename would, on replay, re-issue
-		// rename(oldPath, …) against a source the first (successful) attempt already
-		// moved → a spurious not-found failure — so renames run without the retry wrapper.
-		const io = () => runActionIO(action, ctx);
-		const execute = async () => {
-			await checkPublicationInputs(action, ctx, result.succeeded);
-			const entities = action.action === "rename_local" || action.action === "rename_remote"
-				? await io()
-				: await withIoRetry(io, ctx, onRateLimit);
-			const terminalProof = await proveAdmittedTerminal(action, ctx, entities, result.succeeded);
-			const terminalLocal = terminalProof?.localEntity ?? entities.localEntity;
-			const terminalRemote = terminalProof?.remoteEntity ?? entities.remoteEntity;
-			const terminalRecord = await commitAction(action, terminalLocal, terminalRemote,
-				ctx.committer, terminalProof, result.succeeded);
-			return { localEntity: terminalLocal, remoteEntity: terminalRemote, terminalProof, terminalRecord };
-		};
+		const execute = () => publish(action, ctx, result.succeeded, onRateLimit);
 		const paths = localMutationPaths(action);
 		const { localEntity, remoteEntity, terminalProof, terminalRecord } = ctx.mutationBarrier && paths.length > 0
 			? await ctx.mutationBarrier.run(paths, execute)
@@ -310,6 +296,35 @@ async function executeAction(
 		reportProgress();
 		permit?.release();
 	}
+}
+
+/** Independent same-key matches publish the admitted observation, not a new
+ * filesystem observation. Later edits belong to the next tracker generation.
+ * Store CAS and scheduler permits remain shared with effectful execution.
+ */
+async function publishObservedMatch(
+	action: SyncAction, ctx: Pick<ExecutionContext, "committer">,
+): Promise<Omit<CompletedAction, "action">> {
+	const localEntity = action.local;
+	const remoteEntity = action.remote;
+	const terminalRecord = await commitAction(action, localEntity, remoteEntity, ctx.committer);
+	return { localEntity, remoteEntity, terminalRecord };
+}
+
+async function executeVerifiedAction(
+	action: SyncAction, ctx: ExecutionContext, completed: readonly CompletedAction[], onRateLimit?: () => void,
+): Promise<Omit<CompletedAction, "action">> {
+	await checkPublicationInputs(action, ctx, completed);
+	const io = () => runActionIO(action, ctx);
+	// Renames cannot replay safely after their source has already moved.
+	const entities = action.action === "rename_local" || action.action === "rename_remote"
+		? await io() : await withIoRetry(io, ctx, onRateLimit);
+	const terminalProof = await proveAdmittedTerminal(action, ctx, entities, completed);
+	const localEntity = terminalProof?.localEntity ?? entities.localEntity;
+	const remoteEntity = terminalProof?.remoteEntity ?? entities.remoteEntity;
+	const terminalRecord = await commitAction(action, localEntity, remoteEntity,
+		ctx.committer, terminalProof, completed);
+	return { localEntity, remoteEntity, terminalProof, terminalRecord };
 }
 
 function localMutationPaths(action: SyncAction): string[] {
