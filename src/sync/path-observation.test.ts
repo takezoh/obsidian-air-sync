@@ -1,8 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { FileEntity } from "../fs/types";
 import type { IFileSystem } from "../fs/interface";
 import type { PathObservation } from "./types";
-import { confirmEntryAbsences, exactEntity, observePath } from "./path-observation";
+import { confirmEntryAbsences, confirmRenameOppositeEndpoints, exactEntity, observePath } from "./path-observation";
 
 function entity(path: string, pathAuthority?: FileEntity["pathAuthority"]): FileEntity {
 	return { path, pathAuthority, isDirectory: false, size: 1, mtime: 1, hash: "h" };
@@ -69,5 +69,41 @@ describe("confirmEntryAbsences", () => {
 
 		expect(indexedReads).toBeLessThan(count * 5);
 		expect(observations.every((item) => item.kind === "absent")).toBe(true);
+	});
+});
+
+describe("rename descendant observation", () => {
+	it.each(["local", "remote"] as const)("records a %s counterpart occupant without assuming vacancy", async (side) => {
+		const occupant = entity("old/added.md", "actual_resolved");
+		const observations: PathObservation[] = [
+			observePath(side, "new/added.md", entity("new/added.md", "actual_resolved")),
+		];
+		const stat = vi.fn((path: string) => Promise.resolve(path === occupant.path ? occupant : null));
+		const fs = { stat } as unknown as IFileSystem;
+		const report = { kind: "rename" as const, side, oldPath: "old", newPath: "new",
+			isFolder: true, authority: "reported" as const };
+		await confirmRenameOppositeEndpoints(observations, [report, report], fs, fs);
+		for (const observedSide of ["local", "remote"] as const) {
+			expect(observations).toContainEqual({ kind: "exact", side: observedSide,
+				requestedPath: "old/added.md", entity: occupant });
+		}
+		expect(stat.mock.calls.filter(([path]) => path === "old/added.md")).toHaveLength(2);
+	});
+
+	it("retains an unresolved counterpart and an authoritative tombstone", async () => {
+		const observations: PathObservation[] = [
+			observePath("local", "new/added.md", entity("new/added.md", "actual_resolved")),
+			observePath("remote", "old/added.md", null, "checkpoint_deleted"),
+		];
+		const local = { stat: (path: string) => Promise.resolve(entity(path, "requested_echo")) } as unknown as IFileSystem;
+		const remoteStat = vi.fn(() => Promise.resolve(null));
+		await confirmRenameOppositeEndpoints(observations, [{ kind: "rename", side: "local",
+			oldPath: "old", newPath: "new", isFolder: true, authority: "reported" }],
+		local, { stat: remoteStat } as unknown as IFileSystem);
+		expect(observations).toContainEqual(expect.objectContaining({ kind: "present_unresolved",
+			side: "local", requestedPath: "old/added.md", source: "stat" }));
+		expect(observations).toContainEqual({ kind: "absent", side: "remote",
+			requestedPath: "old/added.md", authority: "checkpoint_deleted" });
+		expect(remoteStat).not.toHaveBeenCalledWith("old/added.md");
 	});
 });

@@ -895,6 +895,36 @@ describe("collectChanges — temperature selection", () => {
 			}));
 		});
 
+		it.each([false, true])("observes the absent counterpart of a new folder descendant with cold=%s", async (cold) => {
+			await stateStore.put(makeRecord("old/known.md"));
+			addFile(remoteFs, "old/known.md", "known");
+			addFile(localFs, "new/known.md", "known");
+			addFile(localFs, "new/added.md", "new");
+			localTracker.markFolderRenamed("new", "old");
+			const localStat = vi.spyOn(localFs, "stat");
+			const remoteStat = vi.spyOn(remoteFs, "stat");
+
+			const result = await collectChanges(makeDeps(), { forceFullScan: cold });
+
+			for (const side of ["local", "remote"] as const) {
+				expect(result.observations).toContainEqual({
+					kind: "absent", side, requestedPath: "old/added.md", authority: "stat",
+				});
+			}
+			expect(localStat.mock.calls.filter(([path]) => path === "old/added.md")).toHaveLength(1);
+			expect(remoteStat.mock.calls.filter(([path]) => path === "old/added.md")).toHaveLength(1);
+			expect(applyScope(result, {}).projection.byEndpoint.get("old/added.md")).toBe("included");
+		});
+
+		it("propagates a descendant counterpart stat failure without inventing absence", async () => {
+			addFile(localFs, "new/added.md", "new");
+			localTracker.markFolderRenamed("new", "old");
+			const stat = remoteFs.stat.bind(remoteFs);
+			vi.spyOn(remoteFs, "stat").mockImplementation((path) => path === "old/added.md"
+				? Promise.reject(new Error("counterpart unreadable")) : stat(path));
+			await expect(collectChanges(makeDeps())).rejects.toThrow("counterpart unreadable");
+		});
+
 		it("aborts when an unseen folder endpoint cannot be confirmed", async () => {
 			localTracker.markFolderRenamed("new", "old");
 			localFs.stat = () => { throw new Error("folder stat failed"); };

@@ -5,6 +5,8 @@ role: implementation
 
 # Implementation
 
+Integration follow-up: after the user authorized correcting main/#61 qualification failures, the existing Observation endpoint collector was extended to stat missing counterparts of already observed folder descendants. Parent terminal proof now projects preservation-copy addresses only on the filesystem that actually moved. Neither change adds policy, a state owner or a recovery route. The main regression tests are exercised through the current public pipeline, including actual two-sided conflict preservation and interrupted parent rename followed by evidence-free re-observation. See verification.md for independent reviews, mutation witnesses and the final 1,873-test gate; initial-match performance remains outside this change.
+
 Status: local implementation, independent code review and the complete repository gate passed. Persistent-design promotion was applied through the docs CLI after the user approved direct registration of its structured data. The user subsequently reported successful actual-vault testing; matching-build log evidence is recorded in [verification](verification.md#actual-vault-observation-2026-09-05). Deployment was not performed by the agent. PR integration remains separate.
 
 ## Implementation progress (2026-09-05)

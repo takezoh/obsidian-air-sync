@@ -528,11 +528,14 @@ async function proveFolderDescendants(action: RenameAction, ctx: ExecutionContex
 			throw new ContentProofError("proof_mismatch", `Folder descendant changed: ${child.newPath}`);
 		}
 		for (const output of receipt?.terminalProof?.verifiedOutputs ?? []) {
-			const path = output.path.startsWith(action.oldPath + "/")
-				? action.path + output.path.slice(action.oldPath.length) : output.path;
-			for (const fs of [ctx.localFs, ctx.remoteFs]) {
+			for (const [side, fs] of [["local", ctx.localFs], ["remote", ctx.remoteFs]] as const) {
+				const moved = action.action === `rename_${side}`;
+				const path = moved && output.path.startsWith(action.oldPath + "/")
+					? action.path + output.path.slice(action.oldPath.length) : output.path;
 				const entity = await fs.stat(path);
-				if (!isExactPath(entity, path) || entity.isDirectory ||
+				// A preservation address may resolve through a case alias on the
+				// unmoved side. Its bytes, not caller spelling, are the obligation.
+				if (!entity || entity.isDirectory ||
 					(!await bytesMatch(output.sourceContent, entity) && !buffersEqual(output.sourceContent, await fs.read(path)))) {
 					throw new ContentProofError("proof_mismatch", `Folder preservation output changed: ${path}`);
 				}
