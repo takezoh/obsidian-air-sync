@@ -23,6 +23,33 @@ export function setBackendSecret(store: ISecretStore, backendType: string, name:
 	}
 }
 
+/**
+ * Publish a required non-empty backend secret and prove the synchronous
+ * SecretStorage postcondition before the caller exposes dependent state.
+ *
+ * Obsidian's API is synchronous but does not promise OS-level flush semantics.
+ * This check therefore proves only the boundary the API exposes: immediate,
+ * exact readback of the candidate under the stable backend key.
+ */
+export function publishBackendSecret(
+	store: ISecretStore,
+	backendType: string,
+	name: string,
+	candidate: string,
+): void {
+	if (!candidate) {
+		throw new Error("Required refresh token is missing");
+	}
+	try {
+		store.setSecret(secretKey(backendType, name), candidate);
+		if (store.getSecret(secretKey(backendType, name)) !== candidate) {
+			throw new Error("readback mismatch");
+		}
+	} catch {
+		throw new Error("Secret credential could not be saved securely. Please try connecting again.");
+	}
+}
+
 /** Read an opaque backend secret, or `""` if absent. */
 export function getBackendSecret(store: ISecretStore, backendType: string, name: string): string {
 	return store.getSecret(secretKey(backendType, name)) ?? "";

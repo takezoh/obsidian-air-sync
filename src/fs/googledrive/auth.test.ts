@@ -260,6 +260,62 @@ describe("GoogleAuth.getAccessToken concurrency", () => {
 });
 
 describe("GoogleDriveProvider.completeAuth", () => {
+	it("rejects a fresh built-in OAuth callback that has no durable refresh token", async () => {
+		const { GoogleDriveProvider } = await import("./provider");
+		const { GoogleAuth } = await import("./auth");
+		const secretStore = createMockSecretStore();
+		const provider = new GoogleDriveProvider(secretStore);
+		const authInternal = provider.auth as unknown as GoogleDriveAuthProviderInternal;
+
+		authInternal.googleAuth = new GoogleAuth();
+		authInternal.googleAuth.setAuthState("saved-state");
+
+		await expect(provider.auth.completeAuth(
+			"https://callback?access_token=new-access&expires_in=3600&state=saved-state",
+			{ pendingAuthState: "saved-state" },
+		)).rejects.toThrow(/refresh token/i);
+	});
+
+	it("does not report success when SecretStorage drops the fresh refresh-token write", async () => {
+		const { GoogleDriveProvider } = await import("./provider");
+		const { GoogleAuth } = await import("./auth");
+		const provider = new GoogleDriveProvider({
+			getSecret: () => null,
+			setSecret: () => {},
+		});
+		const authInternal = provider.auth as unknown as GoogleDriveAuthProviderInternal;
+
+		authInternal.googleAuth = new GoogleAuth();
+		authInternal.googleAuth.setAuthState("saved-state");
+
+		await expect(provider.auth.completeAuth(
+			"https://callback?access_token=new-access&refresh_token=new-refresh&expires_in=3600&state=saved-state",
+			{ pendingAuthState: "saved-state" },
+		)).rejects.toThrow(/secret|refresh token/i);
+	});
+
+	it("keeps an existing durable refresh token when a reauthorization callback omits it", async () => {
+		const { GoogleDriveProvider } = await import("./provider");
+		const { GoogleAuth } = await import("./auth");
+		const secretStore = createMockSecretStore({
+			"air-sync-googledrive-refresh-token": "existing-refresh",
+		});
+		const provider = new GoogleDriveProvider(secretStore);
+		const authInternal = provider.auth as unknown as GoogleDriveAuthProviderInternal;
+
+		authInternal.googleAuth = new GoogleAuth();
+		authInternal.googleAuth.setTokens("existing-refresh", "", 0);
+		authInternal.googleAuth.setAuthState("saved-state");
+
+		await provider.auth.completeAuth(
+			"https://callback?access_token=new-access&expires_in=3600&state=saved-state",
+			{ pendingAuthState: "saved-state" },
+		);
+
+		expect(secretStore.getSecret("air-sync-googledrive-refresh-token"))
+			.toBe("existing-refresh");
+	});
+
 	it("restores CSRF state on existing auth that lacks it", async () => {
 		const { GoogleDriveProvider } = await import("./provider");
 		const { GoogleAuth } = await import("./auth");

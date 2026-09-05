@@ -26,6 +26,7 @@ const DEFAULT_DROPBOX_CUSTOM_DATA: DropboxCustomData = {
 	accessTokenExpiry: 0,
 	pendingCodeVerifier: "",
 	pendingAuthState: "",
+	pendingAuthIdentity: null,
 	pendingPickedFolderPath: "",
 	customClientId: "",
 };

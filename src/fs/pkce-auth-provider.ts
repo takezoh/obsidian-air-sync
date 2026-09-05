@@ -2,7 +2,7 @@ import { Notice, Platform } from "../platform/obsidian";
 import type { IAuthProvider } from "./auth";
 import type { ISecretStore } from "./secret-store";
 import type { Logger } from "../logging/logger";
-import { setBackendSecret, hasBackendSecret } from "./token-store";
+import { getBackendSecret, hasBackendSecret, publishBackendSecret, setBackendSecret } from "./token-store";
 import {
 	BaseOAuthTokenManager,
 	buildOAuthState,
@@ -17,6 +17,13 @@ export interface PkceTokenManager extends BaseOAuthTokenManager {
 	exchangeCode(code: string, codeVerifier: string, redirectUri?: string): Promise<void>;
 	/** Revoke the active token, if the provider supports it (Microsoft does not). */
 	revokeToken?(): Promise<void>;
+}
+
+/** Nonsecret identity bound to one pending PKCE authorization attempt. */
+export interface PendingPkceAuthIdentity {
+	backendType: string;
+	clientId: string;
+	authority?: string;
 }
 
 /**
@@ -69,10 +76,64 @@ export abstract class PkceAuthProvider<TAuth extends PkceTokenManager> implement
 	/** Notify the user on the start path when credentials are missing (custom variants override). */
 	protected onMissingCredentials(): void {}
 
+	/** Optional provider identity segment (OneDrive custom authority). */
+	protected resolveAttemptAuthority(_backendData: Record<string, unknown>): string | undefined {
+		return undefined;
+	}
+
+	/** Whether this provider requires a nonempty authority in the pending snapshot. */
+	protected requiresAttemptAuthority(): boolean {
+		return false;
+	}
+
+	private createAttemptIdentity(backendData: Record<string, unknown>): PendingPkceAuthIdentity {
+		const authority = this.resolveAttemptAuthority(backendData);
+		return {
+			backendType: this.backendType,
+			clientId: this.resolveClientId(backendData),
+			...(authority === undefined ? {} : { authority }),
+		};
+	}
+
+	private readAttemptIdentity(value: unknown): PendingPkceAuthIdentity {
+		if (!value || typeof value !== "object" || Array.isArray(value)) {
+			throw new Error("OAuth attempt identity is missing. Please restart the authorization flow.");
+		}
+		const identity = value as Record<string, unknown>;
+		if (
+			identity.backendType !== this.backendType ||
+			typeof identity.clientId !== "string" ||
+			!identity.clientId ||
+			(this.clientId !== "" && identity.clientId !== this.clientId) ||
+			(this.requiresAttemptAuthority() && (typeof identity.authority !== "string" || !identity.authority)) ||
+			(identity.authority !== undefined && typeof identity.authority !== "string")
+		) {
+			throw new Error("OAuth attempt identity is invalid. Please restart the authorization flow.");
+		}
+		return {
+			backendType: identity.backendType,
+			clientId: identity.clientId,
+			...(typeof identity.authority === "string" ? { authority: identity.authority } : {}),
+		};
+	}
+
+	private applyAttemptIdentity(
+		backendData: Record<string, unknown>,
+		identity: PendingPkceAuthIdentity,
+	): Record<string, unknown> {
+		return {
+			...backendData,
+			customClientId: identity.clientId,
+			...(identity.authority === undefined ? {} : { customAuthority: identity.authority }),
+		};
+	}
+
 	/** Get or lazily create the shared token manager (so refreshed tokens are persistable). */
 	getOrCreateAuth(backendData: Record<string, unknown>, logger?: Logger): TAuth {
 		if (!this.tokenAuth) {
-			this.tokenAuth = this.createAuth(this.resolveClientId(backendData), backendData, logger ?? this.logger);
+			this.tokenAuth = this.wireRefreshPersistence(
+				this.createAuth(this.resolveClientId(backendData), backendData, logger ?? this.logger),
+			);
 		}
 		return this.tokenAuth;
 	}
@@ -85,8 +146,15 @@ export abstract class PkceAuthProvider<TAuth extends PkceTokenManager> implement
 	 * would be discarded with this instance, leaving the stored token stale.
 	 */
 	createDetachedAuth(backendData: Record<string, unknown>, logger?: Logger): TAuth {
-		const auth = this.createAuth(this.resolveClientId(backendData), backendData, logger ?? this.logger);
-		auth.setRefreshTokenRotatedHook((rt) => setBackendSecret(this.secretStore, this.backendType, "refresh", rt));
+		return this.wireRefreshPersistence(
+			this.createAuth(this.resolveClientId(backendData), backendData, logger ?? this.logger),
+		);
+	}
+
+	private wireRefreshPersistence(auth: TAuth): TAuth {
+		auth.setRefreshTokenRotatedHook((refreshToken) => {
+			publishBackendSecret(this.secretStore, this.backendType, "refresh", refreshToken);
+		});
 		return auth;
 	}
 
@@ -109,19 +177,22 @@ export abstract class PkceAuthProvider<TAuth extends PkceTokenManager> implement
 			this.onMissingCredentials();
 			return {};
 		}
+		const identity = this.createAttemptIdentity(backendData);
+		const attemptData = this.applyAttemptIdentity(backendData, identity);
 		const codeVerifier = generateRandomString(64);
 		const codeChallenge = await computeS256Challenge(codeVerifier);
 		// base64url state (URL-transit safe); it returns through the
 		// obsidian://air-sync-auth deep link and is validated in completeAuth.
 		const state = buildOAuthState();
-		const url = this.buildAuthorizeUrl({ clientId: this.resolveClientId(backendData), codeChallenge, state }, backendData);
+		this.tokenAuth = null;
+		const url = this.buildAuthorizeUrl({ clientId: identity.clientId, codeChallenge, state }, attemptData);
 		if (Platform.isMobile) {
 			window.location.href = url;
 		} else {
 			window.open(url);
 		}
 		new Notice("Complete authorization in your browser");
-		return { pendingAuthState: state, pendingCodeVerifier: codeVerifier };
+		return { pendingAuthState: state, pendingCodeVerifier: codeVerifier, pendingAuthIdentity: identity };
 	}
 
 	async completeAuth(input: string, backendData: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -134,13 +205,27 @@ export abstract class PkceAuthProvider<TAuth extends PkceTokenManager> implement
 		if (typeof codeVerifier !== "string" || !codeVerifier) {
 			throw new Error("PKCE code verifier is missing. Please restart the authorization flow.");
 		}
+		const identity = this.readAttemptIdentity(backendData.pendingAuthIdentity);
+		const attemptData = this.applyAttemptIdentity(backendData, identity);
 
-		const auth = this.getOrCreateAuth(backendData);
+		const auth = this.wireRefreshPersistence(
+			this.createAuth(identity.clientId, attemptData, this.logger),
+		);
 		await auth.exchangeCode(params.code, codeVerifier);
 		const tokens = auth.getTokenState();
-		setBackendSecret(this.secretStore, this.backendType, "refresh", tokens.refreshToken);
+		const requiredRefresh = tokens.refreshToken || getBackendSecret(this.secretStore, this.backendType, "refresh");
+		publishBackendSecret(this.secretStore, this.backendType, "refresh", requiredRefresh);
 		setBackendSecret(this.secretStore, this.backendType, "access", tokens.accessToken);
+		if (!tokens.refreshToken) {
+			auth.setTokens(requiredRefresh, tokens.accessToken, tokens.accessTokenExpiry);
+		}
+		this.tokenAuth = auth;
 
-		return { accessTokenExpiry: tokens.accessTokenExpiry, pendingAuthState: "", pendingCodeVerifier: "" };
+		return {
+			accessTokenExpiry: tokens.accessTokenExpiry,
+			pendingAuthState: "",
+			pendingCodeVerifier: "",
+			pendingAuthIdentity: null,
+		};
 	}
 }

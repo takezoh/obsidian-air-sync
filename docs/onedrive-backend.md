@@ -113,8 +113,9 @@ client); the plugin then exchanges the code for tokens directly with Microsoft.
   the App Folder (`special/approot`); `offline_access` enables the refresh token.
 - **Token storage**: refresh + access tokens in Obsidian SecretStorage (keyed per
   backend type, `onedrive`); the access-token expiry lives in
-  `settings.backendData`. Tokens refreshed mid-sync are written back after the
-  cycle. Microsoft's consumer endpoint has no programmatic token revoke, so
+  `settings.backendData`. A rotated refresh token is written and immediately read
+  back before the refreshed response becomes reusable; cycle closeout is not a
+  credential publication point. Microsoft's consumer endpoint has no programmatic token revoke, so
   disconnect clears the SecretStorage tokens (sufficient) and drops the in-memory
   manager.
 - The built-in `client_id` is the real Entra (Azure AD) application id, committed in
@@ -129,9 +130,10 @@ shared `OneDriveProviderBase` — identical client/FS/folder-binding/error behav
 App Folder scope — that swaps the auth identity. The user supplies their own Entra
 **Application (client) ID** and an **account type**, both stored in `backendData`
 (`customClientId`, `customAuthority`) as plain values (the client id is a public PKCE
-identifier — no secret). `OneDriveCustomAuthProvider` overrides the PKCE seams to read
-the client id and authority from `backendData` per call, so the authorize URL and token
-endpoint hit the chosen tenant. Tokens live under the `onedrive-custom` SecretStorage
+identifier — no secret). `OneDriveCustomAuthProvider` snapshots the effective client id
+and authority beside the pending state/verifier when authorization starts, so settings
+edited before callback cannot change the token endpoint or client identity for that
+attempt. Tokens live under the `onedrive-custom` SecretStorage
 keys, separate from the built-in. `disconnect` clears the tokens but preserves
 `customClientId`/`customAuthority` so a reconnect needs no re-entry.
 

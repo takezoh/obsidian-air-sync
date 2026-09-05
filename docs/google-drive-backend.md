@@ -149,7 +149,7 @@ Two OAuth implementations share a common base class (`GoogleAuthBase`). The serv
 
 ### Token storage
 
-Tokens (`refreshToken`, `accessToken`) are stored in Obsidian's `SecretStorage` via `token-store.ts`, never in `settings.backendData`. Only non-secret data lives in `settings.backendData`: `remoteVaultFolderId`, `accessTokenExpiry`, and `pendingAuthState`/`pendingCodeVerifier` (transient, to survive a plugin reload mid-flow), plus the custom-OAuth fields. The delta cursor is **not** here — it lives in the `MetadataStore` (`META_STORE`), co-located with the file map (ADR 0001) (`customClientId`/`customClientSecret` are SecretStorage secret-name references, `customScope`, `customRedirectUri`, `customIncludeGrantedScopes`).
+Tokens (`refreshToken`, `accessToken`) are stored in Obsidian's `SecretStorage` via `token-store.ts`, never in `settings.backendData`. Completion succeeds only after an immediately exact readback of its required refresh credential; a rotated refresh token uses the same check before refreshed response state is installed. This is an API-level postcondition, not a claim that the OS has physically flushed storage. Only non-secret data lives in `settings.backendData`: `remoteVaultFolderId`, `accessTokenExpiry`, and `pendingAuthState`/`pendingCodeVerifier` (transient, to survive a plugin reload mid-flow), plus the custom-OAuth fields. The delta cursor is **not** here — it lives in the `MetadataStore` (`META_STORE`), co-located with the file map (ADR 0001) (`customClientId`/`customClientSecret` are SecretStorage secret-name references, `customScope`, `customRedirectUri`, `customIncludeGrantedScopes`).
 
 ## Resumable upload
 

@@ -9,7 +9,7 @@ import type { Logger } from "../logging/logger";
 import type { RemoteVaultResolution } from "./remote-vault-contract";
 import { METADATA_CACHE_VERSION, MetadataStore } from "../store/metadata-store";
 import { getBackendSecret, setBackendSecret, hasBackendSecret, clearBackendSecrets } from "./token-store";
-import type { PkceAuthProvider, PkceTokenManager } from "./pkce-auth-provider";
+import type { PendingPkceAuthIdentity, PkceAuthProvider, PkceTokenManager } from "./pkce-auth-provider";
 
 /**
  * The `backendData` shape every in-plugin PKCE App-Folder backend stores: the bound
@@ -21,6 +21,7 @@ export interface PkceAppFolderData {
 	accessTokenExpiry: number;
 	pendingCodeVerifier: string;
 	pendingAuthState: string;
+	pendingAuthIdentity: PendingPkceAuthIdentity | null;
 	pendingPickedFolderPath: string;
 }
 
@@ -145,13 +146,11 @@ export abstract class PkceAppFolderProvider<
 	readBackendState(): Record<string, unknown> {
 		const result: Record<string, unknown> = {};
 		// The delta cursor commits atomically with the file map in the metadata store
-		// (ADR 0001). Here we only persist refreshed tokens (access may have rotated) and
-		// the non-secret expiry; the tokens go to SecretStorage. Saved every cycle, clean
-		// or not: a refresh that already succeeded should not be discarded if a later file
-		// op failed.
+		// (ADR 0001). Required refresh publication already completed at token acquisition;
+		// this late snapshot retains only the optional access-token cache and non-secret
+		// expiry.
 		const tokens = this.auth.getTokenState();
 		if (tokens && (tokens.refreshToken || tokens.accessToken)) {
-			setBackendSecret(this.secretStore, this.type, "refresh", tokens.refreshToken);
 			setBackendSecret(this.secretStore, this.type, "access", tokens.accessToken);
 			result.accessTokenExpiry = tokens.accessTokenExpiry;
 		}

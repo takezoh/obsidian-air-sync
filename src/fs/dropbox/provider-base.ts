@@ -40,6 +40,7 @@ export const DEFAULT_DROPBOX_DATA: DropboxBackendData = {
 	accessTokenExpiry: 0,
 	pendingCodeVerifier: "",
 	pendingAuthState: "",
+	pendingAuthIdentity: null,
 	pendingPickedFolderPath: "",
 };
 

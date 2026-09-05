@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { createMockSecretStore } from "./googledrive/test-helpers.test";
 import {
 	setBackendSecret,
+	publishBackendSecret,
 	getBackendSecret,
 	hasBackendSecret,
 	clearBackendSecrets,
@@ -46,5 +47,31 @@ describe("backend secret store", () => {
 		const store = createMockSecretStore({ "air-sync-googledrive-refresh-token": "legacy" });
 		expect(getBackendSecret(store, "googledrive", "refresh")).toBe("legacy");
 		expect(hasBackendSecret(store, "googledrive", "refresh")).toBe(true);
+	});
+
+	it("publishes a required secret only after exact immediate readback", () => {
+		const store = createMockSecretStore();
+		publishBackendSecret(store, "dropbox", "refresh", "candidate");
+		expect(getBackendSecret(store, "dropbox", "refresh")).toBe("candidate");
+	});
+
+	it.each(["", "stale"])("fails when required publication reads back %j", (readback) => {
+		const store = createMockSecretStore();
+		store.getSecret = () => readback || null;
+		expect(() => publishBackendSecret(store, "dropbox", "refresh", "candidate"))
+			.toThrow("Secret credential could not be saved securely");
+	});
+
+	it("fails with bounded text when SecretStorage throws", () => {
+		const store = createMockSecretStore();
+		store.setSecret = () => { throw new Error("secret sentinel"); };
+		expect(() => publishBackendSecret(store, "dropbox", "refresh", "candidate"))
+			.toThrow("Secret credential could not be saved securely. Please try connecting again.");
+	});
+
+	it("rejects an empty required candidate", () => {
+		const store = createMockSecretStore();
+		expect(() => publishBackendSecret(store, "dropbox", "refresh", ""))
+			.toThrow("Required refresh token is missing");
 	});
 });

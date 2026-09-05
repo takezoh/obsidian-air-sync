@@ -126,7 +126,8 @@ with Dropbox. Refreshing an access token needs only the `client_id`.
   `/Apps/<App>/`.
 - **Token storage**: refresh + access tokens in Obsidian SecretStorage (keyed per
   backend type); the access-token expiry lives in `settings.backendData`. Tokens
-  refreshed mid-sync are written back after the cycle.
+  rotated during refresh are written and immediately read back before the refreshed
+  response becomes reusable; cycle closeout is not a credential publication point.
 - The built-in app key is committed in `fs/auth-config.ts` (`DROPBOX_AUTH`); it is a
   public PKCE identifier (no secret), so it ships embedded and connects with no per-user setup.
 
@@ -138,7 +139,9 @@ Folder scope — that swaps the auth identity. The user supplies **their own Dro
 key** (a public PKCE identifier — no secret), stored in `backendData.customClientId` as a
 plain value; they must register `obsidian://air-sync-auth` as a redirect URI in that app.
 `DropboxCustomAuthProvider` overrides the PKCE seams to read the app key from
-`backendData` per call. Tokens live under the `dropbox-custom` SecretStorage keys,
+`backendData` when authorization starts. That public identity is snapshotted beside
+the pending state/verifier and remains the callback exchange identity even if settings
+are edited before return. Tokens live under the `dropbox-custom` SecretStorage keys,
 separate from the built-in. `disconnect` clears the tokens but preserves `customClientId`
 so a reconnect needs no re-entry. (Dropbox has no authority/account-type concept, so —
 unlike `onedrive-custom` — there is no account-type selector.)

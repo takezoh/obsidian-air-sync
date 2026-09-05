@@ -37,6 +37,7 @@ export const DEFAULT_ONEDRIVE_DATA: OneDriveBackendData = {
 	accessTokenExpiry: 0,
 	pendingCodeVerifier: "",
 	pendingAuthState: "",
+	pendingAuthIdentity: null,
 	pendingPickedFolderPath: "",
 };
 

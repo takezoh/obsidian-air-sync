@@ -15,6 +15,8 @@ async function makeProvider(secrets: Record<string, string> = {}) {
 	return { auth: new DropboxAuthProvider(store, "test-client-id"), store };
 }
 
+const ATTEMPT_IDENTITY = { backendType: "dropbox", clientId: "test-client-id" };
+
 describe("DropboxAuthProvider.isAuthenticated", () => {
 	it("is true only when a refresh secret is stored", async () => {
 		const { auth } = await makeProvider();
@@ -52,6 +54,7 @@ describe("DropboxAuthProvider.startAuth", () => {
 		const state = JSON.parse(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4))) as { app: string };
 		expect(state.app).toBe("obsidian-plugin");
 		expect(url.searchParams.get("state")).toBe(out.pendingAuthState);
+		expect(out.pendingAuthIdentity).toEqual({ backendType: "dropbox", clientId: "test-client-id" });
 	});
 
 	it("derives a code_challenge that is the base64url SHA-256 of the verifier", async () => {
@@ -78,6 +81,7 @@ describe("DropboxAuthProvider.completeAuth", () => {
 		const out = await auth.completeAuth("obsidian://air-sync-auth?code=THECODE&state=abc", {
 			pendingAuthState: "abc",
 			pendingCodeVerifier: "verifier-xyz",
+			pendingAuthIdentity: ATTEMPT_IDENTITY,
 		});
 
 		const opts = spy.mock.calls[0]![0] as RequestUrlParam;
@@ -125,6 +129,7 @@ describe("DropboxAuthProvider.completeAuth", () => {
 			auth.completeAuth("obsidian://air-sync-auth?code=THECODE&state=abc", {
 				pendingAuthState: "abc",
 				pendingCodeVerifier: "verifier-xyz",
+				pendingAuthIdentity: ATTEMPT_IDENTITY,
 			}),
 		).rejects.toThrow(/Invalid Dropbox token response/);
 	});
