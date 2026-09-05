@@ -127,6 +127,17 @@ use those imports; the rest of production consumes the public Admission result o
 `AuthorizedSyncPlan`. This keeps path-local proposal and identity-component authority
 from becoming two whole-plan policy owners again.
 
+`sync-admission-authority-guard.test.mjs` closes the boundary inside Admission.
+Production value imports of content comparison and report-family classification are
+limited to `identity-component-decision.ts`; the fact graph and identity decision are
+reachable only through `plan-admission.ts`. Retired action-first optimizer modules have
+no permitted value importers. The AST guard rejects retired APIs and pins the fact-only
+fields of `BatchObservation` and `IdentityComponent`.
+The same AST guard rejects module-scope mutable or computed correctness data in the
+decision and subordinate proof modules.
+The selected rename family and folder proof must therefore remain immutable call-local
+values; a helper cannot become a second policy or retry-state owner.
+
 ### Producer-qualified mock path evidence
 
 Sync tests must not choose path authority independently from the filesystem role.
@@ -277,12 +288,56 @@ these green when touching the pipeline:
 
 | Principle | Pinned by |
 |---|---|
+| **Two-authority durable sync state** — only the clean-cycle remote cursor and per-file successful `SyncRecord` are authoritative; the complete remote cache is a derived co-commit | `sync-state-ownership-guard.test.mjs` (run by `npm run lint:bot-repro`) |
+| **Single Admission identity authority** — bind current component facts before content comparison; no action-first APIs, foreign policy imports, action-bearing observations, or retained proof | `sync-admission-authority-guard.test.mjs`, `sync/plan-admission.test.ts` |
 | **Remote backend completeness** — every registered provider resolves to an exact catalogued filesystem family, and every family runs all four shared contracts | `fs/registry.test.ts`, `tests/fs/remote-backend-contracts.test.ts` |
 | **#3 delta-first** — the hot path stats only dirty paths and never calls `list()` (full scans are cold-start only) | `sync/delta-first.test.ts` |
 | **#5 crash-safe** — an interrupted action commits no baseline and re-syncs to convergence | `sync/crash-safety.test.ts`, `sync/convergence.test.ts` |
-| **Fresh recovery uses existing state only** — retryable unknowns stay visible without a pending-operation presentation; exact legacy rename rows are released only after a clean checkpoint, and same-session failure still forces COLD | `sync/sync-notification.test.ts`, `sync/sync-cycle-finalization.test.ts`, `sync/orchestrator.test.ts` |
+| **Attempt-bounded remote working view** — a clean cycle commits; every incomplete result or pre-closeout exception aborts before classification/retry; the next COLD/WARM/HOT attempt derives only from durable/current facts | `sync/sync-cycle-finalization.test.ts`, `sync/orchestrator.test.ts`, `sync/plan-executor.test.ts`, `tests/fs/remote-backend-contracts.test.ts` |
+| **Case-alias canonicalization adds no owner** — Observation records raw-adapter actual casing and comparable content facts; Admission alone normalizes an explicit alias component and may canonicalize remote casing when endpoints, vacancy, unique identity, and content are complete. Temperature, global record count, database version, and prior failure are not decision inputs | `fs/local/local-fs.test.ts`, `sync/change-detector.test.ts`, `sync/plan-admission.test.ts`, `sync/orchestrator.test.ts` |
+| **Requested spelling has no topology authority** — `requested_echo` may refresh metadata at an identity's current path but cannot re-key it. Provider-resolved mutation responses and successful explicit rename endpoints alone may change the cache path; a mixed case-only parent component retains content work and uses one parent rename | `fs/googledrive/metadata-cache.test.ts`, `fs/googledrive/index.test.ts`, `fs/dropbox/index.test.ts`, `fs/onedrive/index.test.ts`, `sync/orchestrator.test.ts` |
 | **Command-ID immutability** — registered command IDs are a stable, published API | `main-commands.test.ts` (snapshot — update only for a genuinely new command, never to rename a shipped ID) |
 | **Coverage floors** — ratchet thresholds (lines 76 / statements 75 / functions 70 / branches 65) | `vitest.config.ts`, enforced by `npm run test:coverage` in CI. Raise as coverage improves; never lower to make CI pass |
+
+### Closed two-authority fixture
+
+`sync-state-ownership-guard.test.mjs` uses the installed TypeScript AST to inventory every
+`SyncOrchestrator` instance field (including non-private, `#private`, computed, and
+constructor-parameter fields), every production property/element access to
+`commitCheckpoint` (including extracted or bound forms), and the production imports,
+references, constructors, and mutating calls for `SyncStateStore`, `MetadataStore`, and
+`IDBHelper`. It also inventories direct `indexedDB.open` accesses. Its receiver tracking
+covers direct, aliased, destructured, and bracket-notation `SyncStateStore` calls,
+including exact record/content CAS and atomic path rewrites. The negative fixtures
+exercise each CAS method through a destructured store reference; adding a method
+must not silently remove its existing writer from the inventory. This makes a new
+durable owner, persistent-store owner, or in-memory recovery owner a deliberate review
+event rather than an incidental field or write. The cache checkpoint must serialize the
+complete final live cache under its mutex with the cursor; do not add touched-path,
+pending-flush, receipt, journal, or other intermediate correctness state.
+The unified conflict resolver removes the former `conflict.ts` Store reader/import;
+no writer, constructor, or retained-field owner is added. The Admission architecture
+guard also rejects the retired conflict execution switches and legacy resolver APIs.
+`fact-first-execution.test.ts` pins ordinary and renamed conflict preservation,
+original-source revalidation, arriving-destination rejection, terminal-copy integrity,
+and interrupted merge convergence without compensating rollback.
+Observation evidence and Admission dispositions/failure reasons are immutable
+cycle-local values only. Do not persist them, add them to `SyncRecord`, or introduce an
+Orchestrator field to carry them across cycles. Case-alias handling must use one
+Admission-owned normalized component and exhaustive decision, never an
+initial/COLD/error partition. Observation owns fact acquisition only; negative tests
+cover every destructive precondition plus temperature and unrelated-record invariance.
+Within that component, caller-requested spelling remains an address only. It cannot
+become cached topology, cannot authorize a child rename, and cannot substitute for the
+single explicit parent transition after content work.
+
+This is an ordinary architectural primitive/owner inventory, not a malicious-code sandbox:
+it is deliberately conservative for ordinary TypeScript ownership forms, and semantic
+review remains required.
+
+When an intentional architecture change needs a new entry, update the guard fixture,
+ADR 0001, this section, and `AGENTS.md` together, then run `npm run lint:bot-repro`.
+Do not weaken the inventory or add a broad pattern exception to admit a writer.
 
 ## Declaring an exception
 

@@ -1,15 +1,17 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { collectChanges } from "./change-detector";
 import { enrichHashesForRenames } from "./change-hash-enrichment";
-import { planSync } from "./decision-engine";
+import { compareContent } from "./decision-engine";
 import type { ChangeDetectorDeps } from "./change-detector";
 import { LocalChangeTracker } from "./local-tracker";
 import { createMockLocalFs, createMockRemoteFs, type MockFileSystem, createMockStateStore, addFile } from "../__mocks__/sync-test-helpers";
 import type { FileEntity, RemoteChecksum } from "../fs/types";
-import type { MixedEntity, PathObservation, SyncRecord } from "./types";
+import type { IdentityEvidence, MixedEntity, PathObservation, SyncRecord } from "./types";
 import { md5 } from "../utils/md5";
 import { sha256, sha1 } from "../utils/hash";
 import { applyScope } from "./scope-projection";
+import { captureBatchObservation } from "./sync-cycle-planning";
+import { admitBatchObservation } from "./plan-admission";
 
 function makeRecord(path: string, overrides: Partial<SyncRecord> = {}): SyncRecord {
 	return {
@@ -362,9 +364,7 @@ describe("collectChanges — temperature selection", () => {
 			const deleted = result.entries.find((e) => e.path === "remote-deleted.md");
 			expect(deleted?.local).toBeDefined();
 			expect(deleted?.remote).toBeUndefined();
-			expect(planSync([deleted!]).actions).toMatchObject([
-				{ path: "remote-deleted.md", action: "delete_local" },
-			]);
+			expect(compareContent(deleted!)).toBe("delete_local");
 		});
 
 		it("keeps an authoritative remote deletion as conflict when the local file changed", async () => {
@@ -386,9 +386,7 @@ describe("collectChanges — temperature selection", () => {
 			const result = await collectChanges(makeDeps());
 			const deleted = result.entries.find((e) => e.path === "remote-deleted.md");
 
-			expect(planSync([deleted!]).actions).toMatchObject([
-				{ path: "remote-deleted.md", action: "conflict" },
-			]);
+			expect(compareContent(deleted!)).toBe("conflict");
 		});
 
 		it("includes locally deleted file that still exists on remote", async () => {
@@ -408,7 +406,7 @@ describe("collectChanges — temperature selection", () => {
 			expect(entry?.prevSync).toBeDefined();
 		});
 
-		it("returns empty entries when no dirty paths and no remote changes", async () => {
+		it("retains confirmed empty endpoints for Admission without manufacturing work", async () => {
 			await stateStore.put(makeRecord("a.md"));
 			addFile(localFs, "a.md", "content", 1000);
 			localTracker.acknowledge(localTracker.snapshot()); // initialize
@@ -417,9 +415,14 @@ describe("collectChanges — temperature selection", () => {
 			const result = await collectChanges(makeDeps());
 
 			expect(result.temperature).toBe("hot");
-			// orphan.md has no local, no remote, no prevSync → filtered out
+			// Observation retains current absence; Admission owns the no-action decision.
 			const entry = result.entries.find((e) => e.path === "orphan.md");
-			expect(entry).toBeUndefined();
+			expect(entry).toEqual({ path: "orphan.md", local: undefined, remote: undefined, prevSync: undefined });
+			const scoped = applyScope(result, { ignorePatterns: [] });
+			const admission = admitBatchObservation(captureBatchObservation(scoped.changeSet.entries,
+				scoped.changeSet.identityEvidence, scoped.changeSet.observations, scoped.projection, "backend\0root"));
+			expect(admission.failures).toEqual([]);
+			expect(admission.executable.actions).toEqual([]);
 		});
 	});
 
@@ -669,35 +672,209 @@ describe("collectChanges — temperature selection", () => {
 			expect(result.identityEvidence).toEqual([]);
 		});
 
-		it("infers a case-only local rename from current state without a tracker event", async () => {
+		it("collects a case-only alias without inventing rename evidence", async () => {
 			addFile(localFs, "case.md", "local edit", 2000);
 			const remote = addFile(remoteFs, "Case.md", "baseline", 1000);
 			remote.identityKey = "R";
 			await stateStore.put(makeRecord("Case.md", {
 				remoteIdentityKey: "R", localSize: 8, remoteSize: 8,
 			}));
+			const exactLocalStat = localFs.stat.bind(localFs);
+			localFs.stat = async (path) => path === "Case.md"
+				? { ...(await exactLocalStat("case.md"))!, path: "case.md", pathAuthority: "actual_resolved" }
+				: exactLocalStat(path);
 
 			const result = await collectChanges(makeDeps(), { forceFullScan: true });
 
 			expect(result.identityEvidence).toContainEqual({
-				kind: "rename", side: "local", oldPath: "Case.md", newPath: "case.md",
-				isFolder: false, authority: "current_state",
+				kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md",
 			});
+			expect(result.identityEvidence).not.toContainEqual(expect.objectContaining({ kind: "rename" }));
 		});
 
-		it("does not infer a case-only local rename when the baseline remote changed", async () => {
+		it("enriches equal case-alias endpoints without inventing rename evidence", async () => {
+			addFile(localFs, "case.md", "same", 1000);
+			const remote = addFile(remoteFs, "Case.md", "same", 1000);
+			remote.identityKey = "R";
+			const exactLocalStat = localFs.stat.bind(localFs);
+			localFs.stat = async (path) => path === "Case.md"
+				? { ...(await exactLocalStat("case.md"))!, path: "case.md", pathAuthority: "actual_resolved" }
+				: exactLocalStat(path);
+
+			const result = await collectChanges(makeDeps(), { forceFullScan: true });
+
+			expect(result.identityEvidence).toContainEqual({
+				kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md",
+			});
+			expect(result.identityEvidence).not.toContainEqual(expect.objectContaining({ kind: "rename" }));
+			expect(result.entries.find((entry) => entry.path === "case.md")?.local?.hash).not.toBe("");
+			expect(result.entries.find((entry) => entry.path === "Case.md")?.remote?.hash).not.toBe("");
+			const scoped = applyScope(result, { ignorePatterns: [] });
+			const admission = admitBatchObservation(captureBatchObservation(
+				scoped.changeSet.entries, scoped.changeSet.identityEvidence,
+				scoped.changeSet.observations, scoped.projection, "backend\0root",
+			));
+			expect(admission.executable.actions).toContainEqual(expect.objectContaining({
+				action: "rename_remote", content: { mode: "equal" },
+				oldPath: "Case.md", path: "case.md",
+			}));
+			const excluded = applyScope(result, { reservedPaths: ["case.md"] });
+			expect(excluded.changeSet.identityEvidence).not.toContainEqual(expect.objectContaining({
+				kind: "alias", requestedPath: "Case.md", resolvedPath: "case.md",
+			}));
+			const excludedAdmission = admitBatchObservation(captureBatchObservation(
+				excluded.changeSet.entries, excluded.changeSet.identityEvidence,
+				excluded.changeSet.observations, excluded.projection, "backend\0root",
+			));
+			expect(excludedAdmission.executable.actions).not.toContainEqual(expect.objectContaining({
+				action: "rename_remote", oldPath: "Case.md", path: "case.md",
+			}));
+		});
+
+		it("keeps differing case-alias endpoint hashes distinct", async () => {
+			addFile(localFs, "case.md", "local", 1000);
+			const remote = addFile(remoteFs, "Case.md", "remote", 1000);
+			remote.identityKey = "R";
+			const exactLocalStat = localFs.stat.bind(localFs);
+			localFs.stat = async (path) => path === "Case.md"
+				? { ...(await exactLocalStat("case.md"))!, path: "case.md", pathAuthority: "actual_resolved" }
+				: exactLocalStat(path);
+
+			const result = await collectChanges(makeDeps(), { forceFullScan: true });
+
+			const local = result.entries.find((entry) => entry.path === "case.md")?.local;
+			const remoteEntry = result.entries.find((entry) => entry.path === "Case.md")?.remote;
+			expect(local?.hash).not.toBe("");
+			expect(remoteEntry?.hash).not.toBe("");
+			expect(local?.hash).not.toBe(remoteEntry?.hash);
+		});
+
+		it("recomputes case-alias hashes instead of trusting equal stale metadata", async () => {
+			const local = addFile(localFs, "case.md", "local", 1000);
+			const remote = addFile(remoteFs, "Case.md", "remote", 1000);
+			local.hash = "stale";
+			remote.hash = "stale";
+			remote.identityKey = "R";
+			const exactLocalStat = localFs.stat.bind(localFs);
+			localFs.stat = async (path) => path === "Case.md"
+				? { ...(await exactLocalStat("case.md"))!, path: "case.md", pathAuthority: "actual_resolved" }
+				: exactLocalStat(path);
+
+			const result = await collectChanges(makeDeps(), { forceFullScan: true });
+
+			const localHash = result.entries.find((entry) => entry.path === "case.md")?.local?.hash;
+			const remoteHash = result.entries.find((entry) => entry.path === "Case.md")?.remote?.hash;
+			expect(localHash).not.toBe("stale");
+			expect(remoteHash).not.toBe("stale");
+			expect(localHash).not.toBe(remoteHash);
+		});
+
+		it("collects the same case-alias facts when unrelated records exist", async () => {
+			addFile(localFs, "case.md", "same", 1000);
+			const remote = addFile(remoteFs, "Case.md", "same", 1000);
+			remote.identityKey = "R";
+			await stateStore.put(makeRecord("unrelated.md"));
+			const exactLocalStat = localFs.stat.bind(localFs);
+			localFs.stat = async (path) => path === "Case.md"
+				? { ...(await exactLocalStat("case.md"))!, path: "case.md", pathAuthority: "actual_resolved" }
+				: exactLocalStat(path);
+
+			const result = await collectChanges(makeDeps(), { forceFullScan: true });
+
+			expect(result.identityEvidence).toContainEqual({
+				kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md",
+			});
+			expect(result.entries.find((entry) => entry.path === "case.md")?.local?.hash).not.toBe("");
+		});
+
+		it("collects complete case-alias facts through ordinary WARM acquisition", async () => {
+			addFile(localFs, "case.md", "same", 1000);
+			const remote = addFile(remoteFs, "Case.md", "same", 1000);
+			remote.identityKey = "R";
+			await stateStore.put(makeRecord("unrelated.md"));
+			remoteFs.checkpoint!.getChangedPaths = () => Promise.resolve({
+				modified: ["Case.md"], deleted: [],
+			});
+			const exactLocalStat = localFs.stat.bind(localFs);
+			localFs.stat = async (path) => path === "Case.md"
+				? { ...(await exactLocalStat("case.md"))!, path: "case.md", pathAuthority: "actual_resolved" }
+				: exactLocalStat(path);
+
+			const result = await collectChanges(makeDeps());
+
+			expect(result.temperature).toBe("warm");
+			expect(result.identityEvidence).toContainEqual({
+				kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md",
+			});
+			expect(result.identityEvidence).not.toContainEqual(expect.objectContaining({ kind: "rename" }));
+			expect(result.entries.find((entry) => entry.path === "case.md")?.local?.hash).not.toBe("");
+			expect(result.entries.find((entry) => entry.path === "Case.md")?.remote?.hash).not.toBe("");
+			const scoped = applyScope(result, { ignorePatterns: [] });
+			const admission = admitBatchObservation(captureBatchObservation(
+				scoped.changeSet.entries, scoped.changeSet.identityEvidence,
+				scoped.changeSet.observations, scoped.projection, "backend\0root",
+			));
+			expect(admission.executable.actions).toContainEqual(expect.objectContaining({
+				action: "rename_remote", content: { mode: "equal" },
+				oldPath: "Case.md", path: "case.md",
+			}));
+		});
+
+		it("collects complete case-alias facts through ordinary HOT acquisition", async () => {
+			addFile(localFs, "case.md", "same", 1000);
+			const remote = addFile(remoteFs, "Case.md", "same", 1000);
+			remote.identityKey = "R";
+			await stateStore.put(makeRecord("unrelated.md"));
+			remoteFs.checkpoint!.getChangedPaths = () => Promise.resolve({
+				modified: ["Case.md"], deleted: [],
+			});
+			localTracker.acknowledge(localTracker.snapshot());
+			localTracker.markDirty("case.md");
+			const exactLocalStat = localFs.stat.bind(localFs);
+			localFs.stat = async (path) => path === "Case.md"
+				? { ...(await exactLocalStat("case.md"))!, path: "case.md", pathAuthority: "actual_resolved" }
+				: exactLocalStat(path);
+
+			const result = await collectChanges(makeDeps());
+
+			expect(result.temperature).toBe("hot");
+			expect(result.identityEvidence).toContainEqual({
+				kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md",
+			});
+			expect(result.identityEvidence).not.toContainEqual(expect.objectContaining({ kind: "rename" }));
+			expect(result.entries.find((entry) => entry.path === "case.md")?.local?.hash).not.toBe("");
+			expect(result.entries.find((entry) => entry.path === "Case.md")?.remote?.hash).not.toBe("");
+			const scoped = applyScope(result, { ignorePatterns: [] });
+			const admission = admitBatchObservation(captureBatchObservation(
+				scoped.changeSet.entries, scoped.changeSet.identityEvidence,
+				scoped.changeSet.observations, scoped.projection, "backend\0root",
+			));
+			expect(admission.executable.actions).toContainEqual(expect.objectContaining({
+				action: "rename_remote", content: { mode: "equal" },
+				oldPath: "Case.md", path: "case.md",
+			}));
+		});
+
+		it("keeps a changed remote case alias as facts rather than rename evidence", async () => {
 			addFile(localFs, "case.md", "local edit", 2000);
 			const remote = addFile(remoteFs, "Case.md", "remote edit", 2000);
 			remote.identityKey = "R";
 			await stateStore.put(makeRecord("Case.md", {
 				remoteIdentityKey: "R", localSize: 8, remoteSize: 8,
 			}));
+			const exactLocalStat = localFs.stat.bind(localFs);
+			localFs.stat = async (path) => path === "Case.md"
+				? { ...(await exactLocalStat("case.md"))!, path: "case.md", pathAuthority: "actual_resolved" }
+				: exactLocalStat(path);
 
 			const result = await collectChanges(makeDeps(), { forceFullScan: true });
 
 			expect(result.identityEvidence).not.toContainEqual(expect.objectContaining({
 				kind: "rename", side: "local", oldPath: "Case.md", newPath: "case.md",
 			}));
+			expect(result.identityEvidence).toContainEqual({
+				kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md",
+			});
 		});
 
 		it("authoritatively observes otherwise-unseen folder rename roots", async () => {
@@ -716,6 +893,36 @@ describe("collectChanges — temperature selection", () => {
 			expect(result.observations).toContainEqual(expect.objectContaining({
 				kind: "exact", side: "local", requestedPath: "new",
 			}));
+		});
+
+		it.each([false, true])("observes the absent counterpart of a new folder descendant with cold=%s", async (cold) => {
+			await stateStore.put(makeRecord("old/known.md"));
+			addFile(remoteFs, "old/known.md", "known");
+			addFile(localFs, "new/known.md", "known");
+			addFile(localFs, "new/added.md", "new");
+			localTracker.markFolderRenamed("new", "old");
+			const localStat = vi.spyOn(localFs, "stat");
+			const remoteStat = vi.spyOn(remoteFs, "stat");
+
+			const result = await collectChanges(makeDeps(), { forceFullScan: cold });
+
+			for (const side of ["local", "remote"] as const) {
+				expect(result.observations).toContainEqual({
+					kind: "absent", side, requestedPath: "old/added.md", authority: "stat",
+				});
+			}
+			expect(localStat.mock.calls.filter(([path]) => path === "old/added.md")).toHaveLength(1);
+			expect(remoteStat.mock.calls.filter(([path]) => path === "old/added.md")).toHaveLength(1);
+			expect(applyScope(result, {}).projection.byEndpoint.get("old/added.md")).toBe("included");
+		});
+
+		it("propagates a descendant counterpart stat failure without inventing absence", async () => {
+			addFile(localFs, "new/added.md", "new");
+			localTracker.markFolderRenamed("new", "old");
+			const stat = remoteFs.stat.bind(remoteFs);
+			vi.spyOn(remoteFs, "stat").mockImplementation((path) => path === "old/added.md"
+				? Promise.reject(new Error("counterpart unreadable")) : stat(path));
+			await expect(collectChanges(makeDeps())).rejects.toThrow("counterpart unreadable");
 		});
 
 		it("aborts when an unseen folder endpoint cannot be confirmed", async () => {
@@ -753,12 +960,12 @@ describe("collectChanges — temperature selection", () => {
 				if (!folderEvidence || folderEvidence.kind !== "rename") return;
 
 				const rootsOut = applyScope(result, {
-					isExcluded: (path) => path === "old" || path === "new",
+					reservedPaths: ["old", "new"],
 				});
 				expect(rootsOut.changeSet.identityEvidence).not.toContain(folderEvidence);
 
 				const mixedChild = applyScope(result, {
-					isExcluded: (path) => path === "new/a.md",
+					reservedPaths: ["new/a.md"],
 				});
 				expect(mixedChild.changeSet.identityEvidence).not.toContain(folderEvidence);
 				expect([...mixedChild.projection.byEndpoint.keys()]).not.toContain("new/a.md");
@@ -793,7 +1000,7 @@ describe("collectChanges — temperature selection", () => {
 			if (!folderEvidence || folderEvidence.kind !== "rename") return;
 
 			const mixedChild = applyScope(result, {
-				isExcluded: (path) => path === "new/a.md",
+				reservedPaths: ["new/a.md"],
 			});
 			expect(mixedChild.changeSet.identityEvidence).not.toContain(folderEvidence);
 			expect([...mixedChild.projection.byEndpoint.keys()]).not.toContain("new/a.md");
@@ -817,7 +1024,7 @@ describe("collectChanges — temperature selection", () => {
 	});
 
 	describe("enrichHashesForRenames", () => {
-		it("enriches hash while preserving mtime and size from list()", async () => {
+		it("keeps the acquired hash and version together instead of mixing stat with stale listing metadata", async () => {
 			await stateStore.put(makeRecord("old.md", { hash: "sha256abc", localMtime: 1000, localSize: 7 }));
 			const listEntity = addFile(localFs, "new.md", "content", 1000);
 			addFile(remoteFs, "old.md", "content", 1000);
@@ -838,8 +1045,9 @@ describe("collectChanges — temperature selection", () => {
 			expect(result.temperature).toBe("warm");
 			const entry = result.entries.find((e) => e.path === "new.md");
 			expect(entry?.local?.hash).not.toBe("");
-			expect(entry?.local?.mtime).toBe(listEntity.mtime);
-			expect(entry?.local?.size).toBe(listEntity.size);
+			expect(entry?.local?.mtime).toBe(9999);
+			expect(entry?.local?.size).toBe(7);
+			expect(listEntity.mtime).toBe(1000);
 		});
 
 		it("records an alias found while enriching as identity evidence", async () => {
@@ -894,8 +1102,13 @@ describe("collectChanges — temperature selection", () => {
 		});
 	});
 
-	describe("enrichHashesForRenames (unit)", () => {
+		describe("enrichHashesForRenames (unit)", () => {
 		let observations: PathObservation[];
+		function reports(pairs: ReadonlyMap<string, string>, isFolder = false): IdentityEvidence[] {
+			return [...pairs].map(([newPath, oldPath]) => ({
+				kind: "rename", side: "local", oldPath, newPath, isFolder, authority: "reported",
+			}));
+		}
 
 		beforeEach(() => {
 			observations = [];
@@ -917,7 +1130,7 @@ describe("collectChanges — temperature selection", () => {
 				return e;
 			};
 
-			await enrichHashesForRenames(entries, observations, localFs, pairs);
+			await enrichHashesForRenames(entries, observations, localFs, remoteFs, reports(pairs));
 
 			expect(entries[0]!.local!.hash).toBe("sha256-hash");
 			expect(observations).toContainEqual(expect.objectContaining({
@@ -925,6 +1138,18 @@ describe("collectChanges — temperature selection", () => {
 			}));
 		});
 
+		it("does not attach a stale local hash to matching newer remote bytes", async () => {
+			const content = new TextEncoder().encode("current").buffer;
+			const entries = [entry("new.md", await sha256(new TextEncoder().encode("earlier").buffer))];
+			entries[0]!.remote = {
+				path: "new.md", pathAuthority: "actual_resolved", identityKey: "R",
+				isDirectory: false, size: 7, mtime: 1000, hash: "",
+				remoteChecksum: { algo: "md5", value: md5(content) },
+			};
+			addFile(localFs, "new.md", "current", 1000);
+			await enrichHashesForRenames(entries, observations, localFs, remoteFs, reports(new Map([["new.md", "old.md"]])));
+			expect(entries[0]?.remote?.hash).toBe("");
+		});
 		it("proves a completed rename write across remote checksum algorithms", async () => {
 			const entries = [entry("new.md", "")];
 			entries[0]!.remote = {
@@ -937,22 +1162,22 @@ describe("collectChanges — temperature selection", () => {
 			const origStat = localFs.stat.bind(localFs);
 			localFs.stat = async (path: string) => {
 				const value = await origStat(path);
-				return value ? { ...value, hash: "local-sha256" } : value;
+				return value ? { ...value, hash: "ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73" } : value;
 			};
 
-			await enrichHashesForRenames(entries, observations, localFs, pairs);
+			await enrichHashesForRenames(entries, observations, localFs, remoteFs, reports(pairs));
 
-			expect(entries[0]?.remote?.hash).toBe("local-sha256");
+			expect(entries[0]?.remote?.hash).toBe("ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73");
 			const remoteObservation = observations.find((item) =>
 				item.side === "remote" && item.requestedPath === "new.md");
 			expect(remoteObservation?.kind).toBe("exact");
 			if (remoteObservation?.kind === "exact") {
-				expect(remoteObservation.entity.hash).toBe("local-sha256");
+				expect(remoteObservation.entity.hash).toBe("ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73");
 			}
 		});
 
 		it("proves cross-algorithm identity when the local rename hash is already present", async () => {
-			const entries = [entry("new.md", "local-sha256")];
+			const entries = [entry("new.md", "ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73")];
 			entries[0]!.remote = {
 				path: "new.md", pathAuthority: "actual_resolved", identityKey: "R",
 				isDirectory: false, size: 7, mtime: 1000, hash: "",
@@ -962,18 +1187,18 @@ describe("collectChanges — temperature selection", () => {
 			const stat = vi.spyOn(localFs, "stat");
 
 			await enrichHashesForRenames(
-				entries, observations, localFs, new Map([["new.md", "old.md"]]),
+				entries, observations, localFs, remoteFs, reports(new Map([["new.md", "old.md"]])),
 			);
 
 			expect(stat).not.toHaveBeenCalled();
-			expect(entries[0]?.remote?.hash).toBe("local-sha256");
+			expect(entries[0]?.remote?.hash).toBe("ed7002b439e9ac845f22357d822bac1444730fbdb6016d3ec9432297b9ec9f73");
 		});
 
 		it("skips entries where hash is already present", async () => {
 			const entries = [entry("new.md", "existing-hash")];
 			const pairs = new Map([["new.md", "old.md"]]);
 
-			await enrichHashesForRenames(entries, observations, localFs, pairs);
+			await enrichHashesForRenames(entries, observations, localFs, remoteFs, reports(pairs));
 
 			expect(entries[0]!.local!.hash).toBe("existing-hash");
 		});
@@ -982,7 +1207,7 @@ describe("collectChanges — temperature selection", () => {
 			const entries: MixedEntity[] = [{ path: "new.md" }];
 			const pairs = new Map([["new.md", "old.md"]]);
 
-			await enrichHashesForRenames(entries, observations, localFs, pairs);
+			await enrichHashesForRenames(entries, observations, localFs, remoteFs, reports(pairs));
 
 			expect(entries[0]!.local).toBeUndefined();
 		});
@@ -991,7 +1216,7 @@ describe("collectChanges — temperature selection", () => {
 			const entries = [entry("unrelated.md", "")];
 			const pairs = new Map([["new.md", "old.md"]]);
 
-			await enrichHashesForRenames(entries, observations, localFs, pairs);
+			await enrichHashesForRenames(entries, observations, localFs, remoteFs, reports(pairs));
 
 			expect(entries[0]!.local!.hash).toBe("");
 		});
@@ -1003,7 +1228,7 @@ describe("collectChanges — temperature selection", () => {
 			localFs.stat = () => { throw new Error("disk error"); };
 
 			await expect(
-				enrichHashesForRenames(entries, observations, localFs, pairs),
+				enrichHashesForRenames(entries, observations, localFs, remoteFs, reports(pairs)),
 			).rejects.toThrow("disk error");
 
 			expect(entries[0]!.local!.hash).toBe("");
@@ -1015,7 +1240,7 @@ describe("collectChanges — temperature selection", () => {
 
 			localFs.stat = () => Promise.resolve(null);
 
-			await enrichHashesForRenames(entries, observations, localFs, pairs);
+			await enrichHashesForRenames(entries, observations, localFs, remoteFs, reports(pairs));
 
 			expect(entries[0]!.local).toBeUndefined();
 			expect(observations).toContainEqual({
@@ -1031,7 +1256,7 @@ describe("collectChanges — temperature selection", () => {
 				size: 7, mtime: 1000, hash: "untrusted-hash",
 			});
 
-			await enrichHashesForRenames(entries, observations, localFs, pairs);
+			await enrichHashesForRenames(entries, observations, localFs, remoteFs, reports(pairs));
 
 			expect(entries[0]!.local).toBeUndefined();
 			expect(observations).toContainEqual(expect.objectContaining({
@@ -1047,7 +1272,7 @@ describe("collectChanges — temperature selection", () => {
 				size: 7, mtime: 1000, hash: "alias-hash",
 			});
 
-			await enrichHashesForRenames(entries, observations, localFs, pairs);
+			await enrichHashesForRenames(entries, observations, localFs, remoteFs, reports(pairs));
 
 			expect(entries[0]!.local).toBeUndefined();
 			expect(observations).toContainEqual(expect.objectContaining({
@@ -1058,7 +1283,7 @@ describe("collectChanges — temperature selection", () => {
 		it("no-ops when rename pairs is empty", async () => {
 			const entries = [entry("new.md", "")];
 
-			await enrichHashesForRenames(entries, observations, localFs, new Map());
+			await enrichHashesForRenames(entries, observations, localFs, remoteFs, []);
 
 			expect(entries[0]!.local!.hash).toBe("");
 		});
@@ -1074,7 +1299,7 @@ describe("collectChanges — temperature selection", () => {
 			addFile(localFs, "unrelated.md", "other", 1000).hash = "hash-other";
 
 			await enrichHashesForRenames(
-				entries, observations, localFs, new Map(), new Map([["Published", "Drafts"]]),
+				entries, observations, localFs, remoteFs, reports(new Map([["Published", "Drafts"]]), true),
 			);
 
 			expect(entries.map((candidate) => candidate.local?.hash)).toEqual([
@@ -1101,7 +1326,7 @@ describe("collectChanges — temperature selection", () => {
 			};
 
 			const enrichment = enrichHashesForRenames(
-				entries, observations, localFs, new Map(), new Map([["Published", "Drafts"]]),
+				entries, observations, localFs, remoteFs, reports(new Map([["Published", "Drafts"]]), true),
 			);
 			await vi.waitFor(() => expect(maxActive).toBe(10));
 			releaseStats();
@@ -1160,15 +1385,12 @@ describe("collectChanges — warm deletion confirmation", () => {
 });
 
 /**
- * forceFullScan recovery (ARCHITECTURE.md principle #5, "an interrupted sync
- * converges by re-syncing"). WARM detects remote changes via the delta cursor
- * alone. After an interrupted/partial sync the cursor has advanced past files
- * that were *reported* but never pulled-and-baselined, so WARM is structurally
- * blind to them: they exist remotely, have no baseline, and never reappear in
- * the delta. forceFullScan forces a COLD full join (remote list vs records),
- * which is the only mode that rediscovers such orphans.
+ * `forceFullScan` models ordinary COLD acquisition selected from durable facts
+ * (missing checkpoint or changed scope). WARM reads only the committed delta
+ * lineage and therefore does not enumerate an unbaselined remote file absent
+ * from that lineage. COLD's full join does. No prior failure is an input.
  */
-describe("collectChanges — forceFullScan rediscovers un-baselined remote files", () => {
+describe("collectChanges — COLD acquisition discovers un-baselined remote files", () => {
 	let localFs: MockFileSystem;
 	let remoteFs: MockFileSystem;
 	let stateStore: ReturnType<typeof createMockStateStore>;
@@ -1183,9 +1405,8 @@ describe("collectChanges — forceFullScan rediscovers un-baselined remote files
 		remoteFs = createMockRemoteFs();
 		stateStore = createMockStateStore();
 		localTracker = new LocalChangeTracker();
-		// Post-crash state: synced.md was pulled and its baseline committed;
-		// orphan.md was left un-pulled. The remote delta cursor has moved past
-		// orphan.md, so getChangedPaths() (the mock default) reports nothing.
+		// The durable state has one per-file record and no record for orphan.md;
+		// getChangedPaths() (the mock default) reports no delta for either.
 		addFile(localFs, "synced.md", "kept", 1000);
 		addFile(remoteFs, "synced.md", "kept", 1000);
 		addFile(remoteFs, "orphan.md", "left behind", 1000);

@@ -17,7 +17,7 @@ function rename(side: "local" | "remote", oldPath = "old.md", newPath = "new.md"
 }
 
 function projection(oldDisposition: ScopeDisposition, newDisposition: ScopeDisposition): ScopeProjection {
-	return { byEndpoint: new Map([
+	return { isConfiguredScopeCompatible: () => true, byEndpoint: new Map([
 		["old.md", oldDisposition],
 		["new.md", newDisposition],
 	]) };
@@ -53,14 +53,14 @@ describe("projectRenameScope", () => {
 
 	it("defaults an absent endpoint to unknown and defers", () => {
 		expect(projectRenameScope(rename("local"), {
-			byEndpoint: new Map([["old.md", "included"]]),
+			isConfiguredScopeCompatible: () => true, byEndpoint: new Map([["old.md", "included"]]),
 		}).consequence).toBe("defer");
 	});
 
 	it("defers an included folder rename whose observed mapping is incomplete", () => {
 		const folderRename: RenameEvidence = { ...rename("remote", "old", "new"), isFolder: true };
 		const result = projectRenameScope(folderRename, {
-			byEndpoint: new Map([
+			isConfiguredScopeCompatible: () => true, byEndpoint: new Map([
 				["old", "included"], ["new", "included"], ["new/a.md", "included"],
 			]),
 		});
@@ -71,7 +71,7 @@ describe("projectRenameScope", () => {
 	it("permits a folder rename when every observed descendant is included and mapped", () => {
 		const folderRename: RenameEvidence = { ...rename("remote", "old", "new"), isFolder: true };
 		const result = projectRenameScope(folderRename, {
-			byEndpoint: new Map([
+			isConfiguredScopeCompatible: () => true, byEndpoint: new Map([
 				["old", "included"], ["new", "included"],
 				["old/a.md", "included"], ["new/a.md", "included"],
 			]),
@@ -82,6 +82,26 @@ describe("projectRenameScope", () => {
 });
 
 describe("applyScope", () => {
+	it("retains scope compatibility when filtering removes a crossing report and child", () => {
+		const root = directory("old");
+		const alias = { kind: "alias" as const, side: "local" as const,
+			requestedPath: "Old", resolvedPath: "old", entity: root };
+		const evidence = { kind: "alias" as const, side: "local" as const,
+			requestedPath: "Old", resolvedPath: "old" };
+		const policy = { reservedPaths: ["old/private.md"] };
+		const ordinary = applyScope(changeSet({ observations: [alias], identityEvidence: [evidence] }), policy);
+		const crossed = applyScope(changeSet({
+			entries: [{ path: "old/private.md", local: entity("old/private.md") }],
+			observations: [alias],
+			identityEvidence: [evidence, { ...rename("local", "Old", "old"), isFolder: true }],
+		}), policy);
+		expect(crossed.changeSet).toEqual(ordinary.changeSet);
+		expect(ordinary.projection.isConfiguredScopeCompatible("Old", "old")).toBe(true);
+		expect(crossed.projection.isConfiguredScopeCompatible("Old", "old")).toBe(false);
+		policy.reservedPaths.length = 0;
+		expect(crossed.projection.isConfiguredScopeCompatible("Old", "old")).toBe(false);
+	});
+
 	it("removes a cross-scope rename endpoint and the relation itself", () => {
 		const result = applyScope(changeSet({
 			entries: [
@@ -93,7 +113,7 @@ describe("applyScope", () => {
 				{ kind: "exact", side: "local", requestedPath: "new.md", entity: entity("new.md") },
 			],
 			identityEvidence: [rename("local")],
-		}), { isExcluded: (path) => path === "new.md" });
+		}), { reservedPaths: ["new.md"] });
 
 		expect(result.changeSet.entries.map((item) => item.path)).toEqual(["old.md"]);
 		expect(result.changeSet.observations.map((item) => item.requestedPath)).toEqual(["old.md"]);
@@ -109,7 +129,7 @@ describe("applyScope", () => {
 				{ kind: "exact", side: "local", requestedPath: "new.md", entity: entity("new.md") },
 			],
 			identityEvidence: [evidence],
-		}), { isExcluded: () => false });
+		}), { ignorePatterns: [] });
 
 		expect(result.changeSet.identityEvidence).toEqual([evidence]);
 		expect(result.projection.byEndpoint).toEqual(new Map([
@@ -127,7 +147,7 @@ describe("applyScope", () => {
 				{ path: "new/a.md", local: entity("new/a.md") },
 			],
 			identityEvidence: [folderRename],
-		}), { isExcluded: (path) => path === "new/a.md" });
+		}), { reservedPaths: ["new/a.md"] });
 
 		expect(result.changeSet.entries.map((item) => item.path)).toEqual(["old/a.md"]);
 		expect(result.changeSet.identityEvidence).toEqual([]);
@@ -145,7 +165,7 @@ describe("applyScope", () => {
 				{ path: "new/desktop.ini", local: entity("new/desktop.ini") },
 			],
 			identityEvidence: [folderRename],
-		}), { isExcluded: (path) => path.endsWith("desktop.ini") });
+		}), { ignorePatterns: ["*desktop.ini"] });
 
 		expect(result.changeSet.identityEvidence).toEqual([folderRename]);
 		expect(result.changeSet.entries.map((item) => item.path)).toEqual([
@@ -163,7 +183,7 @@ describe("applyScope", () => {
 			identityEvidence: [{
 				kind: "alias", side: "remote", requestedPath: "A.md", resolvedPath: ".hidden/A.md",
 			}],
-		}), { isExcluded: (path) => path.startsWith(".") });
+		}), { ignorePatterns: ["/.*"] });
 
 		expect(result.changeSet.observations).toEqual([]);
 		expect(result.changeSet.identityEvidence).toEqual([]);
@@ -181,7 +201,7 @@ describe("applyScope", () => {
 					localSize: 1, remoteSize: 1, syncedAt: 1,
 				},
 			}],
-		}), { isExcluded: (path) => path.startsWith(".") || path === "desktop.ini" });
+		}), { ignorePatterns: ["/.*"], reservedPaths: ["desktop.ini"] });
 
 		expect(result.changeSet.entries).toEqual([{
 			path: "included.md", local: undefined, remote: entity("included.md"),
@@ -196,7 +216,7 @@ describe("applyScope", () => {
 				reason: "outside_tracked_root",
 			}],
 			identityEvidence: [rename("remote")],
-		}), { isExcluded: () => false });
+		}), { ignorePatterns: [] });
 
 		expect(result.changeSet.observations).toEqual([]);
 		expect(result.changeSet.identityEvidence).toEqual([]);
@@ -212,7 +232,7 @@ describe("applyScope", () => {
 					{ side: "remote", phase: "current", path: "desktop.ini" },
 				],
 			}],
-		}), { isExcluded: (path) => path === "desktop.ini" });
+		}), { reservedPaths: ["desktop.ini"] });
 
 		expect(result.changeSet.identityEvidence).toEqual([{
 			kind: "stable_identity", side: "remote", identityKey: "id",

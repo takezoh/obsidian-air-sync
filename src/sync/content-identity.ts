@@ -1,4 +1,5 @@
 import type { FileEntity, RemoteChecksum } from "../fs/types";
+import type { SyncRecord } from "./types";
 
 /**
  * Content-identity primitives — the single source of truth for "do these two
@@ -41,4 +42,18 @@ export function sameContent(a: FileEntity, b: FileEntity): boolean {
 	const ka = contentKey(a);
 	const kb = contentKey(b);
 	return ka !== null && kb !== null && checksumsEqual(ka, kb);
+}
+
+/** A successful SyncRecord binds its local hash and provider checksum to the same
+ * bytes. Compare each current endpoint to its own committed fingerprint, never
+ * unlike algorithms to each other. Timestamps alone are not a content proof.
+ */
+export function sameSynchronizedContent(local: FileEntity, remote: FileEntity, baseline?: SyncRecord): boolean {
+	if (local.size !== remote.size) return false;
+	if (sameContent(local, remote)) return true;
+	if (remote.hash) return false;
+	return !!baseline && !!local.hash && local.hash === baseline.hash &&
+		local.size === baseline.localSize && remote.size === baseline.remoteSize &&
+		!!remote.remoteChecksum && !!baseline.remoteChecksum &&
+		checksumsEqual(remote.remoteChecksum, baseline.remoteChecksum);
 }

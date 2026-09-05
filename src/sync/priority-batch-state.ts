@@ -1,5 +1,6 @@
 import type { AdmissionResult } from "./plan-admission";
-import type { SyncAction } from "./types";
+import type { SyncAction, SyncRecord } from "./types";
+import type { SupersededAction } from "./execution-result";
 
 export type BatchPhase = "transfer" | "conflict" | "structural" | "finalizing" | "aborting";
 export type PriorityBatchTarget =
@@ -10,7 +11,7 @@ export type PriorityBatchTarget =
 /** Cycle-local exact-object scheduling state. It owns no action policy or durable state. */
 export class PriorityBatchState {
 	private readonly pending: Set<SyncAction>;
-	private readonly superseded = new Set<SyncAction>();
+	private readonly superseded = new Map<SyncAction, SupersededAction>();
 	private readonly invalidated = new Set<SyncAction>();
 	private phase: BatchPhase = "transfer";
 	private checkpointBlocked = false;
@@ -45,8 +46,10 @@ export class PriorityBatchState {
 		return { kind: "superseding", action: disposition.priorityPullAction };
 	}
 
-	beginAction(action: SyncAction): "run" | "superseded" | "invalidated" {
-		if (this.superseded.has(action)) return "superseded";
+	beginAction(action: SyncAction): "run" | "invalidated" | SupersededAction {
+		if (this.phase === "aborting") return "invalidated";
+		const replacement = this.superseded.get(action);
+		if (replacement) return replacement;
 		if (this.invalidated.has(action)) return "invalidated";
 		return this.pending.delete(action) ? "run" : "invalidated";
 	}
@@ -55,9 +58,12 @@ export class PriorityBatchState {
 		this.pending.delete(action);
 	}
 
-	supersede(action: SyncAction): boolean {
+	supersede(action: SyncAction, terminalRecord: SyncRecord): boolean {
+		if (!this.admission.executable.components.some((component) => component.priorityPullAction === action) ||
+			terminalRecord.path !== action.path || !terminalRecord.remoteIdentityKey ||
+			terminalRecord.remoteIdentityKey !== action.remote?.identityKey) return false;
 		if (!this.pending.delete(action)) return false;
-		this.superseded.add(action);
+		this.superseded.set(action, Object.freeze({ action, terminalRecord: Object.freeze({ ...terminalRecord }) }));
 		return true;
 	}
 

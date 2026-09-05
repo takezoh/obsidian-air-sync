@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
 import { collectChanges } from "./change-detector";
-import { planSync } from "./decision-engine";
 import { executePlan } from "./plan-executor";
 import type { ExecutionResult } from "./plan-executor";
 import { LocalChangeTracker } from "./local-tracker";
@@ -11,7 +10,8 @@ import {
 	readText,
 } from "../__mocks__/sync-test-helpers";
 import type { SyncPlan } from "./types";
-import { admitDestructivePlan, captureCycleAdmissionSnapshot } from "./plan-admission";
+import { admitBatchObservation } from "./plan-admission";
+import { captureBatchObservation } from "./sync-cycle-planning";
 import { projectScope } from "./scope-projection";
 
 /**
@@ -35,7 +35,7 @@ interface Env {
 function makeEnv(): Env {
 	return {
 		localFs: createMockLocalFs(),
-		remoteFs: createMockRemoteFs(),
+		remoteFs: createMockRemoteFs("actual_resolved"),
 		stateStore: createMockStateStore(),
 		localTracker: new LocalChangeTracker(),
 	};
@@ -55,10 +55,9 @@ async function runCycle(
 		stateStore,
 		changes: snapshot,
 	});
-	const proposal = planSync(changeSet.entries);
 	const scope = projectScope(changeSet);
-	const admission = admitDestructivePlan(captureCycleAdmissionSnapshot(
-		proposal, changeSet.identityEvidence, changeSet.observations, scope, "crash-safety-test",
+	const admission = admitBatchObservation(captureBatchObservation(
+		changeSet.entries, changeSet.identityEvidence, changeSet.observations, scope, "crash-safety-test",
 	));
 	const result = await executePlan(admission.executable, {
 		localFs,

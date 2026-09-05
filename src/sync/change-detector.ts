@@ -3,13 +3,14 @@ import type { FileEntity } from "../fs/types";
 import type { IdentityEvidence, MixedEntity, PathObservation, SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
 import type { TrackerSnapshot } from "./local-tracker";
-import { hasChanged, hasRemoteChanged } from "./change-compare";
+import { hasChanged } from "./change-compare";
 import {
 	enrichHashesForInitialMatch,
+	enrichHashesForLocalCaseAliases,
 	enrichHashesForRenames,
 	type HashEnrichmentResult,
 } from "./change-hash-enrichment";
-import { collectLocalRenameEvidence, completeIdentityEvidence, renameOptimizerView } from "./identity-evidence";
+import { collectLocalRenameEvidence, completeIdentityEvidence } from "./identity-evidence";
 import {
 	getRemoteChanges,
 	hasFolderRename,
@@ -18,6 +19,7 @@ import {
 } from "./remote-change-source";
 import {
 	confirmEntryAbsences,
+	confirmCaseAliasParentEndpoints,
 	confirmRenameOppositeEndpoints,
 	confirmUnknownRenameEndpoints,
 	ensureRenameEndpointObservations,
@@ -44,10 +46,9 @@ export interface ChangeDetectorDeps {
 
 export interface CollectChangesOptions {
 	/**
-	 * Force a COLD full join regardless of tracker/store state. Used for crash
-	 * recovery: after an interrupted or partial sync the delta-based hot/warm
-	 * path can't rediscover remote files that were reported but never baselined
-	 * (the cursor has moved past them). A full remote list vs records can.
+	 * Force a COLD full join regardless of tracker/store state. This is selected
+	 * from durable facts such as a missing checkpoint or changed scope, never from
+	 * a prior failure or persisted recovery instruction.
 	 */
 	forceFullScan?: boolean;
 }
@@ -68,7 +69,6 @@ export async function collectChanges(
 	const { changes, stateStore } = deps;
 
 	let changeSet: ChangeSet;
-
 	// Determine temperature
 	if (!opts.forceFullScan && changes.initialized && changes.dirtyPaths.size > 0 &&
 		changes.folderRenamePairs.size === 0) {
@@ -104,14 +104,18 @@ export async function collectChanges(
 	// side is missing before planning; a thrown stat aborts rather than becoming absence.
 	if (changeSet.temperature !== "hot") {
 		await confirmEntryAbsences(changeSet, deps.localFs, deps.remoteFs);
-		changeSet.identityEvidence.unshift(...inferCurrentStateLocalCaseRenames(changeSet.entries));
 	}
+	await confirmCaseAliasParentEndpoints(
+		changeSet.observations, deps.localFs, deps.remoteFs,
+	);
+	await enrichHashesForLocalCaseAliases(
+		changeSet.entries, changeSet.observations, changeSet.identityEvidence,
+		deps.localFs, deps.remoteFs,
+	);
 	// Hash enrichment operates only on exact entries and cannot upgrade observations.
 	changeSet.hashEnrichment = await enrichHashesForInitialMatch(changeSet.entries, deps.localFs);
-	const renameView = renameOptimizerView(changeSet.identityEvidence);
 	await enrichHashesForRenames(
-		changeSet.entries, changeSet.observations, deps.localFs,
-		renameView.localFiles, renameView.localFolders,
+		changeSet.entries, changeSet.observations, deps.localFs, deps.remoteFs, changeSet.identityEvidence,
 	);
 	changeSet.identityEvidence = completeIdentityEvidence(
 		changeSet.identityEvidence,
@@ -120,48 +124,6 @@ export async function collectChanges(
 	);
 
 	return changeSet;
-}
-
-/**
- * Recover only the rename relation that current state proves without guessing:
- * a baseline path and one local path differ solely by casing, the unchanged
- * baseline remote still occupies the old spelling, and the new remote spelling
- * has no independent entry. General old/new path pairing remains event-driven.
- */
-function inferCurrentStateLocalCaseRenames(entries: readonly MixedEntity[]): IdentityEvidence[] {
-	const localByFoldedPath = new Map<string, MixedEntity[]>();
-	for (const entry of entries) {
-		if (!entry.local || entry.path === entry.prevSync?.path) continue;
-		const key = entry.path.toLowerCase();
-		const candidates = localByFoldedPath.get(key) ?? [];
-		candidates.push(entry);
-		localByFoldedPath.set(key, candidates);
-	}
-
-	const inferred: IdentityEvidence[] = [];
-	for (const source of entries) {
-		const baseline = source.prevSync;
-		if (!baseline || source.local || !source.remote ||
-			hasRemoteChanged(source.remote, baseline)) continue;
-		if (baseline.remoteIdentityKey &&
-			source.remote.identityKey !== baseline.remoteIdentityKey) continue;
-		const candidates = (localByFoldedPath.get(baseline.path.toLowerCase()) ?? [])
-			.filter((target) =>
-				target.path !== baseline.path &&
-				target.path.toLowerCase() === baseline.path.toLowerCase() &&
-				!target.remote);
-		if (candidates.length !== 1) continue;
-		const target = candidates[0]!;
-		inferred.push({
-			kind: "rename",
-			side: "local",
-			oldPath: baseline.path,
-			newPath: target.path,
-			isFolder: false,
-			authority: "current_state",
-		});
-	}
-	return inferred;
 }
 
 async function collectHot(
@@ -186,22 +148,14 @@ async function collectHot(
 		Promise.all(pathArray.map((p) => remoteFs.stat(p))),
 		stateStore.getMany(pathArray),
 	]);
-	const renameSourcePaths = new Set(changes.renamePairs.values());
 	const observations: PathObservation[] = [];
 
 	const entries: MixedEntity[] = pathArray.map((path, i) => {
 		const localStat = localStats[i] ?? undefined;
-		// A case-insensitive filesystem can resolve a recorded rename source to
-		// the destination file. The tracker is authoritative for the logical
-		// rename: only accept the source as still present when stat() returns that
-		// exact path (for example, the user recreated the source before syncing).
-		const isRenameSourceAlias =
-			renameSourcePaths.has(path) &&
-			localStat?.path !== path;
 		const localObservation = observePath(
 			"local",
 			path,
-			isRenameSourceAlias ? undefined : localStat,
+			localStat,
 		);
 		const remoteObservation = observePath(
 			"remote", path, remoteStats[i],
@@ -217,31 +171,9 @@ async function collectHot(
 		};
 	});
 
-	// Keep only entries that actually changed vs baseline (prune no-ops). This also
-	// subsumes the "has any side" existence check: an entry with neither local nor
-	// remote nor a prevSync can't have changed, so the predicate's branches drop it
-	// (the first branch returns `!!prev` === false for the all-absent case).
-	const changed = entries.filter((e) => {
-		const prev = e.prevSync;
-		// Both deleted — include if previously synced (cleanup)
-		if (!e.local && !e.remote) return !!prev;
-		// New file: no prev record
-		if (!prev) return true;
-		// Local deleted but remote still exists (e.g. rename source)
-		if (!e.local && e.remote) return true;
-		// A checkpoint tombstone is authoritative remote absence. Preserve it even
-		// when the surviving local file is unchanged so the decision engine can
-		// propagate the deletion. Do not infer this from remote stat() absence alone:
-		// locally dirty paths also pass through HOT without a remote change signal.
-		if (e.local && !e.remote && remoteChanges.deletedPaths.has(e.path)) return true;
-		// Local changed
-		if (e.local && hasChanged(e.local, prev)) return true;
-		// Remote changed
-		if (e.remote && hasRemoteChanged(e.remote, prev)) return true;
-		return false;
-	});
-
-	return { entries: changed, observations, identityEvidence: remoteChanges.renameEvidence, temperature: "hot" };
+	// Acquisition retains all facts it obtained. Admission owns no-change and
+	// deletion decisions, including whether stat absence has deletion authority.
+	return { entries, observations, identityEvidence: remoteChanges.renameEvidence, temperature: "hot" };
 }
 
 async function collectWarm(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): Promise<ChangeSet> {

@@ -4,6 +4,7 @@ import type { SyncCycleOutcome } from "./sync-notification";
 
 function outcome(admissionFailures = 0): SyncCycleOutcome {
 	return {
+		completion: { kind: admissionFailures > 0 ? "incomplete" : "clean" },
 		execution: { succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [] },
 		admissionFailures: Array.from({ length: admissionFailures }, (_, index) => ({
 			kind: "failed", paths: [`path-${index}.md`], actions: [], evidence: [],
@@ -13,6 +14,14 @@ function outcome(admissionFailures = 0): SyncCycleOutcome {
 }
 
 describe("sync notification Admission failure visibility", () => {
+	it("does not present an incomplete actionless cycle as up to date", () => {
+		const incomplete = { ...outcome(), completion: { kind: "incomplete" as const } };
+		expect(buildNotificationMessage(incomplete)).toBe("Sync: incomplete");
+		const summary = new CycleSummary();
+		summary.add(incomplete);
+		summary.add(outcome());
+		expect(summary.message).toBe("Sync: incomplete");
+	});
 	it("presents rejected components as errors without a retryability claim", () => {
 		expect(buildNotificationMessage(outcome(2))).toBe("Sync: 2 errors");
 	});

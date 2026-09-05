@@ -1,12 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { planSync } from "./decision-engine";
+import { compareContent } from "./decision-engine";
 import type { FileEntity } from "../fs/types";
 import type { MixedEntity, SyncRecord, SyncActionType } from "./types";
 
 /**
  * Decision table tests — the most safety-critical unit in the pipeline.
  *
- * `decideAction()` is a pure function of (prevSync, local, remote). The columns
+ * `compareContent()` is a pure function of (prevSync, local, remote). The columns
  * `localChanged` / `remoteChanged` are NOT raw inputs: they are computed by
  * `hasChanged()` / `hasRemoteChanged()` (change-compare.ts), each of which can
  * reach the same boolean via several mechanisms:
@@ -66,8 +66,26 @@ function baseline(overrides: Partial<SyncRecord> = {}): SyncRecord {
 
 /** Decide the single action for one entry (null = skipped / no-op). */
 function decide(entry: MixedEntity): SyncActionType | null {
-	return planSync([entry]).actions[0]?.action ?? null;
+	return compareContent(entry);
 }
+
+describe("current content equality before baseline deltas", () => {
+	it("publishes a refreshed baseline when both endpoints changed to the same bytes", () => {
+		expect(decide({
+			path: "f.md", prevSync: baseline(),
+			local: local({ hash: "shared-new", mtime: 2000 }),
+			remote: remote({ hash: "shared-new", mtime: 3000 }),
+		})).toBe("match");
+	});
+
+	it("does not treat unknown current equality as a match", () => {
+		expect(decide({
+			path: "f.md", prevSync: baseline(),
+			local: local({ hash: "", mtime: 2000 }),
+			remote: remote({ hash: "", mtime: 3000 }),
+		})).toBe("conflict");
+	});
+});
 
 interface RowCase {
 	doc: string;
@@ -203,12 +221,7 @@ const TABLE: RowCase[] = [
 	},
 ];
 
-describe("planSync — decision table (docs/sync-pipeline.md)", () => {
-	it("returns an empty plan for empty input", () => {
-		const plan = planSync([]);
-		expect(plan.actions).toHaveLength(0);
-	});
-
+describe("compareContent — decision table (docs/sync-pipeline.md)", () => {
 	for (const c of TABLE) {
 		it(`[${c.doc}] ${c.name}`, () => {
 			expect(decide(c.entry)).toBe(c.expected);
@@ -371,6 +384,8 @@ describe("mechanism invariance — the Action is stable regardless of how the pr
 					local: local(),
 					remote: remote({
 						mtime: 2000,
+						// A checksum-only provider does not also supply the old SHA-256.
+						hash: "",
 						remoteChecksum: { algo: "md5", value: "md5-new" },
 					}),
 					prevSync: baseline({
@@ -428,8 +443,8 @@ describe("mechanism invariance — the Action is stable regardless of how the pr
 	});
 });
 
-describe("emitted SyncAction structure", () => {
-	it("carries the entry's path and the original local/remote/baseline object references", () => {
+describe("content comparison purity", () => {
+	it("does not mutate the bound endpoint or baseline inputs", () => {
 		const l = local({
 			path: "notes/deep/x.md",
 			mtime: 2000,
@@ -437,13 +452,11 @@ describe("emitted SyncAction structure", () => {
 		});
 		const r = remote({ path: "notes/deep/x.md" });
 		const b = baseline({ path: "notes/deep/x.md" });
-		const action = planSync([
-			{ path: "notes/deep/x.md", local: l, remote: r, prevSync: b },
-		]).actions[0]!;
-		expect(action.path).toBe("notes/deep/x.md");
-		expect(action.local).toBe(l);
-		expect(action.remote).toBe(r);
-		expect(action.baseline).toBe(b);
+		const entry = Object.freeze({ path: "notes/deep/x.md", local: Object.freeze(l),
+			remote: Object.freeze(r), prevSync: Object.freeze(b) });
+		const before = structuredClone(entry);
+		expect(compareContent(entry)).toBe("push");
+		expect(entry).toEqual(before);
 	});
 
 	it("preserves input order and decides each entry independently (skips removed)", () => {
@@ -462,23 +475,13 @@ describe("emitted SyncAction structure", () => {
 				prevSync: baseline({ path: "d-del.md" }),
 			},
 		];
-		const actions = planSync(entries).actions;
-		expect(actions.map((a) => [a.path, a.action])).toEqual([
-			["a-push.md", "push"],
-			["c-pull.md", "pull"],
-			["d-del.md", "delete_remote"],
-		]);
+		expect(entries.map(compareContent)).toEqual(["push", null, "pull", "delete_remote"]);
 	});
 });
 
-describe("one plan action per path (ADR 0001 T7 invariant)", () => {
-	// The `withCacheMutex` stale-guard is dormant only because no two CONCURRENT
-	// (Group-A: push/pull/match/cleanup) actions ever target the same path — a parallel
-	// write then can't re-key another write's guarded path mid-upload. The source of
-	// that uniqueness is here: planSync mints exactly one action per changeset entry,
-	// and entries are unique by path. Admission may replace a connected delete+transfer
-	// pair with one native rename, while its component tests preserve unique targets.
-	it("emits exactly one action per path across every action type", () => {
+describe("content outcomes independent of scheduling", () => {
+	// Admission owns action construction, overlapping footprints and ordering.
+	it("returns only one content outcome for each bound file", () => {
 		const entries: MixedEntity[] = [
 			{ path: "push.md", local: local({ mtime: 2000, hash: "h-local" }), remote: remote(), prevSync: baseline() },
 			{ path: "pull.md", local: local(), remote: remote({ mtime: 3000, hash: "h-remote" }), prevSync: baseline() },
@@ -487,14 +490,7 @@ describe("one plan action per path (ADR 0001 T7 invariant)", () => {
 			{ path: "del-local.md", local: local(), prevSync: baseline() },
 			{ path: "cleanup.md", prevSync: baseline() },
 		];
-		const actions = planSync(entries).actions;
-
-		// Every entry produced exactly one action (none collapsed two onto one path).
-		expect(actions).toHaveLength(entries.length);
-		const paths = actions.map((a) => a.path);
-		expect(new Set(paths).size).toBe(paths.length);
-		// Sanity: this changeset really did exercise the parallel Group-A op (push).
-		expect(actions.some((a) => a.action === "push")).toBe(true);
+		expect(entries.map(compareContent)).toEqual(["push", "pull", "match", "delete_remote", "delete_local", "cleanup"]);
 	});
 });
 

@@ -195,7 +195,7 @@ describe("GoogleDriveFs mutation provenance", () => {
 	it("returns the native folder identity without claiming requested casing was resolved", async () => {
 		const { GoogleDriveFs } = await import("./index");
 		const mockClient = {
-			findChildByName: vi.fn().mockResolvedValue(null),
+			listChildrenByName: vi.fn().mockResolvedValue([]),
 			createFolder: vi.fn().mockResolvedValue({
 				id: "folder1",
 				name: "Docs",
@@ -217,6 +217,71 @@ describe("GoogleDriveFs mutation provenance", () => {
 });
 
 describe("GoogleDriveFs.write stale-cache guard for new paths", () => {
+	it("rejects an unresolved parent when Google Drive returns duplicate names", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const duplicate = (id: string): GoogleDriveFile => ({
+			id, name: "Templates", mimeType: "application/vnd.google-apps.folder", parents: ["root"],
+		});
+		const uploadFile = vi.fn();
+		const createFolder = vi.fn();
+		const client = {
+			listAllFiles: vi.fn().mockResolvedValue([]),
+			getChangesStartToken: vi.fn().mockResolvedValue("token-1"),
+			getFile: vi.fn().mockResolvedValue({
+				id: "root", name: "root", mimeType: "application/vnd.google-apps.folder", trashed: false,
+			}),
+			listChildrenByName: vi.fn().mockResolvedValue([duplicate("one"), duplicate("two")]),
+			uploadFile, createFolder,
+		} as never;
+		const fs = new GoogleDriveFs(client, "root");
+		await fs.list();
+
+		await expect(fs.write(
+			"Templates/note.md", new TextEncoder().encode("x").buffer, 1000,
+		)).rejects.toThrow('Ambiguous provider entry for "Templates"');
+		expect(createFolder).not.toHaveBeenCalled();
+		expect(uploadFile).not.toHaveBeenCalled();
+	});
+
+	it("updates the existing child when resolving a case-only parent alias", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const folder: GoogleDriveFile = {
+			id: "folder-1", name: "Templates",
+			mimeType: "application/vnd.google-apps.folder", parents: ["root"],
+		};
+		const child: GoogleDriveFile = {
+			id: "child-1", name: "note.md", mimeType: "text/plain",
+			parents: [folder.id], size: "3",
+		};
+		const uploadFile = vi.fn().mockResolvedValue({
+			...child, name: "note.md", size: "7",
+		});
+		const client = {
+			listAllFiles: vi.fn().mockResolvedValue([folder, child]),
+			getChangesStartToken: vi.fn().mockResolvedValue("token-1"),
+			listChildrenByName: vi.fn().mockResolvedValue([folder]),
+			uploadFile,
+		} as never;
+		const fs = new GoogleDriveFs(client, "root");
+		await fs.list();
+
+		const mtime = Date.now();
+		await fs.write(
+			"TemplateS/note.md",
+			new TextEncoder().encode("changed").buffer,
+			mtime,
+		);
+
+		expect(uploadFile).toHaveBeenCalledOnce();
+		expect(uploadFile.mock.calls[0]?.[0]).toBe("note.md");
+		expect(uploadFile.mock.calls[0]?.[1]).toBe("folder-1");
+		expect(uploadFile.mock.calls[0]?.[3]).toBe("application/octet-stream");
+		expect(uploadFile.mock.calls[0]?.[4]).toBe("child-1");
+		expect(uploadFile.mock.calls[0]?.[5]).toBe(mtime);
+		expect((await fs.stat("Templates/note.md"))?.identityKey).toBe("child-1");
+		expect(await fs.stat("TemplateS/note.md")).toBeNull();
+	});
+
 	it("does not clobber a concurrent re-key that created the same path during upload", async () => {
 		const uploadResult: GoogleDriveFile = {
 			id: "uploaded-id",
@@ -339,7 +404,82 @@ describe("GoogleDriveFs.rename stale-cache guard for the destination", () => {
 });
 
 describe("GoogleDriveFs.commitCheckpoint persistence-failure safety", () => {
-	it("propagates a failed flush and keeps the buffer so the cursor is not committed ahead of the cache", async () => {
+	it("persists a successful folder rename before a restart replays its Google change", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const { MetadataStore, METADATA_CACHE_VERSION } = await import("../../store/metadata-store");
+
+		let folder: GoogleDriveFile = {
+			id: "folder-1", name: "Templates", mimeType: "application/vnd.google-apps.folder",
+			parents: ["root"], version: "1",
+		};
+		const child: GoogleDriveFile = {
+			id: "child-1", name: "note.md", mimeType: "text/plain",
+			parents: [folder.id], version: "1", size: "4", md5Checksum: "same",
+		};
+		const changes: Array<{
+			type: "file"; fileId: string; removed: false; file: GoogleDriveFile;
+		}> = [];
+		const client = {
+			listAllFiles: vi.fn(() => Promise.resolve([folder, child])),
+			getChangesStartToken: vi.fn(() => Promise.resolve(`c${changes.length}`)),
+			listChanges: vi.fn((cursor: string) => {
+				const from = Number(cursor.slice(1));
+				return Promise.resolve({
+					changes: changes.slice(from), newStartPageToken: `c${changes.length}`,
+				});
+			}),
+			updateFileMetadata: vi.fn((_id: string, metadata: { name?: string }) => {
+				folder = { ...folder, ...metadata, version: "2" };
+				changes.push({ type: "file", fileId: folder.id, removed: false, file: folder });
+				return Promise.resolve(folder);
+			}),
+		} as never;
+		const store = new MetadataStore<GoogleDriveFile>(`rename-restart-${Math.random()}`, {
+			dbNamePrefix: "air-sync-googledrive-test", version: METADATA_CACHE_VERSION,
+		});
+
+		const first = new GoogleDriveFs(client, "root", undefined, store);
+		expect((await first.list()).map((entry) => entry.path).sort()).toEqual([
+			"Templates", "Templates/note.md",
+		]);
+		await first.commitCheckpoint();
+		await first.rename("Templates", "TemplateS");
+		expect((await first.listCurrentSnapshot()).map((entry) => entry.path).sort()).toEqual([
+			"TemplateS", "TemplateS/note.md",
+		]);
+		await first.commitCheckpoint();
+		const persistedAfterRename = (await store.loadAll()).files.map((record) => record.path).sort();
+		await first.close();
+
+		// A restart restores the complete committed map and the cursor. The real Google
+		// incremental adapter sees the self-change, but the live projection already has
+		// its final path, so it must not manufacture a second rename edge.
+		const restarted = new GoogleDriveFs(client, "root", undefined, store);
+		const replay = await restarted.getChangedPaths();
+		expect(replay?.renamed).toEqual([]);
+		expect((await restarted.listCurrentSnapshot()).map((entry) => entry.path).sort()).toEqual([
+			"TemplateS", "TemplateS/note.md",
+		]);
+		await restarted.close(); // no checkpoint commit: model a failed Admission cycle
+
+		// Without a clean checkpoint, another restart reads the same cursor but still
+		// begins from the complete final cache projection.
+		const replayedAgain = new GoogleDriveFs(client, "root", undefined, store);
+		expect((await replayedAgain.getChangedPaths())?.renamed).toEqual([]);
+
+		// resetCheckpoint/full scan reads provider current state and loses the delta edge.
+		await replayedAgain.resetCheckpoint();
+		expect((await replayedAgain.list()).map((entry) => entry.path).sort()).toEqual([
+			"TemplateS", "TemplateS/note.md",
+		]);
+		await replayedAgain.close();
+
+		// RED: a clean checkpoint after the executor mutation must persist the same
+		// new path as the live cache. Today rename() never marks either path touched.
+		expect(persistedAfterRename).toEqual(["TemplateS", "TemplateS/note.md"]);
+	});
+
+	it("propagates a failed complete-cache flush so the cursor is not committed ahead of the cache", async () => {
 		const { GoogleDriveFs } = await import("./index");
 		type Store = import("../../store/metadata-store").MetadataStore<GoogleDriveFile>;
 
@@ -363,7 +503,7 @@ describe("GoogleDriveFs.commitCheckpoint persistence-failure safety", () => {
 		} as unknown as Store;
 
 		const fs = new GoogleDriveFs(mockClient, "root", undefined, failingStore);
-		await fs.list(); // fullScan → pendingFullPersist = true
+		await fs.list();
 
 		// The flush fails. commitCheckpoint MUST reject rather than swallow — the
 		// orchestrator awaits it before committing the (advanced) cursor, so a throw
@@ -371,10 +511,8 @@ describe("GoogleDriveFs.commitCheckpoint persistence-failure safety", () => {
 		await expect(fs.commitCheckpoint()).rejects.toThrow(/quota exceeded/);
 		expect(saveAll).toHaveBeenCalledTimes(1);
 
-		// The buffer is RETAINED (not cleared on failure), so when the store recovers
-		// the next clean cycle re-attempts the full flush. If the buffer had been
-		// cleared on failure, pendingFullPersist would be false and this second commit
-		// would persist nothing (saveAll would stay at 1).
+		// When the store recovers, the next clean cycle re-attempts the complete
+		// snapshot. A failed commit must not be treated as a completed checkpoint.
 		saveAll.mockResolvedValueOnce(undefined);
 		await fs.commitCheckpoint();
 		expect(saveAll).toHaveBeenCalledTimes(2);
@@ -928,7 +1066,7 @@ describe("GoogleDriveFs cursor consolidation (crash safety)", () => {
 		expect(listAllFiles).toHaveBeenCalledOnce(); // rebuilt via a fresh full scan
 		expect(delta).toBeNull(); // fresh scan ⇒ no replay warranted
 		expect(fs.changesPageToken).toBe("token-fresh"); // freshly acquired, not the stale "token-X"
-		expect(await fs.hasCheckpoint()).toBe(true); // now initialized with a fresh cursor
+		expect(await fs.hasCheckpoint()).toBe(false); // the fresh cursor is still live-only
 
 		await store.close();
 	});

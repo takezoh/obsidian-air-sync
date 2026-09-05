@@ -103,6 +103,20 @@ describe("setFile", () => {
 		expect(cache.exportRecords().map((record) => record.path)).toEqual(["new.txt"]);
 	});
 
+	it("does not re-key a stable id from requested spelling alone", () => {
+		const cache = makeCache();
+		const original = makeGoogleDriveFile({ id: "f1", name: "Templates" });
+		const refreshed = makeGoogleDriveFile({ id: "f1", name: "Templates" });
+		cache.setFile("Templates", original, "actual_resolved");
+
+		cache.setFile("TemplateS", refreshed, "requested_echo");
+
+		expect(cache.getFile("Templates")).toBe(refreshed);
+		expect(cache.hasFile("TemplateS")).toBe(false);
+		expect(cache.getPathById("f1")).toBe("Templates");
+		expect(cache.getPathAuthority("Templates")).toBe("actual_resolved");
+	});
+
 	it("evicts a destination folder occupant and its subtree when re-keying", () => {
 		const cache = makeCache();
 		cache.setFile("old.txt", makeGoogleDriveFile({ id: "f1", name: "old.txt" }));
@@ -113,7 +127,7 @@ describe("setFile", () => {
 		);
 
 		const moved = makeGoogleDriveFile({ id: "f1", name: "occupied" });
-		cache.setFile("occupied", moved);
+		cache.setFile("occupied", moved, "actual_resolved");
 
 		expect(cache.getFile("occupied")).toBe(moved);
 		expect(cache.hasFile("old.txt")).toBe(false);
@@ -124,7 +138,7 @@ describe("setFile", () => {
 			path: "occupied",
 			file: moved,
 			isFolder: false,
-			pathAuthority: "requested_echo",
+			pathAuthority: "actual_resolved",
 		}]);
 	});
 
@@ -137,14 +151,14 @@ describe("setFile", () => {
 			"actual_resolved",
 		);
 
-		cache.setFile("new", makeFolder({ id: "d1", name: "new" }));
+		cache.setFile("new", makeFolder({ id: "d1", name: "new" }), "actual_resolved");
 
 		expect(cache.hasFile("old")).toBe(false);
 		expect(cache.hasFile("old/child.txt")).toBe(false);
 		expect(cache.hasFile("new")).toBe(true);
 		expect(cache.hasFile("new/child.txt")).toBe(true);
 		expect(cache.getPathById("c1")).toBe("new/child.txt");
-		expect(cache.getPathAuthority("new/child.txt")).toBe("requested_echo");
+		expect(cache.getPathAuthority("new/child.txt")).toBe("actual_resolved");
 		expect(cache.exportRecords().find((record) => record.path === "new/child.txt")?.pathAuthority)
 			.toBe("actual_resolved");
 

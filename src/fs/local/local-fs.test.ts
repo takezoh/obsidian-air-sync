@@ -108,6 +108,8 @@ describe("LocalFs", () => {
 		it("returns FileEntity with hash for a .airsync file", async () => {
 			const { vault, fs } = createLocalFs([".airsync"]);
 			const content = new TextEncoder().encode("log data").buffer;
+			await vault.adapter.mkdir(".airsync");
+			await vault.adapter.mkdir(".airsync/logs");
 			await vault.adapter.writeBinary(".airsync/logs/test.log", content);
 
 			const entity = await fs.stat(".airsync/logs/test.log");
@@ -141,6 +143,7 @@ describe("LocalFs", () => {
 		it("finds an on-disk file missing from the vault index", async () => {
 			const { vault, fs } = createLocalFs();
 			const content = new TextEncoder().encode("hi").buffer;
+			await vault.adapter.mkdir("notes");
 			await vault.adapter.writeBinary("notes/a.md", content);
 			// Simulate the vault index not yet listing the on-disk file.
 			vi.spyOn(vault, "getAbstractFileByPath").mockReturnValue(null);
@@ -154,13 +157,15 @@ describe("LocalFs", () => {
 			expect(entity!.pathAuthority).toBe("actual_resolved");
 		});
 
-		it("marks an indexed stat as resolved and preserves the index's actual spelling", async () => {
+		it("uses adapter-resolved spelling even when the index returns another alias", async () => {
 			const { vault, fs } = createLocalFs();
-			const resolved = new TFile();
-			resolved.path = "notes/a.md";
-			resolved.stat = { size: 1, mtime: 1, ctime: 1 };
-			vi.spyOn(vault, "getAbstractFileByPath").mockReturnValue(resolved);
-			vi.spyOn(vault, "readBinary").mockResolvedValue(new Uint8Array([1]).buffer);
+			await vault.adapter.mkdir("notes");
+			await vault.adapter.writeBinary("notes/a.md", new Uint8Array([1]).buffer, { mtime: 1 });
+			vi.spyOn(vault.adapter, "stat").mockImplementation((path) => Promise.resolve(
+				path === "notes/A.md"
+					? { type: "file", size: 1, mtime: 1, ctime: 1 }
+					: null));
+			vi.spyOn(vault.adapter, "readBinary").mockResolvedValue(new Uint8Array([1]).buffer);
 
 			const entity = await fs.stat("notes/A.md");
 
@@ -363,6 +368,59 @@ describe("LocalFs", () => {
 			const paths = entities.map((e) => e.path);
 			expect(paths).not.toContain(".templates");
 			expect(paths).not.toContain(".templates/daily.md");
+		});
+	});
+
+	describe("list case-alias authority", () => {
+		it("keeps only the adapter-resolved casing when the vault index retains both aliases", async () => {
+			const { vault, fs } = createLocalFs();
+			await vault.createFolder("Templates");
+			await vault.createBinary(
+				"Templates/a.md",
+				new TextEncoder().encode("same").buffer,
+				{ mtime: 1 },
+			);
+			const staleEntries = vault.getAllLoadedFiles();
+			await vault.adapter.rmdir("Templates", true);
+			await vault.createFolder("TemplateS");
+			await vault.createBinary(
+				"TemplateS/a.md",
+				new TextEncoder().encode("same").buffer,
+				{ mtime: 1 },
+			);
+
+			const actualEntries = vault.getAllLoadedFiles();
+			const adapterList = vault.adapter.list.bind(vault.adapter);
+			vi.spyOn(vault.adapter, "list").mockImplementation((dir) =>
+				dir === ""
+					? Promise.resolve({ files: [], folders: ["TemplateS"] })
+					: adapterList(dir));
+			vi.spyOn(vault, "getAllLoadedFiles").mockReturnValue([
+				...staleEntries, ...actualEntries,
+			]);
+
+			const paths = (await fs.list()).map((entity) => entity.path);
+
+			expect(paths).toContain("TemplateS");
+			expect(paths).toContain("TemplateS/a.md");
+			expect(paths).not.toContain("Templates");
+			expect(paths).not.toContain("Templates/a.md");
+		});
+
+		it("keeps distinct case-sensitive paths when both exist on the adapter", async () => {
+			const { vault, fs } = createLocalFs();
+			await vault.createBinary("Case.md", new Uint8Array([1]).buffer);
+			await vault.createBinary("case.md", new Uint8Array([2]).buffer);
+			const adapterList = vault.adapter.list.bind(vault.adapter);
+			vi.spyOn(vault.adapter, "list").mockImplementation((dir) =>
+				dir === ""
+					? Promise.resolve({ files: ["Case.md", "case.md"], folders: [] })
+					: adapterList(dir));
+
+			const paths = (await fs.list()).map((entity) => entity.path);
+
+			expect(paths).toContain("Case.md");
+			expect(paths).toContain("case.md");
 		});
 	});
 

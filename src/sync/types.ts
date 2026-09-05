@@ -24,6 +24,13 @@ export interface SyncRecord {
 	syncedAt: number;
 }
 
+/** Exact record expectations for one admitted successful path relocation. */
+export interface RecordRelocation {
+	readonly source: SyncRecord;
+	readonly destination: SyncRecord | undefined;
+	readonly terminal: SyncRecord;
+}
+
 /** Combined view of a path across local, remote, and previous sync state */
 export interface MixedEntity {
 	path: string;
@@ -38,6 +45,8 @@ export type ScopeDisposition = "included" | "mobile_deferred" | "unknown";
 
 export interface ScopeProjection {
 	byEndpoint: ReadonlyMap<string, ScopeDisposition>;
+	/** Inclusion compatibility only; never identity or rename authorization. */
+	isConfiguredScopeCompatible(this: void, from: string, to: string): boolean;
 }
 
 export type PathObservation =
@@ -67,7 +76,7 @@ export interface RenameEvidence {
 	oldPath: string;
 	newPath: string;
 	isFolder: boolean;
-	authority: "reported" | "current_state";
+	authority: "reported";
 	identityKey?: string;
 }
 
@@ -115,12 +124,42 @@ export type SyncActionType =
 	| "match"
 	| "cleanup";
 
+/** Exact admitted record expectations; comparison history is kept separately. */
+export interface RecordPublication {
+	readonly source: SyncRecord | undefined;
+	readonly destination: SyncRecord | undefined;
+}
+
+export interface ObservedEndpoint {
+	readonly side: SyncSide;
+	readonly entity: FileEntity;
+}
+
+/** A fixed rename protocol, not a programmable sequence of filesystem steps. */
+export type RenameContent =
+	| { readonly mode: "equal" }
+	| {
+		readonly mode: "copy";
+		readonly read: ObservedEndpoint;
+		readonly write: { readonly side: SyncSide; readonly path: string };
+	};
+
 /** Shared fields across all sync actions */
 interface SyncActionBase {
 	path: string;
 	local?: FileEntity;
 	remote?: FileEntity;
 	baseline?: SyncRecord;
+	/** Exact publication expectations captured by Admission, not comparison policy. */
+	publication?: RecordPublication;
+	/** Actual endpoint addresses may differ while a parent transition is pending. */
+	localPath?: string;
+	remotePath?: string;
+	/** Exact current identity source and a distinct protected destination version. */
+	remoteIdentitySource?: FileEntity;
+	additionalRemote?: FileEntity;
+	/** A distinct local destination version that must survive replacement. */
+	additionalLocal?: FileEntity;
 }
 
 /** Standard sync action (all types except rename actions) */
@@ -136,6 +175,15 @@ export interface RenameAction extends SyncActionBase {
 	isFolder?: boolean;
 	/** Descendant path mappings consumed by this folder rename */
 	descendants?: RenamePair[];
+	content?: RenameContent;
+	/** Fixed child-before-parent publication dependencies, never a general graph. */
+	descendantRecords?: readonly {
+		readonly oldPath: string;
+		readonly newPath: string;
+		readonly source: SyncRecord | undefined;
+		readonly destination: SyncRecord | undefined;
+		readonly after?: SyncAction;
+	}[];
 }
 
 /** A single planned action for a path */

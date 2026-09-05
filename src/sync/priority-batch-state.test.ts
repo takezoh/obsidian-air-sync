@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { admitDestructivePlan, captureCycleAdmissionSnapshot } from "./plan-admission";
+import { admitBatchObservation } from "./plan-admission";
+import { captureBatchObservation } from "./sync-cycle-planning";
 import { PriorityBatchState } from "./priority-batch-state";
-import type { PathObservation, SyncAction, SyncRecord } from "./types";
+import type { PathObservation, SyncRecord } from "./types";
 
 function admittedPull(path = "note.md") {
 	const baseline: SyncRecord = {
@@ -16,16 +17,15 @@ function admittedPull(path = "note.md") {
 		path, pathAuthority: "actual_resolved" as const,
 		isDirectory: false, size: 2, mtime: 2, hash: "", identityKey: "remote-id",
 	};
-	const action: SyncAction = { path, action: "pull", baseline, local, remote };
 	const observations: PathObservation[] = [
 		{ kind: "exact", side: "local", requestedPath: path, entity: local },
 		{ kind: "exact", side: "remote", requestedPath: path, entity: remote },
 	];
-	const snapshot = captureCycleAdmissionSnapshot(
-		{ actions: [action] }, [], observations,
-		{ byEndpoint: new Map([[path, "included"]]) }, "priority-batch-test",
+	const snapshot = captureBatchObservation(
+		[{ path, local, remote, prevSync: baseline }], [], observations,
+		{ isConfiguredScopeCompatible: () => true, byEndpoint: new Map([[path, "included"]]) }, "priority-batch-test",
 	);
-	const admission = admitDestructivePlan(snapshot);
+	const admission = admitBatchObservation(snapshot);
 	return { action: admission.executable.actions[0]!, admission };
 }
 
@@ -36,8 +36,9 @@ describe("PriorityBatchState", () => {
 
 		const target = batch.priorityTarget(action.path);
 		expect(target).toEqual({ kind: "superseding", action });
-		expect(target.kind === "superseding" && batch.supersede(target.action)).toBe(true);
-		expect(batch.beginAction(action)).toBe("superseded");
+		const terminalRecord = { ...action.baseline!, hash: "new", localMtime: 2, remoteMtime: 2 };
+		expect(target.kind === "superseding" && batch.supersede(target.action, terminalRecord)).toBe(true);
+		expect(batch.beginAction(action)).toEqual({ action, terminalRecord });
 	});
 
 	it("defers after the transfer phase instead of changing a frozen route", () => {
@@ -50,13 +51,13 @@ describe("PriorityBatchState", () => {
 	});
 
 	it("defers an actionless disposition because its retained observation is non-exact", () => {
-		const snapshot = captureCycleAdmissionSnapshot(
-			{ actions: [] }, [], [{
+		const snapshot = captureBatchObservation(
+			[], [], [{
 				kind: "unknown", side: "remote", requestedPath: "note.md",
 				reason: "not_observed",
-			}], { byEndpoint: new Map([["note.md", "included"]]) }, "priority-batch-test",
+			}], { isConfiguredScopeCompatible: () => true, byEndpoint: new Map([["note.md", "included"]]) }, "priority-batch-test",
 		);
-		const batch = new PriorityBatchState(admitDestructivePlan(snapshot));
+		const batch = new PriorityBatchState(admitBatchObservation(snapshot));
 		expect(batch.priorityTarget("note.md")).toEqual({ kind: "defer" });
 	});
 
@@ -80,5 +81,6 @@ describe("PriorityBatchState", () => {
 		const batch = new PriorityBatchState(admission);
 		batch.abort();
 		expect(batch.priorityTarget(action.path)).toEqual({ kind: "defer" });
+		expect(batch.beginAction(action)).toBe("invalidated");
 	});
 });

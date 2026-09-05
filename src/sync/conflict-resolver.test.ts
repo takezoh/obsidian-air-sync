@@ -19,6 +19,17 @@ describe("resolveConflict", () => {
 	});
 
 	describe("fresh rename preparation", () => {
+		it("rejects bytes that disagree with a stable admitted checksum before preservation", async () => {
+			addFile(remoteFs, "old.md", "first", 1000).identityKey = "R";
+			const source = (await remoteFs.stat("old.md"))!;
+			vi.spyOn(remoteFs, "read").mockResolvedValue(new TextEncoder().encode("other").buffer);
+			const localWrite = vi.spyOn(localFs, "write");
+			const remoteWrite = vi.spyOn(remoteFs, "write");
+			await expect(prepareConflict({ path: "new.md", localFs, remoteFs, remote: source,
+				remoteIdentitySource: source })).rejects.toMatchObject({ kind: "proof_mismatch" });
+			expect(localWrite).not.toHaveBeenCalled();
+			expect(remoteWrite).not.toHaveBeenCalled();
+		});
 		it("is read-only and records primary then additional obligations", async () => {
 			const local = addFile(localFs, "new.md", "local", 2000);
 			const source = addFile(remoteFs, "old.md", "R", 1100);
@@ -32,7 +43,7 @@ describe("resolveConflict", () => {
 			const prepared = await prepareConflict({
 				path: "new.md", localPath: "new.md", remotePath: "old.md",
 				remoteIdentitySource: source, additionalRemote: occupant,
-				localFs, remoteFs, local, remote: source, freshRename: true,
+				localFs, remoteFs, local, remote: source,
 			});
 
 			expect(prepared.kind).toBe("prepared_rotation_required");
@@ -60,7 +71,7 @@ describe("resolveConflict", () => {
 
 			await expect(prepareConflict({
 				path: "new.md", remotePath: "old.md", remoteIdentitySource: source,
-				localFs, remoteFs, remote: source, freshRename: true,
+				localFs, remoteFs, remote: source,
 			})).rejects.toMatchObject({ kind: "proof_mismatch" });
 			expect(reads).toBe(2);
 		});
@@ -75,7 +86,7 @@ describe("resolveConflict", () => {
 
 			await expect(prepareConflict({
 				path: "new.md", remotePath: "old.md", remoteIdentitySource: source,
-				localFs, remoteFs, remote: source, freshRename: true,
+				localFs, remoteFs, remote: source,
 			})).rejects.toMatchObject({ kind });
 		});
 	});
@@ -93,7 +104,8 @@ describe("resolveConflict", () => {
 			expect(result).toMatchObject({ action: "duplicated", duplicatePath: "new.conflict.md" });
 			expect(readText(localFs, "new.conflict.md")).toBe("remote changed");
 			expect(readText(remoteFs, "new.conflict.md")).toBe("remote changed");
-			expect(readText(remoteFs, "new.md")).toBe("local current");
+			expect(new TextDecoder().decode(result.targetContent)).toBe("local current");
+			expect(await remoteFs.stat("new.md")).toBeNull();
 			expect(readText(remoteFs, "old.md")).toBe("remote changed");
 		});
 
@@ -107,7 +119,7 @@ describe("resolveConflict", () => {
 			const result = await resolveConflict({
 				path: "new.md", localPath: "new.md", remotePath: "old.md",
 				remoteIdentitySource: source, additionalRemote: remote, baselinePath: "old.md",
-				localFs, remoteFs, local, remote: source, freshRename: true,
+				localFs, remoteFs, local, remote: source,
 			}, "duplicate");
 
 			expect(result).toMatchObject({ action: "duplicated", duplicatePath: "new.conflict.md" });
@@ -130,7 +142,7 @@ describe("resolveConflict", () => {
 			const context = {
 				path: "new.md", localPath: "new.md", remotePath: "old.md",
 				remoteIdentitySource: source, additionalRemote: occupant,
-				localFs, remoteFs, local, remote: source, freshRename: true,
+				localFs, remoteFs, local, remote: source,
 			} as const;
 
 			await resolveConflict(context, "duplicate");
@@ -148,6 +160,11 @@ describe("resolveConflict", () => {
 			const source = addFile(remoteFs, "old.md", "R", 1000);
 			source.identityKey = "R";
 			const originalRead = localFs.read.bind(localFs);
+			const originalStat = localFs.stat.bind(localFs);
+			vi.spyOn(localFs, "stat").mockImplementation(async (path) => {
+				const entity = await originalStat(path);
+				return path === "new.conflict.md" && entity ? { ...entity, hash: "", remoteChecksum: undefined } : entity;
+			});
 			vi.spyOn(localFs, "read").mockImplementation(async (path) =>
 				path === "new.conflict.md"
 					? new TextEncoder().encode("mismatch").buffer
@@ -156,7 +173,7 @@ describe("resolveConflict", () => {
 			await expect(resolveConflict({
 				path: "new.md", localPath: "new.md", remotePath: "old.md",
 				remoteIdentitySource: source, localFs, remoteFs, local,
-				remote: source, freshRename: true,
+				remote: source,
 			}, "duplicate")).rejects.toMatchObject({ kind: "proof_mismatch" });
 			expect(readText(remoteFs, "new.conflict.md")).toBe("R");
 		});
@@ -180,7 +197,7 @@ describe("resolveConflict", () => {
 			const prepared = await prepareConflict({
 				path: "new.md", localPath: "new.md", remotePath: "old.md",
 				remoteIdentitySource: source, baselinePath: "old.md",
-				localFs, remoteFs, local, remote: source, freshRename: true,
+				localFs, remoteFs, local, remote: source,
 			});
 
 			expect(prepared.kind).toBe("prepared_rotation_required");
@@ -221,7 +238,7 @@ describe("resolveConflict", () => {
 			await expect(prepareConflict({
 				path: "new.md", localPath: "new.md", remotePath: "old.md",
 				remoteIdentitySource: source, additionalRemote: occupant,
-				localFs, remoteFs, local, remote: source, freshRename: true,
+				localFs, remoteFs, local, remote: source,
 			})).rejects.toMatchObject({ kind: "proof_mismatch" });
 
 			expect(reads.get("old.md")).toBe(2);
@@ -255,7 +272,7 @@ describe("resolveConflict", () => {
 			const result = await resolveConflict({
 				path: "new.md", localPath: "new.md", remotePath: "old.md",
 				remoteIdentitySource: source, additionalRemote: occupant,
-				localFs, remoteFs, local, remote: source, freshRename: true,
+				localFs, remoteFs, local, remote: source,
 			}, "duplicate");
 
 			expect(reads.get("old.md")).toBe(2);
@@ -276,7 +293,8 @@ describe("resolveConflict", () => {
 
 			expect(result.action).toBe("duplicated");
 			expect(result.duplicatePath).toBe("file.conflict.md");
-			expect(readText(remoteFs, "file.md")).toBe("local content");
+			expect(new TextDecoder().decode(result.targetContent)).toBe("local content");
+			expect(readText(remoteFs, "file.md")).toBe("remote content");
 			expect(readText(localFs, "file.conflict.md")).toBe(
 				"remote content",
 			);
@@ -291,7 +309,8 @@ describe("resolveConflict", () => {
 			);
 
 			expect(result.action).toBe("duplicated");
-			expect(readText(localFs, "file.md")).toBe("remote only");
+			expect(new TextDecoder().decode(result.targetContent)).toBe("remote only");
+			expect(await localFs.stat("file.md")).toBeNull();
 		});
 
 		it("restores local version remotely when remote is deleted", async () => {
@@ -303,7 +322,8 @@ describe("resolveConflict", () => {
 			);
 
 			expect(result.action).toBe("duplicated");
-			expect(readText(remoteFs, "file.md")).toBe("local only");
+			expect(new TextDecoder().decode(result.targetContent)).toBe("local only");
+			expect(await remoteFs.stat("file.md")).toBeNull();
 		});
 	});
 
@@ -328,7 +348,7 @@ describe("resolveConflict", () => {
 			const result = await resolveConflict({
 				path: "new.md", localPath: "new.md", remotePath: "old.md", baselinePath: "old.md",
 				remoteIdentitySource: source, additionalRemote: occupant,
-				localFs, remoteFs, local, remote: source, baseline, stateStore, freshRename: true,
+				localFs, remoteFs, local, remote: source, baseline, stateStore,
 			}, "auto_merge");
 
 			expect(result.action).toBe("merged");
@@ -363,7 +383,8 @@ describe("resolveConflict", () => {
 
 			expect(result.action).toBe("merged");
 			expect(readText(localFs, "new.md")).toContain("local");
-			expect(readText(remoteFs, "new.md")).toContain("remote");
+			expect(new TextDecoder().decode(result.targetContent)).toContain("remote");
+			expect(await remoteFs.stat("new.md")).toBeNull();
 			expect(readText(remoteFs, "old.md")).toBe(remoteText);
 		});
 
@@ -460,7 +481,9 @@ describe("resolveConflict", () => {
 
 			// newer wins → local is newer
 			expect(result.action).toBe("kept_local");
-			expect(readText(remoteFs, "file.md")).toBe("local content");
+			expect(new TextDecoder().decode(result.targetContent)).toBe("local content");
+			expect(result.verifiedOutputs).toEqual([]);
+			expect(readText(remoteFs, "file.md")).toBe("remote content");
 		});
 
 		it("falls back to newer-wins when stateStore is missing", async () => {
@@ -530,9 +553,7 @@ describe("resolveConflict", () => {
 
 		it("falls back to duplicate when mtime is equal and hashes differ", async () => {
 			const local = addFile(localFs, "file.md", "local ver", 1000);
-			local.hash = "aaa";
 			const remote = addFile(remoteFs, "file.md", "remote ver", 1000);
-			remote.hash = "bbb";
 
 			// No stateStore → skips 3-way merge path → newer-wins
 			const result = await resolveConflict(

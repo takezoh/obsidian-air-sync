@@ -1,6 +1,6 @@
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity, PathAuthority } from "../fs/types";
-import type { RenamePair, SyncRecord } from "../sync/types";
+import type { RecordRelocation, RenamePair, SyncRecord } from "../sync/types";
 import type { SyncStateStore } from "../sync/state";
 import type { AirSyncSettings } from "../settings";
 import { sha256 } from "../utils/hash";
@@ -198,6 +198,7 @@ export function createMockFs(
 			// pre-capability mock, which had no hasCheckpoint and short-circuited to false).
 			// Flipping this to false would silently force every default test cold.
 			hasCheckpoint: () => Promise.resolve(true),
+			abortWorkingView: () => Promise.resolve(),
 			resetCheckpoint: () => Promise.resolve(),
 			commitCheckpoint: () => Promise.resolve(),
 		},
@@ -210,8 +211,8 @@ export function createMockLocalFs(): MockFileSystem {
 }
 
 /** Remote mutations remain request echoes until a test models provider confirmation. */
-export function createMockRemoteFs(): MockFileSystem {
-	return createMockFs("remote", "requested_echo");
+export function createMockRemoteFs(mutationPathAuthority: PathAuthority = "requested_echo"): MockFileSystem {
+	return createMockFs("remote", mutationPathAuthority);
 }
 
 /** Model a provider observation that confirms one remote path and its descendants. */
@@ -260,15 +261,44 @@ export function createMockStateStore(): {
 				return Promise.resolve(false);
 			}
 			records.set(record.path, record);
+			if (!expected || !record.hash || expected.hash !== record.hash ||
+				expected.localSize !== record.localSize || expected.remoteIdentityKey !== record.remoteIdentityKey) {
+				contents.delete(record.path);
+			}
 			return Promise.resolve(true);
 		},
-		compareAndMove(expected: SyncRecord, record: SyncRecord) {
-			if (JSON.stringify(records.get(expected.path)) !== JSON.stringify(expected)) {
+		compareAndMove(expected: SyncRecord, record: SyncRecord,
+			destination: SyncRecord | undefined = expected.path === record.path ? expected : undefined) {
+			if (JSON.stringify(records.get(expected.path)) !== JSON.stringify(expected) ||
+				JSON.stringify(records.get(record.path)) !== JSON.stringify(destination)) {
 				return Promise.resolve(false);
 			}
+			if (expected.path !== record.path) records.delete(expected.path);
 			records.set(record.path, record);
-			records.delete(expected.path);
 			contents.delete(expected.path);
+			contents.delete(record.path);
+			return Promise.resolve(true);
+		},
+		compareAndRewritePaths(relocations: readonly RecordRelocation[]) {
+			if (new Set(relocations.map((item) => item.source.path)).size !== relocations.length ||
+				new Set(relocations.map((item) => item.terminal.path)).size !== relocations.length ||
+				relocations.some((item) =>
+					JSON.stringify(records.get(item.source.path)) !== JSON.stringify(item.source) ||
+					JSON.stringify(records.get(item.terminal.path)) !== JSON.stringify(item.destination))) {
+				return Promise.resolve(false);
+			}
+			for (const item of relocations) {
+				if (item.source.path !== item.terminal.path) records.delete(item.source.path);
+				contents.delete(item.source.path);
+				contents.delete(item.terminal.path);
+			}
+			for (const item of relocations) records.set(item.terminal.path, item.terminal);
+			return Promise.resolve(true);
+		},
+		compareAndDelete(path: string, expected: SyncRecord | undefined) {
+			if (JSON.stringify(records.get(path)) !== JSON.stringify(expected)) return Promise.resolve(false);
+			records.delete(path);
+			contents.delete(path);
 			return Promise.resolve(true);
 		},
 		delete(path: string) {
@@ -303,6 +333,13 @@ export function createMockStateStore(): {
 		putContent(path: string, content: ArrayBuffer) {
 			contents.set(path, content);
 			return Promise.resolve();
+		},
+		compareAndPutContent(expected: SyncRecord, content: ArrayBuffer) {
+			if (JSON.stringify(records.get(expected.path)) !== JSON.stringify(expected)) {
+				return Promise.resolve(false);
+			}
+			contents.set(expected.path, content);
+			return Promise.resolve(true);
 		},
 		getContent(path: string) {
 			return Promise.resolve(contents.get(path));

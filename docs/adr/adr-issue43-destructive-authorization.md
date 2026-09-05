@@ -36,7 +36,7 @@ consequences:
 confirmation: Focused admission/orchestrator/finalization tests prove nominal executor
   input, snapshot stability, actionless deferral, strict pre-Admission recovery, and
   independent OneDrive/A-B evidence causality.
-updated: '2026-09-01'
+updated: '2026-09-04'
 ---
 
 # Bind destructive execution to immutable Admission authority
@@ -52,15 +52,26 @@ production defect and cannot be proven by central exception-retention tests.
 
 ## Decision
 
-The orchestrator captures one immutable cycle snapshot before Admission, containing the
-refined proposal, existing normative evidence, observations, scope projection, and the
-accepted backend/root namespace. Settings/root changes apply to a later snapshot, and
+The orchestrator captures one immutable fact-only cycle snapshot before Admission,
+containing current entries, normative reported evidence, observations, scope
+projection, and the accepted backend/root namespace. Admission privately constructs
+the path-local proposal, normalizes connected identity components, and decides each
+one exactly once. Settings/root changes apply to a later snapshot, and
 backend/root teardown remains serialized with in-flight execution.
 
 Admission emits exactly one disposition for every relevant component, including those
 with zero actions, and is the only constructor of an opaque/nominal
 `AuthorizedSyncPlan`. The executor accepts only that carrier. Finalization consumes the
 same snapshot's dispositions plus mechanical completion and cannot re-evaluate safety.
+
+For a case alias, an explicit Admission-issued action protocol is part of that carrier.
+Observation does not infer rename identity, and Executor does not detect the protocol
+from action shape or missing baseline. Acquisition temperature and whole-store state
+cannot change the component decision.
+
+The same boundary applies when several case-alias children reveal one parent transition:
+Admission retains their content decisions and authorizes one parent folder rename.
+Provider path resolution remains an execution precondition, not a second authorization.
 
 Actionless uncertainty is deferred, visible, checkpoint-holding, evidence-retaining,
 and requests a later COLD cycle without a tight retry. Only an exception strictly before

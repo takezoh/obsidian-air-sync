@@ -142,15 +142,11 @@ local-storage backends; the rename test pins exact mtime-through-rename when
 `computesHashOnStat` (mock/LocalFs) and only requires a finite timestamp otherwise. (Google Drive
 still preserves the written `modifiedTime` on a plain *write* — that is unaffected.)
 
-**The orchestrator-level convergence path is deliberately out of the FS contracts.** ADR
-0001 **path 2** (state C — a live FS whose in-memory cursor overtook the committed one
-after a failure) cannot be closed by the FS alone; it is the orchestrator's job
-(`recoverViaColdScan`). So `runCachingRemoteFsContract` pins only path 1 and the
-FS-observable boundary ("the live FS does **not** self-heal in-session"), and path 2 is
-pinned **generically** by `orchestrator.test.ts` over a `createMockFs` double. Because the
-orchestrator's force-cold logic is backend-agnostic and each backend's FS-boundary
-behaviour is already pinned by its crash-safety contract, per-backend orchestrator
-parameterization is **optional belt-and-suspenders**, not a coverage gap.
+**Attempt abort/reload is part of the shared FS contract.** `runCachingRemoteFsContract`
+requires every caching backend to discard only its live working view, preserve the durable
+checkpoint, and replay the same deletion or folder-rename snapshot on the next ordinary
+access. `orchestrator.test.ts` separately pins the policy boundary: every incomplete
+attempt aborts, every clean attempt commits, and abort precedes classification/retry.
 
 **Prohibited patterns** (each is a way to make a contract green and worthless):
 - a per-backend unit test that re-asserts a shared-contract behaviour against the

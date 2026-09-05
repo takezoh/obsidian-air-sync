@@ -187,6 +187,29 @@ describe("LocalChangeTracker", () => {
 	});
 
 	describe("acknowledge with rename pairs", () => {
+		it("retains a same-value rename recreated after the captured generation", () => {
+			tracker.markRenamed("b.md", "a.md");
+			const snap = tracker.snapshot();
+			tracker.markRenamed("a.md", "b.md");
+			tracker.markRenamed("b.md", "a.md");
+			tracker.acknowledge(snap);
+			expect(tracker.getRenamePairs().get("b.md")).toBe("a.md");
+			expect(tracker.getDirtyPaths().has("a.md")).toBe(true);
+			expect(tracker.getDirtyPaths().has("b.md")).toBe(true);
+			tracker.acknowledge(tracker.snapshot());
+			expect(tracker.getRenamePairs().size).toBe(0);
+			expect(tracker.getDirtyPaths().size).toBe(0);
+		});
+
+		it("invalidates a priority generation even when a rename returns to its original path", () => {
+			tracker.markRenamed("b.md", "a.md");
+			const expected = tracker.generation("a.md");
+			tracker.markRenamed("a.md", "b.md");
+			tracker.acknowledgePath("a.md", expected);
+			expect(tracker.getDirtyPaths().has("a.md")).toBe(true);
+			expect(tracker.generation("a.md")).toBeGreaterThan(expected);
+		});
+
 		it("clears rename pairs when the newPath is in the snapshot", () => {
 			tracker.markRenamed("new.md", "old.md");
 			tracker.acknowledge(tracker.snapshot());
@@ -212,6 +235,25 @@ describe("LocalChangeTracker", () => {
 	});
 
 	describe("markFolderRenamed", () => {
+		it("retains same-value folder reports recreated after the snapshot", () => {
+			tracker.markFolderRenamed("B", "A");
+			const snap = tracker.snapshot();
+			tracker.markFolderRenamed("A", "B");
+			tracker.markFolderRenamed("B", "A");
+			tracker.acknowledge(snap);
+			expect(tracker.getFolderRenamePairs().get("B")).toBe("A");
+			tracker.acknowledge(tracker.snapshot());
+			expect(tracker.getFolderRenamePairs().size).toBe(0);
+		});
+
+		it("advances both folder endpoint generations on a return-to-origin event", () => {
+			tracker.markFolderRenamed("B", "A");
+			const snap = tracker.snapshot();
+			tracker.markFolderRenamed("A", "B");
+			expect(tracker.generation("A")).toBeGreaterThan(snap.generations!.get("A")!);
+			expect(tracker.generation("B")).toBeGreaterThan(snap.generations!.get("B")!);
+		});
+
 		it("records folder rename pair without pretending roots cover descendants", () => {
 			tracker.markFolderRenamed("B", "A");
 			expect(tracker.getFolderRenamePairs().get("B")).toBe("A");

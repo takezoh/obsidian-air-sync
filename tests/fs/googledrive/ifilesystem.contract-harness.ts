@@ -86,6 +86,10 @@ function makeFakeGoogleDriveClient(): GoogleDriveClient {
 			);
 			return Promise.resolve(found ? copy(found.file) : null);
 		},
+		listChildrenByName: (parentId: string, name: string): Promise<GoogleDriveFile[]> =>
+			Promise.resolve([...nodes.values()]
+				.filter((node) => node.file.parents?.includes(parentId) && node.file.name === name)
+				.map((node) => copy(node.file))),
 		createFolder: (name: string, parentId: string): Promise<GoogleDriveFile> => {
 			const file: GoogleDriveFile = {
 				id: newId(),

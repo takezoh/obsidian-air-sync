@@ -1,51 +1,48 @@
-/* eslint max-lines: ["error", 850] -- design keeps fresh compound effects, destructive re-observation, private terminal proof, and proof-gated commit routing in the executor owner. */
+/* eslint max-lines: ["error", 900] -- the executor owns fresh compound effects, destructive re-observation, cycle-local terminal proof, and proof-gated commit routing. */
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
-import type { ConflictStrategy, SyncAction, SyncActionType } from "./types";
-import {
-	isFreshRenameAction,
-	type AuthorizedSyncPlan,
-	type FreshRenameAction,
-} from "./plan-admission";
+import type { ConflictStrategy, RenameAction, SyncAction } from "./types";
+import type { AuthorizedSyncPlan } from "./plan-admission";
 import type { StateCommitterContext } from "./state-committer";
-import {
-	ConflictPreparationError,
-	type ConflictResolverContext,
-	type ConflictResolutionResult,
+import { bytesMatch, captureContentSnapshot, ContentProofError } from "./content-snapshot";
+import type {
+	ConflictResolverContext,
+	ConflictResolutionResult,
 } from "./conflict-resolver";
 import type { VerifiedConflictOutput } from "./conflict";
 import type { Logger } from "../logging/logger";
-import { commitAction, commitTerminalFresh } from "./state-committer";
+import { commitAction } from "./state-committer";
 import { resolveConflict } from "./conflict-resolver";
 import { AuthError, classifyHttpError } from "../fs/errors";
 import type { ErrorClassification } from "../fs/errors";
 import { AsyncPool, AdaptivePool } from "../queue/async-queue";
 import type { AdaptivePoolOpts } from "../queue/async-queue";
 import { decideRetry, sleep } from "./error";
-import type { ExecutionResult } from "./execution-result";
+import type { CompletedAction, ExecutionResult, SupersededAction } from "./execution-result";
+import { orderedChildReceipts } from "./execution-result";
 import type { NormalActionPermit } from "./priority-coordinator";
 import type { LocalMutationBarrier } from "./local-mutation-barrier";
-import { hasRemoteChanged } from "./change-compare";
-import { sameContent } from "./content-identity";
+import { sameSynchronizedContent } from "./content-identity";
+import { hasChanged, hasRemoteChanged } from "./change-compare";
 export type { BlockedAction, CompletedAction, ExecutionResult, FailedAction, ResolvedConflict } from "./execution-result";
 export { toConflictRecords } from "./execution-result";
 
-const terminalFreshProofBrand: unique symbol = Symbol("TerminalFreshProof");
+const terminalActionProofBrand: unique symbol = Symbol("TerminalActionProof");
 
 /** Executor-owned proof seam consumed by the state committer in the following unit. */
-export interface TerminalFreshProof {
-	readonly [terminalFreshProofBrand]: true;
-	readonly action: FreshRenameAction;
+export interface TerminalActionProof {
+	readonly [terminalActionProofBrand]: true;
+	readonly action: SyncAction & { readonly oldPath?: string };
 	readonly localEntity: FileEntity;
 	readonly remoteEntity: FileEntity;
-	readonly intendedContent: ArrayBuffer;
+	readonly intendedContent?: ArrayBuffer;
 	readonly verifiedOutputs: readonly VerifiedConflictOutput[];
 }
 
-class InternalFreshInvariantError extends Error {
+class TerminalInvariantError extends Error {
 	constructor(message: string) {
 		super(message);
-		this.name = "InternalFreshInvariantError";
+		this.name = "TerminalInvariantError";
 	}
 }
 
@@ -75,44 +72,14 @@ export interface ExecutionContext {
 	/** Scheduler safe point acquired immediately before exact action execution. */
 	acquireActionPermit?: () => Promise<NormalActionPermit>;
 	/** Consume the active cycle's exact-object scheduler state; never chooses another action. */
-	beginAction?: (action: SyncAction) => "run" | "superseded" | "invalidated";
+	beginAction?: (action: SyncAction) => "run" | "invalidated" | SupersededAction;
 	/** Publish a fatal terminal state before releasing the action permit. */
-	onActionFatal?: (action: SyncAction, error: AuthError) => void;
+	onActionFatal?: (action: SyncAction, error: Error) => void;
 	mutationBarrier?: LocalMutationBarrier;
 	onPhaseChange?: (phase: "transfer" | "conflict" | "structural") => void;
 	/** Test seam and dependency boundary for the configured resolver. */
 	conflictResolver?: typeof resolveConflict;
 }
-
-type Lane = "remote" | "local" | "both" | "none";
-type Tier = "transfer" | "rename" | "delete" | "none";
-
-/**
- * Executor-internal classification of each action by the filesystem it mutates
- * (`lane`) and its dependency tier (`tier`). This drives the phase/lane scheduling
- * in {@link executePlan}; `SyncActionType` stays the planner's vocabulary. The
- * `Record<SyncActionType, …>` makes the classification exhaustive — adding a new
- * action type fails the build until it is classified here.
- *
- * `conflict` is transfer-tier (content I/O) but is DELIBERATELY scheduled in its
- * own serial phase, NOT pooled with `push`/`pull`: conflict resolution mints a
- * planner-invisible `.conflict` sibling path (`conflict.ts` `generateConflictPath`)
- * and writes it to both sides, so the one-action-per-path invariant does not cover
- * that sibling. Pooling it would risk clobbering a concurrent `push` of a
- * same-named file and would wake the dormant `withCacheMutex` new-path guard. See
- * ADR 0001 (prohibited patterns). Do not move it into the transfer phase.
- */
-const ACTION_CLASS: Record<SyncActionType, { lane: Lane; tier: Tier }> = {
-	push: { lane: "remote", tier: "transfer" },
-	pull: { lane: "local", tier: "transfer" },
-	conflict: { lane: "both", tier: "transfer" },
-	match: { lane: "none", tier: "none" },
-	cleanup: { lane: "none", tier: "none" },
-	rename_remote: { lane: "remote", tier: "rename" },
-	rename_local: { lane: "local", tier: "rename" },
-	delete_remote: { lane: "remote", tier: "delete" },
-	delete_local: { lane: "local", tier: "delete" },
-};
 
 /**
  * Per-action I/O retry attempts for transient / rate-limit errors. DISTINCT from
@@ -142,15 +109,7 @@ export const DESKTOP_TRANSFER_POOL: AdaptivePoolOpts =
 export const MOBILE_TRANSFER_POOL: AdaptivePoolOpts =
 	{ min: 1, start: 3, max: 8, rampAfter: 8, byteBudget: 512 * 1024 * 1024 };
 /**
- * Max concurrent deletes, per lane. Deletes are metadata-only (trash / delete by
- * id) and could run hotter, but they share the backend rate-limit budget, so kept
- * at 5 for parity. Each lane gets its OWN pool — local (vault trash) and remote
- * (network) deletes have disjoint resource profiles and must not share a budget.
- */
-const DELETE_CONCURRENCY = 5;
-
-/**
- * Max concurrent state-only commits (match/cleanup) in Phase 1. They issue no
+ * Max concurrent independent same-key match commits. They issue no
  * network I/O, but a `match` commit may read the file to store a 3-way-merge base
  * (`maybeStoreMergeBase`), so a cold scan's thousands of matches must not all read
  * at once — the old Group A bounded these at 5 via `AsyncPool`.
@@ -168,118 +127,90 @@ function transferSize(action: SyncAction): number {
 }
 
 /**
- * Execute a plan in three phases separated by barriers, scheduled by (lane, tier):
- *
- *   Phase 1  transfers (push/pull) pooled + state-only (match/cleanup) inline
- *   Phase 2  conflict — serial (own phase; see {@link ACTION_CLASS})
- *   Phase 3  structural — remote & local lanes run concurrently; within each lane,
- *            renames serial then deletes pooled
- *
- * The barriers are load-bearing: no content write (Phase 1) runs concurrently with
- * a same-subtree structural rename/delete (Phase 3), and conflict (which mutates a
- * planner-invisible sibling, Phase 2) never overlaps either. Renames stay serial
- * (two endpoints + folder-subtree rewrites); deletes pool (the bulk-delete win).
- * `AuthError` from any action rejects its pool/lane and propagates out (aborting the
- * cycle); all other per-action errors are caught into `result.failed`.
+ * Preserve Admission's component order through successful publication. Only
+ * independent singleton transfers/matches are pooled; compound effects, including
+ * conflict siblings and structural namespaces, run in one exclusive serial interval.
  */
 export async function executePlan(
 	plan: AuthorizedSyncPlan,
 	ctx: ExecutionContext,
 ): Promise<ExecutionResult> {
 	const result: ExecutionResult = {
-		succeeded: [],
-		superseded: [],
-		failed: [],
-		blocked: [],
-		conflicts: [],
+		succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [],
 	};
-
-	const total = plan.actions.length;
 	let completed = 0;
 	const reportProgress = () => {
-		completed++;
-		ctx.onProgress?.(completed, total);
+		ctx.onProgress?.(++completed, plan.actions.length);
 	};
-
-	// Partition by (lane, tier). Conflict is its own phase; match/cleanup are
-	// state-only (run inline, no pool slot); renames/deletes split by lane.
-	const transfers: SyncAction[] = [];
-	const stateOnly: SyncAction[] = [];
-	const conflicts: SyncAction[] = [];
-	const renameRemote: SyncAction[] = [];
-	const deleteRemote: SyncAction[] = [];
-	const renameLocal: SyncAction[] = [];
-	const deleteLocal: SyncAction[] = [];
-
-	for (const action of plan.actions) {
-		const { lane, tier } = ACTION_CLASS[action.action];
-		if (action.action === "conflict") {
-			conflicts.push(action);
-		} else if (tier === "none") {
-			stateOnly.push(action);
-		} else if (tier === "transfer") {
-			transfers.push(action);
-		} else if (tier === "rename") {
-			(lane === "remote" ? renameRemote : renameLocal).push(action);
-		} else {
-			(lane === "remote" ? deleteRemote : deleteLocal).push(action);
-		}
-	}
-
-	// ── Phase 1 — transfers (adaptive pool) + state-only (bounded pool). ──
+	const independent = plan.components.filter((component) => {
+		if (component.paths.length !== 1 || component.actions.length !== 1) return false;
+		const action = component.actions[0]!;
+		return (!action.publication?.source || action.publication.source.path === action.path) &&
+			(action.action === "push" || action.action === "pull" || action.action === "match");
+	});
+	const pooled = new Set(independent);
+	const serial = plan.components.filter((component) => !pooled.has(component));
 	ctx.onPhaseChange?.("transfer");
-	// One action per path ⇒ concurrent transfers target disjoint paths. State-only
-	// actions (match/cleanup) issue no network I/O, but their commit can read a file
-	// to store a 3-way-merge base, so they run through their own bounded pool rather
-	// than all at once (a cold scan can emit thousands of matches).
 	const transferPool = new AdaptivePool(ctx.transferPool ?? DESKTOP_TRANSFER_POOL);
 	const statePool = new AsyncPool(STATE_COMMIT_CONCURRENCY);
-	await Promise.all([
-		...transfers.map((action) =>
-			transferPool.run(
-				() =>
-					executeAction(action, ctx, result, reportProgress, () =>
-						transferPool.noteRateLimit()
-					),
-				transferSize(action)
-			)
-		),
-		...stateOnly.map((action) =>
-			statePool.run(() => executeAction(action, ctx, result, reportProgress))
-		),
-	]);
+	await settleScheduled(independent.map((component) => {
+		const action = component.actions[0]!;
+		return action.action === "match"
+			? statePool.run(() => executeAction(action, ctx, result, reportProgress))
+			: transferPool.run(() => executeAction(action, ctx, result, reportProgress,
+				() => transferPool.noteRateLimit()), transferSize(action));
+	}));
+	if (serial.length === 0) return result;
 
-	// ── Phase 2 — conflicts (serial, own phase). ──
-	ctx.onPhaseChange?.("conflict");
-	// Headless, but mutates a planner-invisible `.conflict` sibling — kept serial so
-	// concurrent resolutions can't collide on that sibling namespace (see ACTION_CLASS).
-	for (const action of conflicts) {
-		await executeConflictAction(action, ctx, result, reportProgress);
-	}
-
-	// ── Phase 3 — structural mutations; the two lanes run concurrently. ──
+	// Close priority eligibility before draining already-running work. Holding
+	// its normal permit across this interval also excludes newly queued priority
+	// work; nested actions must not reacquire a permit while that work is waiting.
 	ctx.onPhaseChange?.("structural");
-	// They touch disjoint filesystems (the local FS has no remote metadata cache), so
-	// they share no mutable state — safe to overlap. Within each lane: renames first
-	// (serial — a rename has two endpoints and folder renames rewrite subtrees), then
-	// deletes pooled (the bulk-folder-delete win). Each lane has its OWN delete pool.
-	const runLane = async (renames: SyncAction[], deletes: SyncAction[]) => {
-		for (const action of renames) {
-			await executeAction(action, ctx, result, reportProgress);
+	const permit = await ctx.acquireActionPermit?.();
+	const serialContext = { ...ctx, acquireActionPermit: undefined };
+	try {
+		for (const component of serial) {
+			let prefixFailed = false;
+			for (const action of component.actions) {
+				if (prefixFailed) {
+					result.blocked.push({ action, reason: "component prefix did not publish" });
+					reportProgress();
+					continue;
+				}
+				const incompleteBefore = result.failed.length + result.blocked.length;
+				if (action.action === "conflict") {
+					await executeConflictAction(action, serialContext, result, reportProgress);
+				} else {
+					await executeAction(action, serialContext, result, reportProgress);
+				}
+				prefixFailed = result.failed.length + result.blocked.length !== incompleteBefore;
+			}
 		}
-		const pool = new AsyncPool(DELETE_CONCURRENCY);
-		await Promise.all(
-			deletes.map((action) =>
-				pool.run(() => executeAction(action, ctx, result, reportProgress))
-			)
-		);
-	};
-	await Promise.all([
-		runLane(renameRemote, deleteRemote),
-		runLane(renameLocal, deleteLocal),
-	]);
-
+	} finally {
+		permit?.release();
+	}
 	return result;
+}
+
+interface FirstFailure {
+	observed: boolean;
+	error: unknown;
+}
+
+/** Preserve the first observed rejection while waiting for every scheduled peer. */
+async function settleScheduled(
+	tasks: Promise<unknown>[],
+	firstFailure: FirstFailure = { observed: false, error: undefined },
+): Promise<void> {
+	const observed = tasks.map((task) => task.catch((err: unknown) => {
+		if (!firstFailure.observed) {
+			firstFailure.observed = true;
+			firstFailure.error = err;
+		}
+		throw err;
+	}));
+	await Promise.allSettled(observed);
+	if (firstFailure.observed) throw firstFailure.error;
 }
 
 /**
@@ -303,10 +234,11 @@ async function withIoRetry<T>(
 		try {
 			return await io();
 		} catch (err) {
-			if (err instanceof AuthError) throw err;
-			const classification = classify(err);
+			const failure = err instanceof ContentProofError && err.kind !== "proof_mismatch" && err.cause instanceof Error ? err.cause : err;
+			if (failure instanceof AuthError || failure instanceof ContentProofError) throw failure;
+			const classification = classify(failure);
 			const decision = decideRetry(classification, attempt, MAX_ACTION_RETRIES, rng);
-			if (decision.action !== "retry") throw err;
+			if (decision.action !== "retry") throw failure;
 			if (classification.kind === "rateLimit") onRateLimit?.();
 			await doSleep(decision.delayMs);
 		}
@@ -323,8 +255,8 @@ async function executeAction(
 	const permit = await ctx.acquireActionPermit?.();
 	try {
 		const start = ctx.beginAction?.(action) ?? "run";
-		if (start === "superseded") {
-			result.superseded.push(action);
+		if (typeof start !== "string") {
+			result.superseded.push(start);
 			return;
 		}
 		if (start === "invalidated") {
@@ -337,33 +269,29 @@ async function executeAction(
 		// moved → a spurious not-found failure — so renames run without the retry wrapper.
 		const io = () => runActionIO(action, ctx);
 		const execute = async () => {
-			const entities = isFreshRenameAction(action) || ACTION_CLASS[action.action].tier === "rename"
+			await checkPublicationInputs(action, ctx, result.succeeded);
+			const entities = action.action === "rename_local" || action.action === "rename_remote"
 				? await io()
 				: await withIoRetry(io, ctx, onRateLimit);
-			const terminalFreshProof = isFreshRenameAction(action)
-				? await proveFreshTerminal(action, ctx, entities, [])
-				: undefined;
-			if (terminalFreshProof) {
-				const baseline = terminalFreshProof.action.baseline;
-				if (!baseline) {
-					throw new InternalFreshInvariantError(
-						`Fresh rename baseline missing: ${terminalFreshProof.action.oldPath}`,
-					);
-				}
-				await commitTerminalFresh(terminalFreshProof, baseline, ctx.committer);
-			} else {
-				await commitAction(action, entities.localEntity, entities.remoteEntity, ctx.committer);
-			}
-			return { ...entities, terminalFreshProof };
+			const terminalProof = await proveAdmittedTerminal(action, ctx, entities, result.succeeded);
+			const terminalLocal = terminalProof?.localEntity ?? entities.localEntity;
+			const terminalRemote = terminalProof?.remoteEntity ?? entities.remoteEntity;
+			const terminalRecord = await commitAction(action, terminalLocal, terminalRemote,
+				ctx.committer, terminalProof, result.succeeded);
+			return { localEntity: terminalLocal, remoteEntity: terminalRemote, terminalProof, terminalRecord };
 		};
 		const paths = localMutationPaths(action);
-		const { localEntity, remoteEntity, terminalFreshProof } = ctx.mutationBarrier && paths.length > 0
+		const { localEntity, remoteEntity, terminalProof, terminalRecord } = ctx.mutationBarrier && paths.length > 0
 			? await ctx.mutationBarrier.run(paths, execute)
 			: await execute();
-		result.succeeded.push({ action, localEntity, remoteEntity, terminalFreshProof });
+		result.succeeded.push({ action, localEntity, remoteEntity, terminalProof, terminalRecord });
 	} catch (err) {
-		if (err instanceof InternalFreshInvariantError) throw err;
-		if (err instanceof ConflictPreparationError && err.kind === "proof_mismatch") {
+		if (err instanceof TerminalInvariantError) {
+			ctx.onActionFatal?.(action, err);
+			throw err;
+		}
+		if (err instanceof ContentProofError && err.kind === "proof_mismatch") {
+			ctx.logger?.warn("executePlan: action blocked", { path: action.path, action: action.action, reason: err.message });
 			result.blocked.push({ action, reason: err.message });
 			return;
 		}
@@ -386,7 +314,7 @@ async function executeAction(
 
 function localMutationPaths(action: SyncAction): string[] {
 	if (action.action === "pull" || action.action === "delete_local" || action.action === "conflict") {
-		return [action.path];
+		return [action.localPath ?? action.path];
 	}
 	if (action.action !== "rename_local") return [];
 	return [action.oldPath, action.path,
@@ -396,56 +324,49 @@ function localMutationPaths(action: SyncAction): string[] {
 async function runActionIO(
 	action: SyncAction,
 	ctx: ExecutionContext,
-): Promise<{ localEntity?: FileEntity; remoteEntity?: FileEntity }> {
-	if (isFreshRenameAction(action)) return runFreshRenameIO(action, ctx);
+): Promise<{ localEntity?: FileEntity; remoteEntity?: FileEntity; intendedContent?: ArrayBuffer }> {
+	if ((action.action === "rename_local" || action.action === "rename_remote") &&
+		(action.content || action.descendantRecords)) return runAdmittedRenameIO(action, ctx);
 	const { localFs, remoteFs } = ctx;
 	const { path } = action;
 
 	switch (action.action) {
-		case "push": {
-			if (!action.local) throw new Error(`push action requires local entity: ${path}`);
-			const content = await localFs.read(path);
-			const remoteEntity = await remoteFs.write(path, content, action.local.mtime);
-			// stat() may return null if the file was deleted between read and stat (race condition);
-			// fall back to action.local which is the pre-sync metadata
-			const localEntity = await localFs.stat(path) ?? action.local;
-			return { localEntity, remoteEntity };
-		}
-
+		case "push":
 		case "pull": {
-			if (!action.remote) throw new Error(`pull action requires remote entity: ${path}`);
-			const content = await remoteFs.read(path);
-			const localEntity = await localFs.write(path, content, action.remote.mtime);
-			// stat() may return null if the file was deleted between write and stat (race condition);
-			// fall back to action.remote which is the pre-sync metadata
-			const remoteEntity = await remoteFs.stat(path) ?? action.remote;
-			return { localEntity, remoteEntity };
+			const pushing = action.action === "push";
+			const expected = pushing ? action.local : action.remote;
+			if (!expected) throw new Error(`${action.action} action requires source entity: ${path}`);
+			const source = pushing ? localFs : remoteFs;
+			const target = pushing ? remoteFs : localFs;
+			const targetPath = (pushing ? action.remotePath : action.localPath) ?? path;
+			const { content } = await captureContentSnapshot(source, expected.path, expected);
+			// Reading may yield to local edits or another writer. Revalidate the
+			// captured destination and record expectations before destructive use.
+			await checkPublicationInputs(action, ctx, []);
+			await target.write(targetPath, content.slice(0), expected.mtime);
+			const [localEntity, remoteEntity] = await Promise.all([
+				localFs.stat(action.localPath ?? action.local?.path ?? path),
+				remoteFs.stat(action.remotePath ?? action.remote?.path ?? path),
+			]);
+			if (!localEntity || !remoteEntity) throw new ContentProofError("proof_mismatch", "Transfer terminal endpoint disappeared");
+			return { localEntity, remoteEntity, intendedContent: content };
 		}
 
 		case "match": {
-			return { localEntity: action.local, remoteEntity: action.remote };
+			return {};
 		}
 
-		case "rename_remote": {
-			await remoteFs.rename(action.oldPath, path);
-			const remoteEntity = await remoteFs.stat(path);
-			const localEntity = await localFs.stat(path) ?? action.local;
-			return { localEntity, remoteEntity: remoteEntity ?? undefined };
-		}
-
-		case "rename_local": {
-			await localFs.rename(action.oldPath, path);
-			const localEntity = await localFs.stat(path) ?? undefined;
-			return { localEntity, remoteEntity: action.remote };
-		}
+		case "rename_remote":
+		case "rename_local":
+			throw new Error(`Rename action omitted its admitted execution inputs: ${path}`);
 
 		case "delete_remote": {
-			await remoteFs.delete(path);
+			await remoteFs.delete(action.remotePath ?? path);
 			return {};
 		}
 
 		case "delete_local": {
-			await localFs.delete(path);
+			await localFs.delete(action.localPath ?? path);
 			return {};
 		}
 
@@ -460,72 +381,176 @@ async function runActionIO(
 	}
 }
 
-async function runFreshRenameIO(
-	action: FreshRenameAction,
-	ctx: ExecutionContext,
-): Promise<{ localEntity?: FileEntity; remoteEntity?: FileEntity }> {
-	const { localFs, remoteFs } = ctx;
-	const local = await localFs.stat(action.path);
-	if (!local || !action.local || !sameContent(local, action.local)) {
-		throw new ConflictPreparationError(
-			"proof_mismatch", `Fresh rename local content changed before execution: ${action.path}`,
-		);
+async function checkPublicationInputs(action: SyncAction, ctx: ExecutionContext, completed: readonly CompletedAction[]): Promise<void> {
+	if (!action.publication && !((action.action === "rename_local" || action.action === "rename_remote") && action.descendantRecords)) {
+		throw new ContentProofError("proof_mismatch", `Admission publication inputs missing: ${action.path}`);
 	}
-	if (action.freshRenameState === "converged") {
-		return { localEntity: local, remoteEntity: action.remote };
-	}
-	if (action.freshRenameState === "remote_changed" ||
-		action.freshRenameState === "destination_conflict") {
-		throw new Error(`Fresh rename conflict must use conflict execution: ${action.path}`);
-	}
-	const identityKey = action.baseline?.remoteIdentityKey;
-	if (!action.baseline || !identityKey) {
-		throw new Error(`Fresh rename requires an identity-aware baseline: ${action.oldPath}`);
-	}
-	const oldBefore = await remoteFs.stat(action.oldPath);
-	const newBefore = await remoteFs.stat(action.path);
-	let identityObservation: FileEntity;
-	if (action.freshRenameState === "old_path_baseline") {
-		if (!oldBefore || oldBefore.identityKey !== identityKey ||
-			hasRemoteChanged(oldBefore, action.baseline) || newBefore) {
-			throw new ConflictPreparationError(
-				"proof_mismatch", `Fresh rename precondition changed: ${action.oldPath}`,
-			);
+	const store = ctx.committer.stateStore;
+	const checkRecord = async (path: string, expected: import("./types").SyncRecord | undefined) => {
+		if (JSON.stringify(await store.get(path)) !== JSON.stringify(expected)) {
+			throw new ContentProofError("proof_mismatch", `Publication precondition changed: ${path}`);
 		}
-		await remoteFs.rename(action.oldPath, action.path);
-		const moved = await remoteFs.stat(action.path);
-		if (!moved || moved.identityKey !== identityKey) {
-			throw new ConflictPreparationError(
-				"proof_mismatch", `Fresh rename identity not observed at destination: ${action.path}`,
-			);
-		}
-		identityObservation = moved;
-	} else {
-		if (oldBefore || !newBefore || newBefore.identityKey !== identityKey ||
-			hasRemoteChanged(newBefore, action.baseline)) {
-			throw new ConflictPreparationError(
-				"proof_mismatch", `Fresh rename write precondition changed: ${action.path}`,
-			);
-		}
-		identityObservation = newBefore;
-	}
-	const content = await localFs.read(action.path);
-	const written = await remoteFs.write(action.path, content, local.mtime);
-	const [oldAfter, newAfter, remoteContent] = await Promise.all([
-		remoteFs.stat(action.oldPath), remoteFs.stat(action.path), remoteFs.read(action.path),
-	]);
-	if (oldAfter || !newAfter || !buffersEqual(content, remoteContent)) {
-		throw new ConflictPreparationError(
-			"proof_mismatch", `Fresh rename terminal verification failed: ${action.path}`,
-		);
-	}
-	return {
-		localEntity: local,
-		remoteEntity: {
-			...written, ...newAfter,
-			identityKey: newAfter.identityKey ?? written.identityKey ?? identityObservation.identityKey,
-		},
 	};
+	if (action.publication) {
+		const { source, destination } = action.publication;
+		await checkRecord(action.path, destination);
+		if (source && source.path !== action.path) await checkRecord(source.path, source);
+		for (const [fs, expected, address] of [
+			[ctx.localFs, action.local, action.localPath ?? action.path],
+			[ctx.remoteFs, action.remote, action.remotePath ?? action.path],
+		] as const) {
+			if (expected) await unchangedEndpoint(fs, expected);
+			else if (await fs.stat(address)) {
+				throw new ContentProofError("proof_mismatch", `Previously absent endpoint appeared: ${address}`);
+			}
+		}
+	}
+	if ((action.action === "rename_local" || action.action === "rename_remote") && action.descendantRecords) {
+		for (const { child, receipt } of orderedChildReceipts(action, completed)) {
+			const source = child.after ? receipt?.terminalRecord : child.source;
+			if (!source) throw new ContentProofError("proof_mismatch", `Child publication missing: ${child.oldPath}`);
+			await checkRecord(source.path, source);
+			if (source.path !== child.newPath) await checkRecord(child.newPath, child.destination);
+		}
+	}
+}
+
+async function unchangedEndpoint(fs: IFileSystem, expected: FileEntity): Promise<FileEntity> {
+	const current = await fs.stat(expected.path);
+	if (!isExactPath(current, expected.path) || current.isDirectory !== expected.isDirectory ||
+		(expected.identityKey && current.identityKey !== expected.identityKey) ||
+		(expected.remoteChecksum && current.remoteChecksum &&
+			(expected.remoteChecksum.algo !== current.remoteChecksum.algo ||
+				expected.remoteChecksum.value !== current.remoteChecksum.value)) ||
+		(!expected.isDirectory && (current.size !== expected.size ||
+			(expected.hash && current.hash ? expected.hash !== current.hash :
+				expected.remoteChecksum && current.remoteChecksum
+					? expected.remoteChecksum.algo !== current.remoteChecksum.algo || expected.remoteChecksum.value !== current.remoteChecksum.value
+					: current.mtime !== expected.mtime)))) {
+		throw new ContentProofError("proof_mismatch", `Endpoint changed before execution: ${expected.path}`);
+	}
+	return current;
+}
+
+/** One rename-then-copy protocol for either direction. Capture precedes mutation. */
+async function runAdmittedRenameIO(action: RenameAction, ctx: ExecutionContext) {
+	if (!action.local || !action.remote) throw new ContentProofError("proof_mismatch", "Rename endpoints missing");
+	const moving = action.action === "rename_local" ? ctx.localFs : ctx.remoteFs;
+	await Promise.all([
+		unchangedEndpoint(ctx.localFs, action.local), unchangedEndpoint(ctx.remoteFs, action.remote),
+	]);
+	const destination = await moving.stat(action.path);
+	if (destination && destination.path !== action.oldPath) {
+		throw new ContentProofError("proof_mismatch", `Rename destination occupied: ${action.path}`);
+	}
+	let content: ArrayBuffer | undefined;
+	if (action.content?.mode === "copy") {
+		const read = action.content.read;
+		const fs = read.side === "local" ? ctx.localFs : ctx.remoteFs;
+		content = (await captureContentSnapshot(fs, read.entity.path, read.entity)).content;
+		await unchangedEndpoint(fs, read.entity);
+	}
+	await unchangedEndpoint(moving, action.action === "rename_local" ? action.local : action.remote);
+	await moving.rename(action.oldPath, action.path);
+	if (content && action.content?.mode === "copy") {
+		const write = action.content.write;
+		await (write.side === "local" ? ctx.localFs : ctx.remoteFs).write(write.path, content.slice(0), action.content.read.entity.mtime);
+	}
+	const [localEntity, remoteEntity] = await Promise.all([
+		ctx.localFs.stat(action.path), ctx.remoteFs.stat(action.path),
+	]);
+	if (!isExactPath(localEntity, action.path) || !isExactPath(remoteEntity, action.path) ||
+		(action.remote.identityKey && remoteEntity.identityKey !== action.remote.identityKey)) {
+		throw new ContentProofError("proof_mismatch", "Rename terminal identity changed");
+	}
+	return { localEntity, remoteEntity, intendedContent: content };
+}
+
+async function proveAdmittedTerminal(
+	action: SyncAction, ctx: ExecutionContext,
+	entities: { localEntity?: FileEntity; remoteEntity?: FileEntity; intendedContent?: ArrayBuffer },
+	completed: readonly CompletedAction[] = [],
+): Promise<TerminalActionProof | undefined> {
+	if (action.action === "cleanup" || action.action === "delete_local" || action.action === "delete_remote") return undefined;
+	const localPath = action.localPath ?? (action.action === "rename_local" || action.action === "rename_remote" || action.action === "conflict"
+		? action.path : action.local?.path ?? action.path);
+	const remotePath = action.remotePath ?? action.path;
+	const localEntity = isExactPath(entities.localEntity ?? null, localPath)
+		? entities.localEntity! : await ctx.localFs.stat(localPath);
+	const remoteEntity = isExactPath(entities.remoteEntity ?? null, remotePath)
+		? entities.remoteEntity! : await ctx.remoteFs.stat(remotePath);
+	if (!isExactPath(localEntity, localPath) || !isExactPath(remoteEntity, remotePath)) {
+		throw new ContentProofError("proof_mismatch", "Terminal endpoints missing");
+	}
+	const identity = action.remoteIdentitySource?.identityKey ?? action.remote?.identityKey;
+	if (identity && remoteEntity.identityKey !== identity) {
+		throw new ContentProofError("proof_mismatch", "Terminal remote identity changed");
+	}
+	if (localEntity.isDirectory !== remoteEntity.isDirectory) {
+		throw new ContentProofError("proof_mismatch", "Terminal endpoint kinds differ");
+	}
+	if ((action.action === "rename_local" || action.action === "rename_remote") && action.descendantRecords) {
+		await proveFolderDescendants(action, ctx, completed);
+	}
+	if (!localEntity.isDirectory || !remoteEntity.isDirectory) {
+		if (localEntity.size !== remoteEntity.size) throw new ContentProofError("proof_mismatch", "Terminal sizes differ");
+		if (entities.intendedContent) {
+			for (const [fs, entity] of [[ctx.localFs, localEntity], [ctx.remoteFs, remoteEntity]] as const) {
+				if (!await bytesMatch(entities.intendedContent, entity) &&
+					!buffersEqual(entities.intendedContent, await fs.read(entity.path))) {
+					throw new ContentProofError("proof_mismatch", "Rename terminal bytes changed");
+				}
+			}
+		} else if (!sameSynchronizedContent(localEntity, remoteEntity, action.baseline)) {
+			const content = await ctx.localFs.read(localPath);
+			if (!await bytesMatch(content, remoteEntity)) {
+				if (!buffersEqual(content, await ctx.remoteFs.read(remotePath))) {
+					throw new ContentProofError("proof_mismatch", "Terminal content differs");
+				}
+			}
+		}
+	}
+	return Object.freeze({ [terminalActionProofBrand]: true as const, action, localEntity, remoteEntity,
+		intendedContent: entities.intendedContent, verifiedOutputs: [] });
+}
+
+/** Prove the admitted suffix mapping against successful child receipts before bulk publication. */
+async function proveFolderDescendants(action: RenameAction, ctx: ExecutionContext, completed: readonly CompletedAction[]) {
+	const retainedPaths = new Set<string>();
+	for (const { child, receipt } of orderedChildReceipts(action, completed)) {
+		retainedPaths.add(child.newPath);
+		const record = child.after ? receipt?.terminalRecord : child.source;
+		const [local, remote] = await Promise.all([ctx.localFs.stat(child.newPath), ctx.remoteFs.stat(child.newPath)]);
+		if (!record || !isExactPath(local, child.newPath) || !isExactPath(remote, child.newPath) ||
+			local.isDirectory || remote.isDirectory ||
+			(record.remoteIdentityKey && remote.identityKey !== record.remoteIdentityKey) ||
+			hasChanged(local, record) || hasRemoteChanged(remote, record) || !sameSynchronizedContent(local, remote, record)) {
+			throw new ContentProofError("proof_mismatch", `Folder descendant changed: ${child.newPath}`);
+		}
+		for (const output of receipt?.terminalProof?.verifiedOutputs ?? []) {
+			for (const [side, fs] of [["local", ctx.localFs], ["remote", ctx.remoteFs]] as const) {
+				const moved = action.action === `rename_${side}`;
+				const path = moved && output.path.startsWith(action.oldPath + "/")
+					? action.path + output.path.slice(action.oldPath.length) : output.path;
+				const entity = await fs.stat(path);
+				// A preservation address may resolve through a case alias on the
+				// unmoved side. Its bytes, not caller spelling, are the obligation.
+				if (!entity || entity.isDirectory ||
+					(!await bytesMatch(output.sourceContent, entity) && !buffersEqual(output.sourceContent, await fs.read(path)))) {
+					throw new ContentProofError("proof_mismatch", `Folder preservation output changed: ${path}`);
+				}
+			}
+		}
+	}
+	for (const child of action.descendants ?? []) {
+		if (retainedPaths.has(child.newPath)) continue;
+		const [local, remote] = await Promise.all([ctx.localFs.stat(child.newPath), ctx.remoteFs.stat(child.newPath)]);
+		if (local || remote) throw new ContentProofError("proof_mismatch", `Deleted folder descendant appeared: ${child.newPath}`);
+	}
+}
+
+function isExactPath(entity: FileEntity | null, path: string): entity is FileEntity {
+	return entity?.path === path && entity.pathAuthority === "actual_resolved";
 }
 
 function buffersEqual(left: ArrayBuffer, right: ArrayBuffer): boolean {
@@ -535,37 +560,42 @@ function buffersEqual(left: ArrayBuffer, right: ArrayBuffer): boolean {
 	return a.every((value, index) => value === b[index]);
 }
 
-function verifiedFreshOutputs(
-	action: FreshRenameAction,
+function verifiedConflictOutputs(
+	action: SyncAction,
 	resolution: ConflictResolutionResult,
 ): readonly VerifiedConflictOutput[] {
-	const expected = action.remote ? [
+	const requiresCopies = resolution.action === "duplicated" && !!action.local ||
+		!!action.remoteIdentitySource && action.remoteIdentitySource.path !== action.path || !!action.additionalRemote || !!action.additionalLocal ||
+		!!action.local && action.local.path !== action.path || !!action.remote && action.remote.path !== action.path;
+	const expected = action.remote && requiresCopies ? [
 		{ role: "primary" as const, sourcePath: action.remotePath ?? action.remote.path },
 		...(action.additionalRemote
 			? [{ role: "additional" as const, sourcePath: action.additionalRemote.path }]
 			: []),
+		...(action.additionalLocal
+			? [{ role: "local" as const, sourcePath: action.additionalLocal.path }] : []),
 	] : [];
 	const actual = resolution.verifiedOutputs;
 	if (!actual || actual.length !== expected.length ||
 		new Set(actual.map(({ path }) => path)).size !== actual.length ||
 		actual.some((output, index) => output.role !== expected[index]?.role ||
 			output.sourcePath !== expected[index]?.sourcePath)) {
-		throw new ConflictPreparationError(
+		throw new ContentProofError(
 			"proof_mismatch", `Conflict preservation coverage mismatch: ${action.path}`,
 		);
 	}
 	return actual;
 }
 
-function makeTerminalFreshProof(
-	action: FreshRenameAction,
+function makeTerminalProof(
+	action: SyncAction,
 	localEntity: FileEntity,
 	remoteEntity: FileEntity,
 	intendedContent: ArrayBuffer,
 	verifiedOutputs: readonly VerifiedConflictOutput[],
-): TerminalFreshProof {
+): TerminalActionProof {
 	return Object.freeze({
-		[terminalFreshProofBrand]: true as const,
+		[terminalActionProofBrand]: true as const,
 		action,
 		localEntity: Object.freeze({ ...localEntity }),
 		remoteEntity: Object.freeze({ ...remoteEntity }),
@@ -574,125 +604,114 @@ function makeTerminalFreshProof(
 	});
 }
 
-async function proveFreshTerminal(
-	action: FreshRenameAction,
-	ctx: ExecutionContext,
-	entities: { localEntity?: FileEntity; remoteEntity?: FileEntity },
-	outputs: readonly VerifiedConflictOutput[],
-): Promise<TerminalFreshProof> {
-	const [localEntity, remoteEntity, oldEntity, localBytes, remoteBytes] = await Promise.all([
-		ctx.localFs.stat(action.path), ctx.remoteFs.stat(action.path),
-		ctx.remoteFs.stat(action.oldPath), ctx.localFs.read(action.path), ctx.remoteFs.read(action.path),
-	]);
-	if (!localEntity || !remoteEntity || oldEntity ||
-		!buffersEqual(localBytes, remoteBytes)) {
-		throw new ConflictPreparationError("proof_mismatch", `Fresh rename terminal proof failed: ${action.path}`);
-	}
-	const trackedIdentity = action.baseline?.remoteIdentityKey;
-	if (trackedIdentity && remoteEntity.identityKey !== trackedIdentity) {
-		throw new ConflictPreparationError("proof_mismatch", `Fresh rename terminal identity mismatch: ${action.path}`);
-	}
-	if (entities.localEntity && entities.localEntity.path !== localEntity.path ||
-		entities.remoteEntity && entities.remoteEntity.path !== remoteEntity.path) {
-		throw new InternalFreshInvariantError(`Fresh rename execution returned wrong endpoint: ${action.path}`);
-	}
-	return makeTerminalFreshProof(action, localEntity, remoteEntity, localBytes, outputs);
-}
-
-async function executeFreshConflictEffects(
-	action: FreshRenameAction,
+async function executePreparedConflictEffects(
+	action: SyncAction,
 	ctx: ExecutionContext,
 	resolution: ConflictResolutionResult,
 ): Promise<{
 	localEntity: FileEntity;
 	remoteEntity: FileEntity;
-	terminalFreshProof: TerminalFreshProof;
+	terminalProof: TerminalActionProof;
 }> {
-	const outputs = verifiedFreshOutputs(action, resolution);
+	const outputs = verifiedConflictOutputs(action, resolution);
 	if (!resolution.targetContent) {
-		throw new InternalFreshInvariantError(`Fresh resolver omitted target content: ${action.path}`);
+		throw new TerminalInvariantError(`Fresh resolver omitted target content: ${action.path}`);
 	}
 	const intended = resolution.targetContent.slice(0);
 	const source = action.remoteIdentitySource;
 	const rotationRequired = !!source && source.path !== action.path;
 	const trackedSourceIdentity = source?.identityKey;
-	if (action.baseline?.remoteIdentityKey && !source &&
-		action.normalizedRenameState.kind !== "baseline_absent_foreign_target" &&
-		action.normalizedRenameState.kind !== "baseline_absent_vacant_target") {
-		throw new InternalFreshInvariantError(`Tracked fresh conflict omitted identity source: ${action.path}`);
+	// The source is an exact admitted current endpoint, never inferred from a
+	// historical baseline or a prior attempt's decision classification.
+	if (action.local) await unchangedEndpoint(ctx.localFs, action.local);
+	if (action.remote) await unchangedEndpoint(ctx.remoteFs, action.remote);
+	for (const [fs, entity, snapshot] of [
+		[ctx.localFs, action.local, resolution.capturedInputs?.local],
+		[ctx.remoteFs, action.remote, resolution.capturedInputs?.remote],
+	] as const) {
+		if (!entity) continue;
+		if (!snapshot) throw new TerminalInvariantError(`Resolver omitted captured input: ${entity.path}`);
+		await assertPreservedSourceUnchanged(fs, entity.path, entity.identityKey,
+			{ sourcePath: snapshot.path, sourceEntity: snapshot.entity, sourceContent: snapshot.content });
 	}
-
-	const primaryOutput = outputs.find((output) => output.role === "primary");
-	const additionalOutput = outputs.find((output) => output.role === "additional");
-	if (source) {
-		if (!primaryOutput) {
-			throw new InternalFreshInvariantError(`Fresh conflict omitted primary snapshot: ${action.path}`);
+	const localTarget = action.localPath ?? action.path;
+	const remoteTarget = action.remotePath ?? action.path;
+	const localMove = action.local && action.local.path !== localTarget;
+	if (localMove) {
+		const occupant = await ctx.localFs.stat(localTarget);
+		if (occupant && occupant.path !== action.local!.path) {
+			throw new ContentProofError("proof_mismatch", `Conflict local destination changed: ${localTarget}`);
 		}
-		await assertPreservedSourceUnchanged(ctx.remoteFs, source.path, source.identityKey, primaryOutput);
 	}
-	const expectedTargetOutput = action.additionalRemote
-		? additionalOutput
-		: !source && action.remote ? primaryOutput : undefined;
-	if ((action.additionalRemote || (!source && action.remote)) && !expectedTargetOutput) {
-		throw new InternalFreshInvariantError(`Fresh conflict omitted target snapshot: ${action.path}`);
+
+	const additionalOutput = outputs.find((output) => output.role === "additional");
+	const localOutput = outputs.find((output) => output.role === "local");
+	if (action.additionalLocal) {
+		if (!localOutput) throw new TerminalInvariantError(`Local preservation proof missing: ${action.path}`);
+		await assertPreservedSourceUnchanged(ctx.localFs, action.additionalLocal.path, action.additionalLocal.identityKey, localOutput);
 	}
-	if (expectedTargetOutput) {
-		const expectedIdentity = action.additionalRemote?.identityKey ?? action.remote?.identityKey;
-		await assertPreservedSourceUnchanged(
-			ctx.remoteFs, action.path, expectedIdentity, expectedTargetOutput,
-		);
-	} else if (source?.path !== action.path && await ctx.remoteFs.stat(action.path)) {
-		throw new ConflictPreparationError(
-			"proof_mismatch", `Fresh conflict destination changed: ${action.path}`,
+	if (action.additionalRemote) {
+		if (!additionalOutput) throw new TerminalInvariantError(`Conflict omitted target snapshot: ${action.path}`);
+		await assertPreservedSourceUnchanged(ctx.remoteFs, remoteTarget, action.additionalRemote.identityKey, additionalOutput);
+	} else if ((rotationRequired || !action.remote) && await ctx.remoteFs.stat(remoteTarget)) {
+		throw new ContentProofError(
+			"proof_mismatch", `Conflict destination changed: ${remoteTarget}`,
 		);
 	}
 
-	const targetBefore = await ctx.remoteFs.stat(action.path);
 	if (rotationRequired) {
-		if (targetBefore) await ctx.remoteFs.delete(action.path);
+		// Delete only the admitted, preserved occupant, never one discovered during execution.
+		if (action.additionalRemote) await ctx.remoteFs.delete(action.path);
 		await ctx.remoteFs.rename(source.path, action.path);
-	} else if (!source && targetBefore) {
-		// Foreign-only occupancy has been preserved; remove its identity before installing
-		// the intended target so no tracked-R authority is inferred from Y.
-		await ctx.remoteFs.delete(action.path);
 	}
+	if (localMove) await ctx.localFs.rename(action.local!.path, localTarget);
 
 	const mtime = resolution.targetMtime ?? action.local?.mtime ?? 0;
-	await ctx.localFs.write(action.path, intended.slice(0), mtime);
-	await ctx.remoteFs.write(action.path, intended.slice(0), mtime);
-	const [localEntity, remoteEntity, localBytes, remoteBytes, sourceAfter] = await Promise.all([
-		ctx.localFs.stat(action.path), ctx.remoteFs.stat(action.path),
-		ctx.localFs.read(action.path), ctx.remoteFs.read(action.path),
+	await ctx.localFs.write(localTarget, intended.slice(0), mtime);
+	await ctx.remoteFs.write(remoteTarget, intended.slice(0), mtime);
+	const [localEntity, remoteEntity, sourceAfter] = await Promise.all([
+		ctx.localFs.stat(localTarget), ctx.remoteFs.stat(remoteTarget),
 		rotationRequired ? ctx.remoteFs.stat(source.path) : Promise.resolve(null),
 	]);
-	if (!localEntity || !remoteEntity || sourceAfter ||
-		!buffersEqual(intended, localBytes) || !buffersEqual(intended, remoteBytes)) {
-		throw new ConflictPreparationError("proof_mismatch", `Fresh conflict terminal bytes mismatch: ${action.path}`);
+	if (!localEntity || !remoteEntity || sourceAfter) {
+		throw new ContentProofError("proof_mismatch", `Fresh conflict terminal bytes mismatch: ${action.path}`);
 	}
 	if (trackedSourceIdentity && remoteEntity.identityKey !== trackedSourceIdentity) {
-		throw new ConflictPreparationError("proof_mismatch", `Fresh conflict terminal identity mismatch: ${action.path}`);
+		throw new ContentProofError("proof_mismatch", `Fresh conflict terminal identity mismatch: ${action.path}`);
 	}
-	const terminalFreshProof = makeTerminalFreshProof(
+	await proveAdmittedTerminal(action, ctx, { localEntity, remoteEntity, intendedContent: intended });
+	for (const output of outputs) {
+		for (const fs of [ctx.localFs, ctx.remoteFs]) {
+			const entity = await fs.stat(output.path);
+			// The allocated address may resolve through an existing case-only parent alias.
+			// Prove stored bytes here; only Admission's original endpoints govern topology.
+			if (!entity || entity.isDirectory ||
+				(!await bytesMatch(output.sourceContent, entity) && !buffersEqual(output.sourceContent, await fs.read(output.path)))) {
+				throw new ContentProofError("proof_mismatch", `Conflict preservation output changed: ${output.path}`);
+			}
+		}
+	}
+	const terminalProof = makeTerminalProof(
 		action, localEntity, remoteEntity, intended, outputs,
 	);
-	return { localEntity, remoteEntity, terminalFreshProof };
+	return { localEntity, remoteEntity, terminalProof };
 }
 
 async function assertPreservedSourceUnchanged(
 	remoteFs: IFileSystem,
 	path: string,
 	expectedIdentity: string | undefined,
-	output: VerifiedConflictOutput,
+	output: Pick<VerifiedConflictOutput, "sourcePath" | "sourceEntity" | "sourceContent">,
 ): Promise<void> {
 	const current = await remoteFs.stat(path);
 	if (!current || output.sourcePath !== path ||
 		current.identityKey !== expectedIdentity ||
 		output.sourceEntity.identityKey !== expectedIdentity) {
-		throw new ConflictPreparationError("proof_mismatch", `Fresh conflict source changed: ${path}`);
+		throw new ContentProofError("proof_mismatch", `Fresh conflict source changed: ${path}`);
 	}
-	const content = await remoteFs.read(path);
-	if (!buffersEqual(content, output.sourceContent)) {
-		throw new ConflictPreparationError("proof_mismatch", `Fresh conflict source bytes changed: ${path}`);
+	if (!await bytesMatch(output.sourceContent, current) &&
+		!buffersEqual(await remoteFs.read(path), output.sourceContent)) {
+		throw new ContentProofError("proof_mismatch", `Fresh conflict source bytes changed: ${path}`);
 	}
 }
 
@@ -705,8 +724,8 @@ async function executeConflictAction(
 	const permit = await ctx.acquireActionPermit?.();
 	try {
 		const start = ctx.beginAction?.(action) ?? "run";
-		if (start === "superseded") {
-			result.superseded.push(action);
+		if (typeof start !== "string") {
+			result.superseded.push(start);
 			return;
 		}
 		if (start === "invalidated") {
@@ -719,17 +738,16 @@ async function executeConflictAction(
 			remoteFs: ctx.remoteFs,
 			local: action.local,
 			remote: action.remote,
+			localPath: action.local?.path,
+			remotePath: action.remote?.path,
 			baseline: action.baseline,
-			stateStore: ctx.committer.stateStore,
+			stateStore: action.baseline && (!action.baseline.remoteIdentityKey ||
+				action.remote?.identityKey === action.baseline.remoteIdentityKey) ? ctx.committer.stateStore : undefined,
 			logger: ctx.logger,
-			...(isFreshRenameAction(action) ? {
-				localPath: action.path,
-				remotePath: action.remotePath ?? action.remote?.path,
-				remoteIdentitySource: action.remoteIdentitySource,
-				additionalRemote: action.additionalRemote,
-				baselinePath: action.oldPath,
-				freshRename: true,
-			} : {}),
+			remoteIdentitySource: action.remoteIdentitySource,
+			additionalRemote: action.additionalRemote,
+			additionalLocal: action.additionalLocal,
+			baselinePath: action.baseline?.path,
 		};
 
 		// No in-cycle retry: conflict resolution (the `duplicate` strategy) is NOT
@@ -738,43 +756,35 @@ async function executeConflictAction(
 		// fails the action and re-resolves next cycle (it runs serially and never feeds
 		// the transfer pool's AIMD).
 		const execute = async () => {
+			await checkPublicationInputs(action, ctx, result.succeeded);
 			const resolution = await (ctx.conflictResolver ?? resolveConflict)(
 				conflictCtx, ctx.conflictStrategy,
 			);
-			const fresh = isFreshRenameAction(action)
-				? await executeFreshConflictEffects(action, ctx, resolution)
-				: undefined;
-			const localEntity = fresh?.localEntity ?? await ctx.localFs.stat(action.path) ?? action.local;
-			const remoteEntity = fresh?.remoteEntity ?? await ctx.remoteFs.stat(action.path) ?? action.remote;
-			if (fresh) {
-				const baseline = fresh.terminalFreshProof.action.baseline;
-				if (!baseline) {
-					throw new InternalFreshInvariantError(
-						`Fresh conflict baseline missing: ${fresh.terminalFreshProof.action.oldPath}`,
-					);
-				}
-				await commitTerminalFresh(fresh.terminalFreshProof, baseline, ctx.committer);
-			} else {
-				await commitAction(action, localEntity, remoteEntity, ctx.committer);
-			}
-			return { resolution, localEntity, remoteEntity, terminalFreshProof: fresh?.terminalFreshProof };
+			const { localEntity, remoteEntity, terminalProof } = await executePreparedConflictEffects(action, ctx, resolution);
+			const terminalRecord = await commitAction(action, localEntity, remoteEntity, ctx.committer,
+				terminalProof, result.succeeded);
+			return { resolution, localEntity, remoteEntity, terminalProof, terminalRecord };
 		};
-		const mutationPaths = isFreshRenameAction(action) && action.remoteIdentitySource
+		const mutationPaths = action.remoteIdentitySource
 			? [action.path, action.remoteIdentitySource.path]
 			: [action.path];
-		const { resolution, localEntity, remoteEntity, terminalFreshProof } = ctx.mutationBarrier
+		const { resolution, localEntity, remoteEntity, terminalProof, terminalRecord } = ctx.mutationBarrier
 			? await ctx.mutationBarrier.run(mutationPaths, execute)
 			: await execute();
 
-		result.conflicts.push({ action, resolution, localEntity, remoteEntity, terminalFreshProof });
-		result.succeeded.push({ action, localEntity, remoteEntity, terminalFreshProof });
+		result.conflicts.push({ action, resolution, localEntity, remoteEntity, terminalProof });
+		result.succeeded.push({ action, localEntity, remoteEntity, terminalProof, terminalRecord });
 	} catch (err) {
-		if (err instanceof InternalFreshInvariantError) throw err;
-		if (err instanceof ConflictPreparationError && err.kind === "proof_mismatch") {
+		if (err instanceof TerminalInvariantError) {
+			ctx.onActionFatal?.(action, err);
+			throw err;
+		}
+		if (err instanceof ContentProofError && err.kind === "proof_mismatch") {
+			ctx.logger?.warn("executePlan: conflict blocked", { path: action.path, reason: err.message });
 			result.blocked.push({ action, reason: err.message });
 			return;
 		}
-		if (err instanceof ConflictPreparationError && err.kind === "external_auth_failure") {
+		if (err instanceof ContentProofError && err.kind === "external_auth_failure") {
 			result.blocked.push({ action, reason: err.message });
 			const cause = err.cause instanceof AuthError
 				? err.cause

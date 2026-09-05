@@ -161,6 +161,36 @@ describe("DropboxFs stale-cache guards (CAS mechanism)", () => {
 		return { fs, cache, warn };
 	}
 
+	it("write: preserves provider casing when the requested parent differs only by case", async () => {
+		const { fs, cache, warn } = await makeFsWithWarn();
+		cache.setEntry("Templates", dbxFolder("folder", "/root/Templates"));
+		cache.setEntry("Templates/note.md", dbxFile("child", "/root/Templates/note.md"));
+		(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
+			const url = typeof opts === "string" ? opts : opts.url;
+			if (url.includes("create_folder_v2")) {
+				return Promise.resolve(mockRes(
+					{ error_summary: "path/conflict/folder/..", error: { ".tag": "path" } },
+					{ status: 409 },
+				));
+			}
+			if (url.includes("get_metadata")) {
+				return Promise.resolve(mockRes(dbxFolder("folder", "/root/Templates")));
+			}
+			if (url.includes("/files/upload")) {
+				return Promise.resolve(mockRes(untagged(
+					dbxFile("child", "/root/Templates/note.md"),
+				)));
+			}
+			return Promise.resolve(mockRes({}));
+		});
+
+		await fs.write("TemplateS/note.md", bytes("same"), 1000);
+
+		expect(warn).not.toHaveBeenCalled();
+		expect(cache.getFile("Templates/note.md")?.id).toBe("id:child");
+		expect(cache.hasFile("TemplateS/note.md")).toBe(false);
+	});
+
 	it("write: does not clobber a concurrent re-key that created the same NEW path during upload", async () => {
 		const { fs, cache, warn } = await makeFsWithWarn();
 		(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {

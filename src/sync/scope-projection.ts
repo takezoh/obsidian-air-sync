@@ -1,4 +1,9 @@
 import type { ChangeSet } from "./change-detector";
+import type { AirSyncSettings } from "../settings";
+import { getEffectiveIgnorePatterns, getEffectiveSyncDotPaths } from "../config-sync";
+import { INTERNAL_METADATA_PATH } from "../fs/remote-vault-contract";
+import { isIgnored, isSystemJunkFile } from "../utils/ignore";
+import { isDotPathOutOfScope } from "../utils/path";
 import type {
 	IdentityEvidence,
 	PathObservation,
@@ -16,8 +21,31 @@ interface RenameScopeRule {
 }
 
 export interface ScopeProjectionPolicy {
-	isExcluded: (path: string) => boolean;
-	mobileMaxBytes?: number;
+	readonly ignorePatterns?: readonly string[];
+	readonly syncDotPaths?: readonly string[];
+	readonly reservedPaths?: readonly string[];
+	readonly excludeSystemJunk?: boolean;
+	readonly mobileMaxBytes?: number;
+}
+
+/** Copy configured values, never a live settings callback, into the cycle cut. */
+export function captureScopePolicy(
+	settings: AirSyncSettings, configDir: string, pluginId: string, mobile = false,
+): ScopeProjectionPolicy {
+	return Object.freeze({
+		ignorePatterns: Object.freeze([...getEffectiveIgnorePatterns(settings, configDir, pluginId)]),
+		syncDotPaths: Object.freeze([...getEffectiveSyncDotPaths(settings, configDir)]),
+		reservedPaths: Object.freeze([INTERNAL_METADATA_PATH, `${configDir}/plugins/${pluginId}/data.json`]),
+		excludeSystemJunk: true,
+		mobileMaxBytes: mobile ? settings.mobileMaxFileSizeMB * 1024 * 1024 : undefined,
+	});
+}
+
+export function isExcludedFromScope(path: string, policy: ScopeProjectionPolicy): boolean {
+	return policy.reservedPaths?.includes(path) === true ||
+		(policy.excludeSystemJunk === true && isSystemJunkFile(path)) ||
+		(policy.syncDotPaths !== undefined && isDotPathOutOfScope(path, [...policy.syncDotPaths])) ||
+		isIgnored(path, [...policy.ignorePatterns ?? []]);
 }
 
 export interface ScopedChangeSet {
@@ -31,14 +59,20 @@ export interface ScopedChangeSet {
  */
 export function applyScope(
 	changeSet: ChangeSet,
-	policy: ScopeProjectionPolicy,
+	inputPolicy: ScopeProjectionPolicy,
 ): ScopedChangeSet {
+	const policy: ScopeProjectionPolicy = Object.freeze({
+		...inputPolicy,
+		ignorePatterns: Object.freeze([...inputPolicy.ignorePatterns ?? []]),
+		reservedPaths: Object.freeze([...inputPolicy.reservedPaths ?? []]),
+		syncDotPaths: inputPolicy.syncDotPaths && Object.freeze([...inputPolicy.syncDotPaths]),
+	});
 	const outsideRoot = new Set(changeSet.observations.flatMap((observation) =>
 		observation.side === "remote" && observation.kind === "unknown" &&
 		observation.reason === "outside_tracked_root"
 			? [observation.requestedPath]
 			: []));
-	const isIncluded = (path: string) => !outsideRoot.has(path) && !policy.isExcluded(path);
+	const isIncluded = (path: string) => !outsideRoot.has(path) && !isExcludedFromScope(path, policy);
 	const surfacePaths = collectChangeSetPaths(changeSet);
 	const scoped: ChangeSet = {
 		...changeSet,
@@ -56,9 +90,14 @@ export function applyScope(
 		identityEvidence: changeSet.identityEvidence.flatMap((evidence) =>
 			normalizeIdentityEvidence(evidence, surfacePaths, isIncluded)),
 	};
+	const projection = projectScope(scoped, policy.mobileMaxBytes);
 	return {
 		changeSet: scoped,
-		projection: projectScope(scoped, policy.mobileMaxBytes),
+		projection: {
+			...projection,
+			isConfiguredScopeCompatible: (from, to) => isIncluded(from) && isIncluded(to) &&
+				!crossesScope({ oldPath: from, newPath: to }, surfacePaths, isIncluded),
+		},
 	};
 }
 
@@ -120,7 +159,7 @@ function collectChangeSetPaths(changeSet: ChangeSet): Set<string> {
 }
 
 function crossesScope(
-	rename: RenameEvidence,
+	rename: Pick<RenameEvidence, "oldPath" | "newPath">,
 	paths: ReadonlySet<string>,
 	isIncluded: (path: string) => boolean,
 ): boolean {
@@ -198,7 +237,7 @@ export function projectScope(
 				: "included",
 		);
 	}
-	return { byEndpoint };
+	return { byEndpoint, isConfiguredScopeCompatible: () => true };
 }
 
 function isIncidentalDirectory(
@@ -224,7 +263,8 @@ export function projectRenameScope(
 	const oldDisposition = projection.byEndpoint.get(rename.oldPath) ?? "unknown";
 	const newDisposition = projection.byEndpoint.get(rename.newPath) ?? "unknown";
 	const consequence = consequenceFor(rename, oldDisposition, newDisposition);
-	if (rename.isFolder && !descendantsMatch(rename, projection, consequence)) {
+	if (!projection.isConfiguredScopeCompatible(rename.oldPath, rename.newPath) ||
+		(rename.isFolder && !descendantsMatch(rename, projection, consequence))) {
 		return { consequence: "defer", oldDisposition, newDisposition };
 	}
 	return { consequence, oldDisposition, newDisposition };

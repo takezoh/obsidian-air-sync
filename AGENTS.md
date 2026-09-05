@@ -60,6 +60,35 @@ central `tests/fs/remote-backend-contracts.test.ts` unit composition root.
 - Mobile compatible (`isDesktopOnly: false`) — no Node/Electron APIs (lint-enforced).
 - Minimize network calls; require explicit disclosure. Use `requestUrl()`, never `fetch`.
 - Command IDs are immutable once published.
+- **Sync durable authority is closed to two states:** the remote delta cursor commits
+  only after a wholly clean cycle, and each file's `SyncRecord` commits only after its
+  admitted I/O succeeds. The remote metadata cache is a derived projection, written as
+  a complete final snapshot atomically with the cursor; it is never an authority or a
+  mutation ledger. Keep `sync-state-ownership-guard.test.mjs` green. Its TypeScript AST
+  inventory covers every `SyncOrchestrator` instance field, every `commitCheckpoint`
+  property/element access, and the production import, reference, constructor, and mutation
+  ownership of `SyncStateStore`, `MetadataStore`, `IDBHelper`, and direct `indexedDB.open`.
+  Any intentional new cursor/`SyncStateStore` writer, persistent-store owner, or
+  orchestrator field requires the guard fixture plus ADR 0001 and enforcement-document
+  updates in the same change.
+- **Cycle evidence never becomes another state owner.** Observation records only
+  current facts; Admission alone may normalize an identity candidate and authorize its action.
+  Never persist evidence, Admission dispositions/failure reasons (including
+  `identity_postcondition_unproven`), pending work, or recovery instructions. Do not add
+  another in-memory correctness owner: keep only bounded execution bookkeeping that is
+	  discarded with the cycle.
+- **Every remote working view is attempt-bounded.** A checkpoint-capable attempt must
+  finish with exactly one lifecycle result: commit only after a wholly clean cycle, or
+  abort on every incomplete outcome/exception before classification or retry. Abort may
+  clear only live derived cache/cursor/scope state; it must not clear the durable
+  checkpoint or mutate the provider. Wait for scheduled sibling effects to settle before
+  aborting. Never add a prior-failure/recovery field to compensate for an unclosed view.
+- **Re-evaluate current facts; do not add stopped-state recovery branches.** COLD,
+  WARM, and HOT are acquisition strategies only. They must produce the same Admission
+  decision for the same complete component facts. A decision may depend on that
+  component's current endpoints and committed `SyncRecord`, never on a prior error,
+  Admission failure, database version, global record count, or recovery marker. A
+  schema cold-start uses the same rules as any vault with those current facts.
 - No migration code — on IndexedDB schema changes, cold-start (drop all stores and
   recreate). Settings schema changes use sensible defaults for missing fields via
   `Object.assign({}, DEFAULT_SETTINGS, stored)`.
@@ -72,14 +101,41 @@ central `tests/fs/remote-backend-contracts.test.ts` unit composition root.
     shape stays connected instead of silently breaking the resolver / stranding
     foreign-backend params. Both are idempotent (a no-op on the current shape). Do not
     grow this list without the same "reshape/discard, not transform" justification.
+- Sync correctness has exactly two durable publication points: a file's `SyncRecord`
+  after that admitted action succeeds, and the remote cursor/derived cache/scope
+  checkpoint after a wholly clean cycle. Do not persist operation intent, rename
+  evidence, Admission failures, retry instructions, or recovery markers. COLD/WARM/HOT
+  must re-observe current facts and enter the same Admission contract.
+- Within Admission, `identity-component-decision.ts` alone binds current identity and
+  topology before calling the pure content comparer. `identity-component-report-family.ts`
+  is subordinate, not another policy stage. Fact graphs and observations cannot carry
+  proposed actions. Retired optimizer/normalization APIs must not return; the AST guard
+  pins these imports and fact-only carriers and prohibits retained proof state.
+- Execute the exact admitted component order through publication: independent singleton
+  transfers and same-key matches may pool; settle them and active priority effects before
+  the globally serial component interval. Defer priority throughout that interval. A
+  failed action blocks its suffix. Parent publication consumes existing ordered successful
+  child receipts, never a separate registry. Exact source/destination CAS is storage
+  mechanism, not identity policy. No action-kind regrouping, DAG, or recovery queue.
+- Every conflict uses the same capture, policy-required preservation, executor effects,
+  terminal proof, and publication route. The resolver never mutates original paths.
+  Do not reintroduce an ordinary/rename execution switch or compensating rollback.
+  Read witnesses remain only in the current result; preservation outputs are verified
+  before destructive work and before publication. A newly observed destination is a
+  precondition failure, never permission to delete an unadmitted version.
 
 ### Project-specific gotchas
 
-- **The vault index can under-report before layout-ready.** Read it only via
+- **The vault index can under-report before layout-ready and can retain stale casing
+  aliases after a case-only rename.** Read it only via
   `LocalFs.list()` (lint-enforced — `getAllLoadedFiles()` is restricted outside
   `src/fs/local/`). `LocalFs.list()` does NOT gate on layout-ready itself — it's a
   pure low-level read; the **gate is the orchestrator** (`runSync`/`shouldSync`
   early-return until `isLayoutReady`), and the only path to `list()` runs through it.
+  For case-fold collisions, `LocalFs.list()` resolves actual spelling through the raw
+  adapter and removes only aliases that resolve to the same physical path; it must keep
+  genuinely distinct case-sensitive siblings. `LocalFs.stat()` likewise uses the raw
+  adapter as the authoritative casing/absence boundary.
   Any new caller of `list()` must likewise be in a layout-ready-gated context. Also
   never derive a deletion from listing-absence alone — confirm against the
   authoritative `LocalFs.stat()` (falls back to the adapter).
@@ -89,6 +145,13 @@ central `tests/fs/remote-backend-contracts.test.ts` unit composition root.
   the raw adapter (`DotPathAdapter`) — this is mechanism, not policy. Whether a hidden
   path *syncs* is separate policy (`syncDotPaths` + `ignorePatterns`, both must pass),
   enforced in `SyncOrchestrator.isExcluded()`.
+- **Requested paths are addresses, not topology facts.** A cache-backed backend may
+  use caller spelling to locate an object, but `requested_echo` must never re-key a
+  stable identity or its descendants. Only provider-resolved metadata, or the
+  successful endpoint of an explicit provider rename, may change cached topology.
+  Case-only parent transitions are decided once by Admission from complete current-cycle
+  facts: child content is handled at the existing provider path, followed by one parent
+  folder rename. Do not add per-child recovery, a new status/action, or cross-cycle state.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the rationale behind these.
 

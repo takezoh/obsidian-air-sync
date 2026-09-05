@@ -5,10 +5,22 @@ import {
 	collectLocalRenameEvidence,
 	collectRemoteRenameEvidence,
 	completeIdentityEvidence,
-	renameOptimizerView,
 } from "./identity-evidence";
 
 describe("identity evidence", () => {
+	it("keeps committed identity occurrences at the record key, not the observation address", () => {
+		const remote: FileEntity = { path: "b.md", pathAuthority: "actual_resolved", identityKey: "R",
+			isDirectory: false, size: 1, mtime: 1, hash: "h" };
+		const completed = completeIdentityEvidence([], [], [{ path: "b.md", remote, prevSync: {
+			path: "a.md", hash: "h", localMtime: 1, remoteMtime: 1, localSize: 1, remoteSize: 1,
+			remoteIdentityKey: "R", syncedAt: 1,
+		} }]);
+		expect(completed).toContainEqual({ kind: "stable_identity", side: "remote", identityKey: "R", occurrences: [
+			{ side: "remote", phase: "baseline", path: "a.md", identityKey: "R" },
+			{ side: "remote", phase: "current", path: "b.md", identityKey: "R" },
+		] });
+	});
+
 	it("normalizes tracker and checkpoint reports into one rename representation", () => {
 		const local = collectLocalRenameEvidence({
 			dirtyPaths: new Set(), renamePairs: new Map([["b.md", "a.md"]]),
@@ -19,15 +31,14 @@ describe("identity evidence", () => {
 			{ oldPath: "x.md", newPath: "y.md" },
 		]);
 
-		expect(local).toHaveLength(2);
+		expect(local).toEqual([
+			{ kind: "rename", side: "local", oldPath: "a.md", newPath: "b.md", isFolder: false, authority: "reported" },
+			{ kind: "rename", side: "local", oldPath: "docs", newPath: "Docs", isFolder: true, authority: "reported" },
+		]);
 		expect(remote).toEqual([{
 			kind: "rename", side: "remote", oldPath: "x.md", newPath: "y.md",
 			isFolder: false, authority: "reported",
 		}]);
-		const view = renameOptimizerView([...local, ...remote]);
-		expect(view.localFiles.get("b.md")).toBe("a.md");
-		expect(view.localFolders.get("Docs")).toBe("docs");
-		expect(view.remote).toEqual([{ oldPath: "x.md", newPath: "y.md", isFolder: undefined }]);
 	});
 
 	it("attaches native identity and relates cross-path baseline/current occurrences", () => {

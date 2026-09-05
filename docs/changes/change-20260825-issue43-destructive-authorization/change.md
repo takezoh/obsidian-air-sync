@@ -65,7 +65,7 @@ source_paths:
 - src/sync/orchestrator.ts
 summary: Centralize destructive authorization in Admission and simplify Issue 43 recovery
   and finalization boundaries.
-updated: '2026-09-01'
+updated: '2026-09-04'
 ---
 
 ## Summary
@@ -80,3 +80,9 @@ input, mechanical commit-last finalization, and strict pre-Admission COLD recove
 Main-session review and the branch-wide minimality audit found no remaining blocking
 issue; one redundant logging carrier was removed. Repository gates, dev-evidence scope
 checks, and live Google Drive, Dropbox, and OneDrive E2E all pass.
+
+The 2026-09-04 case-alias refactor was checked against this boundary: facts still enter
+one immutable Admission snapshot, every recognized component receives one disposition,
+and Executor still accepts only the nominal `AuthorizedSyncPlan`.
+The follow-up parent-component repair preserves that contract while replacing redundant
+child topology effects with one Admission-authorized folder action.

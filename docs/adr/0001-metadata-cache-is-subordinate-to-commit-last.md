@@ -1,58 +1,54 @@
 # ADR 0001 — The remote metadata cache is subordinate to commit-last state
 
-**Status:** Accepted · 2026-06-07 · **Revised 2026-06-07** (cursor single-holding: co-located with the cache; supersedes the earlier "keep the cursor in settings" tradeoff) · **Revised 2026-06-08** (convergence theory: documents state **C** and the third, runtime convergence mechanism `recoverViaColdScan` for same-session failures; corrects the concurrency claim — `cacheMutex` guards a real Group-A race; stale-guard reachability pending T7) · **Revised 2026-06-09** (T7 concluded: the `withCacheMutex` stale-guard is **retained** — it is the compare-and-swap of the mutex-released-during-I/O protocol, not a phantom lock; currently unreachable, kept as defense-in-depth; the phantom "concurrent delta" justification is corrected to the real invariant — one plan action per path) · **Revised 2026-06-14** (clarifies state **C**: the in-memory cursor is the **deferred-commit working state** — held in memory and committed last for crash-safety, *not* a performance optimization — so its overtaking on failure is a byproduct/liability reconciled by `recoverViaColdScan`, not a benefit; corrects the cache-vs-C contrast accordingly) · **Revised 2026-06-15** (executor lane/tier rescheduling: `delete_remote` is now **pooled** in the structural phase and the **inline delete CAS guard transitions from dormant to ACTIVE**; `rename_remote` stays serial and the `withCacheMutex` write/rename guard stays dormant; `conflict` runs in its **own serial phase** — see T7 and Prohibited patterns; cross-refs [ADR 0006](0006-remote-rename-detection-is-order-independent.md)) · **Revised 2026-06-15** (transfer pool is now an `AdaptivePool` with a mutable platform-aware ceiling, desktop ≤10 / mobile ≤3: this changes only the *number* of concurrent disjoint-path `push` writes, not the one-action-per-path invariant the write/rename guard's dormancy rests on — T7 unaffected)
+**Status:** Accepted · 2026-06-07 · **Revised 2026-09-04** (the only durable authorities are the clean remote checkpoint and successful per-file `SyncRecord`; the live cache/cursor/scope is an attempt-bounded derived working view that must commit or abort; prior same-session recovery flags and state C are superseded)
 **Context area:** sync pipeline / Google Drive backend
 **Related:** [sync-pipeline.md → Crash recovery](../sync-pipeline.md), [google-drive-backend.md](../google-drive-backend.md)
 
+**2026-09-05 scheduling clarification:** [Fact-first component Admission](adr-20260905-fact-first-component-admission.md)
+supersedes the historical flat transfer/conflict/structural phases, pooled structural
+deletes, and global one-action-per-path arguments below. Independent singleton
+transfers/same-key matches settle before globally serial ordered components; each action
+publishes before its successor, and priority work is drained/deferred across that interval.
+This changes execution ordering, not A/B ownership or provider cache mutex/CAS mechanics.
+Per-file publication compares exact captured source and destination records atomically;
+parent relocation consumes existing successful child receipts without another owner.
+No writer or orchestrator field is added. The state ownership AST inventory remains closed.
+Ordinary and renamed conflicts now share resolver capture/preservation followed by
+executor-owned original-path effects and exact terminal publication. Removal of the
+legacy conflict executor removes `conflict.ts` from Store readers/imports only. No
+correctness authority is added; input byte witnesses live in the current result and
+are discarded with the attempt. Interrupted merges use current-fact re-observation,
+not a compensating rollback or persisted recovery instruction.
+
 ## Context
 
-Sync correctness rests on **two authoritative, commit-last states** (A and B) — **plus** a
-third, **non-authoritative runtime state** (C) whose divergence after a failure must be
-reconciled, or convergence does not hold. The two committed states, each written **last**
-(after the work they describe has succeeded):
+Sync correctness has exactly **two authoritative durable states** (A and B). Each is
+written **last** after the work it describes succeeds.
 
 | | State | Where | Commit rule |
 |---|---|---|---|
 | **A** | Incremental-sync position (delta cursor `changesStartPageToken`) | the backend's IndexedDB store (`META_STORE`), **co-located with the file-map cache** | Advanced **only on a fully clean cycle** (`failed === 0`), committed in the **same transaction** as the cache. |
 | **B** | Per-file sync state (`SyncRecord`) | sync state store | Written **per file, only after** that file's push/pull/delete succeeds (`plan-executor.ts`: IO → then `commitAction`). |
 
-From these two the engine derives a safety property — **a half-finished or crashed cycle
-converges by re-running** — but the derivation is **not** "A + B, therefore converged."
-*How* the gap is re-detected differs by failure mode, and it leans on a third state:
+The remote filesystem may advance a live cache/cursor/scope while observing or executing
+one attempt. That view is **derived, attempt-bounded state**, not a correctness authority:
 
-| | State | Where | Behaviour on failure |
-|---|---|---|---|
-| **C** | The **in-memory** delta cursor (live `_changesPageToken`) **and** the local **dirty-tracker** | the live `IFileSystem` object + `LocalChangeTracker` — both survive across cycles while the plugin runs | **Overtakes** the committed state — a **byproduct of deferral, not an optimization.** The cursor is held in-memory and its commit **deferred to a clean cycle** (commit-last, rule A) for *crash-safety*, not for performance; so it advances during change *detection* regardless of whether the cycle later fails (the dirty-tracker is acknowledged unconditionally, `orchestrator.ts`). A failed cycle never commits, so the advanced value simply **lingers in the live FS object, ahead of what committed**, until `recoverViaColdScan` reconciles it. The overtaking is a liability the cold path pays for, **not a benefit C provides**. |
+- a wholly clean attempt publishes it with `commitCheckpoint()`;
+- every incomplete returned attempt and every pre-closeout exception discards it with
+  `abortWorkingView()`;
+- abort changes no provider or durable store state, and the next ordinary access reloads
+  A (or observes no checkpoint and uses COLD);
+- the executor waits for all already-scheduled sibling effects to settle before an error
+  reaches abort, so no late sibling can mutate an abandoned view.
 
-**Two convergence paths, both load-bearing:**
-
-1. **Crash** (the process dies ⇒ the FS object is rebuilt): the in-memory cursor reloads
-   from the **committed** cursor A, so replay restarts at the last clean position and
-   re-detects the gap. This is the path the atomicity argument below protects.
-2. **Same-session failure** (the FS object lives on): C has already advanced past the
-   un-committed work, so a warm delta replay would **miss** the gap and `hasCheckpoint()`
-   (which reads the in-memory token) stays true. What recovers it is neither A nor B but
-   `recoverViaColdScan` (`orchestrator.ts`), forcing at least one **next** cycle to
-   cold-reconcile (full list × `SyncRecord` baseline join) — catching the gap regardless of
-   cursor position. Only after that recovery debt is paid may the engine temporarily block
-   the same repeated `permanent` **local-origin** poison action (`push`, `delete_remote`,
-   `rename_remote`) with a stable `permanentCode` in memory. Transient/rate-limit failures
-   remain retryable after recovery and are not blockable. Remote-origin actions (`pull`, `delete_local`,
-   `rename_local`) and `conflict` are never blocked, because hiding them can lose remote
-   changes. Delete the cold recovery and a remote-only add/delete, or a push-failed local
-   edit before the recovery pass, is **silently and permanently dropped for the rest of the
-   session.** FS-level crash tests stay green (they rebuild the FS and exercise only path
-   1); only `orchestrator.test.ts` *"forces a cold reconcile on the cycle after a failure"*
-   catches the regression.
-
-An already-synced file is skipped; an incompletely-synced one is re-pushed/-pulled/-deleted
-⇒ committed ⇒ converged — via whichever of the two paths the failure mode selects.
+Process restart and same-process retry therefore follow the same rule: rebuild from A and
+B plus current local/remote facts. COLD, WARM, and HOT are ordinary acquisition strategies,
+not recovery statuses. The orchestrator must not remember a prior error to select an action
+or acquisition mode.
 
 The Google Drive backend additionally keeps an **IndexedDB metadata cache** (the
-`path↔id` map in `GoogleDriveMetadataCache`, persisted via `MetadataStore`). **This, too, is
-_not_ authoritative** (distinct from C: the cache **is** a performance optimization — a
-derivable snapshot — whereas C is *not*: it is the deferred-commit cursor lingering as live
-divergence). It is a performance optimization that lets
+`path↔id` map in `GoogleDriveMetadataCache`, persisted via `MetadataStore`). It is
+**not authoritative**: it is a performance optimization that lets
 `list`/`stat`/`read`/`getChangedPaths` avoid a network re-list, and it is fully
 derivable: a `fullScan()` rebuilds it from Google Drive (the real authority).
 
@@ -73,26 +69,22 @@ authoritative state and over-engineering its persistence**:
 
 ## Decision
 
-1. **The metadata cache is non-authoritative.** Authority = Google Drive (remote truth) + **A**
-   (cursor) + **B** (`SyncRecord`). Never reason about correctness from the cache; reason
-   from A + B + "re-run converges."
+1. **The metadata cache is non-authoritative.** The only authoritative durable sync
+   states are **A** (the clean-cycle cursor) and **B** (the per-file `SyncRecord`).
+   Google Drive remains remote truth; never reason about sync correctness from the cache.
 
-2. **Convergence is a property of A + B + the cold-reconcile-after-failure mechanism — not
-   of A + B alone.** Two paths close the gap: a **crash** replays from the committed cursor
-   A; a **same-session failure** relies on `recoverViaColdScan` to force the next cycle
-   cold. State **C** (the in-memory cursor and the dirty-tracker) is *allowed* to overtake
-   the committed state on failure precisely because the cold path re-derives the truth.
-   Removing that path because "the committed cursor already holds" is the canonical way to
-   re-open silent in-session data loss — and it is invisible to crash-only tests.
+2. **Every checkpoint-capable attempt must close its live working view.** A clean attempt
+   commits; every other returned outcome aborts; an exception aborts before classification
+   or retry. Durable checkpoint queries describe the store, never the uncommitted live
+   cursor. No prior-failure flag, recovery mode, pending ledger, or third runtime correctness
+   owner may substitute for this lifecycle.
 
-3. **The cache has exactly one invariant: it must never be committed _ahead of_ (nor
-   _behind_) the committed cursor.** This is now **structural**: the cache and the cursor
-   live in the **same IndexedDB store** and commit in **one transaction**
-   (`commitGoogleDriveCache` → `MetadataStore.saveAll` / `commitIncremental`), so they cannot
-   diverge — a failed flush lands neither. A failed flush still **propagates** (the cycle
-   surfaces an error and the next run re-detects the un-flushed work), but there is no
-   longer a two-store ordering to get wrong, nor a buffer-clear that could outrun a
-   failed persist.
+3. **The cache has exactly one invariant: it must be a complete derived projection
+   co-committed with the cursor.** On a clean cycle `CachingRemoteFs` captures the final
+   live cache under `cacheMutex`, and `MetadataStore.saveAll` atomically replaces every
+   cache row and its metadata with the cursor. No touched-path set, pending-full-persist
+   flag, or other mutation bookkeeping participates in correctness. A failed flush
+   propagates and commits neither projection nor cursor.
 
 4. **Prefer simple-and-correct over optimized-and-subtle.** The cache flush should do one
    obvious thing. Convergence — not lockstep machinery — is the safety net.
@@ -107,7 +99,7 @@ authoritative state and over-engineering its persistence**:
 
 **Resolved — the cursor is co-located with the cache (single source of truth).** The
 cursor lives in the backend's IndexedDB store (`META_STORE`), committed in the **same
-transaction** as the file-map (`MetadataStore.saveAll` / `commitIncremental`). There is
+transaction** as the complete file-map (`MetadataStore.saveAll`). There is
 no second store and no write ordering, so the earlier "millisecond two-store window"
 (cursor in `settings`, cache in IndexedDB) is **gone** — cache and cursor are atomically
 in step, or both absent.
@@ -121,6 +113,20 @@ of a rare IndexedDB loss is one extra cold reconcile, which the design already h
 The earlier `ensureInitialized` "cursor present, cache empty" rebuild path is removed
 (that state can no longer occur).
 
+The 2026-09-04 repair invalidates both persisted views once: metadata cache v3→v4
+drops the stale cursor/projection, and SyncState v7→v8 drops path identity that may have
+been committed against that defective projection. Each database uses its ordinary
+drop-and-recreate schema policy independently. This is not a cross-store transaction,
+migration, recovery status, or third authority; the following no-checkpoint,
+no-baseline cycle reconstructs both authorities from current local and remote facts.
+In any later cycle, if Windows/Obsidian exposes two vault-index casing aliases, the raw
+local adapter first resolves the one physical spelling. Observation records only the
+exact/alias endpoints, stat-authoritative remote target absence, unique remote identity,
+and direct-read content facts. Admission normalizes that component and alone authorizes
+the remote rename when hash, size, scope, and identity proof are complete. The decision
+does not depend on COLD/WARM/HOT acquisition, global record count, or prior failure.
+This proof is cycle-local and adds no durable or in-memory state owner.
+
 On a backend/folder switch or disconnect the store — cursor **and** cache together — is
 cleared alongside `settings.backendData` and SecretStorage, so no stale checkpoint
 lingers (`disconnect` clears it; an identity change drops it via the freshly-built FS's
@@ -131,20 +137,16 @@ FS (`resetCheckpoint()`), not by editing settings.
 - eager / mid-cycle cache persistence;
 - swallowing a cache-persist failure and continuing to advance the cursor;
 - treating the cache as authoritative for change detection or deletion;
-- **terminal-failure "quarantine" that advances the cursor despite a failed action before
-  recovery** — this violates rule A (one failure ⇒ at least one cold recovery). The allowed
-  exception is narrow: after the recovery pass has run, an in-memory tracker may block the
-  same repeated `permanent` local-origin poison action (`push`, `delete_remote`,
-  `rename_remote`) with a stable `permanentCode` for a short TTL and report it as
-  `result.blocked`. This is not a blanket
-  cursor advance per failed action: transient/rate-limit failures, remote-origin actions,
-  and conflicts are not blocked, plugin reload clears the state, and action/content changes
-  or a non-eligible failure classification clear the signature. The threshold is two failed
-  cycles so one cold recovery pass is always paid first; the TTL is 5 minutes to limit mobile
-  battery/network churn without making the quarantine durable. Keeping genuinely un-syncable
-  inputs *out of the pipeline* (e.g. `isSystemJunkFile` for OS-generated files some backends
-  reject) remains the preferred escape valve; silently skipping a real remote-origin failure
-  is not;
+- treating caller-requested spelling as provider topology. `requested_echo` may refresh
+  metadata only at an identity's current resolved path; it must not re-key that identity
+  or descendants. Only provider-resolved metadata or a successfully completed explicit
+  rename endpoint may change the derived topology;
+- persisting or retaining a prior failure, Admission disposition, quarantine, recovery mode,
+  or pending-operation marker as input to a later decision;
+- returning or retrying without first aborting an incomplete working view, or aborting while
+  already-scheduled sibling effects can still mutate it;
+- using `resetCheckpoint()` for ordinary attempt failure. Reset is the destructive Rescan /
+  identity-change operation; attempt abort must preserve the committed checkpoint;
 - **pooling `conflict` actions with transfer-phase writes.** Conflict resolution mints a
   **planner-invisible** `.conflict` sibling path (`conflict.ts` `generateConflictPath` →
   `duplicate`) via cross-filesystem existence probing and writes it to both sides. The
@@ -215,26 +217,21 @@ FS (`resetCheckpoint()`), not by editing settings.
 **Pinned by tests** (keep these green; extend them, do not weaken them):
 - `orchestrator.test.ts` → *"does not advance the committed cursor when the checkpoint
   flush (cache persist) fails"* (the flush throws ⇒ the post-checkpoint persist step is
-  skipped) and *"…when a cycle has failures"* (a failed cycle never calls
-  `commitCheckpoint`, so the cursor it would advance stays put). These pin convergence
-  **path 1** (the committed cursor holds) — holding alone is *not* sufficient in-session.
-- `orchestrator.test.ts` → *"forces a cold reconcile on the cycle after a failure
-  (in-memory cursor may have advanced past the committed one)"* — pins convergence
-  **path 2 (same-session)**. Deleting `recoverViaColdScan` on the belief that the committed
-  cursor alone closes the gap re-opens the silent in-session data loss this ADR exists to
-  prevent; the path-1 tests above stay green, so this test is the only guard.
-- `orchestrator.test.ts` → *"does not keep cold-scanning and re-pushing the same poison file
-  after repeated identical failures"* and *"does not quarantine persistent pull failures"* —
-  pin the allowed exception: only same-signature permanent local-origin poison actions with a
-  stable code can be blocked after the recovery pass; remote-origin failures keep recovery
-  safety. The repeated transient/rateLimit failure test pins that recoverable failures are
-  never quarantined.
+  skipped), *"aborts an observation attempt before classifying its error"*, and
+  *"replays from the committed cursor after aborting a failed working view"*. Together
+  these pin commit-or-abort ordering and same-process replay without a recovery flag.
+- `sync-cycle-finalization.test.ts` pins exhaustive returned-outcome closeout: Admission
+  rejection, failed/blocked execution, missing terminal proof, and `checkpointBlocked`
+  abort; only a wholly clean result commits.
+- `plan-executor.test.ts` pins settle-before-throw for fatal parallel work.
+- `remote-backend-contracts.test.ts` runs the shared live-view abort/reload contract for
+  Google Drive, Dropbox, and OneDrive.
 - `index.test.ts` → *"GoogleDriveFs.commitCheckpoint persistence-failure safety"*,
   *"re-reports an un-pulled remote DELETION after a crash…"*, *"treats an empty store as
   no checkpoint: full-scans fresh and warrants no replay"*, and the rest of the
   *"cursor consolidation (crash safety)"* suite.
-- `metadata-store.test.ts` → *"commitIncremental upserts, deletes, and writes meta in one
-  transaction"* (the atomic cache+cursor co-commit).
+- `metadata-store.test.ts` → *"saveAll atomically replaces the complete file map and
+  metadata"* (the atomic complete-cache+cursor co-commit).
 - **T7 stale-guard disposition.** The guard *mechanism* is pinned by
   `googledrive/index.test.ts` / `dropbox/index.test.ts` → the *"stale-cache guard(s)"*
   suites (a cache re-key injected mid-phase-2 ⇒ the phase-3 write is skipped with a

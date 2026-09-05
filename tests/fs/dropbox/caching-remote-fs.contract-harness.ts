@@ -17,14 +17,14 @@ const ROOT_PATH = "/root";
  * Run the shared base crash-safety contract (ADR 0001) against the REAL DropboxFs over
  * a minimal in-memory DropboxClient — a baseline of file entries plus an append-only
  * `list_folder/continue` delta log. This proves the D1 rebase kept Dropbox's ADR 0001
- * path-1 behaviour intact *through the Dropbox seams* (getStartCursor / fullList /
- * fetchChanges + the refreshRootPath re-anchor). Path 2 (state C) is the orchestrator's
- * job and stays pinned by orchestrator.test.ts (see the contract's scope note).
+ * behavior intact through the Dropbox seams (getStartCursor / fullList / fetchChanges
+ * plus the refreshRootPath re-anchor), including same-process abort/reload.
  */
 function makeDropboxHarness(): CachingRemoteFsHarness<DropboxEntry> {
 	const baseline = new Map<string, DropboxEntry>(); // absolute path → entry
 	const events: DropboxEntry[] = []; // delta entries (deletes / upserts), append-only
 	let idSeq = 0;
+	let failAfterFirstPage = false;
 	const cursorAt = (n: number): string => `c${n}`;
 
 	const client = {
@@ -34,7 +34,18 @@ function makeDropboxHarness(): CachingRemoteFsHarness<DropboxEntry> {
 		getLatestCursor: (): Promise<string> => Promise.resolve(cursorAt(events.length)),
 		listFolderAll: (): Promise<DropboxEntry[]> => Promise.resolve([...baseline.values()]),
 		listFolderContinue: (cursor: string): Promise<DropboxListFolderResponse> => {
+			if (cursor === "contract-second-page") {
+				failAfterFirstPage = false;
+				return Promise.reject(new Error("injected later page failure"));
+			}
 			const from = cursor.startsWith("c") ? Number(cursor.slice(1)) : 0;
+			if (failAfterFirstPage) {
+				return Promise.resolve({
+					entries: events.slice(from, from + 1),
+					cursor: "contract-second-page",
+					has_more: true,
+				});
+			}
 			return Promise.resolve({ entries: events.slice(from), cursor: cursorAt(events.length), has_more: false });
 		},
 	} as unknown as DropboxClient;
@@ -56,6 +67,7 @@ function makeDropboxHarness(): CachingRemoteFsHarness<DropboxEntry> {
 			if (!baseline.delete(abs(path))) throw new Error(`stageRemoteDelete: no such file "${path}"`);
 			events.push(dbxDeleted(abs(path)));
 		},
+		failNextDeltaAfterFirstPage: () => { failAfterFirstPage = true; },
 		// Dropbox is path-addressed: a move re-keys the entry (and every descendant) to a
 		// new absolute path, reported as deleted(old)+file/folder(new) sharing the id. We
 		// list the DELETES FIRST — the adversarial ordering ADR 0006 makes safe.

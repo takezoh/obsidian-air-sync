@@ -197,7 +197,7 @@ export class Vault {
 		): Promise<{ files: string[]; folders: string[] }> => {
 			const files: string[] = [];
 			const folders: string[] = [];
-			const prefix = dir + "/";
+			const prefix = dir === "" ? "" : dir + "/";
 			for (const [p, entry] of this.files) {
 				if (
 					p.startsWith(prefix) &&

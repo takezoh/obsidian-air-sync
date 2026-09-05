@@ -3,8 +3,10 @@ import type { SyncAction, SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
 import type { Logger } from "../logging/logger";
 import { isMergeEligible } from "./merge";
-import { isFreshRenameAction } from "./plan-admission";
-import type { TerminalFreshProof } from "./plan-executor";
+import type { TerminalActionProof } from "./plan-executor";
+import type { CompletedAction } from "./execution-result";
+import { orderedChildReceipts } from "./execution-result";
+import { sha256 } from "../utils/hash";
 
 export interface StateCommitterContext {
 	stateStore: SyncStateStore;
@@ -12,8 +14,6 @@ export interface StateCommitterContext {
 	enableThreeWayMerge?: boolean;
 	logger?: Logger;
 }
-
-type OrdinaryCommitAction = SyncAction & { readonly freshRenameState?: never };
 
 /**
  * Build a SyncRecord from a local and remote FileEntity.
@@ -41,15 +41,21 @@ export function buildSyncRecord(local: FileEntity | undefined, remote: FileEntit
  */
 async function maybeStoreMergeBase(
 	ctx: StateCommitterContext,
-	path: string,
+	record: SyncRecord,
 	localEntity: FileEntity | undefined,
-	size: number,
 ): Promise<void> {
+	const { path, localSize: size } = record;
 	const { stateStore, localFs, enableThreeWayMerge, logger } = ctx;
 	if (!(enableThreeWayMerge && localFs && localEntity && isMergeEligible(path, size))) return;
 	try {
-		const content = await localFs.read(path);
-		await stateStore.putContent(path, content);
+		// The record key follows the admitted topology, while the entity path is the
+		// filesystem-resolved endpoint from which the successful bytes are readable.
+		const content = await localFs.read(localEntity.path);
+		// The local file may have changed after the admitted I/O. A CAS protects
+		// the record, but only byte verification can bind this read to that record.
+		if (!record.hash || content.byteLength !== record.localSize ||
+			await sha256(content) !== record.hash) return;
+		await stateStore.compareAndPutContent(record, content);
 	} catch (err) {
 		logger?.warn("Failed to store content for 3-way merge", {
 			path,
@@ -69,73 +75,42 @@ async function maybeStoreMergeBase(
  * Failed actions are skipped by the caller; they will be re-detected on the next sync cycle.
  */
 export async function commitAction(
-	action: OrdinaryCommitAction,
+	action: SyncAction,
 	localEntity: FileEntity | undefined,
 	remoteEntity: FileEntity | undefined,
 	ctx: StateCommitterContext,
-): Promise<void> {
+	proof?: TerminalActionProof,
+	completed: readonly CompletedAction[] = [],
+): Promise<SyncRecord | undefined> {
 	const { path } = action;
 	const { stateStore } = ctx;
-	if (isFreshRenameAction(action)) {
-		throw new Error("Fresh rename requires terminal proof");
+	if ((action.action === "rename_local" || action.action === "rename_remote") && action.descendantRecords) {
+		if (proof?.action !== action) throw new Error(`Folder terminal proof missing: ${path}`);
+		const relocations = [...orderedChildReceipts(action, completed)].map(({ child: item, receipt }) => {
+			const source = item.after ? receipt?.terminalRecord : item.source;
+			if (!source) throw new Error(`Child terminal record missing: ${item.oldPath}`);
+			return { source, destination: source.path === item.newPath ? source : item.destination,
+				terminal: { ...source, path: item.newPath } };
+		});
+		if (!await stateStore.compareAndRewritePaths(relocations)) throw new Error(`Folder records changed before publication: ${path}`);
+		return;
 	}
-
-	switch (action.action) {
-		case "push":
-		case "pull":
-		case "match":
-		case "conflict": {
-			const record = buildSyncRecord(localEntity, remoteEntity, path);
-			if (action.baseline) {
-				const replaced = await stateStore.compareAndPut(action.baseline, record);
-				if (!replaced) throw new Error(`SyncRecord changed before content commit: ${path}`);
-			} else {
-				await stateStore.put(record);
-			}
-			await maybeStoreMergeBase(ctx, path, localEntity, record.localSize);
-			break;
+	if (action.publication) {
+		const { source, destination } = action.publication;
+		if (action.action === "cleanup" || action.action === "delete_local" || action.action === "delete_remote") {
+			if (!await stateStore.compareAndDelete(path, destination)) throw new Error(`SyncRecord changed before deletion: ${path}`);
+			return;
 		}
-
-		case "rename_remote":
-		case "rename_local": {
-			if (action.isFolder && action.descendants) {
-				await stateStore.rewritePaths(action.descendants);
-			} else {
-				await stateStore.delete(action.oldPath);
-				const renameRecord = buildSyncRecord(localEntity, remoteEntity, path);
-				await stateStore.put(renameRecord);
-				await maybeStoreMergeBase(ctx, path, localEntity, renameRecord.localSize);
-			}
-			break;
-		}
-
-		case "delete_local":
-		case "delete_remote":
-		case "cleanup":
-			await stateStore.delete(path);
-			break;
-
-		default: {
-			// Exhaustive check: if a new SyncActionType is added, TypeScript will error here
-			const _exhaustive: never = action;
-			void _exhaustive;
-			break;
-		}
+		const compound = action.action === "rename_local" || action.action === "rename_remote" ||
+			(source !== undefined && source.path !== path);
+		if (compound && proof?.action !== action) throw new Error(`Terminal publication proof missing: ${path}`);
+		const record = buildSyncRecord(localEntity, remoteEntity, path);
+		const committed = source && source.path !== path
+			? await stateStore.compareAndMove(source, record, destination)
+			: await stateStore.compareAndPut(destination, record);
+		if (!committed) throw new Error(`SyncRecord changed before terminal publication: ${path}`);
+		await maybeStoreMergeBase(ctx, record, localEntity);
+		return record;
 	}
-}
-
-/** Fresh-only per-file CAS. The executor brand and exact admitted baseline are mandatory. */
-export async function commitTerminalFresh(
-	proof: TerminalFreshProof,
-	exactBaseline: SyncRecord,
-	ctx: StateCommitterContext,
-): Promise<void> {
-	if (!proof) throw new Error("Fresh rename terminal proof missing");
-	if (proof.action.baseline !== exactBaseline) {
-		throw new Error(`Fresh rename admitted baseline mismatch: ${proof.action.oldPath}`);
-	}
-	const record = buildSyncRecord(proof.localEntity, proof.remoteEntity, proof.action.path);
-	const moved = await ctx.stateStore.compareAndMove(exactBaseline, record);
-	if (!moved) throw new Error(`SyncRecord changed before fresh rename commit: ${proof.action.oldPath}`);
-	await maybeStoreMergeBase(ctx, proof.action.path, proof.localEntity, record.localSize);
+	throw new Error(`Admission publication inputs missing: ${path}`);
 }

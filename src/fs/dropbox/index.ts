@@ -161,16 +161,29 @@ export class DropboxFs extends CachingRemoteFs<DropboxEntry> {
 		const { result: entry } = await this.withCacheMutex({
 			operationName: "write",
 			resolve: async () => {
-				if (this.cache.isFolder(path)) {
-					throw new Error(`Cannot write file: "${path}" is an existing directory`);
+				const requestedParent = DropboxMetadataCache.parentPath(path);
+				await this.ensureFolder(requestedParent);
+				const actualParent = requestedParent
+					? this.cache.findPathIgnoringCase(requestedParent)
+					: "";
+				if (actualParent === undefined) {
+					throw new Error(`Cannot resolve provider parent for "${path}"`);
 				}
-				const existingId = this.cache.idAt(path);
-				await this.ensureFolder(DropboxMetadataCache.parentPath(path));
-				return { existingId };
+				const leaf = path.split("/").pop()!;
+				const candidate = actualParent ? `${actualParent}/${leaf}` : leaf;
+				const targetPath = this.cache.findPathIgnoringCase(candidate) ?? candidate;
+				if (this.cache.isFolder(targetPath)) {
+					throw new Error(`Cannot write file: "${targetPath}" is an existing directory`);
+				}
+				return { existingId: this.cache.idAt(targetPath), targetPath };
 			},
-			execute: () => this.client.upload(this.addr(path), content, mtime),
-			staleGuard: (r) => ({ path, expectedId: r.existingId }),
-			update: (_r, result) => { this.cache.setEntry(path, result); },
+			execute: (r) => this.client.upload(this.addr(r.targetPath), content, mtime),
+			staleGuard: (r) => ({ path: r.targetPath, expectedId: r.existingId }),
+			update: (r, result) => {
+				if (!this.cache.setResolvedEntry(result)) {
+					this.cache.setEntry(r.targetPath, result, "requested_echo");
+				}
+			},
 		});
 
 		const hash = await sha256(content);
@@ -248,7 +261,12 @@ export class DropboxFs extends CachingRemoteFs<DropboxEntry> {
 				// move_v2's metadata may arrive without a `.tag` discriminator; stamp it
 				// from the known prior type so the cache keeps classifying a moved folder
 				// as a folder (else a later write into it fails with "is a file").
-				this.cache.setEntry(newPath, { ...result, ".tag": r.wasFolder ? "folder" : "file" });
+				const moved = {
+					...result, ".tag": r.wasFolder ? "folder" : "file",
+				} satisfies DropboxEntry;
+				if (!this.cache.setResolvedEntry(moved)) {
+					this.cache.setEntry(newPath, moved, "actual_resolved");
+				}
 				if (r.wasFolder) this.cache.rewriteChildPaths(oldPath, newPath);
 			},
 		});
@@ -331,17 +349,29 @@ export class DropboxFs extends CachingRemoteFs<DropboxEntry> {
 
 	/** Ensure a folder exists by path, creating parents as needed (idempotent). */
 	private async ensureFolder(path: string): Promise<void> {
-		if (!path || this.cache.isFolder(path)) return;
+		if (!path) return;
+		const existingPath = this.cache.findPathIgnoringCase(path);
+		if (existingPath && this.cache.isFolder(existingPath)) return;
 		const parts = path.split("/");
 		let currentPath = "";
 		for (const part of parts) {
-			currentPath = currentPath ? `${currentPath}/${part}` : part;
-			if (this.cache.isFolder(currentPath)) continue;
-			if (this.cache.hasFile(currentPath)) {
-				throw new Error(`Cannot create directory "${path}": "${currentPath}" is a file`);
+			const requestedPath = currentPath ? `${currentPath}/${part}` : part;
+			const cachedPath = this.cache.findPathIgnoringCase(requestedPath) ?? requestedPath;
+			if (this.cache.isFolder(cachedPath)) {
+				currentPath = cachedPath;
+				continue;
 			}
-			const folder = await this.client.createFolder(this.addr(currentPath));
-			this.cache.setEntry(currentPath, folder);
+			if (this.cache.hasFile(cachedPath)) {
+				throw new Error(`Cannot create directory "${path}": "${cachedPath}" is a file`);
+			}
+			const folder = await this.client.createFolder(this.addr(requestedPath));
+			const resolved = this.cache.setResolvedEntry(folder);
+			if (resolved) {
+				currentPath = resolved;
+			} else {
+				this.cache.setEntry(requestedPath, folder, "requested_echo");
+				currentPath = requestedPath;
+			}
 		}
 	}
 }

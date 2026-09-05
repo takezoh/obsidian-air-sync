@@ -12,6 +12,7 @@ import type { RenamePair, SyncPlan } from "./types";
 import { admitBatchObservation } from "./plan-admission";
 import { projectScope } from "./scope-projection";
 import { captureBatchObservation } from "./sync-cycle-planning";
+import { finalizeSyncCycle } from "./sync-cycle-finalization";
 
 /**
  * Convergence (fixed-point) contract — the emergent property the whole engine
@@ -40,7 +41,7 @@ interface Env {
 function makeEnv(): Env {
 	return {
 		localFs: createMockLocalFs(),
-		remoteFs: createMockRemoteFs(),
+		remoteFs: createMockRemoteFs("actual_resolved"),
 		stateStore: createMockStateStore(),
 		localTracker: new LocalChangeTracker(),
 	};
@@ -69,12 +70,17 @@ async function runCycle(env: Env): Promise<SyncPlan> {
 	const admission = admitBatchObservation(captureBatchObservation(
 		changeSet.entries, changeSet.identityEvidence, changeSet.observations, scope, "convergence-test",
 	));
-	await executePlan(admission.executable, {
+	expect(admission.failures).toEqual([]);
+	const result = await executePlan(admission.executable, {
 		localFs,
 		remoteFs,
 		committer: { stateStore },
 		conflictStrategy: "auto_merge",
 	});
+	expect(result.failed).toEqual([]);
+	expect(result.blocked).toEqual([]);
+	const completion = await finalizeSyncCycle({ admission, result, checkpoint: remoteFs.checkpoint, scopeFingerprint: "convergence-test" });
+	expect(completion.kind).toBe("clean");
 	// Acknowledging the snapshot also flips the tracker into its "initialized"
 	// state for the next cycle.
 	localTracker.acknowledge(snapshot);

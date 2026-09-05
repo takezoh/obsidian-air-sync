@@ -8,14 +8,17 @@ decision_makers:
 - project owner
 consequences:
   positive:
-  - Recovery has one path and cannot replay an obligation that contradicts current state.
+  - Recovery has one path and cannot replay an obligation that contradicts current
+    state.
   - A failed action is eligible again on the next explicit sync.
   negative:
-  - A Dropbox case-only two-leg move cannot be made crash-atomic without provider support or a prohibited journal.
+  - A Dropbox case-only two-leg move cannot be made crash-atomic without provider
+    support or a prohibited journal.
   neutral:
   - Native rename evidence remains a current-cycle optimization, not correctness state.
 confirmation: Production has no operation journal or cross-cycle failure quarantine;
-  failure/restart convergence tests and the repository gate pass.
+  failure/restart convergence tests, versioned cold-start tests, and the repository
+  gate pass.
 tags: []
 owners: []
 relations:
@@ -30,8 +33,9 @@ source_paths:
 - src/sync/sync-cycle-finalization.ts
 - src/fs/dropbox/index.ts
 - src/store/metadata-store.ts
-summary: Persist terminal facts only; after any error, re-observe current endpoints and replan.
-updated: '2026-09-03'
+summary: Persist terminal facts only; after any error, re-observe current endpoints
+  and replan.
+updated: '2026-09-04'
 ---
 
 ## Context
@@ -53,20 +57,42 @@ Persist only verified successful-unit `SyncRecord` bundles and the clean-cycle r
 checkpoint. Do not persist or replay observation, rename evidence, operation intent,
 debt, pending/deferred work, startup resume instructions, or failure quarantine.
 
-Rename evidence belongs only to the current Observation snapshot. After failure,
-`recoverViaColdScan` forces current-state planning in the same process; after restart,
-the last committed cursor/baseline is restored and endpoints are observed again. A
+Rename evidence belongs only to the current Observation snapshot. After failure, the
+checkpoint owner aborts its live working view; same-process retry and restart therefore
+both restore the last committed cursor/baseline and observe endpoints again. A
 general rename whose evidence is gone falls back to ordinary new-path transfer and
 old-path delete/conflict logic. Rename plus local content change is not itself a
 conflict; a remote change from the baseline is.
 
-A case-only relation may be reconstructed without history only from an unambiguous
-case-folded baseline/current pair. The local path must be the actual resolved spelling;
-remote old must retain expected stable identity and baseline version/content; remote new
-must be vacant or the same-id casing alias; provider canonical/display spelling must
-distinguish exact old/new/temp. For folders, current-cycle tracker evidence may be
-coalesced from managed descendants; excluded descendants never enter the evidence
-surface.
+Schema invalidation remains the one-time exception to restoring an old baseline. When
+persisted semantics are incompatible, each database owner uses the project-wide
+drop-and-recreate policy. The 2026-09-04 repair applies that policy to metadata cache
+v3→v4 and SyncState v7→v8 because retaining v7 path identity can preserve a component
+created by the defective checkpoint projection. This stores no recovery instruction:
+the next ordinary no-checkpoint, no-baseline COLD cycle observes current endpoints and
+re-establishes terminal facts.
+
+A case-only relation may be canonicalized without operation history from complete
+current component facts. For an unbaselined component in every acquisition mode the raw local adapter must prove
+old→new aliasing, exact local new and remote old, stat-authoritative remote-new absence,
+one remote identity occurrence, and byte-identical direct reads. Observation publishes
+only endpoint, identity, SHA-256, and size facts; Admission normalizes the component and
+alone authorizes an explicit `case_alias_canonicalization`/`rename_remote` protocol
+after validating equal content and included scope. The rule never depends on a zero-
+record store, schema version, prior failure, or COLD/WARM/HOT selection. This is not
+general content-based identity inference and persists nothing. Provider canonical/
+display spelling must still distinguish exact old/new/temp. For folders, current-cycle
+tracker evidence may be coalesced from managed descendants; excluded descendants never
+enter the evidence surface.
+
+When a terminal baseline exists, the alias feeds the ordinary fresh-reconciliation
+table instead: baseline-relative local and remote changes determine rename/write,
+conflict, or settlement. This remains current-fact Admission, not a recovery branch.
+Candidate normalization does not decide the terminal outcome: the shaped component
+always passes through Admission's single final identity evaluator. A complete parent
+rename may cover a cross-path stable identity only when its descendant mapping contains
+the exact current occurrence to that identity's unique committed baseline occurrence.
+This proof is recomputed from the current cycle and is never persisted as recovery state.
 
 Dropbox retains its non-atomic `old -> temp -> new` implementation only inside one
 provider invocation. On a returned second-leg error it re-observes old/new/temp by stable
@@ -93,8 +119,9 @@ mechanisms.
    Dropbox settlement and rollback stay inside one invocation and expose no temp/pending
    model to the engine.
 4. **Commit/finalization** persists successful unit facts and, only for a clean cycle,
-   the remote checkpoint. On failure it retains the old checkpoint and requests COLD
-   observation; it writes no recovery instruction.
+   the remote checkpoint. On failure it aborts the live derived view, retains the old
+   checkpoint, and writes no recovery instruction. The next ordinary acquisition chooses
+   COLD, WARM, or HOT from durable/current facts only.
 
 ## Consequences
 

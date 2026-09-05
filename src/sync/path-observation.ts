@@ -71,6 +71,46 @@ export async function confirmEntryAbsences(
 	}
 }
 
+/**
+ * A file-level local alias can reveal a case-only parent mismatch even when the
+ * listing produced no explicit folder rename evidence.  Observe the two parent
+ * endpoints as facts so Admission can decide the whole component; this function
+ * does not create rename evidence or actions.
+ */
+export async function confirmCaseAliasParentEndpoints(
+	observations: PathObservation[],
+	localFs: IFileSystem,
+	remoteFs: IFileSystem,
+): Promise<void> {
+	const pairs = new Map<string, { oldPath: string; newPath: string }>();
+	for (const observation of observations) {
+		if (observation.kind !== "alias" || observation.side !== "local" ||
+			observation.entity.isDirectory) continue;
+		const oldPath = parentPath(observation.requestedPath);
+		const newPath = parentPath(observation.resolvedPath);
+		if (!oldPath || !newPath || oldPath === newPath ||
+			oldPath.toLowerCase() !== newPath.toLowerCase()) continue;
+		pairs.set(`${oldPath}\0${newPath}`, { oldPath, newPath });
+	}
+	const pool = new AsyncPool(10);
+	await Promise.all([...pairs.values()].flatMap(({ oldPath, newPath }) => [
+		{ side: "local" as const, path: oldPath, fs: localFs },
+		{ side: "local" as const, path: newPath, fs: localFs },
+		{ side: "remote" as const, path: oldPath, fs: remoteFs },
+		{ side: "remote" as const, path: newPath, fs: remoteFs },
+	].filter(({ side, path }) => !observations.some((observation) =>
+		observation.side === side && observation.requestedPath === path &&
+		observation.kind !== "unknown" && observation.kind !== "present_unresolved"))
+		.map(({ side, path, fs }) => pool.run(async () => {
+			replaceObservation(observations, observePath(side, path, await fs.stat(path)));
+		}))));
+}
+
+function parentPath(path: string): string {
+	const separator = path.lastIndexOf("/");
+	return separator === -1 ? "" : path.slice(0, separator);
+}
+
 function observationAt(
 	observations: readonly PathObservation[],
 	indexes: ReadonlyMap<string, number>,
@@ -134,24 +174,36 @@ export async function confirmUnknownRenameEndpoints(
 	})));
 }
 
-/** Confirm the opposite side of every rename candidate before Admission classifies it. */
+/** Confirm rename endpoints, including counterparts of already observed descendants.
+ * Addresses to inspect are not identity assertions; Admission owns that decision.
+ */
 export async function confirmRenameOppositeEndpoints(
 	observations: PathObservation[],
 	evidence: readonly IdentityEvidence[],
 	localFs: IFileSystem,
 	remoteFs: IFileSystem,
 ): Promise<void> {
+	if (!evidence.some((item) => item.kind === "rename")) return;
 	const candidates = new Map<string, { side: SyncSide; path: string; fs: IFileSystem }>();
+	const observed = new Map(observations.map((item) => [observationKey(item.side, item.requestedPath), item]));
+	const knownPaths = new Set(observations.flatMap((item) => [item.requestedPath,
+		...(item.kind === "alias" ? [item.resolvedPath] : [])]));
+	const add = (side: SyncSide, path: string) => {
+		if (!needsConfirmation(observed.get(observationKey(side, path)))) return;
+		candidates.set(observationKey(side, path), { side, path, fs: side === "local" ? localFs : remoteFs });
+	};
 	for (const item of evidence) {
 		if (item.kind !== "rename") continue;
 		const side = item.side === "local" ? "remote" : "local";
-		const fs = side === "local" ? localFs : remoteFs;
-		for (const path of [item.oldPath, item.newPath]) {
-			const existing = observations.find((observation) =>
-				observation.side === side && observation.requestedPath === path);
-			if (!existing || existing.kind === "unknown" ||
-				(existing.kind === "present_unresolved" && existing.source === "list")) {
-				candidates.set(`${side}\0${path}`, { side, path, fs });
+		for (const path of [item.oldPath, item.newPath]) add(side, path);
+		if (!item.isFolder) continue;
+		for (const path of knownPaths) {
+			const root = [item.oldPath, item.newPath].find((prefix) => path.startsWith(prefix + "/"));
+			if (!root) continue;
+			for (const target of [item.oldPath, item.newPath]) {
+				const counterpart = target + path.slice(root.length);
+				add("local", counterpart);
+				add("remote", counterpart);
 			}
 		}
 	}

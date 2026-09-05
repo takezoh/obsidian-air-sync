@@ -101,6 +101,12 @@ export abstract class AbstractMetadataCache<TFile> {
 		const id = this.extractId(file);
 		const incomingIsFolder = this.isFolderEntry(file);
 		const oldPath = this.idToPath.get(id);
+		// Requested spelling is an addressing echo, not provider topology evidence.
+		// It may refresh an existing identity, but it must never move that identity.
+		if (pathAuthority === "requested_echo" && oldPath !== undefined && oldPath !== path) {
+			path = oldPath;
+			pathAuthority = this.getStoredPathAuthority(oldPath);
+		}
 		const occupant = this.pathToFile.get(path);
 
 		// Provider upserts may re-key a stable id without a preceding tombstone.
@@ -381,7 +387,7 @@ export abstract class AbstractMetadataCache<TFile> {
 	}
 
 	/** Apply a single file change to the metadata cache */
-	applyFileChange(file: TFile): void {
+	applyFileChange(file: TFile): string | null {
 		const id = this.extractId(file);
 		const path = this.resolvePathFromCache(file);
 		const oldPath = this.idToPath.get(id);
@@ -392,19 +398,20 @@ export abstract class AbstractMetadataCache<TFile> {
 			if (oldPath) {
 				this.removeTree(oldPath);
 			}
-			return;
+			return null;
 		}
 
 		// The backend's own metadata file is never tracked. If a previously-tracked
 		// file was moved onto this reserved path, drop its stale entry too.
 		if (this.isReserved(path)) {
 			if (oldPath) this.removeTree(oldPath);
-			return;
+			return null;
 		}
 
 		// The delta names this entry and its parent id directly, so the entry's own
 		// spelling is provider-resolved. getPathAuthority() still projects any
 		// unresolved ancestor over it until that ancestor is confirmed.
 		this.setFile(path, file, "actual_resolved");
+		return path;
 	}
 }
