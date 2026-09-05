@@ -106,11 +106,23 @@ central `tests/fs/remote-backend-contracts.test.ts` unit composition root.
   checkpoint after a wholly clean cycle. Do not persist operation intent, rename
   evidence, Admission failures, retry instructions, or recovery markers. COLD/WARM/HOT
   must re-observe current facts and enter the same Admission contract.
-- Within Admission, `identity-component-decision.ts` is the sole rename-authority
-  owner. Candidate shapers, `identity-component-report-family.ts`, and
-  `identity-component-topology.ts` are pure subordinate functions: they must not be
-  imported as independent policy stages or retain
-  correctness data across calls. The architecture guard enforces this boundary.
+- Within Admission, `identity-component-decision.ts` alone binds current identity and
+  topology before calling the pure content comparer. `identity-component-report-family.ts`
+  is subordinate, not another policy stage. Fact graphs and observations cannot carry
+  proposed actions. Retired optimizer/normalization APIs must not return; the AST guard
+  pins these imports and fact-only carriers and prohibits retained proof state.
+- Execute the exact admitted component order through publication: independent singleton
+  transfers and same-key matches may pool; settle them and active priority effects before
+  the globally serial component interval. Defer priority throughout that interval. A
+  failed action blocks its suffix. Parent publication consumes existing ordered successful
+  child receipts, never a separate registry. Exact source/destination CAS is storage
+  mechanism, not identity policy. No action-kind regrouping, DAG, or recovery queue.
+- Every conflict uses the same capture, policy-required preservation, executor effects,
+  terminal proof, and publication route. The resolver never mutates original paths.
+  Do not reintroduce an ordinary/rename execution switch or compensating rollback.
+  Read witnesses remain only in the current result; preservation outputs are verified
+  before destructive work and before publication. A newly observed destination is a
+  precondition failure, never permission to delete an unadmitted version.
 
 ### Project-specific gotchas
 

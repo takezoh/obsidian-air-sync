@@ -8,6 +8,7 @@ const ROOT = process.cwd();
 const SOURCE_ROOT = join(ROOT, "src");
 const MUTATING_SYNC_STATE_METHODS = new Set([
 	"put", "putContent", "delete", "clear", "rewritePaths", "compareAndPut", "compareAndMove",
+	"compareAndDelete", "compareAndRewritePaths", "compareAndPutContent",
 ]);
 
 const ORCHESTRATOR_INSTANCE_FIELDS = [
@@ -17,11 +18,11 @@ const ORCHESTRATOR_INSTANCE_FIELDS = [
 const CHECKPOINT_ACCESSORS = ["src/sync/sync-cycle-finalization.ts"];
 const SYNC_STATE_STORE = {
 	imports: [
-		"src/sync/change-detector.ts", "src/sync/conflict-resolver.ts", "src/sync/conflict.ts",
+		"src/sync/change-detector.ts", "src/sync/conflict-resolver.ts",
 		"src/sync/opened-file-priority.ts", "src/sync/orchestrator.ts", "src/sync/state-committer.ts",
 	],
 	references: [
-		"src/sync/change-detector.ts", "src/sync/conflict-resolver.ts", "src/sync/conflict.ts",
+		"src/sync/change-detector.ts", "src/sync/conflict-resolver.ts",
 		"src/sync/opened-file-priority.ts", "src/sync/orchestrator.ts", "src/sync/state-committer.ts",
 	],
 	constructors: ["src/sync/orchestrator.ts"],
@@ -183,6 +184,14 @@ function syncStateMutationCalls(sourceFile, localNames) {
 			if (node.initializer && isReceiver(node.initializer)) {
 				for (const binding of bindingNames(node.name, sourceFile)) aliases.add(binding);
 			}
+			if (node.initializer && ts.isObjectBindingPattern(node.name)) {
+				for (const element of node.name.elements) {
+					const property = propertyNameText(element.propertyName ?? element.name, sourceFile);
+					if (syncStateProperties.has(property)) {
+						for (const binding of bindingNames(element.name, sourceFile)) aliases.add(binding);
+					}
+				}
+			}
 		}
 		if (ts.isCallExpression(node)) {
 			const name = callName(node.expression);
@@ -307,6 +316,20 @@ test("guard rejects aliased and bracketed SyncStateStore mutations", () => {
 	assert.equal(sourceState.SyncStateStore.mutations, true);
 	assert.throws(() => assert.deepEqual(sourceState.SyncStateStore.mutations, false));
 });
+
+for (const method of ["compareAndPut", "compareAndMove", "compareAndDelete", "compareAndRewritePaths", "compareAndPutContent"]) {
+	for (const access of [`records.${method}`, `records["${method}"]`]) {
+		test(`guard recognizes destructured store mutation ${access}`, () => {
+			const source = parseSource(`import type { SyncStateStore } from "./state";
+				interface Context { stateStore: SyncStateStore }
+				async function save(ctx: Context) {
+					const { stateStore: records } = ctx;
+					await ${access}({} as never);
+				}`, "synthetic-exact-publication.ts");
+			assert.equal(sourceInventory(source).SyncStateStore.mutations, true);
+		});
+	}
+}
 
 test("guard rejects a third IDBHelper owner", () => {
 	const source = parseSource(`import { IDBHelper } from "./idb-helper";

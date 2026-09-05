@@ -6,7 +6,7 @@ import type { LocalMutationBarrier } from "./local-mutation-barrier";
 import type { PriorityBatchTarget } from "./priority-batch-state";
 import type { SyncStateStore } from "./state";
 import { buildSyncRecord } from "./state-committer";
-import type { SyncAction } from "./types";
+import type { SyncAction, SyncRecord } from "./types";
 
 export type OpenedFilePriorityResult =
 	| "applied"
@@ -22,7 +22,7 @@ interface OpenedFilePriorityContext {
 	localTracker: LocalChangeTracker;
 	mutationBarrier: LocalMutationBarrier;
 	target: PriorityBatchTarget;
-	supersede(action: SyncAction): boolean;
+	supersede(action: SyncAction, terminalRecord: SyncRecord): boolean;
 	invalidate(action: SyncAction): boolean;
 	invalidateCycle(): void;
 	requestNormalLifecycle(): void;
@@ -61,7 +61,7 @@ export async function syncOpenedFilePriority(
 				invalidateTarget(ctx);
 				return "deferred_to_batch";
 			}
-			return supersedeTarget(ctx) ? "already_current" : deferToBatch(ctx);
+			return supersedeTarget(ctx, currentRecord) ? "already_current" : deferToBatch(ctx);
 		}
 
 		const read = await ctx.remoteFs.priority.read(observed);
@@ -99,7 +99,7 @@ export async function syncOpenedFilePriority(
 				return "deferred_to_batch";
 			}
 
-			if (!supersedeTarget(ctx)) {
+			if (!supersedeTarget(ctx, nextRecord)) {
 				ctx.localTracker.markDirty(ctx.path);
 				ctx.invalidateCycle();
 				return deferToBatch(ctx);
@@ -121,8 +121,8 @@ export async function syncOpenedFilePriority(
 	}
 }
 
-function supersedeTarget(ctx: OpenedFilePriorityContext): boolean {
-	return ctx.target.kind !== "superseding" || ctx.supersede(ctx.target.action);
+function supersedeTarget(ctx: OpenedFilePriorityContext, terminalRecord: SyncRecord): boolean {
+	return ctx.target.kind !== "superseding" || ctx.supersede(ctx.target.action, terminalRecord);
 }
 
 function invalidateTarget(ctx: OpenedFilePriorityContext): void {

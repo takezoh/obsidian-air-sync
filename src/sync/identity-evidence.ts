@@ -19,26 +19,7 @@ export function collectRemoteRenameEvidence(pairs: readonly RenamePair[]): Renam
 	})));
 }
 
-export function renameOptimizerView(evidence: readonly IdentityEvidence[]): {
-	localFiles: ReadonlyMap<string, string>;
-	localFolders: ReadonlyMap<string, string>;
-	remote: RenamePair[];
-} {
-	const localFiles = new Map<string, string>();
-	const localFolders = new Map<string, string>();
-	const remote: RenamePair[] = [];
-	for (const item of evidence) {
-		if (item.kind !== "rename") continue;
-		if (item.side === "remote") {
-			remote.push({ oldPath: item.oldPath, newPath: item.newPath, isFolder: item.isFolder || undefined });
-		} else {
-			(item.isFolder ? localFolders : localFiles).set(item.newPath, item.oldPath);
-		}
-	}
-	return { localFiles, localFolders, remote };
-}
-
-export function renameEvidenceKey(evidence: RenameEvidence): string {
+function renameEvidenceKey(evidence: RenameEvidence): string {
 	return `${evidence.side}\0${evidence.oldPath}\0${evidence.newPath}\0${evidence.isFolder}`;
 }
 
@@ -75,7 +56,7 @@ export function completeIdentityEvidence(
 	for (const entry of entries) {
 		if (entry.prevSync?.remoteIdentityKey) {
 			appendOccurrence(byIdentity, entry.prevSync.remoteIdentityKey, {
-				side: "remote", phase: "baseline", path: entry.path,
+				side: "remote", phase: "baseline", path: entry.prevSync.path,
 				identityKey: entry.prevSync.remoteIdentityKey,
 			});
 		}

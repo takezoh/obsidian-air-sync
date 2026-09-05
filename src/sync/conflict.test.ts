@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { resolveWithStrategy, generateConflictPath } from "./conflict";
+import { describe, it, expect, beforeEach } from "vitest";
+import { generateConflictPath } from "./conflict";
+import { resolveConflict } from "./conflict-resolver";
 import {
 	createMockLocalFs, createMockRemoteFs, type MockFileSystem,
 	createMockStateStore,
@@ -12,7 +13,7 @@ function encode(s: string): ArrayBuffer {
 	return new TextEncoder().encode(s).buffer.slice(0);
 }
 
-describe("resolveWithStrategy", () => {
+describe("resolveConflict", () => {
 	let localFs: MockFileSystem;
 	let remoteFs: MockFileSystem;
 
@@ -21,29 +22,28 @@ describe("resolveWithStrategy", () => {
 		remoteFs = createMockRemoteFs();
 	});
 
-	describe("keep_newer", () => {
+	describe("auto_merge", () => {
 		it("keeps the remote version when its mtime is newer", async () => {
 			const local = addFile(localFs, "f.md", "older local", 1000);
 			const remote = addFile(remoteFs, "f.md", "newer remote", 2000);
 
-			const r = await resolveWithStrategy(
+			const r = await resolveConflict(
 				{ path: "f.md", localFs, remoteFs, local, remote },
-				"keep_newer",
+				"auto_merge",
 			);
 
 			expect(r.action).toBe("kept_remote");
-			expect(readText(localFs, "f.md")).toBe("newer remote");
+			expect(new TextDecoder().decode(r.targetContent)).toBe("newer remote");
+			expect(readText(localFs, "f.md")).toBe("older local");
 		});
 
 		it("keeps local when mtime ties and content is identical", async () => {
 			const local = addFile(localFs, "f.md", "same", 1500);
-			local.hash = "H";
 			const remote = addFile(remoteFs, "f.md", "same", 1500);
-			remote.hash = "H";
 
-			const r = await resolveWithStrategy(
+			const r = await resolveConflict(
 				{ path: "f.md", localFs, remoteFs, local, remote },
-				"keep_newer",
+				"auto_merge",
 			);
 
 			expect(r.action).toBe("kept_local");
@@ -51,70 +51,23 @@ describe("resolveWithStrategy", () => {
 
 		it("duplicates when mtime ties but content differs", async () => {
 			const local = addFile(localFs, "f.md", "local body", 1500);
-			local.hash = "A";
 			const remote = addFile(remoteFs, "f.md", "remote body", 1500);
-			remote.hash = "B";
 
-			const r = await resolveWithStrategy(
+			const r = await resolveConflict(
 				{ path: "f.md", localFs, remoteFs, local, remote },
-				"keep_newer",
+				"auto_merge",
 			);
 
 			expect(r.action).toBe("duplicated");
 		});
 
 		it("treats both-sides-deleted as a no-op", async () => {
-			const r = await resolveWithStrategy(
+			const r = await resolveConflict(
 				{ path: "f.md", localFs, remoteFs },
-				"keep_newer",
+				"auto_merge",
 			);
 
 			expect(r.action).toBe("kept_local");
-		});
-	});
-
-	describe("auto_merge — crash-safe rollback", () => {
-		it("restores the pre-merge local file and rethrows when the remote write fails", async () => {
-			// Non-overlapping edits → a clean merge that writes to both sides.
-			const base = "l1\nl2\nl3\n";
-			const localText = "l1\nLOCAL\nl3\n";
-			const remoteText = "l1\nl2\nREMOTE\n";
-			const local = addFile(localFs, "f.md", localText, 2000);
-			const remote = addFile(remoteFs, "f.md", remoteText, 2000);
-			const stateStore = createMockStateStore();
-			stateStore.contents.set("f.md", encode(base));
-			const baseline: SyncRecord = {
-				path: "f.md",
-				hash: "",
-				localMtime: 1000,
-				remoteMtime: 1000,
-				localSize: base.length,
-				remoteSize: base.length,
-				syncedAt: 900,
-			};
-			// The merged content reaches local first, then the remote write blows up.
-			vi.spyOn(remoteFs, "write").mockRejectedValueOnce(
-				new Error("remote unavailable"),
-			);
-
-			await expect(
-				resolveWithStrategy(
-					{
-						path: "f.md",
-						localFs,
-						remoteFs,
-						local,
-						remote,
-						prevSync: baseline,
-						stateStore,
-					},
-					"auto_merge",
-				),
-			).rejects.toThrow("remote unavailable");
-
-			// Local must be rolled back to its original content — never left holding a
-			// merge that was never committed remotely (the two sides must not diverge).
-			expect(readText(localFs, "f.md")).toBe(localText);
 		});
 	});
 
@@ -138,14 +91,14 @@ describe("resolveWithStrategy", () => {
 			const remote = addFile(remoteFs, "data.json", remoteText, 2000);
 			const stateStore = createMockStateStore();
 			stateStore.contents.set("data.json", encode(base));
-			return resolveWithStrategy(
+			return resolveConflict(
 				{
 					path: "data.json",
 					localFs,
 					remoteFs,
 					local,
 					remote,
-					prevSync: baseline(base),
+					baseline: baseline(base),
 					stateStore,
 				},
 				"auto_merge",
@@ -160,7 +113,7 @@ describe("resolveWithStrategy", () => {
 			);
 			expect(r.action).toBe("merged");
 			expect(r.hasConflictMarkers).toBe(false);
-			expect(readText(localFs, "data.json")).toBe(
+			expect(new TextDecoder().decode(r.targetContent)).toBe(
 				'{\n"a": 99,\n"b": 200\n}',
 			);
 		});

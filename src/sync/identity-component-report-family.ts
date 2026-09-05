@@ -47,7 +47,7 @@ export function selectReportFamily(reports: readonly RenameEvidence[]): ReportSe
 			return { kind: "conflicting" };
 		}
 		if (!root) {
-			if (claims.length > 1) return { kind: "conflicting" };
+			if (claims.length > 1 && !isLocalChain(claims)) return { kind: "conflicting" };
 			if (claims.length === 1) governingReports.push(claims[0]!);
 		}
 	}
@@ -62,6 +62,23 @@ export function selectReportFamily(reports: readonly RenameEvidence[]): ReportSe
 	return selected.length > 0
 		? { kind: "reported", reports: selected, governingReports }
 		: { kind: "none" };
+}
+
+/** A sequence of local notifications is coherent only as one unbranched chain.
+ * This checks report shape; Admission must still account for every endpoint. */
+function isLocalChain(claims: readonly RenameEvidence[]): boolean {
+	if (claims.some((claim) => claim.side !== "local" || claim.isFolder)) return false;
+	const bySource = new Map(claims.map((claim) => [claim.oldPath, claim]));
+	const targets = new Set(claims.map((claim) => claim.newPath));
+	const starts = claims.filter((claim) => !targets.has(claim.oldPath));
+	if (starts.length !== 1) return false;
+	let claim: RenameEvidence | undefined = starts[0];
+	let count = 0;
+	while (claim && count < claims.length) {
+		count++;
+		claim = bySource.get(claim.newPath);
+	}
+	return !claim && count === claims.length;
 }
 
 function shallowestFolderRoot(claims: readonly RenameEvidence[]): RenameEvidence | undefined {

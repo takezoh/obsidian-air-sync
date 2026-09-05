@@ -3,10 +3,7 @@ import type { IFileSystem } from "../fs/interface";
 import type { IBackendProvider } from "../fs/backend";
 import type { Logger } from "../logging/logger";
 import { AsyncMutex } from "../queue/async-queue";
-import { isIgnored, isSystemJunkFile } from "../utils/ignore";
-import { isDotPathOutOfScope } from "../utils/path";
-import { getEffectiveIgnorePatterns, getEffectiveSyncDotPaths, isOwnPluginDataPath } from "../config-sync";
-import { INTERNAL_METADATA_PATH } from "../fs/remote-vault-contract";
+import { captureScopePolicy, isExcludedFromScope } from "./scope-projection";
 import { SyncStateStore } from "./state";
 import { LocalChangeTracker, type TrackerSnapshot } from "./local-tracker";
 import { collectChanges, type ChangeSet } from "./change-detector";
@@ -22,7 +19,7 @@ import {
 	logSyncCyclePlan,
 	prepareSyncCycleSnapshot,
 } from "./sync-cycle-planning";
-import { finalizeSyncCycle, WorkingViewAbortError } from "./sync-cycle-finalization";
+import { runSyncCycleAttempt, WorkingViewAbortError } from "./sync-cycle-finalization";
 import { admitBatchObservation } from "./plan-admission";
 import { PriorityCoordinator } from "./priority-coordinator";
 import { LocalMutationBarrier } from "./local-mutation-barrier";
@@ -57,13 +54,6 @@ export interface SyncOrchestratorDeps {
 }
 
 const MAX_RETRIES = 3;
-
-class PostCloseoutError extends Error {
-	constructor(readonly original: unknown) {
-		super(original instanceof Error ? original.message : String(original));
-		this.name = "PostCloseoutError";
-	}
-}
 
 export class SyncOrchestrator {
 	private syncMutex = new AsyncMutex();
@@ -119,29 +109,9 @@ export class SyncOrchestrator {
 	}
 
 	isExcluded(path: string): boolean {
-		const settings = this.deps.getSettings();
-		// The backend's own metadata file is reserved: never sync it from either
-		// side, even when `.airsync` is opted into syncDotPaths. The remote FS also
-		// hides it; excluding it here keeps the exclusion symmetric (otherwise a
-		// local copy would be pushed, then deleted as a phantom remote deletion).
-		if (path === INTERNAL_METADATA_PATH) return true;
-		// OS-generated junk (desktop.ini, thumbs.db, .DS_Store) is never synced on any
-		// backend — treated as non-existent like the reserved metadata path. Beyond
-		// being noise, some backends (Dropbox) reject these outright, which would
-		// otherwise fail every cycle and block the delta checkpoint.
-		if (isSystemJunkFile(path)) return true;
-		const configDir = this.deps.configDir();
-		// This plugin's own data.json (backend credentials/vaultId) is reserved
-		// the same way, regardless of enableConfigSync — a user can put configDir
-		// into syncDotPaths by hand without the toggle, and this must still hold
-		// so a user's own ignorePatterns entry can never override it and leak
-		// credentials across devices (see isOwnPluginDataPath's doc comment).
-		if (isOwnPluginDataPath(path, configDir, this.deps.pluginId())) return true;
-		// A path syncs only if it passes BOTH gates: the dot-path scope
-		// (hidden paths are in scope only when opted into syncDotPaths) AND
-		// the user's ignore patterns.
-		if (isDotPathOutOfScope(path, getEffectiveSyncDotPaths(settings, configDir))) return true;
-		return isIgnored(path, getEffectiveIgnorePatterns(settings, configDir, this.deps.pluginId()));
+		return isExcludedFromScope(path, captureScopePolicy(
+			this.deps.getSettings(), this.deps.configDir(), this.deps.pluginId(),
+		));
 	}
 
 	/**
@@ -216,7 +186,7 @@ export class SyncOrchestrator {
 				if (!result) return; // Fatal error already handled
 
 				const { succeeded, failed, blocked, conflicts } = result;
-				if (failed > 0 || blocked > 0) {
+				if (result.outcome.completion.kind !== "clean") {
 					this.deps.onStatusChange("partial_error");
 					this.deps.logger?.warn("Sync completed with errors", {
 						succeeded, conflicts, failed, blocked,
@@ -247,8 +217,7 @@ export class SyncOrchestrator {
 				// The tracker is an input buffer, not durable sync state. Consume its
 				// snapshot only after the whole cycle reached a terminal success; a
 				// failed cycle must be repeatable from the same observed local event.
-				if (failed === 0 && blocked === 0 &&
-					!result.outcome.unsettledLocalRenameInput) {
+				if (result.outcome.completion.kind === "clean") {
 					this.deps.localTracker.acknowledge(snapshot);
 				}
 			} while (this.syncPending);
@@ -287,11 +256,7 @@ export class SyncOrchestrator {
 				};
 			} catch (err) {
 				if (err instanceof WorkingViewAbortError) throw err.original;
-				const postCloseout = err instanceof PostCloseoutError;
-				const original = postCloseout ? err.original : err;
-				if (!postCloseout) {
-					await this.deps.remoteFs()?.checkpoint?.abortWorkingView();
-				}
+				const original = err;
 				lastError = original;
 				// Classification is the backend's job (it knows its own error shapes,
 				// e.g. that Google 403 can mean rate-limit); the retry POLICY is the
@@ -348,7 +313,7 @@ export class SyncOrchestrator {
 				localTracker: this.deps.localTracker,
 				mutationBarrier: this.localMutationBarrier,
 				target,
-				supersede: (action) => activeBatch?.supersede(action) ?? false,
+				supersede: (action, record) => activeBatch?.supersede(action, record) ?? false,
 				invalidate: (action) => activeBatch?.invalidate(action) ?? false,
 				invalidateCycle: () => activeBatch?.blockCheckpoint(),
 				requestNormalLifecycle: () => this.requestNormalLifecycle(),
@@ -376,6 +341,8 @@ export class SyncOrchestrator {
 		if (!localFs || !remoteFs) {
 			throw new Error("Cannot sync: local or remote filesystem is not available");
 		}
+		try {
+			const closed = await runSyncCycleAttempt(remoteFs.checkpoint, async () => {
 		const preparationPermit = await this.priorityCoordinator.acquireNormalPermit();
 		const prepared = await (async () => {
 		try {
@@ -394,12 +361,9 @@ export class SyncOrchestrator {
 			});
 		const { renamePairs } = snapshot;
 
-		const isMobile = this.deps.isMobile();
-		const maxBytes = settings.mobileMaxFileSizeMB * 1024 * 1024;
-		const planning = prepareSyncCycleSnapshot(changeSet, namespace, {
-				isExcluded: (path) => this.isExcluded(path),
-				mobileMaxBytes: isMobile ? maxBytes : undefined,
-			}, this.deps.logger);
+		const planning = prepareSyncCycleSnapshot(changeSet, namespace, captureScopePolicy(
+			settings, this.deps.configDir(), this.deps.pluginId(), this.deps.isMobile(),
+		), this.deps.logger);
 		const visiblePaths = new Set(planning.snapshot.scope.byEndpoint.keys());
 		logChangeDetection(changeSet, renamePairs, this.deps.logger, visiblePaths);
 
@@ -448,48 +412,20 @@ export class SyncOrchestrator {
 			onPhaseChange: (phase) => this.activeBatch?.setPhase(phase),
 		};
 
-		try {
-			const execution = await executePlan(admission.executable, ctx);
-			const unsettledFolderRename = [...snapshot.folderRenamePairs].some(([newPath, oldPath]) => {
-				const renamed = execution.succeeded.some(({ action }) =>
-					action.action === "rename_remote" &&
-					action.oldPath === oldPath && action.path === newPath);
-				const remoteAtNew = admission.snapshot.observations.some((observation) =>
-					observation.side === "remote" && observation.requestedPath === newPath &&
-					observation.kind === "exact");
-				const remoteLeftOld = admission.snapshot.observations.some((observation) =>
-					observation.side === "remote" && observation.requestedPath === oldPath &&
-					(observation.kind === "absent" ||
-						(observation.kind === "alias" && observation.resolvedPath === newPath)));
-				return !renamed && !(remoteAtNew && remoteLeftOld);
-			});
-			const outcome: SyncCycleOutcome = {
-				execution,
-				admissionFailures: admission.failures,
-				unsettledLocalRenameInput:
-					admission.unsettledLocalRenameInput || unsettledFolderRename,
-			};
-			await this.priorityCoordinator.finalize(async () => {
+				const execution = await executePlan(admission.executable, ctx);
+				return { settings, provider, admission, execution };
+			}, (close) => this.priorityCoordinator.finalize(close), ({ admission, execution }) => {
 				this.activeBatch?.setPhase("finalizing");
-				await finalizeSyncCycle({
-					admission,
-					result: execution,
-					checkpoint: remoteFs.checkpoint, scopeFingerprint,
-					checkpointBlocked: this.activeBatch?.isCheckpointBlocked,
-				});
-				try {
-					if (provider?.readBackendState) {
-						settings.backendData = {
-							...settings.backendData,
-							...provider.readBackendState(),
-						};
-					}
-					await this.deps.saveSettings();
-				} catch (err) {
-					throw new PostCloseoutError(err);
-				}
+				return { admission, result: execution, scopeFingerprint,
+					checkpointBlocked: this.activeBatch?.isCheckpointBlocked };
 			});
-			return outcome;
+			const { settings, provider, admission, execution } = closed.value;
+			// Settings are supplementary, after the attempt's working view is closed.
+			if (provider?.readBackendState) {
+				settings.backendData = { ...settings.backendData, ...provider.readBackendState() };
+			}
+			await this.deps.saveSettings();
+			return { execution, admissionFailures: admission.failures, completion: closed.completion };
 		} finally {
 			this.activeBatch = null;
 		}

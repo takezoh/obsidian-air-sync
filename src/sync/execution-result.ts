@@ -1,18 +1,26 @@
 import type { FileEntity } from "../fs/types";
-import type { ConflictRecord, ConflictStrategy, SyncAction } from "./types";
+import type { ConflictRecord, ConflictStrategy, RenameAction, SyncAction, SyncRecord } from "./types";
 import type { ConflictResolutionResult } from "./conflict-resolver";
-import type { TerminalFreshProof } from "./plan-executor";
+import type { TerminalActionProof } from "./plan-executor";
 
 export interface CompletedAction {
 	action: SyncAction;
 	localEntity?: FileEntity;
 	remoteEntity?: FileEntity;
-	terminalFreshProof?: TerminalFreshProof;
+	terminalProof?: TerminalActionProof;
+	/** Exact successful publication consumed by a following parent action. */
+	terminalRecord?: SyncRecord;
 }
 
 export interface FailedAction {
 	action: SyncAction;
 	error: Error;
+}
+
+/** Successful priority publication replacing this exact admitted pull. */
+export interface SupersededAction {
+	readonly action: SyncAction;
+	readonly terminalRecord: SyncRecord;
 }
 
 export interface BlockedAction {
@@ -25,16 +33,35 @@ export interface ResolvedConflict {
 	resolution: ConflictResolutionResult;
 	localEntity?: FileEntity;
 	remoteEntity?: FileEntity;
-	terminalFreshProof?: TerminalFreshProof;
+	terminalProof?: TerminalActionProof;
 }
 
 export interface ExecutionResult {
 	succeeded: CompletedAction[];
 	/** Admission-marked exact actions completed by a priority operation. */
-	superseded: SyncAction[];
+	superseded: SupersededAction[];
 	failed: FailedAction[];
 	blocked: BlockedAction[];
 	conflicts: ResolvedConflict[];
+}
+
+/** Join an admitted ordered child prefix to the existing success collection.
+ * The iterator is call-local; no receipt cache or mutable baseline view exists. */
+export function* orderedChildReceipts(action: RenameAction, completed: readonly CompletedAction[]) {
+	let cursor = 0;
+	for (const child of action.descendantRecords ?? []) {
+		let receipt: CompletedAction | undefined;
+		if (child.after) {
+			while (cursor < completed.length) {
+				const candidate = completed[cursor++]!;
+				if (candidate.action === child.after) {
+					receipt = candidate;
+					break;
+				}
+			}
+		}
+		yield { child, receipt };
+	}
 }
 
 export function toConflictRecords(

@@ -128,8 +128,11 @@ use those imports; the rest of production consumes the public Admission result o
 from becoming two whole-plan policy owners again.
 
 `sync-admission-authority-guard.test.mjs` closes the boundary inside Admission.
-Production value imports of rename candidate shapers, report-family classification, and
-the topology proof are limited to their declared owner, `identity-component-decision.ts`.
+Production value imports of content comparison and report-family classification are
+limited to `identity-component-decision.ts`; the fact graph and identity decision are
+reachable only through `plan-admission.ts`. Retired action-first optimizer modules have
+no permitted value importers. The AST guard rejects retired APIs and pins the fact-only
+fields of `BatchObservation` and `IdentityComponent`.
 The same AST guard rejects module-scope mutable or computed correctness data in the
 decision and subordinate proof modules.
 The selected rename family and folder proof must therefore remain immutable call-local
@@ -286,7 +289,7 @@ these green when touching the pipeline:
 | Principle | Pinned by |
 |---|---|
 | **Two-authority durable sync state** — only the clean-cycle remote cursor and per-file successful `SyncRecord` are authoritative; the complete remote cache is a derived co-commit | `sync-state-ownership-guard.test.mjs` (run by `npm run lint:bot-repro`) |
-| **Single Admission rename authority** — one identity-component decision selects and shapes a rename family once; subordinate candidate/topology helpers cannot become policy owners or retain proof across calls | `sync-admission-authority-guard.test.mjs`, `sync/plan-admission.test.ts` |
+| **Single Admission identity authority** — bind current component facts before content comparison; no action-first APIs, foreign policy imports, action-bearing observations, or retained proof | `sync-admission-authority-guard.test.mjs`, `sync/plan-admission.test.ts` |
 | **Remote backend completeness** — every registered provider resolves to an exact catalogued filesystem family, and every family runs all four shared contracts | `fs/registry.test.ts`, `tests/fs/remote-backend-contracts.test.ts` |
 | **#3 delta-first** — the hot path stats only dirty paths and never calls `list()` (full scans are cold-start only) | `sync/delta-first.test.ts` |
 | **#5 crash-safe** — an interrupted action commits no baseline and re-syncs to convergence | `sync/crash-safety.test.ts`, `sync/convergence.test.ts` |
@@ -304,11 +307,20 @@ constructor-parameter fields), every production property/element access to
 `commitCheckpoint` (including extracted or bound forms), and the production imports,
 references, constructors, and mutating calls for `SyncStateStore`, `MetadataStore`, and
 `IDBHelper`. It also inventories direct `indexedDB.open` accesses. Its receiver tracking
-covers direct, aliased, and bracket-notation `SyncStateStore` calls. This makes a new
+covers direct, aliased, destructured, and bracket-notation `SyncStateStore` calls,
+including exact record/content CAS and atomic path rewrites. The negative fixtures
+exercise each CAS method through a destructured store reference; adding a method
+must not silently remove its existing writer from the inventory. This makes a new
 durable owner, persistent-store owner, or in-memory recovery owner a deliberate review
 event rather than an incidental field or write. The cache checkpoint must serialize the
 complete final live cache under its mutex with the cursor; do not add touched-path,
 pending-flush, receipt, journal, or other intermediate correctness state.
+The unified conflict resolver removes the former `conflict.ts` Store reader/import;
+no writer, constructor, or retained-field owner is added. The Admission architecture
+guard also rejects the retired conflict execution switches and legacy resolver APIs.
+`fact-first-execution.test.ts` pins ordinary and renamed conflict preservation,
+original-source revalidation, arriving-destination rejection, terminal-copy integrity,
+and interrupted merge convergence without compensating rollback.
 Observation evidence and Admission dispositions/failure reasons are immutable
 cycle-local values only. Do not persist them, add them to `SyncRecord`, or introduce an
 Orchestrator field to carry them across cycles. Case-alias handling must use one

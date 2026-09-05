@@ -7,15 +7,17 @@ const ts = await import("typescript");
 const ROOT = process.cwd();
 const SOURCE_ROOT = join(ROOT, "src");
 const DECISION_FILE = "src/sync/identity-component-decision.ts";
-const TOPOLOGY_FILE = "src/sync/identity-component-topology.ts";
 const REPORT_FAMILY_FILE = "src/sync/identity-component-report-family.ts";
 const VALUE_IMPORT_OWNERS = new Map([
-	["src/sync/identity-component-topology.ts", new Map([["*", new Set([DECISION_FILE])]])],
+	["src/sync/decision-engine.ts", new Map([["*", new Set([DECISION_FILE])]])],
+	[DECISION_FILE, new Map([["*", new Set(["src/sync/plan-admission.ts"])]])],
+	["src/sync/plan-admission-graph.ts", new Map([["*", new Set(["src/sync/plan-admission.ts"])]])],
+	["src/sync/identity-component-topology.ts", new Map([["*", new Set()]])],
 	["src/sync/identity-component-report-family.ts", new Map([["*", new Set([DECISION_FILE])]])],
-	["src/sync/local-rename-admission.ts", new Map([["*", new Set([DECISION_FILE])]])],
-	["src/sync/optimize-local-renames.ts", new Map([["*", new Set([DECISION_FILE])]])],
-	["src/sync/optimize-remote-renames.ts", new Map([["*", new Set([DECISION_FILE])]])],
-	["src/sync/plan-admission-case-alias.ts", new Map([["*", new Set([DECISION_FILE])]])],
+	["src/sync/local-rename-admission.ts", new Map([["*", new Set()]])],
+	["src/sync/optimize-local-renames.ts", new Map([["*", new Set()]])],
+	["src/sync/optimize-remote-renames.ts", new Map([["*", new Set()]])],
+	["src/sync/plan-admission-case-alias.ts", new Map([["*", new Set()]])],
 ]);
 
 function productionTypeScriptFiles(root = SOURCE_ROOT) {
@@ -158,8 +160,45 @@ test("Admission helper value imports have one closed owner", () => {
 	assertClosedValueImports();
 });
 
+function assertFactOnlyBoundary(file, source) {
+	const forbidden = new Set(["planSync", "admitDestructivePlan", "bindAdmissionPlan", "captureCycleAdmissionSnapshot",
+		"FreshRenameState", "FreshRenameAction", "normalizedRenameState", "renameOptimizerView",
+		"resolveWithStrategy", "resolveLegacyConflict", "prepareOnly", "requiresPreparation"]);
+	const visit = (node) => {
+		if (ts.isIdentifier(node)) assert.ok(!forbidden.has(node.text), `${file}: obsolete action-first contract ${node.text}`);
+		if (ts.isInterfaceDeclaration(node) && ["BatchObservation", "IdentityComponent"].includes(node.name.text)) {
+			assert.deepEqual(node.members.map((member) => member.name?.getText(source)).sort(),
+				(node.name.text === "BatchObservation"
+					? ["entries", "evidence", "baselinePaths", "observations", "scope", "namespace"]
+					: ["paths", "entries", "evidence", "observations"]).sort(),
+				`${node.name.text} must contain only observed facts`);
+		}
+		node.forEachChild(visit);
+	};
+	visit(source);
+}
+
+test("production has only the fact-first Admission contract", () => {
+	for (const file of productionTypeScriptFiles()) assertFactOnlyBoundary(file, parseSource(readFileSync(file, "utf8"), file));
+});
+
+test("guard rejects action-first API and action-bearing observation", () => {
+	for (const text of ["export function planSync() {}", "interface BatchObservation { actions: unknown[]; }",
+		"interface IdentityComponent { paths: Set<string>; actions: unknown[]; }",
+		"function resolveLegacyConflict() {}", "interface ResolverContext { prepareOnly?: boolean; }"]) {
+		assert.throws(() => assertFactOnlyBoundary("fixture.ts", parseSource(text, "fixture.ts")));
+	}
+});
+
+test("content comparison and fact binding cannot become independent policy stages", () => {
+	for (const module of ["decision-engine", "identity-component-decision", "plan-admission-graph"]) {
+		const file = "src/sync/orchestrator.ts";
+		assert.throws(() => assertAllowedValueImports(file, parseSource(`import * as policy from "./${module}";`, file)));
+	}
+});
+
 test("identity decision and subordinate proofs retain no module-scope state", () => {
-	for (const file of [DECISION_FILE, TOPOLOGY_FILE, REPORT_FAMILY_FILE]) {
+	for (const file of [DECISION_FILE, REPORT_FAMILY_FILE]) {
 		assertNoModuleState(parseSource(readFileSync(join(ROOT, file), "utf8"), file));
 	}
 });

@@ -1,12 +1,12 @@
 import type { ExecutionResult } from "./plan-executor";
 import type { AdmissionFailureComponent } from "./plan-admission";
+import type { SyncCycleCompletion } from "./sync-cycle-finalization";
 
 /** One complete cycle outcome across the Admission and execution boundaries. */
 export interface SyncCycleOutcome {
 	execution: ExecutionResult;
 	admissionFailures: AdmissionFailureComponent[];
-	/** Current tracker rename input was not yet bound to a terminal sync decision. */
-	unsettledLocalRenameInput?: boolean;
+	completion: SyncCycleCompletion;
 }
 
 /** Outcome counts for one completed sync cycle. */
@@ -30,7 +30,7 @@ export function buildNotificationMessage(outcome: SyncCycleOutcome): string {
 		else if (action.action === "rename_remote" || action.action === "rename_local") counts.renamed++;
 	};
 	for (const { action } of execution.succeeded) count(action);
-	for (const action of execution.superseded) count(action);
+	for (const { action } of execution.superseded) count(action);
 	const parts: string[] = [];
 	if (counts.pushed > 0) parts.push(`${counts.pushed} pushed`);
 	if (counts.pulled > 0) parts.push(`${counts.pulled} pulled`);
@@ -41,6 +41,7 @@ export function buildNotificationMessage(outcome: SyncCycleOutcome): string {
 	const errors = execution.failed.length + outcome.admissionFailures.length;
 	if (errors > 0) parts.push(`${errors} ${errors === 1 ? "error" : "errors"}`);
 	if (execution.blocked.length > 0) parts.push(`${execution.blocked.length} blocked`);
+	if (outcome.completion.kind === "incomplete" && errors === 0 && execution.blocked.length === 0) parts.push("incomplete");
 	return parts.length === 0 ? "Everything up to date" : `Sync: ${parts.join(", ")}`;
 }
 
@@ -55,9 +56,11 @@ export class CycleSummary {
 	private readonly merged: SyncCycleOutcome = {
 		execution: { succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [] },
 		admissionFailures: [],
+		completion: { kind: "clean" },
 	};
 
 	add(cycle: SyncCycleOutcome): void {
+		if (cycle.completion.kind === "incomplete") this.merged.completion = cycle.completion;
 		// Append element-by-element, not `push(...arr)`: a cold full-scan cycle can
 		// carry tens of thousands of actions, and spreading that many arguments can
 		// overflow the engine's argument limit (RangeError) on mobile.

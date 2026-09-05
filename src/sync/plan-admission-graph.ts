@@ -1,67 +1,73 @@
-import type { IdentityEvidence, MixedEntity, PathObservation, ScopeProjection, SyncAction } from "./types";
+import type { IdentityEvidence, MixedEntity, PathObservation } from "./types";
+import type { BatchObservation } from "./sync-cycle-planning";
 
-export interface AdmissionComponent {
-	paths: Set<string>;
-	actions: SyncAction[];
-	entries: MixedEntity[];
-	evidence: IdentityEvidence[];
-	observations: PathObservation[];
+/** Component membership is established before any action exists. */
+export interface IdentityComponent {
+	readonly paths: ReadonlySet<string>;
+	readonly entries: readonly MixedEntity[];
+	readonly evidence: readonly IdentityEvidence[];
+	readonly observations: readonly PathObservation[];
 }
 
-export function buildAdmissionComponents(
-	plan: { readonly actions: readonly SyncAction[] },
-	identityEvidence: readonly IdentityEvidence[],
-	observations: readonly PathObservation[],
-	scope: ScopeProjection,
-	entries: readonly MixedEntity[] = [],
-): AdmissionComponent[] {
+export function buildFactComponents(snapshot: BatchObservation): IdentityComponent[] {
 	const graph = new PathGraph();
-	const actionPathSets = plan.actions.map(actionPaths);
-	const evidencePathSets = identityEvidence.map(evidencePaths);
-	const observationPathSets = observations.map(observationPaths);
-	const entryPathSets = entries.map((entry) => [entry.path]);
-	const knownPaths = new Set([
-		...actionPathSets.flat(), ...evidencePathSets.flat(), ...observationPathSets.flat(),
-		...entryPathSets.flat(),
-		...scope.byEndpoint.keys(),
+	const evidence = snapshot.evidence.map((item) => item.evidence);
+	const entryPaths = snapshot.entries.map((entry) => [
+		entry.path, ...[entry.local?.path, entry.remote?.path, entry.prevSync?.path]
+			.filter((path): path is string => path !== undefined),
 	]);
-	const sortedKnownPaths = [...knownPaths].sort();
-	for (const paths of actionPathSets) graph.connect(paths);
-	for (const [index, evidence] of identityEvidence.entries()) {
-		const paths = evidencePathSets[index]!;
-		graph.connect(evidence.kind === "rename" && evidence.isFolder
-			? [...paths, ...folderDescendantPaths(evidence.oldPath, evidence.newPath, sortedKnownPaths)]
-			: paths);
+	const paths = [...new Set([
+		...entryPaths.flat(), ...evidence.flatMap(evidencePaths),
+		...snapshot.observations.flatMap(observationPaths),
+	])].sort();
+	for (const group of entryPaths) graph.connect(group);
+	for (const item of evidence) {
+		const group = evidencePaths(item);
+		graph.connect(item.kind === "rename" && item.isFolder
+			? [...group, ...folderDescendantPaths(item.oldPath, item.newPath, paths)] : group);
 	}
-	for (const [index, observation] of observations.entries()) {
-		const paths = observationPathSets[index]!;
-		graph.connect(observation.kind === "alias" && observation.entity.isDirectory
-			? [...paths, ...folderDescendantPaths(
-				observation.requestedPath, observation.resolvedPath, sortedKnownPaths,
-			)]
-			: paths);
+	for (const item of snapshot.observations) {
+		const group = observationPaths(item);
+		graph.connect(item.kind === "alias" && item.entity.isDirectory
+			? [...group, ...folderDescendantPaths(item.requestedPath, item.resolvedPath, paths)] : group);
 	}
-	for (const paths of entryPathSets) graph.connect(paths);
-
-	const byRoot = new Map<string, AdmissionComponent>();
+	// Committed keys participate in publication footprints, but do not assert
+	// that their historical identity still occupies that address.
+	const identityPaths = new Map<string, string[]>();
+	for (const entry of snapshot.entries) {
+		for (const occurrence of [
+			{ path: entry.prevSync?.path, identity: entry.prevSync?.remoteIdentityKey },
+			{ path: entry.remote?.path, identity: entry.remote?.identityKey },
+		]) {
+			if (!occurrence.path || !occurrence.identity) continue;
+			const group = identityPaths.get(occurrence.identity) ?? [];
+			group.push(occurrence.path);
+			identityPaths.set(occurrence.identity, group);
+		}
+	}
+	for (const group of identityPaths.values()) graph.connect(group);
+	const grouped = new Map<string, {
+		paths: Set<string>; entries: MixedEntity[]; evidence: IdentityEvidence[];
+		observations: PathObservation[];
+	}>();
 	for (const path of graph.paths()) {
 		const root = graph.root(path);
-		const component = byRoot.get(root) ?? emptyComponent();
+		const component = grouped.get(root) ?? { paths: new Set(), entries: [], evidence: [], observations: [] };
 		component.paths.add(path);
-		byRoot.set(root, component);
+		grouped.set(root, component);
 	}
-	for (const action of plan.actions) componentFor(byRoot, graph, actionPaths(action)).actions.push(action);
-	for (const evidence of identityEvidence) {
-		componentFor(byRoot, graph, evidencePaths(evidence)).evidence.push(evidence);
+	for (const entry of snapshot.entries) grouped.get(graph.root(entry.path))!.entries.push(entry);
+	for (const item of evidence) {
+		const first = evidencePaths(item)[0];
+		if (first) grouped.get(graph.root(first))!.evidence.push(item);
 	}
-	for (const observation of observations) {
-		componentFor(byRoot, graph, observationPaths(observation)).observations.push(observation);
-	}
-	for (const entry of entries) componentFor(byRoot, graph, [entry.path]).entries.push(entry);
-	return [...byRoot.values()].filter((component) =>
-		component.actions.length > 0 || component.evidence.length > 0 ||
-		component.observations.some((observation) =>
-			observation.kind === "present_unresolved" || observation.kind === "unknown"));
+	for (const item of snapshot.observations) grouped.get(graph.root(item.requestedPath))!.observations.push(item);
+	// WARM's local scan also contains unrelated, unchanged addresses for which
+	// no remote facts were acquired. Those are not attempted components. Keep
+	// every observed entry (including no-change entries) and every retained claim.
+	return [...grouped.values()].filter((component) => component.entries.length > 0 ||
+		component.evidence.length > 0 || component.observations.some((item) =>
+			item.kind === "unknown" || item.kind === "present_unresolved"));
 }
 
 function folderDescendantPaths(
@@ -92,11 +98,6 @@ function pathsWithPrefix(sortedPaths: readonly string[], prefix: string): string
 	return matches;
 }
 
-function actionPaths(action: SyncAction): string[] {
-	if (action.action !== "rename_local" && action.action !== "rename_remote") return [action.path];
-	return [action.oldPath, action.path, ...(action.descendants?.flatMap((pair) => [pair.oldPath, pair.newPath]) ?? [])];
-}
-
 function evidencePaths(evidence: IdentityEvidence): string[] {
 	if (evidence.kind === "rename") return [evidence.oldPath, evidence.newPath];
 	if (evidence.kind === "alias") return [evidence.requestedPath, evidence.resolvedPath];
@@ -109,18 +110,6 @@ function observationPaths(observation: PathObservation): string[] {
 		return [observation.requestedPath, observation.returnedPath];
 	}
 	return [observation.requestedPath];
-}
-
-function emptyComponent(): AdmissionComponent {
-	return { paths: new Set(), actions: [], entries: [], evidence: [], observations: [] };
-}
-
-function componentFor(
-	components: Map<string, AdmissionComponent>,
-	graph: PathGraph,
-	paths: readonly string[],
-): AdmissionComponent {
-	return components.get(graph.root(paths[0]!))!;
 }
 
 class PathGraph {

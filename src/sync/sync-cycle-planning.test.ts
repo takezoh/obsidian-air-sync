@@ -33,7 +33,7 @@ describe("batch observation boundary", () => {
 			},
 		}];
 		const scope: ScopeProjection = {
-			byEndpoint: new Map([["renamed.md", "included"]]),
+			isConfiguredScopeCompatible: () => true, byEndpoint: new Map([["renamed.md", "included"]]),
 		};
 
 		const observation = captureBatchObservation(
@@ -78,7 +78,7 @@ describe("batch observation boundary", () => {
 			temperature: "cold",
 		};
 		const { snapshot } = prepareSyncCycleSnapshot(
-			changeSet, "backend\0root", { isExcluded: () => false },
+			changeSet, "backend\0root", { ignorePatterns: [] },
 		);
 
 		expect(snapshot.entries).toEqual(changeSet.entries);
@@ -98,7 +98,7 @@ describe("batch observation boundary", () => {
 				{ path: "old.md", prevSync: oldRecord },
 				{
 					path: "new.md",
-					local: { path: "new.md", size: 4, mtime: 2, hash: "new", isDirectory: false },
+					local: { path: "new.md", size: 4, mtime: 2, hash: "new", isDirectory: false, pathAuthority: "actual_resolved" },
 				},
 				{ path: "desktop.ini", prevSync: excludedRecord },
 			],
@@ -106,7 +106,7 @@ describe("batch observation boundary", () => {
 				{ kind: "absent", side: "local", requestedPath: "old.md", authority: "stat" },
 				{
 					kind: "exact", side: "local", requestedPath: "new.md",
-					entity: { path: "new.md", size: 4, mtime: 2, hash: "new", isDirectory: false },
+					entity: { path: "new.md", size: 4, mtime: 2, hash: "new", isDirectory: false, pathAuthority: "actual_resolved" },
 				},
 				{
 					kind: "absent", side: "local", requestedPath: "desktop.ini", authority: "stat",
@@ -120,7 +120,7 @@ describe("batch observation boundary", () => {
 		};
 
 		const { snapshot } = prepareSyncCycleSnapshot(changeSet, "backend\0root", {
-			isExcluded: (path) => path !== "old.md",
+			ignorePatterns: ["**", "!old.md"],
 		});
 
 		expect(snapshot.entries.map((entry) => entry.path)).toEqual(["old.md"]);
@@ -137,22 +137,22 @@ describe("batch observation boundary", () => {
 			entries: [
 				{
 					path: "old.md", prevSync: baseline("old.md"),
-					remote: { path: "old.md", size: 4, mtime: 1, hash: "base", isDirectory: false },
+					remote: { path: "old.md", size: 4, mtime: 1, hash: "base", isDirectory: false, pathAuthority: "actual_resolved" },
 				},
 				{
 					path: "new.md",
-					local: { path: "new.md", size: 4, mtime: 2, hash: "new", isDirectory: false },
+					local: { path: "new.md", size: 4, mtime: 2, hash: "new", isDirectory: false, pathAuthority: "actual_resolved" },
 				},
 			],
 			observations: [
 				{ kind: "absent", side: "local", requestedPath: "old.md", authority: "stat" },
 				{
 					kind: "exact", side: "remote", requestedPath: "old.md",
-					entity: { path: "old.md", size: 4, mtime: 1, hash: "base", isDirectory: false },
+					entity: { path: "old.md", size: 4, mtime: 1, hash: "base", isDirectory: false, pathAuthority: "actual_resolved" },
 				},
 				{
 					kind: "exact", side: "local", requestedPath: "new.md",
-					entity: { path: "new.md", size: 4, mtime: 2, hash: "new", isDirectory: false },
+					entity: { path: "new.md", size: 4, mtime: 2, hash: "new", isDirectory: false, pathAuthority: "actual_resolved" },
 				},
 			] as ChangeSet["observations"],
 			expectedAction: { action: "delete_remote", path: "old.md" },
@@ -163,21 +163,21 @@ describe("batch observation boundary", () => {
 			entries: [
 				{
 					path: "old.md", prevSync: baseline("old.md"),
-					remote: { path: "old.md", size: 4, mtime: 1, hash: "base", isDirectory: false },
+					remote: { path: "old.md", size: 4, mtime: 1, hash: "base", isDirectory: false, pathAuthority: "actual_resolved" },
 				},
 				{
 					path: "new.md",
-					local: { path: "new.md", size: 4, mtime: 2, hash: "new", isDirectory: false },
+					local: { path: "new.md", size: 4, mtime: 2, hash: "new", isDirectory: false, pathAuthority: "actual_resolved" },
 				},
 			],
 			observations: [
 				{
 					kind: "exact", side: "remote", requestedPath: "old.md",
-					entity: { path: "old.md", size: 4, mtime: 1, hash: "base", isDirectory: false },
+					entity: { path: "old.md", size: 4, mtime: 1, hash: "base", isDirectory: false, pathAuthority: "actual_resolved" },
 				},
 				{
 					kind: "exact", side: "local", requestedPath: "new.md",
-					entity: { path: "new.md", size: 4, mtime: 2, hash: "new", isDirectory: false },
+					entity: { path: "new.md", size: 4, mtime: 2, hash: "new", isDirectory: false, pathAuthority: "actual_resolved" },
 				},
 				{ kind: "absent", side: "remote", requestedPath: "new.md", authority: "stat" },
 			] as ChangeSet["observations"],
@@ -194,7 +194,7 @@ describe("batch observation boundary", () => {
 			temperature: "hot",
 		};
 		const { snapshot } = prepareSyncCycleSnapshot(changeSet, "backend\0root", {
-			isExcluded: (path) => path === excludedPath,
+			reservedPaths: [excludedPath],
 		});
 
 		const admission = admitBatchObservation(snapshot);

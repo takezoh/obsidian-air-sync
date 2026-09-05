@@ -1,0 +1,128 @@
+artifact: design-plan-spine
+version: 2
+granularity_profile: boundary-complete
+requirements:
+  - {id: FR-001, type: ubiquitous, priority: must, statement: "The system SHALL decide from current facts and committed SyncRecords without new correctness state; equal complete facts SHALL yield equal COLD/WARM/HOT decisions."}
+  - {id: FR-002, type: event_driven, priority: must, statement: "WHEN topology, content and required baselines align, Admission SHALL resolve no action; incomplete baseline publication SHALL first use existing terminal publication."}
+  - {id: FR-003, type: event_driven, priority: must, statement: "WHEN rename and edit coexist, the system SHALL preserve the exact admitted identity/content outcome and required conflict versions."}
+  - {id: FR-004, type: unwanted, priority: must, statement: "IF required included facts are unknown or contradictory, Admission SHALL fail closed; every derived relation SHALL use one captured pure scope compatibility query while preserving inclusion policy."}
+  - {id: FR-005, type: event_driven, priority: must, statement: "WHEN effects terminate successfully, SyncRecord publication SHALL atomically compare exact source/destination expectations; foreign replacement requires Admission authorization and policy-required preservation proof, not store identity policy."}
+  - {id: FR-006, type: event_driven, priority: must, statement: "WHEN finalization returns clean, orchestration SHALL acknowledge only captured generations and display successful completion; incomplete cycles SHALL do neither."}
+  - {id: NFR-001, type: maintainability, priority: must, statement: "One identity decision owner and one cycle completion predicate; no action-first fallback, new action kind, state owner, flag or dual run."}
+components:
+  - id: observation
+    kind: existing
+    contract_refs: [contract-facts, contract-scope]
+    paths: [src/sync/change-detector.ts, src/sync/scope-projection.ts, src/sync/sync-cycle-planning.ts]
+  - id: admission
+    kind: existing
+    contract_refs: [contract-facts, contract-effects, contract-scope]
+    paths: [src/sync/plan-admission.ts, src/sync/plan-admission-graph.ts, src/sync/identity-component-decision.ts]
+  - id: content-comparison
+    kind: existing
+    contract_refs: [contract-facts, contract-effects]
+    paths: [src/sync/decision-engine.ts]
+  - id: execution-publication
+    kind: existing
+    contract_refs: [contract-effects, contract-publication, contract-closeout]
+    paths: [src/sync/plan-executor.ts, src/sync/priority-batch-state.ts, src/sync/state-committer.ts, src/sync/state.ts, src/sync/sync-cycle-finalization.ts, src/sync/orchestrator.ts, src/sync/local-tracker.ts]
+contracts:
+  - id: contract-facts
+    dimension: identity decision and action construction
+    owner: admission
+    requirement_refs: [FR-001, FR-002, FR-004, NFR-001]
+    unit_refs: [unit-1, unit-4]
+    adr_refs: [adr-20260905-fact-first-component-admission]
+    partition: {outcomes: [determinate, unknown, conflicting], default_policy: Fail closed on incomplete or contradictory identity facts; no action-derived proof.}
+    verification:
+      - {id: ac-convergence, tier: T0, command: "npx vitest run src/sync/plan-admission.test.ts"}
+      - {id: ac-structure, tier: T2}
+  - id: contract-effects
+    dimension: Admission-owned readonly component order and executor-owned ordered I/O/publication with independent singleton pooling and global serial priority deferral
+    owner: execution-publication
+    requirement_refs: [FR-001, FR-003, NFR-001]
+    unit_refs: [unit-1, unit-2, unit-4]
+    adr_refs: [adr-20260905-fact-first-component-admission]
+    verification:
+      - {id: ac-preservation, tier: T1, command: "npx vitest run src/sync/plan-executor.test.ts"}
+      - {id: ac-structure, tier: T2}
+  - id: contract-publication
+    dimension: identity-neutral exact source/destination CAS with authorized replacement proof and atomic record/merge-base publication
+    owner: execution-publication
+    requirement_refs: [FR-001, FR-005]
+    unit_refs: [unit-2, unit-4]
+    adr_refs: [adr-20260905-fact-first-component-admission]
+    verification:
+      - {id: ac-publication, tier: T1, command: "npx vitest run src/sync/state.test.ts src/sync/state-committer.test.ts"}
+  - id: contract-scope
+    dimension: one immutable-capture pure scope compatibility query for every Admission relation plus separate managed subtree completeness
+    owner: observation
+    requirement_refs: [FR-001, FR-004]
+    unit_refs: [unit-1, unit-4]
+    adr_refs: [adr-20260905-fact-first-component-admission]
+    verification:
+      - {id: ac-preservation, tier: T0, command: "npx vitest run src/sync/scope-projection.test.ts src/sync/plan-admission.test.ts"}
+  - id: contract-closeout
+    dimension: exact clean/incomplete result and generation acknowledgment
+    owner: execution-publication
+    requirement_refs: [FR-001, FR-006, NFR-001]
+    unit_refs: [unit-3, unit-4]
+    adr_refs: [adr-20260905-fact-first-component-admission]
+    verification:
+      - {id: ac-closeout, tier: T1, command: "npx vitest run src/sync/sync-cycle-finalization.test.ts src/sync/orchestrator.test.ts src/sync/local-tracker.test.ts"}
+      - {id: ac-structure, tier: T2}
+adrs:
+  - id: adr-20260905-fact-first-component-admission
+    status: accepted
+    decision_input_refs: [FR-001, FR-002, FR-003, FR-004, FR-005, FR-006, NFR-001]
+units:
+  - title: unit-1
+    contract_refs: [contract-facts, contract-effects, contract-scope]
+    files: [src/sync/plan-admission.ts, src/sync/plan-admission-graph.ts, src/sync/identity-component-decision.ts, src/sync/identity-component-topology.ts, src/sync/identity-component-report-family.ts, src/sync/local-rename-admission.ts, src/sync/plan-admission-case-alias.ts, src/sync/decision-engine.ts, src/sync/optimize-local-renames.ts, src/sync/optimize-remote-renames.ts, src/sync/types.ts, src/sync/scope-projection.ts, src/sync/sync-cycle-planning.ts, src/sync/plan-admission.test.ts, src/sync/scope-projection.test.ts, src/sync/sync-cycle-planning.test.ts]
+    depends_on: []
+    acceptance: [ac-convergence, ac-preservation]
+    objective: Bind current facts and real effect/publication footprints into ordered components; apply one captured pure scope query to every relation and strengthen public reproductions.
+    output_format: Source and discriminating tests; no production fallback.
+    tool_guidance: Use existing public BatchObservation seam and scope fixtures; apply_patch edits; focused vitest then full gate.
+    task_boundaries: Existing Admission owns action order and identity; existing ScopeProjection gains one private immutable-capture pure query, not another policy stage; preserve inclusion policy and report conflict authority.
+  - title: unit-2
+    contract_refs: [contract-effects, contract-publication]
+    files: [src/sync/plan-executor.ts, src/sync/priority-batch-state.ts, src/sync/state-committer.ts, src/sync/state.ts, src/sync/types.ts, src/sync/execution-result.ts, src/sync/plan-executor.test.ts, src/sync/priority-batch-state.test.ts, src/sync/state-committer.test.ts, src/sync/state.test.ts, src/__mocks__/sync-test-helpers.ts]
+    depends_on: [unit-1]
+    acceptance: [ac-preservation, ac-publication]
+    objective: Execute readonly ordered components after independent singleton pool settlement with global serial priority deferral; publish exact authorized replacements and record-bound merge bases atomically.
+    output_format: Source and filesystem/IDB interruption tests.
+    tool_guidance: Reuse executor/result and real test IDB seams; test all six B-to-A action combinations, prefix blocking, pool/priority exclusion, foreign replacement replay and late merge-base refresh races.
+    task_boundaries: Existing action kinds and owners only; replace flat phases, preserve Admission order, and keep store CAS identity-neutral; no DAG, queue, arbitrary step IR or retry ledger.
+  - title: unit-3
+    contract_refs: [contract-closeout]
+    files: [src/sync/sync-cycle-finalization.ts, src/sync/orchestrator.ts, src/sync/local-tracker.ts, src/sync/execution-result.ts, src/sync/sync-cycle-finalization.test.ts, src/sync/orchestrator.test.ts, src/sync/local-tracker.test.ts]
+    depends_on: [unit-2]
+    acceptance: [ac-closeout]
+    objective: Unify closeout, tracker acknowledgment and successful UI projection on one call-local result.
+    output_format: Source and exact priority/checkpoint/ABA lifecycle tests.
+    tool_guidance: Existing generation snapshots and terminal result seams only; check commit and abort exception paths.
+    task_boundaries: No new orchestrator field or independent completion predicate.
+  - title: unit-4
+    contract_refs: [contract-facts, contract-effects, contract-publication, contract-scope, contract-closeout]
+    files: [AGENTS.md, ARCHITECTURE.md, docs/code-enforcement.md, docs/design/design-four-stage-sync-pipeline.md, docs/adr/adr-20260905-fact-first-component-admission.md]
+    depends_on: [unit-1, unit-2, unit-3]
+    acceptance: [ac-convergence, ac-preservation, ac-publication, ac-closeout, ac-structure]
+    objective: Enforce simplified ownership and verify repeated real-vault convergence before declaring repaired.
+    output_format: Guard updates, accepted/promoted design only with approval, full gate and actual-vault evidence.
+    tool_guidance: Run full project gate and independent review; record build hash and repeated observed cycles.
+    task_boundaries: Do not rewrite historical accepted ADRs; no automatic reset, deployment, merge or release authorization.
+acceptance:
+  - {id: ac-convergence, criteria: "Public complete facts converge including old/missing baseline publication and repeated cycles; unknown/contradictory facts remain failed.", requirement_refs: [FR-001, FR-002, FR-004]}
+  - {id: ac-preservation, criteria: "All six B pull/match/conflict then A match/conflict orders preserve versions and block failed suffixes; pool/priority never overlap serial work; report/alias/actual/baseline derivations share the scope query, distinguishing equal included facts with different scope captures while retaining XOR and both-excluded policy.", requirement_refs: [FR-001, FR-003, FR-004]}
+  - {id: ac-publication, criteria: "Exact source/destination CAS allows authorized proven foreign replacement, atomically invalidates incompatible merge bases and CAS-binds refresh; mismatch preserves concurrent records and ordinary post-I/O replay converges; folder publication is atomic.", requirement_refs: [FR-001, FR-005]}
+  - {id: ac-closeout, criteria: "Only exact terminal clean closeout acknowledges captured generations or presents success; priority, optional checkpoint and ABA are covered.", requirement_refs: [FR-001, FR-006]}
+  - {id: ac-structure, criteria: "Full gates and ownership guards pass; actual vault repeatedly converges; old policy route and duplicate completion owners are absent.", requirement_refs: [FR-001, NFR-001]}
+dispositions:
+  - {decision_input_ref: FR-001, disposition: Preserve ADR 0001 and acquisition-only strategy semantics., contract_refs: [contract-facts, contract-publication, contract-closeout]}
+  - {decision_input_ref: FR-002, disposition: Select affirmative fact-first terminal resolution instead of a zero-action bypass., contract_refs: [contract-facts]}
+  - {decision_input_ref: FR-003, disposition: Existing components carry readonly ordered existing actions; replace flat phases with independent singleton pool then globally serial complex work and priority deferral., contract_refs: [contract-effects]}
+  - {decision_input_ref: FR-004, disposition: Preserve inclusion policy while replacing the no-additional-scope-information restriction with one pure query over privately frozen pre-projection scope; no all-physical-subtree scan., contract_refs: [contract-scope]}
+  - {decision_input_ref: FR-005, disposition: Separate Admission replacement policy and executor preservation proof from identity-neutral exact record CAS with atomic merge-base invalidation and record-bound refresh., contract_refs: [contract-publication]}
+  - {decision_input_ref: FR-006, disposition: Reuse one call-local closeout result and existing generation map., contract_refs: [contract-closeout]}
+  - {decision_input_ref: NFR-001, disposition: Replace old production policy outright and remove duplicate factual and completion state., adr_refs: [adr-20260905-fact-first-component-admission], contract_refs: [contract-facts, contract-closeout]}

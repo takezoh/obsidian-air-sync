@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { contentKey, checksumsEqual, sameContent } from "./content-identity";
+import { contentKey, checksumsEqual, sameContent, sameSynchronizedContent } from "./content-identity";
+import type { SyncRecord } from "./types";
 import type { FileEntity } from "../fs/types";
 
 function entity(overrides: Partial<FileEntity> = {}): FileEntity {
@@ -81,5 +82,42 @@ describe("sameContent", () => {
 
 	it("ignores size — content identity is checksum-only", () => {
 		expect(sameContent(entity({ hash: "h", size: 1 }), entity({ hash: "h", size: 999 }))).toBe(true);
+	});
+});
+
+describe("sameSynchronizedContent", () => {
+	const baseline: SyncRecord = {
+		path: "old.md", hash: "local-sha", localMtime: 1000, remoteMtime: 1000,
+		localSize: 100, remoteSize: 100, syncedAt: 1000,
+		remoteChecksum: { algo: "md5", value: "provider-md5" },
+	};
+	const local = entity({ path: "new.md", hash: "local-sha" });
+	const remote = entity({ path: "old.md", remoteChecksum: { algo: "md5", value: "provider-md5" } });
+
+	it("uses independently matching committed fingerprints without equating their algorithms", () => {
+		expect(sameContent(local, remote)).toBe(false);
+		expect(sameSynchronizedContent(local, remote, baseline)).toBe(true);
+	});
+
+	it.each([
+		{ hash: "changed" }, { hash: "" }, { size: 99 },
+	])("rejects changed or unproven local content %o", (changed) => {
+		expect(sameSynchronizedContent({ ...local, ...changed }, remote, baseline)).toBe(false);
+	});
+
+	it.each<Partial<FileEntity>>([
+		{ remoteChecksum: undefined },
+		{ remoteChecksum: { algo: "md5", value: "changed" } },
+		{ remoteChecksum: { algo: "sha1", value: "provider-md5" } },
+		{ hash: "contradictory-current-sha" },
+		{ size: 99 },
+	])("rejects changed or unproven remote content %o", (changed) => {
+		expect(sameSynchronizedContent(local, { ...remote, ...changed }, baseline)).toBe(false);
+	});
+
+	it("does not substitute matching metadata for a missing committed content proof", () => {
+		expect(sameSynchronizedContent(local, remote)).toBe(false);
+		expect(sameSynchronizedContent(local, remote, { ...baseline, remoteChecksum: undefined })).toBe(false);
+		expect(sameSynchronizedContent(local, remote, { ...baseline, remoteSize: 99 })).toBe(false);
 	});
 });

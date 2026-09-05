@@ -38,6 +38,18 @@ const TEST_CONFIG_DIR = ".cfg";
 // derives it from deps rather than hardcoding it.
 const TEST_PLUGIN_ID = "test-plugin";
 
+/** Positive scenarios with provider-confirmed post-write metadata. The canonical
+ * remote double stays conservative; fact-first execution tests pin echo rejection.
+ */
+function confirmRemoteWrites(fs: MockFileSystem): void {
+	const write = fs.write.bind(fs);
+	fs.write = async (path, content, mtime) => {
+		const written = await write(path, content, mtime);
+		confirmMockPath(fs, written.path);
+		return written;
+	};
+}
+
 function mockSettings(): AirSyncSettings {
 	// Unique vaultId per call keeps each orchestrator's fake-indexeddb store isolated.
 	return baseMockSettings({
@@ -116,7 +128,7 @@ describe("SyncOrchestrator", () => {
 	describe("plan admission and stateless rename recovery", () => {
 		it("pushes a never-synchronized local rename", async () => {
 			const localFs = createMockLocalFs();
-			const remoteFs = createMockRemoteFs();
+			const remoteFs = createMockRemoteFs("actual_resolved");
 			const tracker = new LocalChangeTracker();
 			const settings = baseMockSettings({
 				backendType: "test", vaultId: `test-${Math.random()}`, lastSyncedIdentity: "test:root",
@@ -230,7 +242,7 @@ describe("SyncOrchestrator", () => {
 				failed: 1,
 			}));
 			expect(warn).toHaveBeenCalledWith("Sync plan component failed Admission", expect.objectContaining({
-				reasons: ["scope_or_authority_missing"],
+				reasons: ["remote_identity_missing"],
 			}));
 			expect(tracker.getRenamePairs()).toEqual(new Map([["a.md", "A.md"]]));
 			expect(remoteList).not.toHaveBeenCalled();
@@ -339,6 +351,7 @@ describe("SyncOrchestrator", () => {
 		it("converges a synchronized local rename plus edit and reaches a fixed point", async () => {
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();
+			confirmRemoteWrites(remoteFs);
 			const tracker = new LocalChangeTracker();
 			addFile(localFs, "new.md", "local edited", 2000);
 			const remote = addFile(remoteFs, "old.md", "baseline", 1000);
@@ -388,6 +401,7 @@ describe("SyncOrchestrator", () => {
 		it("replans a case-only rename plus edit from committed state after restart", async () => {
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();
+			confirmRemoteWrites(remoteFs);
 			addFile(localFs, "case.md", "local edited", 2000);
 			confirmMockPath(localFs, "case.md");
 			const remote = addFile(remoteFs, "Case.md", "baseline", 1000);
@@ -470,6 +484,7 @@ describe("SyncOrchestrator", () => {
 		it("admits the complete mixed-child case-only folder component from a cold scan", async () => {
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();
+			confirmRemoteWrites(remoteFs);
 			const localChanged = addFile(localFs, "TemplateS/changed.md", "local edit", 2000);
 			const localPush = addFile(localFs, "TemplateS/push.md", "local edit", 2000);
 			const localSame = addFile(localFs, "TemplateS/same.md", "same", 1000);
@@ -484,6 +499,7 @@ describe("SyncOrchestrator", () => {
 
 			const exactLocalStat = localFs.stat.bind(localFs);
 			const exactLocalWrite = localFs.write.bind(localFs);
+			const exactLocalRead = localFs.read.bind(localFs);
 			const exactRemoteWrite = remoteFs.write.bind(remoteFs);
 			const localPhysicalPath = (path: string) => path === "Templates"
 				? "TemplateS"
@@ -497,6 +513,7 @@ describe("SyncOrchestrator", () => {
 			};
 			localFs.write = (path, content, mtime) =>
 				exactLocalWrite(localPhysicalPath(path), content, mtime);
+			localFs.read = (path) => exactLocalRead(localPhysicalPath(path));
 			remoteFs.write = (path, content, mtime) => {
 				const providerPath = path.startsWith("TemplateS/")
 					? `Templates/${path.slice("TemplateS/".length)}`
@@ -543,7 +560,7 @@ describe("SyncOrchestrator", () => {
 				localFs, remoteFs, stateStore: orchestrator.state, changes: tracker.snapshot(),
 			}, { forceFullScan: true });
 			const planning = prepareSyncCycleSnapshot(changes, "test:root", {
-				isExcluded: () => false,
+				ignorePatterns: [],
 			});
 			const admission = admitBatchObservation(planning.snapshot);
 			expect(admission.snapshot.observations).toContainEqual(expect.objectContaining({
@@ -556,9 +573,9 @@ describe("SyncOrchestrator", () => {
 
 			const planLog = info.mock.calls.find(([message]) => message === "Sync plan created");
 			expect(planLog?.[1]).toMatchObject({ push: 1, conflict: 1, rename_remote: 1 });
-			expect(renameRemote.mock.calls).toEqual([["Templates", "TemplateS"]]);
 			expect(error.mock.calls).toEqual([]);
 			expect(warn.mock.calls).toEqual([]);
+			expect(renameRemote.mock.calls).toEqual([["Templates", "TemplateS"]]);
 			expect(localChanged.path).toBe("TemplateS/changed.md");
 			expect(localPush.path).toBe("TemplateS/push.md");
 			expect(readText(remoteFs, "TemplateS/push.md")).toBe("local edit");
@@ -571,6 +588,7 @@ describe("SyncOrchestrator", () => {
 		it("preserves third-path R and destination Y once through runSync", async () => {
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();
+			confirmRemoteWrites(remoteFs);
 			const tracker = new LocalChangeTracker();
 			addFile(localFs, "new.md", "local edited", 2000);
 			const primary = addFile(remoteFs, "third.md", "remote R changed", 1500);
@@ -618,6 +636,7 @@ describe("SyncOrchestrator", () => {
 		it("auto-merges third-path R while preserving exact R and Y through runSync", async () => {
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();
+			confirmRemoteWrites(remoteFs);
 			const tracker = new LocalChangeTracker();
 			const base = "one\ntwo\nthree\nfour\nfive\n";
 			const localText = "one\nlocal\nthree\nfour\nfive\n";
@@ -673,6 +692,7 @@ describe("SyncOrchestrator", () => {
 		it("preserves foreign Y when tracked R is absent and converges through runSync", async () => {
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();
+			confirmRemoteWrites(remoteFs);
 			const tracker = new LocalChangeTracker();
 			addFile(localFs, "new.md", "local edited", 2000);
 			const foreign = addFile(remoteFs, "new.md", "foreign Y", 1400);
@@ -712,6 +732,7 @@ describe("SyncOrchestrator", () => {
 		it("converges a vacant target when tracked R is absent through runSync", async () => {
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();
+			confirmRemoteWrites(remoteFs);
 			const tracker = new LocalChangeTracker();
 			addFile(localFs, "new.md", "local edited", 2000);
 			tracker.markRenamed("new.md", "old.md");
@@ -993,7 +1014,7 @@ describe("SyncOrchestrator", () => {
 			settings.ignorePatterns = ["*.tmp"];
 			const deps = createDeps({ getSettings: () => settings });
 			const localFs = createMockLocalFs();
-			const remoteFs = createMockRemoteFs();
+			const remoteFs = createMockRemoteFs("actual_resolved");
 			deps.localFs = () => localFs;
 			deps.remoteFs = () => remoteFs;
 			addFile(localFs, "file.tmp", "ignored");
@@ -1303,7 +1324,7 @@ describe("SyncOrchestrator", () => {
 		it("retries a rate-limited transfer in-cycle, so the cycle completes clean", async () => {
 			const deps = createDeps();
 			const localFs = createMockLocalFs();
-			const remoteFs = createMockRemoteFs();
+			const remoteFs = createMockRemoteFs("actual_resolved");
 			deps.localFs = () => localFs;
 			deps.remoteFs = () => remoteFs;
 			addFile(localFs, "a.md", "content"); // local-only ⇒ push
@@ -2252,7 +2273,7 @@ describe("SyncOrchestrator", () => {
 			["rateLimit", () => Object.assign(new Error("rate limited"), { status: 429 })],
 		])("does not quarantine repeated %s push failures", async (_kind, makeError) => {
 			const localFs = createMockLocalFs();
-			const remoteFs = createMockRemoteFs();
+			const remoteFs = createMockRemoteFs("actual_resolved");
 			addFile(localFs, "flaky.md", "body", 1000);
 
 			const settings = baseMockSettings({
@@ -2645,13 +2666,14 @@ describe("SyncOrchestrator", () => {
 
 		it("does not force cold when settings are unchanged between cycles", async () => {
 			const localFs = createMockLocalFs();
-			const remoteFs = createMockRemoteFs();
+			const remoteFs = createMockRemoteFs("actual_resolved");
 			addFile(remoteFs, "synced.md", "kept", 1000);
 			addFile(localFs, "synced.md", "kept", 1000);
 
 			const settings = baseMockSettings({ backendType: "test", vaultId: `test-${Math.random()}` });
 			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
 			wireScopeFingerprint(remoteFs, null);
+			const commitCheckpoint = vi.spyOn(remoteFs.checkpoint!, "commitCheckpoint");
 
 			const infoSpy = vi.fn();
 			const deps = createDeps({
@@ -2670,6 +2692,7 @@ describe("SyncOrchestrator", () => {
 			const orchestrator = new SyncOrchestrator(deps);
 
 			await orchestrator.runSync(); // cycle 1: commits the fingerprint (migration)
+			expect(commitCheckpoint).toHaveBeenCalledOnce();
 			infoSpy.mockClear();
 
 			await orchestrator.runSync(); // cycle 2: settings unchanged → no scope change

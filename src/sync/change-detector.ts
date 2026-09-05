@@ -3,14 +3,14 @@ import type { FileEntity } from "../fs/types";
 import type { IdentityEvidence, MixedEntity, PathObservation, SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
 import type { TrackerSnapshot } from "./local-tracker";
-import { hasChanged, hasRemoteChanged } from "./change-compare";
+import { hasChanged } from "./change-compare";
 import {
 	enrichHashesForInitialMatch,
 	enrichHashesForLocalCaseAliases,
 	enrichHashesForRenames,
 	type HashEnrichmentResult,
 } from "./change-hash-enrichment";
-import { collectLocalRenameEvidence, completeIdentityEvidence, renameOptimizerView } from "./identity-evidence";
+import { collectLocalRenameEvidence, completeIdentityEvidence } from "./identity-evidence";
 import {
 	getRemoteChanges,
 	hasFolderRename,
@@ -114,10 +114,8 @@ export async function collectChanges(
 	);
 	// Hash enrichment operates only on exact entries and cannot upgrade observations.
 	changeSet.hashEnrichment = await enrichHashesForInitialMatch(changeSet.entries, deps.localFs);
-	const renameView = renameOptimizerView(changeSet.identityEvidence);
 	await enrichHashesForRenames(
-		changeSet.entries, changeSet.observations, deps.localFs,
-		renameView.localFiles, renameView.localFolders,
+		changeSet.entries, changeSet.observations, deps.localFs, deps.remoteFs, changeSet.identityEvidence,
 	);
 	changeSet.identityEvidence = completeIdentityEvidence(
 		changeSet.identityEvidence,
@@ -150,22 +148,14 @@ async function collectHot(
 		Promise.all(pathArray.map((p) => remoteFs.stat(p))),
 		stateStore.getMany(pathArray),
 	]);
-	const renameSourcePaths = new Set(changes.renamePairs.values());
 	const observations: PathObservation[] = [];
 
 	const entries: MixedEntity[] = pathArray.map((path, i) => {
 		const localStat = localStats[i] ?? undefined;
-		// A case-insensitive filesystem can resolve a recorded rename source to
-		// the destination file. The tracker is authoritative for the logical
-		// rename: only accept the source as still present when stat() returns that
-		// exact path (for example, the user recreated the source before syncing).
-		const isRenameSourceAlias =
-			renameSourcePaths.has(path) &&
-			localStat?.path !== path;
 		const localObservation = observePath(
 			"local",
 			path,
-			isRenameSourceAlias ? undefined : localStat,
+			localStat,
 		);
 		const remoteObservation = observePath(
 			"remote", path, remoteStats[i],
@@ -181,31 +171,9 @@ async function collectHot(
 		};
 	});
 
-	// Keep only entries that actually changed vs baseline (prune no-ops). This also
-	// subsumes the "has any side" existence check: an entry with neither local nor
-	// remote nor a prevSync can't have changed, so the predicate's branches drop it
-	// (the first branch returns `!!prev` === false for the all-absent case).
-	const changed = entries.filter((e) => {
-		const prev = e.prevSync;
-		// Both deleted — include if previously synced (cleanup)
-		if (!e.local && !e.remote) return !!prev;
-		// New file: no prev record
-		if (!prev) return true;
-		// Local deleted but remote still exists (e.g. rename source)
-		if (!e.local && e.remote) return true;
-		// A checkpoint tombstone is authoritative remote absence. Preserve it even
-		// when the surviving local file is unchanged so the decision engine can
-		// propagate the deletion. Do not infer this from remote stat() absence alone:
-		// locally dirty paths also pass through HOT without a remote change signal.
-		if (e.local && !e.remote && remoteChanges.deletedPaths.has(e.path)) return true;
-		// Local changed
-		if (e.local && hasChanged(e.local, prev)) return true;
-		// Remote changed
-		if (e.remote && hasRemoteChanged(e.remote, prev)) return true;
-		return false;
-	});
-
-	return { entries: changed, observations, identityEvidence: remoteChanges.renameEvidence, temperature: "hot" };
+	// Acquisition retains all facts it obtained. Admission owns no-change and
+	// deletion decisions, including whether stat absence has deletion authority.
+	return { entries, observations, identityEvidence: remoteChanges.renameEvidence, temperature: "hot" };
 }
 
 async function collectWarm(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): Promise<ChangeSet> {

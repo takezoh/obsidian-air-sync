@@ -42,7 +42,7 @@ export function captureBatchObservation(
 	scope: ScopeProjection,
 	namespace: string,
 	baselinePaths: readonly string[] = entries.flatMap((entry) =>
-		entry.prevSync ? [entry.path] : []),
+		entry.prevSync ? [entry.prevSync.path] : []),
 ): BatchObservation {
 	const evidence = identityEvidence.map((item): CycleEvidenceItem =>
 		isLocalRenameEvidence(item)
@@ -53,7 +53,10 @@ export function captureBatchObservation(
 		evidence,
 		baselinePaths: new Set(baselinePaths),
 		observations: [...observations],
-		scope: { byEndpoint: new Map(scope.byEndpoint) },
+		scope: {
+			byEndpoint: new Map(scope.byEndpoint),
+			isConfiguredScopeCompatible: scope.isConfiguredScopeCompatible,
+		},
 		namespace,
 	});
 }
@@ -207,7 +210,6 @@ export function logSyncCyclePlan(
 	}
 	logger?.info("Sync plan created", {
 		total: admission.executable.actions.length,
-		proposed: admission.snapshot.plan.actions.length,
 		localRenameCandidates: renameCandidates.length,
 		freshLocalRenameCandidates: renameCandidates.length,
 		...actionBreakdown,

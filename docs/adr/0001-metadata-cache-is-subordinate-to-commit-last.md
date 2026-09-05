@@ -4,6 +4,22 @@
 **Context area:** sync pipeline / Google Drive backend
 **Related:** [sync-pipeline.md → Crash recovery](../sync-pipeline.md), [google-drive-backend.md](../google-drive-backend.md)
 
+**2026-09-05 scheduling clarification:** [Fact-first component Admission](adr-20260905-fact-first-component-admission.md)
+supersedes the historical flat transfer/conflict/structural phases, pooled structural
+deletes, and global one-action-per-path arguments below. Independent singleton
+transfers/same-key matches settle before globally serial ordered components; each action
+publishes before its successor, and priority work is drained/deferred across that interval.
+This changes execution ordering, not A/B ownership or provider cache mutex/CAS mechanics.
+Per-file publication compares exact captured source and destination records atomically;
+parent relocation consumes existing successful child receipts without another owner.
+No writer or orchestrator field is added. The state ownership AST inventory remains closed.
+Ordinary and renamed conflicts now share resolver capture/preservation followed by
+executor-owned original-path effects and exact terminal publication. Removal of the
+legacy conflict executor removes `conflict.ts` from Store readers/imports only. No
+correctness authority is added; input byte witnesses live in the current result and
+are discarded with the attempt. Interrupted merges use current-fact re-observation,
+not a compensating rollback or persisted recovery instruction.
+
 ## Context
 
 Sync correctness has exactly **two authoritative durable states** (A and B). Each is

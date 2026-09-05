@@ -27,13 +27,16 @@ invariants:
     cycle.
   enforcement: contract
 - id: INV-003
-  statement: A checkpoint advances only after all admitted actions are terminal under
-    finalization policy.
+  statement: A cycle is clean only after every exact admitted obligation has successful
+    terminal publication and the working view closes once. Sibling effects settle
+    before commit or abort; incomplete attempts abort before classification or retry.
+    Only clean completion acknowledges captured tracker generations.
   enforcement: test
 - id: INV-004
-  statement: Configured-scope filtering removes excluded paths and cross-scope identity
-    edges before BatchObservation; Admission and later stages cannot observe or branch
-    on them.
+  statement: Configured-scope projection removes excluded metadata and identity edges
+    before BatchObservation. Every relation uses the same immutable cycle-local pure
+    scope compatibility query; it performs no I/O and cannot bind identity or authorize
+    actions.
   enforcement: test
 - id: INV-005
   statement: Admission decisions depend only on current component facts and component-local
@@ -41,20 +44,40 @@ invariants:
     and database version are not decision inputs.
   enforcement: test
 - id: INV-006
-  statement: Component-local normalization shapes a candidate only; every normalized
-    component reaches exactly one action-aware Admission evaluator before exactly
-    one disposition is emitted.
-  enforcement: test
+  statement: Admission binds current component identity, endpoints and committed baseline
+    before subordinate content comparison and constructs ordered actions once. Actions
+    and intended effects never serve as identity or completeness evidence.
+  enforcement: contract
 - id: INV-007
-  statement: Admission selects one authority family from immutable raw component facts,
-    materializes it once, evaluates it once, and disposes the component once; coherent
-    reports precede aliases and normative conflict has no fallback.
+  statement: Admission selects one authority family from current component facts and
+    emits exactly one disposition. Coherent reports precede aliases; unresolved claims
+    have no weaker-family fallback. A report is already satisfied only when its current
+    endpoints and identity claims are positively accounted for.
   enforcement: contract
 - id: INV-008
   statement: A selected folder-root claim governs only exact, complete, unique, suffix-preserving,
     included descendants proven by immutable call-local data that is discarded with
     the component decision.
   enforcement: test
+- id: INV-009
+  statement: Execution preserves component order through each action's terminal publication;
+    failure blocks the suffix. Independent singleton transfers and same-key matches
+    may pool, but all pool and active priority effects settle before the globally
+    serial component interval, throughout which new priority effects are deferred.
+  enforcement: test
+- id: INV-010
+  statement: Publication compares exact admitted source and destination records atomically;
+    storage does not choose identity replacement policy. Parent publication consumes
+    existing successful child receipts, not a second registry. Concurrent records
+    and incompatible merge bases are protected by the same transaction.
+  enforcement: test
+- id: INV-011
+  statement: 'Sync has exactly two durable authorities: successful per-file SyncRecords
+    and the wholly clean-cycle remote cursor. Metadata cache and scope are derived
+    final snapshots committed atomically with that cursor. Do not persist intent,
+    evidence, failures or recovery instructions, or introduce another retained in-memory
+    correctness owner.'
+  enforcement: contract
 boundaries:
   provides:
   - id: BOUNDARY-001
@@ -74,9 +97,15 @@ boundaries:
     statement: BatchObservation carrying an excluded path, excluded-path disposition,
       or identity edge with an excluded endpoint.
   - id: BOUNDARY-007
-    statement: Production modules other than the identity-component decision importing
-      rename candidate/topology helpers, or Admission retaining mutable correctness
-      proof at module scope or across calls.
+    statement: Independent identity-policy stages, action-first normalization or repair
+      APIs, action-bearing observations, and correctness proofs retained at module
+      scope or across calls are forbidden.
+  - id: BOUNDARY-008
+    statement: Conflict resolution cannot mutate originals or select separate ordinary
+      and rename execution routes. One capture and policy-required preservation contract
+      precedes executor-owned effects, source revalidation, terminal proof and publication.
+      Newly arriving destinations are precondition failures, never deletion authority;
+      interrupted work is re-observed without compensating recovery state.
 variability:
   fixed:
   - id: FIXED-001
@@ -117,14 +146,15 @@ compatibility_policies:
     semantics, and user-visible sync outcomes.
 tags: []
 owners: []
-relations: []
+relations:
+- {type: references, target: adr-20260905-fact-first-component-admission}
 source_paths:
 - src/sync/sync-cycle-planning.ts
-- src/sync/case-alias-admission.ts
-- src/sync/local-rename-admission.ts
 - src/sync/plan-admission.ts
 - src/sync/plan-executor.ts
 - src/sync/sync-cycle-finalization.ts
+- src/sync/identity-component-decision.ts
+- src/sync/conflict-resolver.ts
 summary: Current responsibility and dependency boundaries for the four-stage sync
   pipeline.
 updated: '2026-09-04'
@@ -138,8 +168,8 @@ Keep the sync engine structurally convergent by assigning every normal-cycle dec
 
 The pipeline is `Observation -> Admission -> Execution -> Commit/finalization`.
 
-- Observation owns acquisition and a cut-consistent immutable carrier.
-- Admission owns path-local proposal logic as a private helper, identity-component decisions, conflict policy, and exact authorization.
+- Observation owns acquisition, configured-scope projection and a cut-consistent immutable carrier.
+- Admission binds current identity and topology before subordinate pure content comparison, and owns conflict policy and exact authorization.
 - Execution owns ordering and I/O for the authorized actions only.
 - Commit/finalization owns per-action state publication, completion proof, and checkpoint commit-last.
 
@@ -147,36 +177,64 @@ The pipeline is `Observation -> Admission -> Execution -> Commit/finalization`.
 
 `BatchObservation` contains facts, never `SyncPlan` or another action carrier. `AuthorizedSyncPlan` can be created only by Admission. Execution and finalization consume that exact object and cannot call decision helpers.
 
-Observation may enrich facts such as content hashes, aliases, and stable identities,
-but it cannot turn them into rename evidence or action intent. Admission normalizes one
-connected component and decides it exhaustively. Component-local normalizers construct
-candidate actions only: they cannot authorize, settle, or fail a component. After all
-candidate shaping, one final identity-component evaluator applies every fail-closed
-predicate and produces the sole reason set from which Admission emits exactly one
-disposition. A complete parent rename mapping can prove a descendant identity edge only
-for the exact current occurrence to that identity's unique committed baseline occurrence;
-an intended destination is not proof. COLD/WARM/HOT are acquisition
-strategies only; whole-store record count, schema version, and prior failure are never
-policy inputs. Executor may select compound I/O only from an explicit protocol emitted
-by Admission, never by reverse-engineering absent baselines or action shape.
+Observation records current endpoint, content, alias and identity facts, including
+reported rename notifications; it cannot manufacture action intent. Admission binds
+one connected component, resolves coherent reports before aliases, compares content
+only after identity binding, and emits one disposition with ordered actions. An
+unresolved claim has no weaker-family fallback. Neither a proposed effect nor an
+unrelated destination baseline proves that a reported move is complete.
+
+A complete parent mapping concerns exact current occurrences and their committed
+baselines, not intended destinations. COLD/WARM/HOT are acquisition strategies only;
+whole-store count, schema version and prior failures are not policy inputs. Execution
+uses the fixed admitted protocol and never reinterprets a precondition mismatch as a
+different action or permission to overwrite a newly arrived version.
 
 Configured-scope filtering is the entrance to this boundary. Paths rejected by that
 filter, observations that disclose them, and identity edges with an excluded endpoint
 must be removed before `BatchObservation` is constructed. Admission and later stages
-have no excluded-path disposition and cannot let an excluded physical entry affect a
-sync decision.
+have no excluded-path disposition or excluded metadata inventory. Every report-,
+alias-, endpoint- and baseline-derived relation uses the same captured pure scope
+compatibility query. Its immutable private scope surface and settings answer inclusion
+compatibility only; they perform no I/O and do not bind identity or authorize work.
 
 ## Invariants
 
-Rename plus content change on one side is ordinary evidence and converges to the new path and content. A conflict exists only when both sides changed incompatibly from the same baseline. Structural ambiguity fails closed before destructive I/O.
+Rename plus content change is ordinary evidence and converges to the new path and
+content. Compare proven current equality before changes against the baseline. Conflicts
+use existing policy over bound versions, including baseline-absent disagreement and
+foreign destination versions that must be preserved. Structural ambiguity fails closed.
+
+Successful file records and the wholly clean-cycle remote cursor are the only durable
+authorities. Cache and scope are derived final snapshots published atomically with the
+cursor. No evidence, failure, intent or recovery marker becomes persistent state, and
+no additional retained in-memory correctness owner is introduced.
 
 ## Collaboration
 
-The orchestrator sequences the four owners but owns none of their policy. The existing priority coordinator is a scheduling mechanism inside Execution; it is not a fifth decision stage.
+The orchestrator sequences the four owners but owns none of their policy. Independent
+singleton transfers and same-key matches may pool. Pool and active priority effects
+settle before the globally serial component interval; new priority effects wait until
+it ends. Each component action publishes before its successor, and failure blocks the
+suffix. Parent publication consumes the existing successful child receipts. There is
+no dependency graph, additional receipt registry or recovery queue.
+
+All conflicts share capture and policy-required preservation before executor-owned
+original-path effects. Sources are revalidated before destruction, required copies
+and terminal endpoints are verified before publication, and exact record CAS protects
+concurrent records. The resolver does not mutate originals or choose a separate
+ordinary-conflict execution route. Stored bytes may be proven by authoritative
+checksums; only affected endpoints lacking that proof require fallback reads.
 
 ## Failure Responsibility
 
-Observation and Admission failures abort before effects. Execution records exact failures. Finalization alone decides whether completion is sufficient to advance the checkpoint. A failure preserves the prior committed baseline/checkpoint and persists no operation intent.
+Observation and Admission failures do not authorize effects. Execution reports exact
+outcomes; already successful file publications remain durable when later work fails.
+Finalization settles siblings and closes each attempt exactly once: commit only when
+wholly clean, otherwise abort the live derived view before classification or retry,
+without erasing the durable checkpoint. Only clean completion acknowledges captured
+tracker generations. Interrupted work is re-observed under the same rules, including
+partial merges; no compensating rollback or recovery instruction is required.
 
 ## Variability
 
@@ -184,10 +242,16 @@ Private names and helper placement may change. The four owners, action-authority
 
 ## Conformance
 
-ESLint prevents production modules outside Admission from importing the path-local decision helper. Unit tests verify the fact-only carrier and exact plan behavior. The repository gate verifies lint, Dashboard reproduction, build, and coverage.
+AST guards close the identity-policy imports, fact-only carriers, retired API surface,
+durable writers and retained orchestrator fields. Contract and public pipeline tests
+pin component order, scope compatibility, exact publication, source/copy integrity,
+attempt closeout and ordinary convergence after interruption. The repository gate
+verifies lint, Dashboard reproduction, build and coverage; actual Obsidian acceptance
+is separate from fake-backed test success.
 
 ## Related Decisions
 
 - `adr-20260903-four-stage-sync-pipeline`
 - `adr-20260831-admission-owns-identity-component-decisi`
 - `adr-20260902-fresh-state-reconciliation-for-rename-edits`
+- [Fact-first component Admission](../adr/adr-20260905-fact-first-component-admission.md) supersedes earlier action-first and flat-phase contracts.

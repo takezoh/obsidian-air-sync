@@ -5,7 +5,7 @@
 1. **3-state sync** -- Compare local, remote, and last-sync-record to detect changes. Text conflicts use 3-way merge.
 2. **Swappable production core** -- All remote I/O in the backend-agnostic production core goes through `IFileSystem` + `IBackendProvider`. Adding a backend leaves that core unchanged and extends explicit integration and verification points: its implementation/provider, `fs/registry.ts`, backend-specific settings UI where applicable, the shared contract catalog/matrix, and opt-in live E2E.
 3. **Delta-first** -- Only process files that changed. O(n) full scans are allowed when durable facts require COLD: cold start, missing checkpoint, scope change, and manual rescan.
-4. **Pipeline as data** -- Each sync phase is a pure transformation: `ChangeSet → plain SyncPlan proposal → AuthorizedSyncPlan → Result`. I/O is isolated at boundaries; all intermediate states are testable.
+4. **Fact-first pipeline** -- `ChangeSet → BatchObservation → AuthorizedSyncPlan → Result`. Observation freezes facts; Admission binds identity/topology before pure content comparison and constructs the only executable plan. Execution performs its exact effects; no intermediate result is durable authority.
 5. **Crash-safe by construction** -- State is committed only *after* success: per-file baselines after each admitted action, and the remote delta checkpoint only when no action or Admission failure remains. An interrupted attempt aborts its live derived working view and is freshly reclassified on the next invocation; COLD/WARM/HOT follow durable/current facts only. Operation intent, rename evidence, and cross-cycle failure quarantine are never persisted.
 6. **Duplicate over delete** -- When in doubt, keep the file. Deleting an unwanted copy is easy; recovering a lost file is impossible.
 7. **Single responsibility per module** -- Each file owns one concept. Target 200-300 lines; split when exceeded.
@@ -19,7 +19,7 @@ One row per directory; see the layer diagram and per-doc references for module d
 | `main.ts` | Plugin entry point — lifecycle only: load settings, register commands, wire components, handle the OAuth protocol callback. |
 | `settings.ts` | `AirSyncSettings` type and `DEFAULT_SETTINGS`; `settings-normalize.ts` lifts a legacy per-type `backendData` map into the active flat bag on load. |
 | `config-sync.ts` | Experimental config-directory sync: augments `syncDotPaths`/`ignorePatterns` with the vault's config directory and a built-in pattern set when `enableConfigSync` is on, and `isOwnPluginDataPath()` — the unconditional guard `SyncOrchestrator.isExcluded()` uses to keep this plugin's own settings file from ever syncing. |
-| `sync/` | The sync pipeline and its orchestration: change tracking and evidence-complete detection (hot/warm/cold), direction-aware scope projection, the path-local decision engine, single-owner Admission identity-component authority selection/shaping/fail-closed authorization, plan execution (3-phase lane/tier scheduling), per-action state commit, clean-cycle remote checkpoint finalization, conflict resolution and 3-way merge, the orchestrator (mutex/retry/status), the scheduler (vault events + triggers), the IndexedDB `SyncStateStore`, error classification, and the conflict-history audit writer. |
+| `sync/` | Four-stage sync: current-fact acquisition (hot/warm/cold) and captured scope projection; single-owner identity Admission with subordinate pure content comparison; ordered component execution; exact per-action publication and sole clean-cycle checkpoint finalization. Also conflict resolution/merge, lifecycle orchestration, scheduler, the IndexedDB `SyncStateStore`, error classification and conflict-history audit. |
 | `fs/` | Backend-agnostic contracts and lifecycle: `IFileSystem` + `IncrementalCheckpoint`, `IAuthProvider`, `IBackendProvider` + `WebFolderPicker`, `FileEntity`/`RemoteChecksum`, the provider registry, error classification (`errors.ts`), the OAuth PKCE helper (`oauth-pkce.ts`), the backend settings-renderer contract (`settings-renderer.ts`), `BackendManager`, and the `ISecretStore`/token-store wrappers over Obsidian SecretStorage. |
 | `tests/fs/` | Shared public filesystem behaviour contracts, backend-specific contract harnesses, the exact remote implementation-family catalog, and the central required-contract matrix. Keeping this Vitest-owned infrastructure outside `src/` preserves the production/community-lint boundary. |
 | `fs/caching/` | Shared base for id-addressed remote backends: `CachingRemoteFs<T>` (path↔id resolution and the `IncrementalCheckpoint` checkpoint lifecycle, ADR 0001) and `AbstractMetadataCache<T>`. Google Drive, Dropbox, and OneDrive all build on it. The id-keyed delta apply (`id-delta.ts`) makes their remote-rename detection order-independent for free (ADR 0006). |
@@ -65,17 +65,17 @@ One row per directory; see the layer diagram and per-doc references for module d
      │        │                           │
      │        ▼                           │
      │  2 Admission                       │  PlanAdmission / DecisionEngine
-     │    admitBatchObservation()         │    private path-local proposal
-     │      → admitDestructivePlan()      │    component build + policy
+     │    admitBatchObservation()         │    current identity binding
+     │      → compare bound content      │    private pure comparison
      │      → AuthorizedSyncPlan          │    authorization, disposition, lifecycle
      │        │                           │
      │        ▼                           │
      │  3 Execution                       │  PlanExecutor
-     │    executePlan()  (3 phases)       │
-     │    1 transfers: push/pull          │    AdaptivePool (AIMD); match/cleanup inline
-     │    2 conflict (serial)             │    own phase (sibling-path safe)
-     │    3 structural: 2 lanes ||        │    remote & local, concurrent
-     │      per lane: rename then del     │    rename serial; delete pooled
+     │    executePlan()                   │
+     │    independent singletons pool     │    AdaptivePool (AIMD)
+     │    settle pool + priority          │    defer new priority work
+     │    complex components serial       │    exact admitted action order
+     │      publish before successor      │    failed prefix blocks suffix
      │    exact outcomes only             │    no action invention or rerouting
      │        │                           │
      │        ▼                           │
@@ -93,7 +93,7 @@ One row per directory; see the layer diagram and per-doc references for module d
 
 `runSync` early-returns when no remote backend is present, the backend is connecting, or layout is not ready; it serializes via an `AsyncMutex`. A sync arriving while one runs sets a `syncPending` flag and the running cycle re-runs via a `do/while` loop (coalescing). Each cycle retries up to `MAX_RETRIES = 3`: `AuthError` (status 401) and a non-rate-limit HTTP 403 abort the whole sync immediately; HTTP 404 breaks the retry loop without special handling. For 429 or a rate-limit 403 carrying a `Retry-After` header, delay = `retryAfter * 1000` ms; otherwise exponential backoff with jitter = `2^(attempt-1) * 1000 * (0.5 + Math.random())` ms. See [docs/error-handling.md](docs/error-handling.md) for the full classification/recovery table.
 
-File-open priority is a narrow side entrance to this pipeline, not a second decision engine. The scheduler only forwards the opened path. `IFileSystem.priority` obtains a detached identity/path/version observation without consuming or mutating the batch delta cache. `PriorityCoordinator` admits it only between complete normal actions; after a whole-record `SyncRecord` CAS it may replace the exact still-pending singleton pull projected by Admission. Any missing authority, local race, CAS loss, or closed phase falls back to the normal lifecycle. Normal batch actions still use the same `AuthorizedSyncPlan`, provider calls, and global phase barriers.
+File-open priority is a narrow side entrance, not a second decision engine. The scheduler forwards the opened path; `IFileSystem.priority` obtains a detached observation without consuming the batch delta cache. After exact whole-record CAS, it may replace the exact still-pending singleton pull projected by Admission. Execution drains existing priority effects before the globally serial component interval and defers new ones until it ends. Missing authority or a race leaves normal batch ownership unchanged. The successful receipt is existing cycle-local bookkeeping, not another record authority.
 
 ## Core data models
 
@@ -276,7 +276,7 @@ Key design points:
 - `delete()` is idempotent (deleting a non-existent path is a no-op) and backends may use soft deletion (trash). Deleting a directory removes its children recursively; the caller must separately clean up the SyncRecord for each removed child path (`delete()` does not touch sync state).
 - `write()` auto-creates parent directories.
 - `rename(oldPath, newPath)` throws if `oldPath` does not exist or if `newPath` already exists (Admission proves destination occupancy before issuing a native rename, while execution still fails safely on a race); it auto-creates parent directories. `mkdir()` is idempotent and throws if an intermediate component is an existing file.
-- A mutation argument is an address, not proof of provider casing. A `requested_echo` may update metadata only at the stable identity's already-resolved path; it never re-keys topology. Provider-returned resolved metadata, or a successful explicit rename endpoint when the provider response is sparse, is required to move a cache identity. For a complete case-only parent component, Admission keeps child content effects at the provider-current path and emits one parent folder rename; the existing executor phase barrier performs that rename only after content settles.
+- A mutation argument is an address, not proof of provider casing. A `requested_echo` may update metadata only at the stable identity's already-resolved path; it never re-keys topology. Provider-returned resolved metadata, or a successful explicit rename endpoint when the provider response is sparse, is required to move a cache identity. For a complete case-only parent component, Admission keeps child content effects at the provider-current path and emits one parent folder rename after child publication in that component. Parent record relocation consumes the exact successful child receipts and commits atomically only after final descendant proof.
 
 ## IBackendProvider / IAuthProvider
 

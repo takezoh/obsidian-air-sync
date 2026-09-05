@@ -6,11 +6,9 @@ import type { OneDriveDeltaResponse } from "./types";
 import { GraphApiError } from "./types";
 import { odFile, odFolder, odDeleted, deltaPage } from "./test-helpers";
 import { collectRemoteRenameEvidence } from "../../sync/identity-evidence";
-import {
-	admitDestructivePlan,
-	captureCycleAdmissionSnapshot,
-} from "../../sync/plan-admission";
-import type { PathObservation, SyncAction } from "../../sync/types";
+import { admitBatchObservation } from "../../sync/plan-admission";
+import { captureBatchObservation } from "../../sync/sync-cycle-planning";
+import type { PathObservation, MixedEntity } from "../../sync/types";
 
 vi.mock("obsidian");
 
@@ -106,36 +104,44 @@ describe("applyOneDriveDelta", () => {
 		expect(cache.getPathById("f1")).toBe("a.md");
 	});
 
-	it("proves the casing edge, not Admission policy, changes destructive authorization", async () => {
+	it("binds current stable identity equally with or without the redundant casing report", async () => {
 		const cache = new OneDriveMetadataCache(ROOT);
 		cache.buildFromFiles([odFile("f1", "A.md", ROOT)]);
 		const client = fakeClient([deltaPage([odFile("f1", "a.md", ROOT)], "tok2")]);
 		const delta = await applyOneDriveDelta(ctx(cache, client), "tok1");
 		if (delta.needsFullScan) throw new Error("unexpected resync");
 		const emittedEvidence = collectRemoteRenameEvidence(delta.renamedPaths);
-		const actions: SyncAction[] = [
-			{ path: "A.md", action: "delete_local" },
-			{ path: "a.md", action: "delete_remote" },
+		const local = { path: "A.md", pathAuthority: "actual_resolved" as const,
+			isDirectory: false, hash: "same", size: 1, mtime: 1 };
+		const remote = { ...local, path: cache.getPathById("f1")!, identityKey: "f1" };
+		const entries: MixedEntity[] = [
+			{ path: "A.md", local, prevSync: {
+				path: "A.md", hash: "same", localMtime: 1, remoteMtime: 1,
+				localSize: 1, remoteSize: 1, remoteIdentityKey: "f1", syncedAt: 1,
+			} },
+			{ path: "a.md", remote },
 		];
 		const observations: PathObservation[] = [
 			{ kind: "absent", side: "remote", requestedPath: "A.md", authority: "checkpoint_deleted" },
 			{ kind: "absent", side: "local", requestedPath: "a.md", authority: "stat" },
 		];
-		const scope = { byEndpoint: new Map([
+		const scope = { isConfiguredScopeCompatible: () => true, byEndpoint: new Map([
 			["A.md", "included" as const], ["a.md", "included" as const],
 		]) };
-		const admit = (identityEvidence: typeof emittedEvidence) => admitDestructivePlan(
-			captureCycleAdmissionSnapshot(
-				{ actions }, identityEvidence, observations, scope, "onedrive:root",
+		const admit = (identityEvidence: typeof emittedEvidence) => admitBatchObservation(
+			captureBatchObservation(
+				entries, identityEvidence, observations, scope, "onedrive:root",
 			),
 		);
 
 		const withProducerEdge = admit(emittedEvidence);
 		const withoutProducerEdge = admit([]);
 
-		expect(withProducerEdge.executable.actions).toEqual([]);
-		expect(withProducerEdge.failures[0]?.reasons).toEqual(["opposing_deletes"]);
-		expect(withoutProducerEdge.executable.actions).toEqual(actions);
+		expect(withProducerEdge.failures).toEqual([]);
+		expect(withProducerEdge.executable.actions).toEqual([
+			expect.objectContaining({ action: "rename_local", oldPath: "A.md", path: "a.md", content: { mode: "equal" } }),
+		]);
+		expect(withoutProducerEdge.executable.actions).toEqual(withProducerEdge.executable.actions);
 		expect(withoutProducerEdge.failures).toEqual([]);
 	});
 

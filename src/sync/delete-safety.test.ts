@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { planSync } from "./decision-engine";
+import { compareContent } from "./decision-engine";
 import { executePlan } from "./plan-executor";
 import { collectChanges } from "./change-detector";
 import { LocalChangeTracker } from "./local-tracker";
@@ -11,7 +11,8 @@ import {
 import type { MixedEntity, SyncRecord } from "./types";
 import type { FileEntity } from "../fs/types";
 import { sha256 } from "../utils/hash";
-import { admitDestructivePlan, captureCycleAdmissionSnapshot } from "./plan-admission";
+import { admitBatchObservation } from "./plan-admission";
+import { captureBatchObservation } from "./sync-cycle-planning";
 
 /**
  * Delete-safety contracts.
@@ -63,7 +64,7 @@ describe("§2-1 (fixed): a lone deletion is no longer silently aborted", () => {
 			remote,
 			prevSync: baselineRecord("note.md"),
 		};
-		expect(planSync([entry]).actions[0]?.action).toBe("delete_remote");
+		expect(compareContent(entry)).toBe("delete_remote");
 	});
 
 	it("a lone delete_remote actually executes (no abort path remains)", async () => {
@@ -71,13 +72,13 @@ describe("§2-1 (fixed): a lone deletion is no longer silently aborted", () => {
 		const remoteFs = createMockRemoteFs();
 		const stateStore = createMockStateStore();
 		addFile(remoteFs, "note.md", CONTENT, 1000);
-		await stateStore.put(baselineRecord("note.md"));
+		await stateStore.put(baselineRecord("note.md", await contentHash()));
 
-		const admission = admitDestructivePlan(captureCycleAdmissionSnapshot(
-			{ actions: [{ path: "note.md", action: "delete_remote" }] },
+		const admission = admitBatchObservation(captureBatchObservation(
+			[{ path: "note.md", remote: (await remoteFs.stat("note.md"))!, prevSync: await stateStore.get("note.md") }],
 			[],
 			[{ kind: "absent", side: "local", requestedPath: "note.md", authority: "stat" }],
-			{ byEndpoint: new Map([["note.md", "included"]]) },
+			{ isConfiguredScopeCompatible: () => true, byEndpoint: new Map([["note.md", "included"]]) },
 			"delete-safety-test",
 		));
 		const result = await executePlan(
@@ -126,9 +127,9 @@ describe("phantom warm deletion: an incomplete listing does not mass-delete", ()
 			stateStore,
 			changes: localTracker.snapshot(),
 		});
-		const actions = planSync(changeSet.entries).actions;
+		const actions = changeSet.entries.map(compareContent).filter((action) => action !== null);
 		const deletes = actions.filter(
-			(a) => a.action === "delete_remote",
+			(a) => a === "delete_remote",
 		).length;
 
 		expect(deletes).toBe(0);
@@ -153,9 +154,10 @@ describe("phantom warm deletion: an incomplete listing does not mass-delete", ()
 			stateStore,
 			changes: localTracker.snapshot(),
 		});
-		const action = planSync(changeSet.entries).actions.find(
+		const entry = changeSet.entries.find(
 			(a) => a.path === "gone.md",
 		);
-		expect(action?.action).toBe("delete_remote");
+		expect(entry).toBeDefined();
+		expect(compareContent(entry!)).toBe("delete_remote");
 	});
 });

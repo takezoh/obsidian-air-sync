@@ -84,6 +84,27 @@ describe("SyncStateStore", () => {
 		expect(result).toEqual(record);
 	});
 
+	it("compareAndDelete: removes the exact record and its merge base together", async () => {
+		const record = makeRecord("note.md");
+		await store.put(record);
+		await store.putContent(record.path, new Uint8Array([1, 2]).buffer);
+		expect(await store.compareAndDelete(record.path, record)).toBe(true);
+		expect(await store.get(record.path)).toBeUndefined();
+		expect(await store.getContent(record.path)).toBeUndefined();
+	});
+
+	it("compareAndDelete: preserves a changed record and content on mismatch", async () => {
+		const expected = makeRecord("note.md");
+		const current = { ...expected, hash: "newer", syncedAt: 2000 };
+		const bytes = new Uint8Array([3, 4]).buffer;
+		await store.put(current);
+		await store.putContent(current.path, bytes);
+		expect(await store.compareAndDelete(current.path, expected)).toBe(false);
+		expect(await store.compareAndDelete(current.path, undefined)).toBe(false);
+		expect(await store.get(current.path)).toEqual(current);
+		expect(await store.getContent(current.path)).toEqual(bytes);
+	});
+
 	it("get: returns undefined for nonexistent path", async () => {
 		const result = await store.get("does-not-exist.md");
 		expect(result).toBeUndefined();
@@ -164,6 +185,18 @@ describe("SyncStateStore", () => {
 		expect(await store.get("a.md")).toEqual(next);
 	});
 
+	it("compareAndPut invalidates an incompatible base only when publication succeeds", async () => {
+		const baseline = makeRecord("A.md", { hash: "old" });
+		const terminal = { ...baseline, hash: "new" };
+		const bytes = new Uint8Array([1]).buffer;
+		await store.put(baseline);
+		await store.putContent(baseline.path, bytes);
+		expect(await store.compareAndPut(undefined, terminal)).toBe(false);
+		expect(await store.getContent(baseline.path)).toEqual(bytes);
+		expect(await store.compareAndPut(baseline, terminal)).toBe(true);
+		expect(await store.getContent(baseline.path)).toBeUndefined();
+	});
+
 	it("compareAndMove atomically replaces the exact old-path record and content", async () => {
 		const baseline = makeRecord("old.md", { syncedAt: 1 });
 		const next = makeRecord("new.md", { syncedAt: 2 });
@@ -197,6 +230,101 @@ describe("SyncStateStore", () => {
 
 		expect(await store.get("a.md")).toBeUndefined();
 		expect(await store.getContent("a.md")).toBeUndefined();
+	});
+
+	it("compareAndMove refuses an uncaptured destination and preserves both merge bases", async () => {
+		const source = makeRecord("A.md", { remoteIdentityKey: "X" });
+		const destination = makeRecord("B.md", { remoteIdentityKey: "Z" });
+		await store.put(source);
+		await store.put(destination);
+		await store.putContent("A.md", new Uint8Array([1]).buffer);
+		await store.putContent("B.md", new Uint8Array([2]).buffer);
+
+		expect(await store.compareAndMove(source, { ...source, path: "B.md" })).toBe(false);
+		expect(await store.get("A.md")).toEqual(source);
+		expect(await store.get("B.md")).toEqual(destination);
+		expect(await store.getContent("A.md")).toEqual(new Uint8Array([1]).buffer);
+		expect(await store.getContent("B.md")).toEqual(new Uint8Array([2]).buffer);
+	});
+
+	it("compareAndMove compares an explicitly captured foreign destination without identity policy", async () => {
+		const source = makeRecord("A.md", { remoteIdentityKey: "X" });
+		const destination = makeRecord("B.md", { remoteIdentityKey: "Z" });
+		const terminal = { ...source, path: "B.md", syncedAt: 901 };
+		await store.put(source);
+		await store.put(destination);
+		await store.putContent("B.md", new Uint8Array([2]).buffer);
+
+		expect(await store.compareAndMove(source, terminal, destination)).toBe(true);
+		expect(await store.get("A.md")).toBeUndefined();
+		expect(await store.get("B.md")).toEqual(terminal);
+		expect(await store.getContent("B.md")).toBeUndefined();
+	});
+
+	it("compareAndMove never deletes its result when source and destination are the same key", async () => {
+		const source = makeRecord("A.md");
+		const terminal = { ...source, syncedAt: 902 };
+		await store.put(source);
+		expect(await store.compareAndMove(source, terminal, source)).toBe(true);
+		expect(await store.get("A.md")).toEqual(terminal);
+	});
+
+	it("compareAndPutContent cannot attach a late base to a different terminal record", async () => {
+		const captured = makeRecord("A.md");
+		const current = { ...captured, hash: "new", syncedAt: 902 };
+		await store.put(current);
+		await store.putContent("A.md", new Uint8Array([2]).buffer);
+		expect(await store.compareAndPutContent(captured, new Uint8Array([1]).buffer)).toBe(false);
+		expect(await store.getContent("A.md")).toEqual(new Uint8Array([2]).buffer);
+		expect(await store.compareAndPutContent(current, new Uint8Array([3]).buffer)).toBe(true);
+		expect(await store.getContent("A.md")).toEqual(new Uint8Array([3]).buffer);
+	});
+
+	it("compareAndRewritePaths reads overlapping keys before removing any source", async () => {
+		const a = makeRecord("A.md", { remoteIdentityKey: "X" });
+		const b = makeRecord("B.md", { remoteIdentityKey: "Y" });
+		await store.put(a);
+		await store.put(b);
+		expect(await store.compareAndRewritePaths([
+			{ source: a, destination: b, terminal: { ...a, path: "B.md" } },
+			{ source: b, destination: undefined, terminal: { ...b, path: "C.md" } },
+		])).toBe(true);
+		expect(await store.get("A.md")).toBeUndefined();
+		expect(await store.get("B.md")).toEqual({ ...a, path: "B.md" });
+		expect(await store.get("C.md")).toEqual({ ...b, path: "C.md" });
+	});
+
+	it("compareAndRewritePaths preserves all records and content on any mismatch", async () => {
+		const a = makeRecord("old/a.md");
+		const b = makeRecord("old/b.md");
+		const winner = makeRecord("new/b.md", { hash: "foreign" });
+		await store.put(a);
+		await store.put(b);
+		await store.put(winner);
+		await store.putContent(a.path, new Uint8Array([1]).buffer);
+		expect(await store.compareAndRewritePaths([
+			{ source: a, destination: undefined, terminal: { ...a, path: "new/a.md" } },
+			{ source: b, destination: undefined, terminal: { ...b, path: "new/b.md" } },
+		])).toBe(false);
+		expect(await store.getAll()).toEqual(expect.arrayContaining([a, b, winner]));
+		expect(await store.getAll()).toHaveLength(3);
+		expect(await store.getContent(a.path)).toEqual(new Uint8Array([1]).buffer);
+	});
+
+	it("compareAndRewritePaths rejects duplicate targets and supports same-key members", async () => {
+		const a = makeRecord("A.md");
+		const b = makeRecord("B.md");
+		await store.put(a);
+		await store.put(b);
+		expect(await store.compareAndRewritePaths([
+			{ source: a, destination: undefined, terminal: { ...a, path: "C.md" } },
+			{ source: b, destination: undefined, terminal: { ...b, path: "C.md" } },
+		])).toBe(false);
+		expect(await store.compareAndRewritePaths([
+			{ source: a, destination: a, terminal: { ...a, syncedAt: 903 } },
+		])).toBe(true);
+		expect(await store.get("A.md")).toEqual({ ...a, syncedAt: 903 });
+		expect(await store.get("B.md")).toEqual(b);
 	});
 
 	it("delete: does not throw for nonexistent path", async () => {

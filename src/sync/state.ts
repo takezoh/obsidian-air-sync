@@ -1,4 +1,4 @@
-import type { RenamePair, SyncRecord } from "./types";
+import type { RecordRelocation, RenamePair, SyncRecord } from "./types";
 import { IDBHelper, sanitizeDbName } from "../store/idb-helper";
 import { encodeContent, decodeContent } from "../store/content-codec";
 
@@ -93,7 +93,7 @@ export class SyncStateStore {
 
 	/** Replace a record only when the same transaction still observes the expected baseline. */
 	async compareAndPut(expected: SyncRecord | undefined, record: SyncRecord): Promise<boolean> {
-		return this.helper.runTransaction(STORE_NAME, "readwrite", (tx) => {
+		return this.helper.runTransaction([STORE_NAME, CONTENT_STORE_NAME], "readwrite", (tx) => {
 			const store = tx.objectStore(STORE_NAME);
 			const request = store.get(record.path);
 			let replaced = false;
@@ -101,25 +101,36 @@ export class SyncStateStore {
 				const current = request.result as SyncRecord | undefined;
 				if (JSON.stringify(current) !== JSON.stringify(expected)) return;
 				store.put(record);
+				if (!expected || !record.hash || expected.hash !== record.hash ||
+					expected.localSize !== record.localSize ||
+					expected.remoteIdentityKey !== record.remoteIdentityKey) {
+					tx.objectStore(CONTENT_STORE_NAME).delete(record.path);
+				}
 				replaced = true;
 			};
 			return () => replaced;
 		});
 	}
 
-	/** Atomically replace an exact old-path baseline with its new-path record. */
-	async compareAndMove(expected: SyncRecord, record: SyncRecord): Promise<boolean> {
+	/** Compare both publication keys before replacing an admitted terminal record. */
+	async compareAndMove(
+		expected: SyncRecord,
+		record: SyncRecord,
+		expectedDestination: SyncRecord | undefined = expected.path === record.path ? expected : undefined,
+	): Promise<boolean> {
 		return this.helper.runTransaction([STORE_NAME, CONTENT_STORE_NAME], "readwrite", (tx) => {
 			const store = tx.objectStore(STORE_NAME);
 			const contentStore = tx.objectStore(CONTENT_STORE_NAME);
-			const request = store.get(expected.path);
+			const source = store.get(expected.path);
+			const destination = store.get(record.path);
 			let moved = false;
-			request.onsuccess = () => {
-				const current = request.result as SyncRecord | undefined;
-				if (JSON.stringify(current) !== JSON.stringify(expected)) return;
+			destination.onsuccess = () => {
+				if (JSON.stringify(source.result) !== JSON.stringify(expected) ||
+					JSON.stringify(destination.result) !== JSON.stringify(expectedDestination)) return;
+				if (expected.path !== record.path) store.delete(expected.path);
 				store.put(record);
-				store.delete(expected.path);
 				contentStore.delete(expected.path);
+				contentStore.delete(record.path);
 				moved = true;
 			};
 			return () => moved;
@@ -127,11 +138,58 @@ export class SyncStateStore {
 	}
 
 	/** Delete a sync record by path */
+	async compareAndDelete(path: string, expected: SyncRecord | undefined): Promise<boolean> {
+		return this.helper.runTransaction([STORE_NAME, CONTENT_STORE_NAME], "readwrite", (tx) => {
+			const store = tx.objectStore(STORE_NAME);
+			const request = store.get(path);
+			let deleted = false;
+			request.onsuccess = () => {
+				if (JSON.stringify(request.result) !== JSON.stringify(expected)) return;
+				store.delete(path);
+				tx.objectStore(CONTENT_STORE_NAME).delete(path);
+				deleted = true;
+			};
+			return () => deleted;
+		});
+	}
+
+	/** Unconditional test/setup removal; execution uses exact comparison. */
 	async delete(path: string): Promise<void> {
 		await this.helper.runTransaction([STORE_NAME, CONTENT_STORE_NAME], "readwrite", (tx) => {
 			tx.objectStore(STORE_NAME).delete(path);
 			tx.objectStore(CONTENT_STORE_NAME).delete(path);
 			return () => {};
+		});
+	}
+
+	/** Compare the entire admitted folder mapping against one transaction image. */
+	async compareAndRewritePaths(relocations: readonly RecordRelocation[]): Promise<boolean> {
+		const sources = new Set(relocations.map((item) => item.source.path));
+		const targets = new Set(relocations.map((item) => item.terminal.path));
+		if (sources.size !== relocations.length || targets.size !== relocations.length) return false;
+		if (relocations.length === 0) return true;
+		return this.helper.runTransaction([STORE_NAME, CONTENT_STORE_NAME], "readwrite", (tx) => {
+			const store = tx.objectStore(STORE_NAME);
+			const content = tx.objectStore(CONTENT_STORE_NAME);
+			const reads = relocations.map((item) => ({
+				item,
+				source: store.get(item.source.path),
+				destination: store.get(item.terminal.path),
+			}));
+			let published = false;
+			reads[reads.length - 1]!.destination.onsuccess = () => {
+				if (reads.some(({ item, source, destination }) =>
+					JSON.stringify(source.result) !== JSON.stringify(item.source) ||
+					JSON.stringify(destination.result) !== JSON.stringify(item.destination))) return;
+				for (const { item } of reads) {
+					if (item.source.path !== item.terminal.path) store.delete(item.source.path);
+					content.delete(item.source.path);
+					content.delete(item.terminal.path);
+				}
+				for (const { item } of reads) store.put(item.terminal);
+				published = true;
+			};
+			return () => published;
 		});
 	}
 
@@ -187,6 +245,21 @@ export class SyncStateStore {
 		await this.helper.runTransaction(CONTENT_STORE_NAME, "readwrite", (tx) => {
 			tx.objectStore(CONTENT_STORE_NAME).put({ path, content: encoded });
 			return () => {};
+		});
+	}
+
+	/** A delayed best-effort merge-base refresh belongs to exactly one terminal record. */
+	async compareAndPutContent(expected: SyncRecord, content: ArrayBuffer): Promise<boolean> {
+		const encoded = encodeContent(content);
+		return this.helper.runTransaction([STORE_NAME, CONTENT_STORE_NAME], "readwrite", (tx) => {
+			const request = tx.objectStore(STORE_NAME).get(expected.path);
+			let replaced = false;
+			request.onsuccess = () => {
+				if (JSON.stringify(request.result) !== JSON.stringify(expected)) return;
+				tx.objectStore(CONTENT_STORE_NAME).put({ path: expected.path, content: encoded });
+				replaced = true;
+			};
+			return () => replaced;
 		});
 	}
 

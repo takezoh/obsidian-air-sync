@@ -3,10 +3,10 @@ import { createMockLocalFs, createMockRemoteFs, createMockStateStore, addFile, r
 import { LocalChangeTracker } from "./local-tracker";
 import { LocalMutationBarrier } from "./local-mutation-barrier";
 import { syncOpenedFilePriority } from "./opened-file-priority";
-import { admitDestructivePlan, captureCycleAdmissionSnapshot } from "./plan-admission";
+import { admitBatchObservation } from "./plan-admission";
+import { captureBatchObservation } from "./sync-cycle-planning";
 import { PriorityBatchState } from "./priority-batch-state";
 import { executePlan } from "./plan-executor";
-import type { SyncAction } from "./types";
 
 async function arrange() {
 	const localFs = createMockLocalFs();
@@ -87,12 +87,11 @@ describe("syncOpenedFilePriority", () => {
 		const local = await ctx.localFs.stat("note.md");
 		if (!baseline || !local) throw new Error("test setup failed");
 		const remote = ctx.observation.entity;
-		const action: SyncAction = { path: "note.md", action: "pull", baseline, local, remote };
-		const admission = admitDestructivePlan(captureCycleAdmissionSnapshot(
-			{ actions: [action] }, [], [
+		const admission = admitBatchObservation(captureBatchObservation(
+			[{ path: "note.md", local, remote, prevSync: baseline }], [], [
 				{ kind: "exact", side: "local", requestedPath: "note.md", entity: local },
 				{ kind: "exact", side: "remote", requestedPath: "note.md", entity: remote },
-			], { byEndpoint: new Map([["note.md", "included"]]) }, "priority-cas-test",
+			], { isConfiguredScopeCompatible: () => true, byEndpoint: new Map([["note.md", "included"]]) }, "priority-cas-test",
 		));
 		const batch = new PriorityBatchState(admission);
 		ctx.remoteFs.priority = {
@@ -107,7 +106,7 @@ describe("syncOpenedFilePriority", () => {
 		expect(await syncOpenedFilePriority({
 			...ctx.base,
 			target: batch.priorityTarget("note.md"),
-			supersede: (candidate) => batch.supersede(candidate),
+			supersede: (candidate, record) => batch.supersede(candidate, record),
 			invalidate: (candidate) => batch.invalidate(candidate),
 			invalidateCycle: () => batch.blockCheckpoint(),
 		})).toBe("deferred_to_batch");
@@ -117,7 +116,7 @@ describe("syncOpenedFilePriority", () => {
 			beginAction: (candidate) => batch.beginAction(candidate),
 		});
 
-		expect(execution.blocked).toEqual([{ action, reason: "priority observation invalidated pending action" }]);
+		expect(execution.blocked).toEqual([{ action: admission.executable.actions[0], reason: "priority observation invalidated pending action" }]);
 		expect(normalRead).not.toHaveBeenCalled();
 		expect(batch.isCheckpointBlocked).toBe(true);
 	});
