@@ -38,15 +38,15 @@ describe("computeS256Challenge", () => {
 });
 
 describe("buildOAuthState", () => {
-	it("is URL-safe and decodes to the app id, a nonce, and any extra fields", () => {
+	it("is URL-safe and decodes to a nonce and any extra fields without an app id", () => {
 		const state = buildOAuthState({ custom: true });
 		// base64url: no chars a form-decoder would mangle.
 		expect(state).not.toMatch(/[+/=]/);
 		const b64 = state.replace(/-/g, "+").replace(/_/g, "/");
 		const decoded = JSON.parse(
 			atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4)),
-		) as { app: string; nonce: string; custom?: boolean };
-		expect(decoded.app).toBe("obsidian-plugin");
+		) as { nonce: string; custom?: boolean; app?: unknown };
+		expect(decoded).not.toHaveProperty("app");
 		expect(typeof decoded.nonce).toBe("string");
 		expect(decoded.custom).toBe(true);
 	});
