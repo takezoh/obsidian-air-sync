@@ -12,6 +12,7 @@ export type OpenedFilePriorityResult =
 	| "applied"
 	| "already_current"
 	| "deferred_to_batch"
+	| "deferred_to_vault_debounce"
 	| "failed_retryable";
 
 interface OpenedFilePriorityContext {
@@ -33,12 +34,15 @@ interface OpenedFilePriorityContext {
 export async function syncOpenedFilePriority(
 	ctx: OpenedFilePriorityContext,
 ): Promise<OpenedFilePriorityResult> {
-	if (ctx.target.kind === "defer" || !ctx.remoteFs.priority) return deferToBatch(ctx);
-	const expectedRecord = await ctx.stateStore.get(ctx.path);
-	if (!expectedRecord?.remoteIdentityKey) return deferToBatch(ctx);
-	const expectedGeneration = ctx.localTracker.generation(ctx.path);
-
 	try {
+		const expectedRecord = await ctx.stateStore.get(ctx.path);
+		// A baseline-less opened file cannot be priority-pulled safely. Return the
+		// timing decision to the scheduler, which uniquely owns the vault debounce.
+		if (!expectedRecord) return "deferred_to_vault_debounce";
+		if (ctx.target.kind === "defer" || !ctx.remoteFs.priority) return deferToBatch(ctx);
+		if (!expectedRecord.remoteIdentityKey) return deferToBatch(ctx);
+		const expectedGeneration = ctx.localTracker.generation(ctx.path);
+
 		const [localBefore, observed] = await Promise.all([
 			ctx.localFs.stat(ctx.path),
 			ctx.remoteFs.priority.observe({

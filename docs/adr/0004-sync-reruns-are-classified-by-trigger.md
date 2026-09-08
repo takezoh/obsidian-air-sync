@@ -71,9 +71,21 @@ fast path fast and not burning a redundant full scan.
 3. **`syncPending` is not equivalent to "dirty exists."** It means *"a debounce-fired or rescan
    `runSync` arrived while locked."* Do not replace the `do/while` condition with a dirty-count loop.
 
-4. **This is an efficiency contract, not a safety one** (ADR 0001). A change here can only make sync
-   slower or wasteful, never unsafe — review proposals on that axis, and do not reach for it to fix
-   a convergence concern.
+   **2026-09-08 file-open clarification:** A priority attempt with no `SyncRecord` returns the
+   explicit `deferred_to_vault_debounce` disposition without requesting a normal cycle itself.
+   `pullSingle()` propagates that disposition, and `SyncScheduler` calls its existing
+   `debouncedSync()`. The scheduler therefore remains the sole owner of vault timing: it resets a
+   pending create / rename / modify timer or re-arms one already consumed by an incomplete cycle.
+   The rule depends on the current baseline fact, not on `file-open` / `create` event order or on a
+   dirty mark as an implicit proxy for timer state. Otherwise file-open could upload a new note's
+   temporary name, then preserve that uploaded version as a conflict after rename. Once a baseline
+   exists, active-batch deferral, missing provider capability, a record without identity, and actual
+   priority failures keep their immediate normal-lifecycle fallback.
+
+4. **Signal dropping and rerun coalescing are efficiency contracts** (ADR 0001). The file-open
+   clarification also preserves the existing timing of local edits: an early upload of a temporary
+   name can require a later conflict preservation even though the executor remains fail-safe.
+   Keep that trigger boundary separate from the resolver's convergence and preservation rules.
 
 ## Consequences
 

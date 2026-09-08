@@ -2,6 +2,7 @@ import { debounce, TFolder } from "../platform/obsidian";
 import type { EventRef, Workspace, Vault, TAbstractFile, TFile } from "../platform/obsidian";
 import type { IFileSystem } from "../fs/interface";
 import type { LocalChangeTracker } from "./local-tracker";
+import type { OpenedFilePriorityResult } from "./opened-file-priority";
 
 const DEBOUNCE_MS = 5000;
 
@@ -40,7 +41,7 @@ function trackScopedFolderRename(
 
 export interface SyncOrchestrator {
 	runSync(): Promise<void>;
-	pullSingle(path: string): Promise<void>;
+	pullSingle(path: string): Promise<OpenedFilePriorityResult | undefined>;
 	isSyncing(): boolean;
 }
 
@@ -240,7 +241,8 @@ export class SyncScheduler {
 		this.deps.registerEvent(
 			workspace.on("file-open", async (file: TFile | null) => {
 				if (!file) return;
-				await orchestrator.pullSingle(file.path);
+				const outcome = await orchestrator.pullSingle(file.path);
+				if (outcome === "deferred_to_vault_debounce") this.debouncedSync();
 			}),
 		);
 	}

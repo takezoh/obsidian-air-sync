@@ -24,7 +24,7 @@ import { admitBatchObservation } from "./plan-admission";
 import { PriorityCoordinator } from "./priority-coordinator";
 import { LocalMutationBarrier } from "./local-mutation-barrier";
 import { PriorityBatchState } from "./priority-batch-state";
-import { syncOpenedFilePriority } from "./opened-file-priority";
+import { syncOpenedFilePriority, type OpenedFilePriorityResult } from "./opened-file-priority";
 
 export type { SyncStatus };
 
@@ -292,12 +292,12 @@ export class SyncOrchestrator {
 		return null;
 	}
 
-	async pullSingle(path: string): Promise<void> {
+	async pullSingle(path: string): Promise<OpenedFilePriorityResult | undefined> {
 		if (this.isExcluded(path)) {
 			this.deps.logger?.debug("pullSingle: skipped — out of sync scope", { path });
 			return;
 		}
-		await this.priorityCoordinator.enqueue(path, async () => {
+		return this.priorityCoordinator.enqueue(path, async () => {
 			const localFs = this.deps.localFs();
 			const remoteFs = this.deps.remoteFs();
 			if (!localFs || !remoteFs) {
@@ -320,6 +320,7 @@ export class SyncOrchestrator {
 				logger: this.deps.logger,
 			});
 			this.deps.logger?.info("file-open priority completed", { path, outcome });
+			return outcome;
 		});
 	}
 

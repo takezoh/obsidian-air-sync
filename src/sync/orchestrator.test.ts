@@ -1688,11 +1688,20 @@ describe("SyncOrchestrator", () => {
 			const { orchestrator, warn } = await arrangePriorityPull({ failRead: true });
 			await expect(
 				orchestrator.pullSingle("note.md"),
-			).resolves.toBeUndefined();
+			).resolves.toBe("failed_retryable");
 			expect(warn).toHaveBeenCalledWith(
 				"file-open priority attempt failed",
 				expect.objectContaining({ path: "note.md" }),
 			);
+			await orchestrator.close();
+		});
+
+		it("returns the vault debounce disposition for a baseline-less opened file", async () => {
+			const { orchestrator } = await arrangePriorityPull();
+			await orchestrator.state.delete("note.md");
+
+			await expect(orchestrator.pullSingle("note.md"))
+				.resolves.toBe("deferred_to_vault_debounce");
 			await orchestrator.close();
 		});
 
