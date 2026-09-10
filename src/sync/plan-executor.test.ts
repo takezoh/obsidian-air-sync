@@ -116,10 +116,10 @@ async function arrangeFreshConflict(ctx: ExecutionContext, withOccupant = false)
 afterEach(() => vi.restoreAllMocks());
 
 describe("executePlan", () => {
-	it.each(["push", "pull"] as const)("does not publish %s when its source disappears during the write", async (kind) => {
+	it("publishes a completed push from its captured bytes when the local source disappears during the write", async () => {
 		const ctx = makeCtx();
-		const source = (kind === "push" ? ctx.localFs : ctx.remoteFs) as MockFileSystem;
-		const target = (kind === "push" ? ctx.remoteFs : ctx.localFs) as MockFileSystem;
+		const source = ctx.localFs as MockFileSystem;
+		const target = ctx.remoteFs as MockFileSystem;
 		addFile(source, "race.md", "original");
 		const snapshot = (await source.stat("race.md"))!;
 		const write = target.write.bind(target);
@@ -129,7 +129,29 @@ describe("executePlan", () => {
 			return result;
 		});
 		const result = await executePlan(makePlan([{
-			action: kind, path: "race.md", ...(kind === "push" ? { local: snapshot } : { remote: snapshot }),
+			action: "push", path: "race.md", local: snapshot,
+		}]), ctx);
+		expect(result.blocked).toEqual([]);
+		expect(result.succeeded).toHaveLength(1);
+		expect(await ctx.committer.stateStore.get("race.md")).toMatchObject({
+			hash: snapshot.hash, localSize: snapshot.size, remoteSize: snapshot.size,
+		});
+	});
+
+	it("does not publish a pull when its remote source disappears during the write", async () => {
+		const ctx = makeCtx();
+		const source = ctx.remoteFs as MockFileSystem;
+		const target = ctx.localFs as MockFileSystem;
+		addFile(source, "race.md", "original");
+		const snapshot = (await source.stat("race.md"))!;
+		const write = target.write.bind(target);
+		vi.spyOn(target, "write").mockImplementation(async (path, bytes, mtime) => {
+			const result = await write(path, bytes, mtime);
+			await source.delete("race.md");
+			return result;
+		});
+		const result = await executePlan(makePlan([{
+			action: "pull", path: "race.md", remote: snapshot,
 		}]), ctx);
 		expect(result.succeeded).toEqual([]);
 		expect(result.blocked).toHaveLength(1);

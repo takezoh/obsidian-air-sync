@@ -113,6 +113,13 @@ Execution runs in three phases (lane/tier scheduling — see [sync-pipeline.md](
 
 `SyncOrchestrator` also keeps an in-memory failed-action tracker. It never persists across plugin reloads. Only local-origin actions that are safe to skip after recovery (`push`, `delete_remote`, `rename_remote`) and whose failure classification is `permanent` with a stable `permanentCode` are eligible. If the same backend/action/path/permanentCode signature fails in two consecutive cycles, the third cycle records it in `result.blocked` without executing its I/O. Success, action/content changes, action type changes, a non-eligible failure classification, or the 5 minute TTL clear the block. Remote-origin and conflict actions are deliberately excluded, and `transient` / `rateLimit` failures are deliberately excluded so a recovered network/provider is retried immediately.
 
+A local source disappearing after a push write is not itself an action failure when
+the executor already captured the admitted bytes and proves the remote terminal contains
+them. It publishes that completed transfer as a historical baseline; any vault rename
+or edit recorded after the cycle snapshot remains pending for the next cycle. This does
+not apply when the old local path still exists with changed bytes, when the remote
+terminal is unproved, or when a pull's remote source disappears.
+
 ## Acknowledge pattern
 
 Each sync cycle captures a `snapshot()` of the tracker at the start — a frozen copy of `dirtyPaths`, `renamePairs`, `folderRenamePairs`, and `initialized` — drives change detection from it, and acknowledges exactly that snapshot at the end:

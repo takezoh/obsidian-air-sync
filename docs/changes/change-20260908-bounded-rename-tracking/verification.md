@@ -45,6 +45,7 @@ Implementation evidence was collected against implementation HEAD `8439d48eb37b5
 - Candidate terminal proof rejects `requested_echo` and publishes only actual-resolved admitted endpoints.
 - Conflict history exposes all candidate paths in child order while preserving the legacy first duplicate path.
 - Cleanup is cover-before-delete and exact-CAS only.
+- A baseline-free push whose local source is renamed after its exact bytes are captured publishes the completed remote transfer from that immutable witness. The pending rename/edit then converges through the existing remote rename-plus-write path without a conflict sibling, and the third cycle is a fixed point. A disappearing remote source during pull remains blocked.
 
 ## Prior implementation failure regressions
 
@@ -61,6 +62,7 @@ Implementation evidence was collected against implementation HEAD `8439d48eb37b5
 - `verify-hot-warm-fact-composition`: rejects loss of exact dirty-path hashes during promotion and rejects contradictory HOT/list facts.
 - `verify-terminal-path-authority`: rejects publication from `requested_echo` or a changed actual endpoint.
 - `verify-ordered-cover-projection`: requires every successful child candidate in audit order.
+- `verify-first-push-in-flight-rename`: reproduces `Untitled 3.md` being pushed empty while the vault renames and edits it to `a.md`; it rejects the former `blocked` then `a.conflict.md` outcome and requires clean historical publication followed by rename-plus-write convergence.
 
 Contract-to-test coverage is exact: C01 `verify-current-alias-authority`; C02 `verify-min-utf8-anchor`; C03 `verify-direct-candidate-full-digest` plus `verify-no-alternate-candidate`; C04 `verify-direct-candidate-fact-only`; C05 `verify-one-build-candidate-partition`; C06 `verify-same-byte-candidate-union`; C07 `verify-foreign-candidate-independent`; C08 `verify-absent-candidate-preflight` plus `verify-no-same-cycle-reroute`; C09 `verify-direct-candidate-fixed-point` plus child-publication and cleanup tests; and C10 `verify-terminal-partial-tracker-consumption` including same-metadata edit retry and abandoned-folder breadth recovery.
 
@@ -94,3 +96,8 @@ npm run test:coverage
 ```
 
 Final gate result: lint passed; bot reproduction passed (55 guard tests plus source scan); build passed; coverage passed with 95 files and 1,982 tests. Independent review additionally exercised HOT/WARM composition, three-version fixed points, candidate aliases and foreign occupants, publication retry, requested-echo rejection, rename controls, and single remote-delta acquisition through the production pipeline. The Personal-vault regression added partial-cycle relation-abandonment, equal-mtime/equal-size failed-edit retry, abandoned-folder breadth recovery, rename-write latent-occupant rejection, ordered partial-cover projection, missing-only three-version retry, next-cycle latent-alias convergence, and unaddressable provider-duplicate coverage, then reran the full gate.
+
+Follow-up verification for the in-flight first-push rename regression passed lint,
+all 55 bot-reproduction/ownership guards, build, and coverage with 95 files and
+1,983 tests. The focused executor and convergence suites passed 99 tests, including
+the retained blocked control for a disappearing pull source.

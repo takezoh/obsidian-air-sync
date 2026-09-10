@@ -110,6 +110,16 @@ Two-sided terminal proof requires actual-resolved authority and admitted endpoin
 
 A complete two-sided cover plus exact cleanup is `resolved_no_action` even with asymmetric originals. History is audit-only and does not participate in later decisions.
 
+A baseline-free push is complete when its exact pre-write local snapshot has been
+written and the remote terminal proves those bytes. If a post-snapshot vault rename
+removes the old local address during the write, the immutable captured local entity is
+the historical local half of that transfer's `SyncRecord`; requiring the obsolete
+address to remain present would discard a completed effect and manufacture an
+unbaselined two-version conflict on retry. The later rename/edit remains ordinary
+tracker input and converges from that baseline. This exception is local-push-only:
+an existing but changed local source, an unproved remote terminal, or a disappearing
+remote source during pull stays non-clean.
+
 Checkpoint publication, dirty-path retention, and relation-report abandonment are intentionally separate. A wholly clean cycle commits the remote checkpoint and acknowledges its full captured tracker snapshot. A terminal partial cycle withholds the checkpoint, retains dirty paths, and abandons only captured file/folder rename reports. Endpoint-generation checks preserve relation reports recreated after capture. Failed rename reports therefore leave with their cycle rather than becoming retry authority, while a failed same-metadata content write remains on HOT; the unchanged checkpoint and current endpoints re-surface unfinished relational work on the next invocation.
 
 ## Consequences

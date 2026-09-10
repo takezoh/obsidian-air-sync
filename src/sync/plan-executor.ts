@@ -1,4 +1,4 @@
-/* eslint max-lines: ["error", 950] -- the executor owns all fixed protocols, immediate pre-effect observation, terminal proof, and proof-gated commit routing. */
+/* eslint max-lines: ["error", 960] -- the executor owns all fixed protocols, immediate pre-effect observation, terminal proof, and proof-gated commit routing. */
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
 import type { ConflictStrategy, PreservationCoverChild, RenameAction, SyncAction } from "./types";
@@ -355,15 +355,21 @@ async function runActionIO(
 			const source = pushing ? localFs : remoteFs;
 			const target = pushing ? remoteFs : localFs;
 			const targetPath = (pushing ? action.remotePath : action.localPath) ?? path;
-			const { content } = await captureContentSnapshot(source, expected.path, expected);
+			const captured = await captureContentSnapshot(source, expected.path, expected);
+			const { content } = captured;
 			// Reading may yield to local edits or another writer. Revalidate the
 			// captured destination and record expectations before destructive use.
 			await checkPublicationInputs(action, ctx, []);
 			await target.write(targetPath, content.slice(0), expected.mtime);
-			const [localEntity, remoteEntity] = await Promise.all([
+			let [localEntity, remoteEntity] = await Promise.all([
 				localFs.stat(action.localPath ?? action.local?.path ?? path),
 				remoteFs.stat(action.remotePath ?? action.remote?.path ?? path),
 			]);
+			// A vault rename can remove a push source after its bytes were captured
+			// and written. Publish that completed transfer as historical baseline;
+			// the tracker retains the later rename/edit for the next cycle. A source
+			// that still exists must remain current and is verified below as before.
+			if (pushing && !localEntity) localEntity = captured.entity;
 			if (!localEntity || !remoteEntity) throw new ContentProofError("proof_mismatch", "Transfer terminal endpoint disappeared");
 			return { localEntity, remoteEntity, intendedContent: content };
 		}

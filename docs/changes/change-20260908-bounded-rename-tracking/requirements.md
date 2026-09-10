@@ -91,6 +91,18 @@ Each frozen candidate fact shall carry one requested candidate address, authorit
 
 If immediate pre-write authoritative stat reveals an occupant or alias not present in the admitted snapshot, Execution shall stop before that write effect, preserve the successful component prefix, block its suffix, and leave the checkpoint unchanged. It shall not convert policy in the same cycle. The next ordinary sync shall freshly observe current facts. For an ordinary exact-path write, a foreign-byte occupant at that exact path enters existing same-path conflict, while only a different path joined by current-cycle alias resolution enters `preservation_cover`. For an observed-absent cover candidate, newly observed same bytes are absorbed and newly observed different bytes remain ordinary while the group fails `preservation_destination_unavailable`. Continued inability to expose each occurrence independently remains FR-BRT-015.
 
+### FR-BRT-018 — A completed first push survives a concurrent local rename
+
+When a baseline-free push has captured and validated one exact local byte version,
+written those bytes to the admitted remote destination, and proved that remote
+terminal, disappearance of the old local source address after the write shall not
+invalidate the completed transfer. Execution shall publish a `SyncRecord` for the
+captured local version and proved remote terminal. A local rename or edit recorded
+after the cycle snapshot remains pending and shall converge from that historical
+baseline in the next cycle. A local source that remains at the admitted address but
+no longer matches the captured bytes, an unproved remote terminal, and a disappearing
+remote source during pull remain non-clean.
+
 ### INV-BRT-001 — Durable authority remains closed
 
 Only a successful action's `SyncRecord` and a wholly clean cycle's remote checkpoint plus derived cache/scope snapshot are durable correctness publications. Evidence, dispositions, pending work, failure reasons, and history shall not become authority.
@@ -115,3 +127,4 @@ Only a successful action's `SyncRecord` and a wholly clean cycle's remote checkp
 - **AC-BRT-008:** unique rename, same-exact-path conflict, and exclusion behavior remain unchanged; only a same-byte single candidate edge joins the collision component, and unavailable candidate scope is `preservation_destination_unavailable`.
 - **AC-BRT-009:** cleanup retains current terminal-pair records, the selected candidate, every foreign independent ordinary record, and a one-sided ordinary action's retained baseline; report loss does not change the current-fact predicate, and cleanup absence creates no delete authority.
 - **AC-BRT-010:** cycle 1 plans an ordinary write but pre-write stat exposes a latent occupant; it performs no write at that destination, preserves its prior successful prefix, and leaves checkpoint unchanged. On cycle 2, fresh current-cycle alias resolution joining a different path creates or reuses the required cover, while a foreign-byte occupant at the same exact path uses the existing same-path conflict flow and creates no preservation cover. An independently unobservable duplicate remains FR-BRT-015. After the selected flow completes, the next unchanged sync is `up_to_date`.
+- **AC-BRT-011:** a baseline-free local file is pushed while a post-snapshot vault event renames and edits it. The first cycle publishes the captured pre-rename transfer without `blocked`; the next cycle performs the existing remote rename-plus-write from the pending tracker generation; no conflict sibling is created; and the following cycle plans no action. The symmetric disappearing-source pull remains blocked.

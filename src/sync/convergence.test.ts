@@ -94,6 +94,56 @@ function actionTypes(plan: SyncPlan): string[] {
 }
 
 describe("sync converges to a fixed point", () => {
+	it("publishes a completed first push when its local source is renamed in flight, then converges the edit", async () => {
+		const env = makeEnv();
+		addFile(env.localFs, "Untitled 3.md", "", 1000);
+		const firstSnapshot = env.localTracker.snapshot();
+		const firstChanges = await collectChanges({
+			localFs: env.localFs, remoteFs: env.remoteFs, stateStore: env.stateStore,
+			changes: firstSnapshot,
+		});
+		const firstAdmission = admitBatchObservation(captureBatchObservation(
+			firstChanges.entries, firstChanges.identityEvidence, firstChanges.observations,
+			projectScope(firstChanges), "rename-during-first-push", undefined, firstChanges.candidateFacts,
+		));
+		expect(firstAdmission.executable.actions).toMatchObject([{
+			action: "push", path: "Untitled 3.md",
+		}]);
+		const remoteWrite = env.remoteFs.write.bind(env.remoteFs);
+		vi.spyOn(env.remoteFs, "write").mockImplementation(async (path, content, mtime) => {
+			const written = await remoteWrite(path, content, mtime);
+			env.remoteFs.files.get(path)!.entity.identityKey = "R";
+			await env.localFs.rename("Untitled 3.md", "a.md");
+			addFile(env.localFs, "a.md", "a", 2000);
+			env.localTracker.markRenamed("a.md", "Untitled 3.md");
+			return written;
+		});
+
+		const firstResult = await executePlan(firstAdmission.executable, {
+			localFs: env.localFs, remoteFs: env.remoteFs,
+			committer: { stateStore: env.stateStore }, conflictStrategy: "duplicate",
+		});
+
+		expect(firstResult.failed).toEqual([]);
+		expect(firstResult.blocked).toEqual([]);
+		expect(await env.stateStore.get("Untitled 3.md")).toBeDefined();
+		expect((await finalizeSyncCycle({
+			admission: firstAdmission, result: firstResult,
+			checkpoint: env.remoteFs.checkpoint, scopeFingerprint: "rename-during-first-push",
+		})).kind).toBe("clean");
+		env.localTracker.acknowledge(firstSnapshot);
+		vi.restoreAllMocks();
+
+		const second = await runCycle(env);
+		expect(second.actions).toMatchObject([{
+			action: "rename_remote", oldPath: "Untitled 3.md", path: "a.md",
+		}]);
+		expect(readText(env.remoteFs, "a.md")).toBe("a");
+		expect(env.remoteFs.files.has("Untitled 3.md")).toBe(false);
+		expect([...env.localFs.files.keys()].some((path) => path.includes(".conflict"))).toBe(false);
+		expect((await runCycle(env)).actions).toEqual([]);
+	});
+
 	it("local-only files push, then a re-sync plans nothing", async () => {
 		const env = makeEnv();
 		addFile(env.localFs, "a.md", "alpha", 1000);

@@ -124,6 +124,23 @@ One closed collision projects one user-visible conflict with ordered child outco
 
 The remote checkpoint, dirty paths, and relation reports have different roles and therefore different closeout rules. Only wholly clean completion commits the checkpoint and acknowledges the complete captured tracker snapshot. A terminal partial result abandons only the captured file/folder rename reports using endpoint-generation checks; it retains dirty paths so a failed content write remains on HOT even when mtime and size did not change. A relation report recreated after capture survives. Unfinished relational work is reconstructed from current endpoints, successful per-file publications, and the unchanged checkpoint.
 
+## Contract 9 — Historical publication of a completed push
+
+`captureContentSnapshot` proves the admitted local version before a push. After the
+destination write, Execution still requires an exact remote terminal containing those
+captured bytes and exact publication CAS. If the old local address disappeared during
+that write, Execution uses the immutable captured local entity as the historical side
+of the new `SyncRecord`; it does not require the obsolete address to reappear. When the
+local address still exists, its terminal content is checked as before. Pull retains the
+strict two-current-endpoint rule because no local tracker can explain disappearance of
+its remote source.
+
+This does not persist a rename report or recovery marker. A vault rename/edit arriving
+after the cycle snapshot remains in the existing generation-aware tracker. The next
+cycle observes the published old-path baseline plus that current local relation and
+uses the existing rename-plus-write protocol, after which an unchanged cycle is a fixed
+point.
+
 ## C01–C10 executable contract text
 
 - **C01 — Current-alias authority:** only complete current-cycle alias resolution may form a preservation collision; cached, prior, casing, Unicode, or provider-normalization guesses may not.
