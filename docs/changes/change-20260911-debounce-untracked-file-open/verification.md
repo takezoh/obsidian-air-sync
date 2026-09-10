@@ -20,19 +20,23 @@ already armed the independent five-second scheduler debounce.
 - Before implementation, the focused suites failed three tests: the priority helper
   returned `deferred_to_batch`, the orchestrator returned no typed outcome while
   starting `runSync`, and the scheduler did not debounce an untracked outcome.
-- After implementation, focused scheduler/orchestrator/priority tests pass, including
-  create/open/rename coalescing, untracked-open liveness, tracked missing-identity
-  immediate fallback, and destroy-during-await behavior.
+- During the #71 integration, four additional RED cases proved that the initial #72
+  implementation checked missing capability or active-batch state before baseline
+  absence and did not catch baseline-read failure at that boundary.
+- After implementation, the three focused scheduler/orchestrator/priority suites pass
+  158 tests. They include create/open/rename/modify coalescing, event-order independence,
+  failed-cycle debounce re-arming, untracked-open liveness, tracked immediate fallbacks,
+  baseline-read failure, and destroy-during-await behavior.
 
 ## Gate
 
 - `npm run lint`: passed.
 - `npm run lint:bot-repro`: passed (55 guard tests).
 - `npm run build`: passed after updating the scheduler mock to the narrowed return type.
-- `npm run test:coverage`: passed (96 files, 1991 tests; 85.33% statements,
-  81.62% branches, 84.59% functions, and 86.78% lines).
+- `npm run test:coverage`: passed (96 files, 2001 tests; 85.30% statements,
+  81.60% branches, 84.59% functions, and 86.75% lines).
 - Personal artifact parity: repository and deployed `main.js` both have SHA-256
-  `f088f2f7d1f1750fd980ba83bb776edb98f3b7606998a8bc43eee0eec4bd94b3`.
+  `f1d1679a37dff69a0eaea5c5b24cd012a35138e8ba0cea8b276606b83e7b0b9a`.
 
 ## Independent review and evidence boundary
 

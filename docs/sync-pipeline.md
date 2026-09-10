@@ -321,7 +321,11 @@ A missing baseline is classified more narrowly than other priority deferrals. It
 request, and the scheduler feeds the result into the same resettable five-second
 debounce used by vault changes. Obsidian's create-plus-open sequence therefore waits for
 the note's name/content to settle, while an untracked open without a create event still
-gets a delayed normal scan. The scheduler rechecks its destroyed state after the
-priority await so plugin unload cannot re-arm a cancelled timer. Present-but-incomplete
-tracking, observation contradictions, invalidation, provider errors, and CAS loss keep
-their immediate normal-lifecycle behavior.
+gets a delayed normal scan. Baseline classification happens before capability and
+active-batch checks, so the result does not depend on whether file-open or create is
+observed first. It also re-arms a timer already consumed by an incomplete baseline-free
+cycle; a retained dirty path is not treated as proof that a debounce remains armed. The
+scheduler rechecks its destroyed state after the priority await so plugin unload cannot
+re-arm a cancelled timer. Present-but-incomplete tracking, active-batch deferral,
+missing capability, observation contradictions, invalidation, provider or baseline-read
+errors, and CAS loss keep their immediate normal-lifecycle behavior.

@@ -21,6 +21,13 @@ role: requirements
 - **FR-UFO-005:** A tracked record without remote identity, detached observation
   contradiction, local race, provider failure, CAS loss, and active-batch defer
   shall retain their existing immediate normal-lifecycle and invalidation behavior.
+- **FR-UFO-006:** Baseline absence shall be classified before provider-capability and
+  active-batch checks, so an untracked open has the same debounce result regardless of
+  file-open/create event order. A baseline read failure shall remain retryable through
+  an immediate normal lifecycle.
+- **FR-UFO-007:** If an incomplete cycle consumed the prior debounce without creating a
+  baseline, a later file-open shall re-arm the scheduler debounce even while the dirty
+  path remains recorded.
 
 ## Acceptance
 
@@ -29,3 +36,5 @@ role: requirements
   observes the final local path and content rather than publishing the transient name.
 - Repeated qualifying events produce one batch after the final event.
 - Plugin unload cannot revive a cancelled debounce.
+- A failed baseline-free upload can converge on a later file-open without requiring a
+  new vault mutation.
