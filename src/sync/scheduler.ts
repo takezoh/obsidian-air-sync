@@ -40,7 +40,7 @@ function trackScopedFolderRename(
 
 export interface SyncOrchestrator {
 	runSync(): Promise<void>;
-	pullSingle(path: string): Promise<void>;
+	pullSingle(path: string): Promise<"untracked" | undefined>;
 	isSyncing(): boolean;
 }
 
@@ -240,7 +240,8 @@ export class SyncScheduler {
 		this.deps.registerEvent(
 			workspace.on("file-open", async (file: TFile | null) => {
 				if (!file) return;
-				await orchestrator.pullSingle(file.path);
+				const outcome = await orchestrator.pullSingle(file.path);
+				if (outcome === "untracked" && !this.destroyed) this.debouncedSync();
 			}),
 		);
 	}

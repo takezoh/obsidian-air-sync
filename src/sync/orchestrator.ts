@@ -295,17 +295,17 @@ export class SyncOrchestrator {
 		return null;
 	}
 
-	async pullSingle(path: string): Promise<void> {
+	async pullSingle(path: string): Promise<"untracked" | undefined> {
 		if (this.isExcluded(path)) {
 			this.deps.logger?.debug("pullSingle: skipped — out of sync scope", { path });
 			return;
 		}
-		await this.priorityCoordinator.enqueue(path, async () => {
+		return this.priorityCoordinator.enqueue(path, async () => {
 			const localFs = this.deps.localFs();
 			const remoteFs = this.deps.remoteFs();
 			if (!localFs || !remoteFs) {
 				this.deps.logger?.warn("pullSingle: skipped — no local or remote fs", { path });
-				return;
+				return undefined;
 			}
 			const activeBatch = this.activeBatch;
 			const target = activeBatch
@@ -323,6 +323,7 @@ export class SyncOrchestrator {
 				logger: this.deps.logger,
 			});
 			this.deps.logger?.info("file-open priority completed", { path, outcome });
+			return outcome === "untracked" ? outcome : undefined;
 		});
 	}
 

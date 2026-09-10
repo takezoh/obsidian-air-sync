@@ -315,3 +315,13 @@ These triggers are **classified** ([ADR 0004](adr/0004-sync-reruns-are-classifie
 5. If an admitted singleton pull is still pending, supersede that exact action object; otherwise complete independently
 
 Unlike focus/visibility/online triggers, file-open is queued even while a batch runs. `PriorityCoordinator` drains queued opens after active normal actions finish and before later normal permits. It never interrupts an effect/commit pair, runs nothing during preparation/finalization, and does not alter the global phase order. Only a transfer-phase exact singleton regular-file pull with matching stable identity can be superseded. Missing capability/baseline, structural or ambiguous topology, a local edit, changed target token/identity, CAS loss, or a later phase fails closed to the normal lifecycle; no alternate action is invented. Duplicate opens of one pending path coalesce into one attempt.
+
+A missing baseline is classified more narrowly than other priority deferrals. It is an
+`untracked` result, not a safety failure: priority performs no immediate lifecycle
+request, and the scheduler feeds the result into the same resettable five-second
+debounce used by vault changes. Obsidian's create-plus-open sequence therefore waits for
+the note's name/content to settle, while an untracked open without a create event still
+gets a delayed normal scan. The scheduler rechecks its destroyed state after the
+priority await so plugin unload cannot re-arm a cancelled timer. Present-but-incomplete
+tracking, observation contradictions, invalidation, provider errors, and CAS loss keep
+their immediate normal-lifecycle behavior.

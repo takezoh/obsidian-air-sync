@@ -42,7 +42,7 @@ function createDeps(
 
 	const runSync = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
 	const pullSingle = vi
-		.fn<(path: string) => Promise<void>>()
+		.fn<(path: string) => Promise<"untracked" | undefined>>()
 		.mockResolvedValue(undefined);
 
 	const deps: SyncSchedulerDeps & {
@@ -339,6 +339,46 @@ describe("SyncScheduler", () => {
 	});
 
 	describe("file-open priority sync", () => {
+		it("debounces an untracked open through the normal vault-change timer", async () => {
+			deps.pullSingle.mockResolvedValue("untracked");
+			await deps.workspaceHandlers.get("file-open")!(makeFile("new.md"));
+
+			vi.advanceTimersByTime(4999);
+			expect(deps.runSync).not.toHaveBeenCalled();
+			vi.advanceTimersByTime(1);
+			expect(deps.runSync).toHaveBeenCalledOnce();
+		});
+
+		it("coalesces create, file-open, and rename until the final quiet interval", async () => {
+			deps.pullSingle.mockResolvedValue("untracked");
+			const created = makeFile("Untitled.md");
+			(deps.vaultHandlers.get("create") as VaultHandler)(created);
+			await deps.workspaceHandlers.get("file-open")!(created);
+			vi.advanceTimersByTime(2000);
+			(deps.vaultHandlers.get("rename") as RenameHandler)(makeFile("final.md"), "Untitled.md");
+
+			vi.advanceTimersByTime(4999);
+			expect(deps.runSync).not.toHaveBeenCalled();
+			vi.advanceTimersByTime(1);
+			expect(deps.runSync).toHaveBeenCalledOnce();
+			expect(deps.localTracker.getRenamePairs().get("final.md")).toBe("Untitled.md");
+		});
+
+		it("does not revive the debounce after destroy while an untracked open settles", async () => {
+			let resolveOpen!: (value: "untracked") => void;
+			deps.pullSingle.mockReturnValue(new Promise<"untracked">((resolve) => {
+				resolveOpen = resolve;
+			}));
+			const opened = deps.workspaceHandlers.get("file-open")!(makeFile("new.md"));
+
+			scheduler.destroy();
+			resolveOpen("untracked");
+			await opened;
+			vi.advanceTimersByTime(5000);
+
+			expect(deps.runSync).not.toHaveBeenCalled();
+		});
+
 		it("routes an opened file without stale cache or baseline prechecks", async () => {
 			const handler = deps.workspaceHandlers.get("file-open")!;
 			await handler({ path: "note.md" });

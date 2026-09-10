@@ -1645,7 +1645,9 @@ describe("SyncOrchestrator", () => {
 	});
 
 	describe("pullSingle()", () => {
-		async function arrangePriorityPull(options: { failRead?: boolean; remoteMissing?: boolean } = {}) {
+		async function arrangePriorityPull(options: {
+			failRead?: boolean; remoteMissing?: boolean; untracked?: boolean;
+		} = {}) {
 			const info = vi.fn();
 			const warn = vi.fn();
 			const deps = createDeps({
@@ -1691,16 +1693,18 @@ describe("SyncOrchestrator", () => {
 				read: priorityRead,
 			};
 			const orchestrator = new SyncOrchestrator(deps);
-			await orchestrator.state.put({
-				path: "note.md",
-				hash: local.hash,
-				localMtime: local.mtime,
-				remoteMtime: 1000,
-				localSize: local.size,
-				remoteSize: local.size,
-				remoteIdentityKey: "remote-note-id",
-				syncedAt: 1000,
-			});
+			if (!options.untracked) {
+				await orchestrator.state.put({
+					path: "note.md",
+					hash: local.hash,
+					localMtime: local.mtime,
+					remoteMtime: 1000,
+					localSize: local.size,
+					remoteSize: local.size,
+					remoteIdentityKey: "remote-note-id",
+					syncedAt: 1000,
+				});
+			}
 			return { deps, localFs, remoteFs, orchestrator, info, warn, priorityRead };
 		}
 
@@ -1713,6 +1717,16 @@ describe("SyncOrchestrator", () => {
 			expect(record).toMatchObject({
 				path: "note.md", remoteMtime: 2000, remoteIdentityKey: "remote-note-id",
 			});
+			await orchestrator.close();
+		});
+
+		it("returns untracked without directly starting the normal lifecycle", async () => {
+			const { orchestrator, priorityRead } = await arrangePriorityPull({ untracked: true });
+			const runSync = vi.spyOn(orchestrator, "runSync");
+
+			expect(await orchestrator.pullSingle("note.md")).toBe("untracked");
+			expect(priorityRead).not.toHaveBeenCalled();
+			expect(runSync).not.toHaveBeenCalled();
 			await orchestrator.close();
 		});
 

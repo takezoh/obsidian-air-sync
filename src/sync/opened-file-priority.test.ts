@@ -8,7 +8,7 @@ import { captureBatchObservation } from "./sync-cycle-planning";
 import { PriorityBatchState } from "./priority-batch-state";
 import { executePlan } from "./plan-executor";
 
-async function arrange() {
+async function arrange(options: { tracked?: boolean; remoteIdentity?: boolean } = {}) {
 	const localFs = createMockLocalFs();
 	const remoteFs = createMockRemoteFs();
 	const stateStore = createMockStateStore();
@@ -26,10 +26,13 @@ async function arrange() {
 			entity: { ...remote },
 		},
 	};
-	await stateStore.put({
-		path: "note.md", hash: local.hash, localMtime: local.mtime, remoteMtime: 1,
-		localSize: local.size, remoteSize: local.size, remoteIdentityKey: "remote-id", syncedAt: 1,
-	});
+	if (options.tracked ?? true) {
+		await stateStore.put({
+			path: "note.md", hash: local.hash, localMtime: local.mtime, remoteMtime: 1,
+			localSize: local.size, remoteSize: local.size, syncedAt: 1,
+			...(options.remoteIdentity ?? true ? { remoteIdentityKey: "remote-id" } : {}),
+		});
+	}
 	const requestNormalLifecycle = vi.fn();
 	const supersede = vi.fn().mockReturnValue(true);
 	const invalidate = vi.fn().mockReturnValue(true);
@@ -46,6 +49,32 @@ async function arrange() {
 }
 
 describe("syncOpenedFilePriority", () => {
+	it("returns an untracked outcome without starting the normal lifecycle", async () => {
+		const ctx = await arrange({ tracked: false });
+		const observe = vi.fn().mockResolvedValue(ctx.observation);
+		ctx.remoteFs.priority = {
+			observe,
+			read: vi.fn(),
+		};
+
+		expect(await syncOpenedFilePriority(ctx.base)).toBe("untracked");
+		expect(observe).not.toHaveBeenCalled();
+		expect(ctx.requestNormalLifecycle).not.toHaveBeenCalled();
+	});
+
+	it("immediately defers a tracked record that lacks remote identity", async () => {
+		const ctx = await arrange({ remoteIdentity: false });
+		const observe = vi.fn().mockResolvedValue(ctx.observation);
+		ctx.remoteFs.priority = {
+			observe,
+			read: vi.fn(),
+		};
+
+		expect(await syncOpenedFilePriority(ctx.base)).toBe("deferred_to_batch");
+		expect(observe).not.toHaveBeenCalled();
+		expect(ctx.requestNormalLifecycle).toHaveBeenCalledOnce();
+	});
+
 	it("does not overwrite an edit observed while detached content is being read", async () => {
 		const ctx = await arrange();
 		const gate = deferred<ArrayBuffer>();
