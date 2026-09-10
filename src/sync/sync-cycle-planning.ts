@@ -7,6 +7,7 @@ import type {
 	LocalRenameEvidence,
 	MixedEntity,
 	PathObservation,
+	CandidateFact,
 	ScopeProjection,
 } from "./types";
 
@@ -30,6 +31,7 @@ export interface BatchObservation {
 	readonly evidence: DeepReadonly<readonly CycleEvidenceItem[]>;
 	readonly baselinePaths: ReadonlySet<string>;
 	readonly observations: DeepReadonly<readonly PathObservation[]>;
+	readonly candidateFacts: DeepReadonly<readonly CandidateFact[]>;
 	readonly scope: DeepReadonly<ScopeProjection>;
 	readonly namespace: string;
 }
@@ -43,6 +45,7 @@ export function captureBatchObservation(
 	namespace: string,
 	baselinePaths: readonly string[] = entries.flatMap((entry) =>
 		entry.prevSync ? [entry.prevSync.path] : []),
+	candidateFacts: readonly CandidateFact[] = [],
 ): BatchObservation {
 	const evidence = identityEvidence.map((item): CycleEvidenceItem =>
 		isLocalRenameEvidence(item)
@@ -53,6 +56,7 @@ export function captureBatchObservation(
 		evidence,
 		baselinePaths: new Set(baselinePaths),
 		observations: [...observations],
+		candidateFacts: [...candidateFacts],
 		scope: {
 			byEndpoint: new Map(scope.byEndpoint),
 			isConfiguredScopeCompatible: scope.isConfiguredScopeCompatible,
@@ -195,6 +199,7 @@ export function prepareSyncCycleSnapshot(
 		projection,
 		namespace,
 		scopedChangeSet.entries.flatMap((entry) => entry.prevSync ? [entry.prevSync.path] : []),
+		scopedChangeSet.candidateFacts,
 	);
 	return { snapshot };
 }

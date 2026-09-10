@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { executePlan, toConflictRecords, DESKTOP_TRANSFER_POOL, MOBILE_TRANSFER_POOL } from "./plan-executor";
 import type { ExecutionContext, ResolvedConflict } from "./plan-executor";
-import type { PathObservation, SyncAction, SyncRecord } from "./types";
+import type { CandidateFact, PathObservation, SyncAction, SyncRecord } from "./types";
 import { createMockLocalFs, createMockRemoteFs, type MockFileSystem, createMockStateStore, addFile, readText, deferred, flush } from "../__mocks__/sync-test-helpers";
 import { AuthError, classifyHttpError } from "../fs/errors";
 import { AdaptivePool } from "../queue/async-queue";
@@ -14,6 +14,7 @@ import { resolveConflict } from "./conflict-resolver";
 import { ContentProofError } from "./content-snapshot";
 import { PriorityCoordinator } from "./priority-coordinator";
 import { buildSyncRecord } from "./state-committer";
+import { insertConflictSuffix } from "./conflict";
 
 function makeCtx(
 	overrides: Partial<ExecutionContext> = {},
@@ -459,6 +460,26 @@ describe("executePlan", () => {
 			expect(stateStore.records.has("new.md")).toBe(false);
 		});
 
+		it("blocks before a rename-write overwrites an occupant that appears after the rename", async () => {
+			const ctx = makeCtx();
+			const { remoteFs, stateStore, baseline, action } = await arrangeFreshRename(ctx);
+			const rename = remoteFs.rename.bind(remoteFs);
+			vi.spyOn(remoteFs, "rename").mockImplementation(async (oldPath, newPath) => {
+				await rename(oldPath, newPath);
+				addFile(remoteFs, newPath, "latent occupant", 3000).identityKey = "X";
+			});
+			const write = vi.spyOn(remoteFs, "write");
+
+			const result = await executePlan(makePlan([action]), ctx);
+
+			expect(result.blocked).toHaveLength(1);
+			expect(result.failed).toEqual([]);
+			expect(write).not.toHaveBeenCalled();
+			expect(readText(remoteFs, "new.md")).toBe("latent occupant");
+			expect(stateStore.records.get("old.md")).toEqual(baseline);
+			expect(stateStore.records.has("new.md")).toBe(false);
+		});
+
 		it("rechecks a same-metadata remote checksum change before rename execution", async () => {
 			const ctx = makeCtx();
 			const { remoteFs, stateStore, baseline, action } = await arrangeFreshRename(ctx);
@@ -615,6 +636,167 @@ describe("executePlan", () => {
 	});
 
 	describe("conflict", () => {
+		it("publishes every preservation-cover version without mutating originals", async () => {
+			const ctx = makeCtx({ conflictStrategy: "duplicate" });
+			const localFs = ctx.localFs as MockFileSystem;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
+			addFile(localFs, "case.md", "local");
+			addFile(remoteFs, "Case.md", "remote");
+			const local = (await localFs.stat("case.md"))!;
+			const remote = (await remoteFs.stat("Case.md"))!;
+			const localCandidate = insertConflictSuffix("Case.md", local.hash);
+			const remoteCandidate = insertConflictSuffix("Case.md", remote.hash);
+			const action: SyncAction = {
+				action: "conflict", path: "Case.md", protocol: {
+					kind: "preservation_cover", collisionWitnesses: [], candidatePaths: [localCandidate, remoteCandidate], preservedPaths: [], cleanup: [], children: [
+						{ source: { side: "local", entity: local }, content: { sha256: local.hash, size: local.size },
+							candidatePath: localCandidate, expectedLocal: null, expectedRemote: null,
+							missingSides: ["local", "remote"], publication: { source: undefined, destination: undefined } },
+						{ source: { side: "remote", entity: remote }, content: { sha256: remote.hash, size: remote.size },
+							candidatePath: remoteCandidate, expectedLocal: null, expectedRemote: null,
+							missingSides: ["local", "remote"], publication: { source: undefined, destination: undefined } },
+					],
+				},
+			};
+
+			const result = await executePlan(makePlan([action]), ctx);
+
+			expect(result.failed).toEqual([]);
+			expect(result.blocked).toEqual([]);
+			expect(readText(localFs, "case.md")).toBe("local");
+			expect(readText(remoteFs, "Case.md")).toBe("remote");
+			expect(readText(remoteFs, localCandidate)).toBe("local");
+			expect(readText(localFs, remoteCandidate)).toBe("remote");
+			expect(await ctx.committer.stateStore.get(localCandidate)).toBeDefined();
+			expect(await ctx.committer.stateStore.get(remoteCandidate)).toBeDefined();
+			expect(result.conflicts).toHaveLength(1);
+		});
+
+		it("accepts an admitted candidate alias and writes only the missing side", async () => {
+			const ctx = makeCtx({ conflictStrategy: "duplicate" });
+			const localFs = ctx.localFs as MockFileSystem;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
+			addFile(localFs, "case.md", "local");
+			const source = (await localFs.stat("case.md"))!;
+			const candidatePath = insertConflictSuffix("Case.md", source.hash);
+			const resolvedPath = candidatePath.toLowerCase();
+			addFile(localFs, resolvedPath, "local");
+			const expectedLocal = (await localFs.stat(resolvedPath))!;
+			const exactLocalStat = localFs.stat.bind(localFs);
+			vi.spyOn(localFs, "stat").mockImplementation((path) =>
+				path === candidatePath ? exactLocalStat(resolvedPath) : exactLocalStat(path));
+			const action: SyncAction = {
+				action: "conflict", path: "Case.md", protocol: {
+					kind: "preservation_cover", collisionWitnesses: [], candidatePaths: [candidatePath], preservedPaths: [], cleanup: [], children: [{
+						source: { side: "local", entity: source },
+						content: { sha256: source.hash, size: source.size },
+						candidatePath, expectedLocal, expectedRemote: null,
+						missingSides: ["remote"], publication: { source: undefined, destination: undefined },
+					}],
+				},
+			};
+
+			const result = await executePlan(makePlan([action]), ctx);
+
+			expect(result.failed).toEqual([]);
+			expect(result.blocked).toEqual([]);
+			expect(readText(localFs, resolvedPath)).toBe("local");
+			expect(readText(remoteFs, candidatePath)).toBe("local");
+			expect(await ctx.committer.stateStore.get(candidatePath)).toBeDefined();
+		});
+
+		it("executes an admitted three-version collision cover end to end", async () => {
+			const ctx = makeCtx({ conflictStrategy: "duplicate" });
+			const localFs = ctx.localFs as MockFileSystem;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
+			addFile(localFs, "case.md", "local");
+			addFile(localFs, "third.md", "third");
+			addFile(remoteFs, "Case.md", "remote").identityKey = "R";
+			const local = (await localFs.stat("case.md"))!;
+			const third = (await localFs.stat("third.md"))!;
+			const remote = (await remoteFs.stat("Case.md"))!;
+			const candidatePaths = [local, third, remote].map((entity) => insertConflictSuffix("Case.md", entity.hash));
+			const candidateObservations: PathObservation[] = candidatePaths.flatMap((requestedPath) =>
+				(["local", "remote"] as const).map((side) => ({
+					kind: "absent" as const, side, requestedPath, authority: "stat" as const,
+				})));
+			const observations: PathObservation[] = [
+				{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md", entity: local },
+				{ kind: "exact", side: "local", requestedPath: "case.md", entity: local },
+				{ kind: "exact", side: "local", requestedPath: "third.md", entity: third },
+				{ kind: "exact", side: "remote", requestedPath: "Case.md", entity: remote },
+				{ kind: "absent", side: "remote", requestedPath: "case.md", authority: "stat" },
+				{ kind: "absent", side: "remote", requestedPath: "third.md", authority: "stat" },
+			];
+			const candidateFacts: CandidateFact[] = candidatePaths.map((requestedPath) => ({
+				requestedPath,
+				local: candidateObservations.find((item) => item.side === "local" && item.requestedPath === requestedPath)!,
+				remote: candidateObservations.find((item) => item.side === "remote" && item.requestedPath === requestedPath)!,
+				baseline: null,
+			}));
+			const evidence = [
+				{ kind: "alias" as const, side: "local" as const, requestedPath: "Case.md", resolvedPath: "case.md" },
+				{ kind: "rename" as const, side: "local" as const, oldPath: "Case.md", newPath: "third.md",
+					isFolder: false, authority: "reported" as const },
+				{ kind: "rename" as const, side: "remote" as const, oldPath: "case.md", newPath: "third.md",
+					isFolder: false, authority: "reported" as const },
+			];
+			const paths = ["Case.md", "case.md", "third.md", ...candidatePaths];
+			const admitted = admitBatchObservation(captureBatchObservation(
+				[{ path: "Case.md", remote }, { path: "case.md", local }, { path: "third.md", local: third }],
+				evidence, observations,
+				{ isConfiguredScopeCompatible: () => true,
+					byEndpoint: new Map(paths.map((path) => [path, "included" as const])) },
+				"three-version-executor-test", undefined, candidateFacts,
+			));
+
+			expect(admitted.failures).toEqual([]);
+			const result = await executePlan(admitted.executable, ctx);
+
+			expect(result.failed).toEqual([]);
+			expect(result.blocked).toEqual([]);
+			expect(candidatePaths.map((path) => readText(localFs, path))).toEqual(["local", "third", "remote"]);
+			expect(candidatePaths.map((path) => readText(remoteFs, path))).toEqual(["local", "third", "remote"]);
+			const records = await Promise.all(candidatePaths.map((path) => ctx.committer.stateStore.get(path)));
+			expect(records.every((record) => record !== undefined)).toBe(true);
+			expect(result.conflicts[0]?.resolution.duplicatePaths).toEqual(candidatePaths);
+			expect(result.conflicts[0]?.resolution.duplicatePath).toBe(candidatePaths[0]);
+		});
+
+		it("retains a published cover prefix when a later destination appears", async () => {
+			const ctx = makeCtx({ conflictStrategy: "duplicate" });
+			const localFs = ctx.localFs as MockFileSystem;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
+			addFile(localFs, "case.md", "local");
+			addFile(remoteFs, "Case.md", "remote");
+			const local = (await localFs.stat("case.md"))!;
+			const remote = (await remoteFs.stat("Case.md"))!;
+			const localCandidate = insertConflictSuffix("Case.md", local.hash);
+			const remoteCandidate = insertConflictSuffix("Case.md", remote.hash);
+			const action: SyncAction = { action: "conflict", path: "Case.md", protocol: {
+				kind: "preservation_cover", collisionWitnesses: [], candidatePaths: [localCandidate, remoteCandidate], preservedPaths: [], cleanup: [], children: [
+					{ source: { side: "local", entity: local }, content: { sha256: local.hash, size: local.size }, candidatePath: localCandidate, expectedLocal: null, expectedRemote: null, missingSides: ["local", "remote"], publication: { source: undefined, destination: undefined } },
+					{ source: { side: "remote", entity: remote }, content: { sha256: remote.hash, size: remote.size }, candidatePath: remoteCandidate, expectedLocal: null, expectedRemote: null, missingSides: ["local", "remote"], publication: { source: undefined, destination: undefined } },
+				],
+			} };
+			const originalWrite = remoteFs.write.bind(remoteFs);
+			vi.spyOn(remoteFs, "write").mockImplementation(async (path, content, mtime) => {
+				const written = await originalWrite(path, content, mtime);
+				if (path === localCandidate) addFile(localFs, remoteCandidate, "foreign");
+				return written;
+			});
+
+			const result = await executePlan(makePlan([action]), ctx);
+
+			expect(result.blocked).toHaveLength(1);
+			expect(await ctx.committer.stateStore.get(localCandidate)).toBeDefined();
+			expect(await ctx.committer.stateStore.get(remoteCandidate)).toBeUndefined();
+			expect(readText(localFs, remoteCandidate)).toBe("foreign");
+			expect(result.conflicts).toHaveLength(1);
+			expect(result.conflicts[0]?.resolution.duplicatePath).toBe(localCandidate);
+			expect(result.conflicts[0]?.resolution.duplicatePaths).toEqual([localCandidate]);
+		});
+
 		it("preserves then rotates the tracked identity and returns terminal proof", async () => {
 			const ctx = makeCtx({ conflictStrategy: "duplicate" });
 			const localFs = ctx.localFs as MockFileSystem;
@@ -1801,6 +1983,19 @@ describe("toConflictRecords", () => {
 		expect(rec.remote).toBe(remoteEntity);
 		expect(rec.sessionId).toBe("sess-1");
 		expect(rec.resolvedAt).toBe("2024-01-01T00:00:00.000Z");
+	});
+
+	it("preserves every ordered duplicate path while retaining the first-path compatibility field", () => {
+		const duplicatePaths = ["a.conflict-a.md", "a.conflict-b.md", "a.conflict-c.md"];
+		const conflicts: ResolvedConflict[] = [{
+			action: { action: "conflict", path: "a.md" } as unknown as SyncAction,
+			resolution: { action: "duplicated", duplicatePath: duplicatePaths[0], duplicatePaths },
+		}];
+
+		const rec = toConflictRecords(conflicts, "duplicate", "session", "time")[0]!;
+
+		expect(rec.duplicatePath).toBe(duplicatePaths[0]);
+		expect(rec.duplicatePaths).toEqual(duplicatePaths);
 	});
 
 	it("carries hasConflictMarkers through for a merged resolution (and tolerates absent entities)", () => {

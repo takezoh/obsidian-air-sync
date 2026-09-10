@@ -1,16 +1,20 @@
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
-import type { IdentityEvidence, MixedEntity, PathObservation, SyncRecord } from "./types";
+import type { CandidateFact, IdentityEvidence, MixedEntity, PathObservation, SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
 import type { TrackerSnapshot } from "./local-tracker";
 import { hasChanged } from "./change-compare";
 import {
 	enrichHashesForInitialMatch,
-	enrichHashesForLocalCaseAliases,
 	enrichHashesForRenames,
+	observeDirectConflictCandidates,
 	type HashEnrichmentResult,
 } from "./change-hash-enrichment";
+import { directConflictCandidateHint } from "./conflict";
+import { captureAliasCollisionContents } from "./collision-content-observation";
 import { collectLocalRenameEvidence, completeIdentityEvidence } from "./identity-evidence";
+import { needsWarmComponentAcquisition } from "./hot-acquisition-completeness";
+import { promoteHotProbeIntoWarm } from "./hot-warm-promotion";
 import {
 	getRemoteChanges,
 	hasFolderRename,
@@ -30,6 +34,7 @@ import {
 export interface ChangeSet {
 	entries: MixedEntity[];
 	observations: PathObservation[];
+	candidateFacts: CandidateFact[];
 	identityEvidence: IdentityEvidence[];
 	temperature: "hot" | "warm" | "cold";
 	/** Acquisition diagnostics; production collection always supplies this after enrichment. */
@@ -82,7 +87,18 @@ export async function collectChanges(
 				await remoteSnapshotAfterDelta(deps.remoteFs),
 			);
 		} else {
-			changeSet = await collectHot(deps, remoteChanges);
+			const hot = await collectHot(deps, remoteChanges);
+			// Any unbaselined, partially observed address can be one spelling of a
+			// managed alias component. This is an address-local condition: unrelated
+			// dirty paths must not make the partial view authoritative. WARM observes
+			// the record set and local surface; Admission still decides every address.
+			if (needsWarmComponentAcquisition(hot, changes)) {
+				const warm = await collectWarm(deps, await stateStore.getAll(), remoteChanges);
+				promoteHotProbeIntoWarm(warm, hot);
+				changeSet = warm;
+			} else {
+				changeSet = hot;
+			}
 		}
 	} else {
 		const allRecords = await stateStore.getAll();
@@ -108,15 +124,27 @@ export async function collectChanges(
 	await confirmCaseAliasParentEndpoints(
 		changeSet.observations, deps.localFs, deps.remoteFs,
 	);
-	await enrichHashesForLocalCaseAliases(
-		changeSet.entries, changeSet.observations, changeSet.identityEvidence,
-		deps.localFs, deps.remoteFs,
+	await captureAliasCollisionContents(
+		changeSet.entries, changeSet.observations, changeSet.identityEvidence, deps.localFs, deps.remoteFs,
 	);
 	// Hash enrichment operates only on exact entries and cannot upgrade observations.
 	changeSet.hashEnrichment = await enrichHashesForInitialMatch(changeSet.entries, deps.localFs);
 	await enrichHashesForRenames(
 		changeSet.entries, changeSet.observations, deps.localFs, deps.remoteFs, changeSet.identityEvidence,
 	);
+	const candidateEvidence = completeIdentityEvidence(
+		changeSet.identityEvidence,
+		changeSet.observations,
+		changeSet.entries,
+	);
+	const candidateFacts = await observeDirectConflictCandidates(
+		changeSet.entries, changeSet.observations, candidateEvidence,
+		deps.localFs, deps.remoteFs,
+	);
+	const candidateBaselines = await deps.stateStore.getMany(candidateFacts.map((fact) => fact.requestedPath));
+	changeSet.candidateFacts = candidateFacts.map((fact) => ({
+		...fact, baseline: candidateBaselines.get(fact.requestedPath) ?? null,
+	}));
 	changeSet.identityEvidence = completeIdentityEvidence(
 		changeSet.identityEvidence,
 		changeSet.observations,
@@ -173,15 +201,22 @@ async function collectHot(
 
 	// Acquisition retains all facts it obtained. Admission owns no-change and
 	// deletion decisions, including whether stat absence has deletion authority.
-	return { entries, observations, identityEvidence: remoteChanges.renameEvidence, temperature: "hot" };
+	return {
+		entries, observations, candidateFacts: [],
+		identityEvidence: remoteChanges.renameEvidence, temperature: "hot",
+	};
 }
 
-async function collectWarm(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): Promise<ChangeSet> {
+async function collectWarm(
+	deps: ChangeDetectorDeps,
+	allRecords: SyncRecord[],
+	prefetchedRemoteChanges?: RemoteChanges,
+): Promise<ChangeSet> {
 	const { localFs, remoteFs } = deps;
 
 	const [localFiles, remoteChanges] = await Promise.all([
 		localFs.list(),
-		getRemoteChanges(remoteFs, deps.onRemoteIdentityEvidence),
+		prefetchedRemoteChanges ?? getRemoteChanges(remoteFs, deps.onRemoteIdentityEvidence),
 	]);
 	if (hasFolderRename(remoteChanges)) {
 		return collectCold(
@@ -195,6 +230,18 @@ async function collectWarm(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): 
 
 	const recordMap = new Map(allRecords.map((r) => [r.path, r]));
 	const changedPaths = new Set<string>();
+	// A deterministic preservation sibling is only a bounded acquisition hint.
+	// Re-observe it and its base; Admission still requires a current base alias
+	// and byte-consistent candidate facts before treating it as subordinate.
+	for (const path of [
+		...allRecords.map((record) => record.path),
+		...localFiles.filter((file) => !file.isDirectory).map((file) => file.path),
+	]) {
+		const hint = directConflictCandidateHint(path);
+		if (!hint) continue;
+		changedPaths.add(path);
+		changedPaths.add(hint.basePath);
+	}
 
 	// Compare local listing against sync records
 	for (const file of localFiles) {
@@ -253,7 +300,10 @@ async function collectWarm(deps: ChangeDetectorDeps, allRecords: SyncRecord[]): 
 		};
 	});
 
-	return { entries, observations, identityEvidence: remoteChanges.renameEvidence, temperature: "warm" };
+	return {
+		entries, observations, candidateFacts: [],
+		identityEvidence: remoteChanges.renameEvidence, temperature: "warm",
+	};
 }
 
 async function collectCold(
@@ -304,6 +354,7 @@ async function collectCold(
 	return {
 		entries: Array.from(pathMap.values()),
 		observations,
+		candidateFacts: [],
 		identityEvidence: remoteChanges?.renameEvidence ?? [],
 		temperature: "cold",
 	};

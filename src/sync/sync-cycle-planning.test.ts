@@ -75,7 +75,7 @@ describe("batch observation boundary", () => {
 			identityEvidence: [{
 				kind: "alias", side: "remote", requestedPath: "alias.md", resolvedPath: "renamed.md",
 			}],
-			temperature: "cold",
+			temperature: "cold", candidateFacts: [],
 		};
 		const { snapshot } = prepareSyncCycleSnapshot(
 			changeSet, "backend\0root", { ignorePatterns: [] },
@@ -116,7 +116,7 @@ describe("batch observation boundary", () => {
 				kind: "rename", side: "local", oldPath: "old.md", newPath: "new.md",
 				isFolder: false, authority: "reported",
 			}],
-			temperature: "hot",
+			temperature: "hot", candidateFacts: [],
 		};
 
 		const { snapshot } = prepareSyncCycleSnapshot(changeSet, "backend\0root", {
@@ -191,7 +191,7 @@ describe("batch observation boundary", () => {
 				kind: "rename", side: "local", oldPath: "old.md", newPath: "new.md",
 				isFolder: false, authority: "reported",
 			}],
-			temperature: "hot",
+			temperature: "hot", candidateFacts: [],
 		};
 		const { snapshot } = prepareSyncCycleSnapshot(changeSet, "backend\0root", {
 			reservedPaths: [excludedPath],

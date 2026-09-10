@@ -169,8 +169,8 @@ function assertFactOnlyBoundary(file, source) {
 		if (ts.isInterfaceDeclaration(node) && ["BatchObservation", "IdentityComponent"].includes(node.name.text)) {
 			assert.deepEqual(node.members.map((member) => member.name?.getText(source)).sort(),
 				(node.name.text === "BatchObservation"
-					? ["entries", "evidence", "baselinePaths", "observations", "scope", "namespace"]
-					: ["paths", "entries", "evidence", "observations"]).sort(),
+					? ["entries", "evidence", "baselinePaths", "observations", "candidateFacts", "scope", "namespace"]
+					: ["paths", "entries", "evidence", "observations", "candidateFacts"]).sort(),
 				`${node.name.text} must contain only observed facts`);
 		}
 		node.forEachChild(visit);

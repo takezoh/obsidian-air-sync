@@ -133,6 +133,14 @@ limited to `identity-component-decision.ts`; the fact graph and identity decisio
 reachable only through `plan-admission.ts`. Retired action-first optimizer modules have
 no permitted value importers. The AST guard rejects retired APIs and pins the fact-only
 fields of `BatchObservation` and `IdentityComponent`.
+`BatchObservation.candidateFacts` is a separate read-only occupancy view carrying the
+requested address, both authoritative resolved endpoint observations, and the
+requested-address `SyncRecord` baseline, so
+candidate lookups cannot become ordinary alias-topology authority.
+`IdentityComponent` may carry only those candidate facts derived for its current
+original alias component. They are occupancy and publication-precondition facts for
+direct content-addressed candidates, not independent identity claims, dispositions,
+or proposed actions.
 The same AST guard rejects module-scope mutable or computed correctness data in the
 decision and subordinate proof modules.
 The selected rename family and folder proof must therefore remain immutable call-local

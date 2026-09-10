@@ -187,6 +187,23 @@ describe("LocalChangeTracker", () => {
 	});
 
 	describe("acknowledge with rename pairs", () => {
+		it("can abandon captured relations without consuming dirty paths", () => {
+			tracker.markRenamed("new.md", "old.md");
+			const snap = tracker.snapshot();
+			tracker.acknowledgeRelations(snap);
+			expect(tracker.getRenamePairs()).toEqual(new Map());
+			expect(tracker.getDirtyPaths()).toEqual(new Set(["old.md", "new.md"]));
+		});
+
+		it("retains a relation recreated after a partial cycle snapshot", () => {
+			tracker.markRenamed("new.md", "old.md");
+			const snap = tracker.snapshot();
+			tracker.markRenamed("old.md", "new.md");
+			tracker.markRenamed("new.md", "old.md");
+			tracker.acknowledgeRelations(snap);
+			expect(tracker.getRenamePairs().get("new.md")).toBe("old.md");
+		});
+
 		it("retains a same-value rename recreated after the captured generation", () => {
 			tracker.markRenamed("b.md", "a.md");
 			const snap = tracker.snapshot();
@@ -235,6 +252,11 @@ describe("LocalChangeTracker", () => {
 	});
 
 	describe("markFolderRenamed", () => {
+		it("marks both folder endpoints dirty for post-relation re-observation", () => {
+			tracker.markFolderRenamed("B", "A");
+			expect(tracker.getDirtyPaths()).toEqual(new Set(["A", "B"]));
+		});
+
 		it("retains same-value folder reports recreated after the snapshot", () => {
 			tracker.markFolderRenamed("B", "A");
 			const snap = tracker.snapshot();
@@ -254,10 +276,10 @@ describe("LocalChangeTracker", () => {
 			expect(tracker.generation("B")).toBeGreaterThan(snap.generations!.get("B")!);
 		});
 
-		it("records folder rename pair without pretending roots cover descendants", () => {
+		it("records folder rename roots as bounded dirty addresses without enumerating descendants", () => {
 			tracker.markFolderRenamed("B", "A");
 			expect(tracker.getFolderRenamePairs().get("B")).toBe("A");
-			expect(tracker.getDirtyPaths().size).toBe(0);
+			expect(tracker.getDirtyPaths()).toEqual(new Set(["A", "B"]));
 		});
 
 		it("collapses folder rename chain A→B→C into A→C", () => {

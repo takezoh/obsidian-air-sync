@@ -1,5 +1,6 @@
-import type { IdentityEvidence, MixedEntity, PathObservation } from "./types";
+import type { CandidateFact, IdentityEvidence, MixedEntity, PathObservation } from "./types";
 import type { BatchObservation } from "./sync-cycle-planning";
+import { directConflictCandidateHint, insertConflictSuffix } from "./conflict";
 
 /** Component membership is established before any action exists. */
 export interface IdentityComponent {
@@ -7,6 +8,7 @@ export interface IdentityComponent {
 	readonly entries: readonly MixedEntity[];
 	readonly evidence: readonly IdentityEvidence[];
 	readonly observations: readonly PathObservation[];
+	readonly candidateFacts?: readonly CandidateFact[];
 }
 
 export function buildFactComponents(snapshot: BatchObservation): IdentityComponent[] {
@@ -46,13 +48,72 @@ export function buildFactComponents(snapshot: BatchObservation): IdentityCompone
 		}
 	}
 	for (const group of identityPaths.values()) graph.connect(group);
+	const candidateLinks: Array<{ anchor: string; candidate: string; fact?: CandidateFact }> = [];
+	const aliasesByRoot = new Map<string, Extract<PathObservation, { kind: "alias" }>[]>();
+	for (const observation of snapshot.observations) {
+		if (observation.kind !== "alias" || observation.entity.isDirectory) continue;
+		const root = graph.root(observation.requestedPath);
+		const group = aliasesByRoot.get(root) ?? [];
+		group.push(observation);
+		aliasesByRoot.set(root, group);
+	}
+	for (const [root, aliases] of aliasesByRoot) {
+		const anchor = [...new Set(aliases.flatMap((item) => [item.requestedPath, item.resolvedPath]))]
+			.sort(compareUtf8)[0]!;
+		const versions = new Map<string, { hash: string; size: number; sourcePath: string }>();
+		for (const entry of snapshot.entries) {
+			if (graph.root(entry.path) !== root) continue;
+			for (const entity of [entry.local, entry.remote]) {
+				if (!entity || entity.isDirectory || !entity.hash) continue;
+				versions.set(`${entity.size}\0${entity.hash}`, { hash: entity.hash, size: entity.size, sourcePath: entry.path });
+			}
+		}
+		// Completed cover versions may exist only at candidate addresses. A record
+		// can trigger their observation, but only current endpoint bytes matching
+		// the encoded digest can add the version obligation.
+		for (const fact of snapshot.candidateFacts) {
+			const hint = directConflictCandidateHint(fact.requestedPath);
+			if (hint?.basePath !== anchor) continue;
+			const present = [fact.local, fact.remote].flatMap((item) =>
+				item.kind === "exact" || item.kind === "alias" ? [item.entity] : []);
+			if (present.length === 0 || present.some((entity) => entity.isDirectory ||
+				entity.pathAuthority !== "actual_resolved" || entity.hash !== hint.sha256 ||
+				entity.size !== present[0]!.size)) continue;
+			const key = `${present[0]!.size}\0${hint.sha256}`;
+			if (versions.has(key)) continue;
+			versions.set(key, {
+				hash: hint.sha256, size: present[0]!.size, sourcePath: present[0]!.path,
+			});
+		}
+		for (const version of versions.values()) {
+			const candidate = insertConflictSuffix(anchor, version.hash);
+			const fact = snapshot.candidateFacts.find((item) => item.requestedPath === candidate);
+			candidateLinks.push({ anchor, candidate, fact });
+			const endpoints = fact ? [fact.local, fact.remote] : [];
+			const authoritative = endpoints.every((item) => item.requestedPath === candidate &&
+				(item.kind === "exact" ||
+				item.kind === "alias" || (item.kind === "absent" && item.authority === "stat")));
+			const complete = authoritative && (["local", "remote"] as const).every((side) =>
+				endpoints.some((item) => item.side === side && (item.kind === "exact" ||
+					item.kind === "alias" || (item.kind === "absent" && item.authority === "stat"))));
+			const present = endpoints.flatMap((item) =>
+				item.kind === "exact" || item.kind === "alias" ? [item.entity] : []);
+			if (complete && present.length > 0 && present.every((entity) => !entity.isDirectory &&
+				entity.pathAuthority === "actual_resolved" &&
+				entity.hash === version.hash && entity.size === version.size)) {
+				graph.connect([anchor, version.sourcePath, candidate, ...present.map((entity) => entity.path)]);
+			}
+		}
+	}
 	const grouped = new Map<string, {
 		paths: Set<string>; entries: MixedEntity[]; evidence: IdentityEvidence[];
-		observations: PathObservation[];
+		observations: PathObservation[]; candidateFacts: CandidateFact[];
 	}>();
 	for (const path of graph.paths()) {
 		const root = graph.root(path);
-		const component = grouped.get(root) ?? { paths: new Set(), entries: [], evidence: [], observations: [] };
+		const component = grouped.get(root) ?? {
+			paths: new Set(), entries: [], evidence: [], observations: [], candidateFacts: [],
+		};
 		component.paths.add(path);
 		grouped.set(root, component);
 	}
@@ -62,12 +123,26 @@ export function buildFactComponents(snapshot: BatchObservation): IdentityCompone
 		if (first) grouped.get(graph.root(first))!.evidence.push(item);
 	}
 	for (const item of snapshot.observations) grouped.get(graph.root(item.requestedPath))!.observations.push(item);
+	for (const { anchor, fact } of candidateLinks) {
+		const component = grouped.get(graph.root(anchor))!;
+		if (fact && !component.candidateFacts.includes(fact)) component.candidateFacts.push(fact);
+	}
 	// WARM's local scan also contains unrelated, unchanged addresses for which
 	// no remote facts were acquired. Those are not attempted components. Keep
 	// every observed entry (including no-change entries) and every retained claim.
 	return [...grouped.values()].filter((component) => component.entries.length > 0 ||
 		component.evidence.length > 0 || component.observations.some((item) =>
 			item.kind === "unknown" || item.kind === "present_unresolved"));
+}
+
+function compareUtf8(left: string, right: string): number {
+	const encoder = new TextEncoder();
+	const a = encoder.encode(left);
+	const b = encoder.encode(right);
+	for (let index = 0; index < Math.min(a.length, b.length); index++) {
+		if (a[index] !== b[index]) return a[index]! - b[index]!;
+	}
+	return a.length - b.length;
 }
 
 function folderDescendantPaths(

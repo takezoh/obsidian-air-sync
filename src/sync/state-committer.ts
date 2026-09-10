@@ -15,6 +15,17 @@ export interface StateCommitterContext {
 	logger?: Logger;
 }
 
+/** Publish an Admission-captured stale-record cleanup without creating file-delete authority. */
+export async function commitExactCleanup(
+	path: string,
+	expected: SyncRecord,
+	ctx: StateCommitterContext,
+): Promise<void> {
+	if (!await ctx.stateStore.compareAndDelete(path, expected)) {
+		throw new Error(`SyncRecord changed before cleanup: ${path}`);
+	}
+}
+
 /**
  * Build a SyncRecord from a local and remote FileEntity.
  * Centralised record construction for the sync pipeline.

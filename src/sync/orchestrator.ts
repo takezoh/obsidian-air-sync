@@ -214,11 +214,14 @@ export class SyncOrchestrator {
 				}
 				await this.deps.logger?.flush();
 
-				// The tracker is an input buffer, not durable sync state. Consume its
-				// snapshot only after the whole cycle reached a terminal success; a
-				// failed cycle must be repeatable from the same observed local event.
+				// Checkpoint and tracker inputs have separate closeout rules. A clean
+				// cycle consumes every captured producer input. A terminal partial cycle
+				// abandons captured relation reports so stale rename claims cannot replay,
+				// but retains dirty paths so failed same-metadata content writes stay HOT.
 				if (result.outcome.completion.kind === "clean") {
 					this.deps.localTracker.acknowledge(snapshot);
+				} else {
+					this.deps.localTracker.acknowledgeRelations(snapshot);
 				}
 			} while (this.syncPending);
 

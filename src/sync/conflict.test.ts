@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { generateConflictPath } from "./conflict";
+import { generateConflictPath, insertConflictSuffix } from "./conflict";
 import { resolveConflict } from "./conflict-resolver";
 import {
 	createMockLocalFs, createMockRemoteFs, type MockFileSystem,
@@ -141,6 +141,10 @@ describe("resolveConflict", () => {
 });
 
 describe("generateConflictPath", () => {
+	it("uses the complete digest as a direct conflict suffix", () => {
+		const digest = "a".repeat(64);
+		expect(insertConflictSuffix("notes/file.md", digest)).toBe(`notes/file.conflict-${digest}.md`);
+	});
 	it("returns the .conflict path when it is free", async () => {
 		const localFs = createMockLocalFs();
 		const remoteFs = createMockRemoteFs();
