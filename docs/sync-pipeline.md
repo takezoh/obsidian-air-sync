@@ -175,6 +175,12 @@ rules:
 
 For a local reported rename in `ChangeSet.identityEvidence`, Admission may shape `delete_remote(oldPath) + push(newPath)` → `rename_remote`. Hash verification is mandatory: `push.local.hash === del.baseline.hash` must hold, confirming content is unchanged. The private local helper enforces this rule for both file and folder renames.
 
+Current local and remote occurrences are claimed symmetrically while Admission binds a
+component. A destination baseline used as one rename/conflict publication expectation
+cannot independently bind the same occurrence again and create a second publisher at
+that key. Exact executor CAS remains a guard against external or priority publication,
+not a mechanism for resolving duplicate actions from one plan.
+
 - **File renames** (`optimizeLocalFileRenames`): Consumes the derived file view of local `RenameEvidence`.
 - **Folder renames** (`coalesceLocalFolderRenames`): Consumes the derived folder view and coalesces all mapped managed-descendant actions into one `rename_remote` with `isFolder: true`. Every managed descendant must pass hash verification. Excluded listing entries are absent from this view and do not prevent the opaque folder rename. Missing managed mappings still fail Admission.
 
@@ -261,6 +267,9 @@ captured bytes, the transfer publishes those captured local facts as its histori
 and converges in the next cycle. An existing local source whose bytes changed is still
 rejected, as are an unproved remote terminal and a pull whose remote source disappeared;
 the latter has no local tracker evidence that can explain the remote transition.
+When three-way merge is enabled, the optional merge-base projection reuses these proved
+transfer bytes and validates them against the committed record instead of rereading the
+now-obsolete local path.
 
 Each normal action holds a `PriorityCoordinator` permit from immediately before its exact effect through `commitAction()` and terminal result publication. Queued file-open work therefore runs only at a safe point where no normal action is half-applied. Preparation through Admission and finalization through checkpoint commit are exclusive. The existing phase barriers remain authoritative; priority is allowed to replace only an unstarted Admission-projected singleton pull during the transfer phase.
 

@@ -88,6 +88,11 @@ No casing, Unicode, or provider-normalization heuristic fills an evidence gap. N
 
 Observation alone performs targeted existing list/stat/read/hash enrichment and freezes current facts for potential direct candidates, but selects no anchor, edge, or action. `plan-admission-graph` builds once, selects `P` as the minimum UTF-8 bytes among current alias-resolved paths, partitions exact byte versions, and considers only `insertConflictSuffix(P, fullSha256)` for each version. Matching bytes add an edge and union endpoints. Different bytes remain an independent ordinary component and provide a read-only occupancy witness that fails the group with `preservation_destination_unavailable`. Admission performs no filesystem I/O, iterative frontier, or second build.
 
+Each current local and remote occurrence has one binding owner inside that closed
+component. Claiming is symmetric: a destination baseline consumed by a rename binding
+is its exact CAS expectation, not permission for a second baseline binding to publish
+the same key. Executor CAS remains strict and never repairs a duplicated Admission plan.
+
 Candidate observation uses one attempt-local fact that separates the requested candidate address, each side's actual resolved endpoint, and the requested-key baseline. Existing candidate records may seed bounded re-observation of the base but never authorize a collision. When HOT sees a current component with no committed baseline, it reuses its remote delta and promotes to WARM, composing rather than discarding exact dirty-path facts.
 
 ### Exact bytes are the preservation unit

@@ -398,7 +398,7 @@ function bindFiles(facts: CurrentFacts, reports: readonly RenameEvidence[]): Bou
 		const path = localReport && local ? local.path : remote?.path !== baseline.path && remote
 			? remote.path : local?.path ?? remote?.path ?? baseline.path;
 		if (!compatible(facts, baseline.path, path)) return "unknown_scope";
-		if (remote && claimedRemote.has(remote.path)) continue;
+		if ((local && claimedLocal.has(local.path)) || (remote && claimedRemote.has(remote.path))) continue;
 		const recreated = path !== baseline.path && facts.remote.has(baseline.path) &&
 			facts.remote.get(baseline.path)?.identityKey !== baseline.remoteIdentityKey;
 		const destinationLocal = recreated ? facts.local.get(path) : local;

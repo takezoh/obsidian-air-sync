@@ -14,6 +14,7 @@ import { projectScope } from "./scope-projection";
 import { captureBatchObservation, prepareSyncCycleSnapshot } from "./sync-cycle-planning";
 import { finalizeSyncCycle } from "./sync-cycle-finalization";
 import { insertConflictSuffix } from "./conflict";
+import type { Logger } from "../logging/logger";
 
 /**
  * Convergence (fixed-point) contract — the emergent property the whole engine
@@ -118,14 +119,20 @@ describe("sync converges to a fixed point", () => {
 			env.localTracker.markRenamed("a.md", "Untitled 3.md");
 			return written;
 		});
+		const warn = vi.fn();
 
 		const firstResult = await executePlan(firstAdmission.executable, {
 			localFs: env.localFs, remoteFs: env.remoteFs,
-			committer: { stateStore: env.stateStore }, conflictStrategy: "duplicate",
+			committer: {
+				stateStore: env.stateStore, localFs: env.localFs,
+				enableThreeWayMerge: true, logger: { warn } as unknown as Logger,
+			},
+			conflictStrategy: "duplicate",
 		});
 
 		expect(firstResult.failed).toEqual([]);
 		expect(firstResult.blocked).toEqual([]);
+		expect(warn).not.toHaveBeenCalled();
 		expect(await env.stateStore.get("Untitled 3.md")).toBeDefined();
 		expect((await finalizeSyncCycle({
 			admission: firstAdmission, result: firstResult,
