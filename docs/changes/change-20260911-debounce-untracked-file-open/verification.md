@@ -24,7 +24,8 @@ already armed the independent five-second scheduler debounce.
   implementation checked missing capability or active-batch state before baseline
   absence and did not catch baseline-read failure at that boundary.
 - After implementation, the three focused scheduler/orchestrator/priority suites pass
-  158 tests. They include create/open/rename/modify coalescing, event-order independence,
+	159 tests. They include create/open/rename/modify coalescing through the real scheduler
+	and orchestrator in both create/open orders, event-order independence,
   failed-cycle debounce re-arming, untracked-open liveness, tracked immediate fallbacks,
   baseline-read failure, and destroy-during-await behavior.
 
@@ -33,8 +34,8 @@ already armed the independent five-second scheduler debounce.
 - `npm run lint`: passed.
 - `npm run lint:bot-repro`: passed (55 guard tests).
 - `npm run build`: passed after updating the scheduler mock to the narrowed return type.
-- `npm run test:coverage`: passed (96 files, 2001 tests; 85.30% statements,
-  81.60% branches, 84.59% functions, and 86.75% lines).
+- `npm run test:coverage`: passed (96 files, 2003 tests; 85.33% statements,
+	81.66% branches, 84.59% functions, and 86.78% lines).
 - Personal artifact parity: repository and deployed `main.js` both have SHA-256
   `f1d1679a37dff69a0eaea5c5b24cd012a35138e8ba0cea8b276606b83e7b0b9a`.
 

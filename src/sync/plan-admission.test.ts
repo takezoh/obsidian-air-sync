@@ -1698,6 +1698,33 @@ describe("admitBatchObservation", () => {
 		]);
 	});
 
+	it("retains the exact-path comparison baseline after abandoning a relation", () => {
+		const baselineEntity = freshEntity("B.md", "base", "X");
+		const baseline = recordFor(baselineEntity);
+		const local = freshEntity("B.md", "local");
+		const actions: SyncAction[] = [
+			{ path: "A.md", action: "pull", remote: entity("A.md", "Y") },
+			{ path: "B.md", action: "conflict", local, remote: baselineEntity, baseline },
+		];
+		const observations: PathObservation[] = [
+			{ kind: "exact", side: "remote", requestedPath: "A.md", entity: entity("A.md", "Y") },
+			{ kind: "exact", side: "remote", requestedPath: "B.md", entity: baselineEntity },
+			{ kind: "exact", side: "local", requestedPath: "B.md", entity: local },
+			{ kind: "absent", side: "local", requestedPath: "A.md", authority: "stat" },
+		];
+		const scope = projection({ "A.md": "included", "B.md": "included" });
+
+		const result = admit(actions, [remoteRename()], observations, scope);
+
+		expect(result.failures).toEqual([]);
+		expect(result.executable.actions).toEqual([
+			{ action: "pull", path: "A.md", remote: entity("A.md", "Y"),
+				publication: { source: undefined, destination: undefined } },
+			{ action: "push", path: "B.md", local, remote: baselineEntity, baseline,
+				publication: { source: baseline, destination: baseline } },
+		]);
+	});
+
 	it("defers a folder rename when a projected descendant is not mapped", () => {
 		const fixture = folderFacts(["known.md", "missing.md"]);
 		fixture.entries = fixture.entries.filter(({ path }) => path !== "B/missing.md");

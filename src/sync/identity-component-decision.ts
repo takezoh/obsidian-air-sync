@@ -166,7 +166,8 @@ function relationRootsObserved(facts: CurrentFacts, relation: FolderRelation): b
 }
 
 /** Reconcile exact current addresses independently after abandoning an unusable
- * relation. Historical records remain CAS expectations but never deletion authority.
+ * relation. Two-sided occurrences retain their comparison baseline; one-sided
+ * occurrences retain only CAS expectations, never deletion authority.
  */
 function ordinaryActionsAfterRelationAbandonment(
 	facts: CurrentFacts,
@@ -180,7 +181,8 @@ function ordinaryActionsAfterRelationAbandonment(
 		if (!remote && !absent(facts, "remote", path)) return "unknown_observation";
 		const expected = facts.records.get(path);
 		const action = materializeFile({
-			path, local, remote, publication: { source: expected, destination: expected },
+			path, local, remote, baseline: local && remote ? expected : undefined,
+			publication: { source: expected, destination: expected },
 		}, facts);
 		if (typeof action === "string") return action;
 		if (action && action.action !== "delete_local" && action.action !== "delete_remote") actions.push(action);

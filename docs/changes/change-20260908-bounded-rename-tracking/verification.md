@@ -13,6 +13,7 @@ Implementation evidence was collected against implementation HEAD `8439d48eb37b5
 
 - Unique complete relations retain native rename; contradictory complete relations abandon only the relation.
 - Positively distinct exact/provider occurrences emit ordinary actions; equal bytes do not collapse those paths.
+- Relation abandonment retains the committed exact-path baseline for two-sided content comparison, so a local-only change remains a push and a remote-only change remains a pull instead of becoming a false conflict. One-sided absence still supplies no deletion authority.
 - Affirmative current-cycle alias resolution emits one typed `preservation_cover`; exact/provider facts without a current alias edge do not.
 - Three exact versions A/B/C produce three children; A/A/A inside one collision produces one child.
 - Unknown bytes and same-path provider duplicates that cannot each be enumerated/resolved/read are non-executable observation failures.
