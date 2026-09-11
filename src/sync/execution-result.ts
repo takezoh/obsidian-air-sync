@@ -78,6 +78,7 @@ export function toConflictRecords(
 		local: c.localEntity,
 		remote: c.remoteEntity,
 		duplicatePath: c.resolution.duplicatePath,
+		duplicatePaths: c.resolution.duplicatePaths,
 		hasConflictMarkers: c.resolution.hasConflictMarkers,
 		resolvedAt,
 		sessionId,

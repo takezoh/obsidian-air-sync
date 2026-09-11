@@ -1,13 +1,15 @@
-/* eslint max-lines: ["error", 600] -- current-fact binding and final authorization stay under one identity-policy owner. */
+/* eslint max-lines: ["error", 700] -- relation abandonment and preservation-cover authorization must stay under the sole identity-policy owner. */
 import type { FileEntity } from "../fs/types";
 import type { IdentityComponent } from "./plan-admission-graph";
 import { selectReportFamily } from "./identity-component-report-family";
 import { compareContent } from "./decision-engine";
 import { sameContent, sameSynchronizedContent } from "./content-identity";
 import { isDotPrefixed } from "../utils/path";
+import { insertConflictSuffix } from "./conflict";
 import type {
-	PathObservation, RenameEvidence, ScopeProjection, SyncAction, SyncRecord,
+	CandidateFact, PathObservation, RenameEvidence, ScopeProjection, SyncAction, SyncRecord,
 	RecordPublication, RenameContent, SyncSide,
+	PreservationCoverChild,
 } from "./types";
 
 export type AdmissionFailureReason =
@@ -15,7 +17,7 @@ export type AdmissionFailureReason =
 	| "incomplete_folder_mapping" | "present_unresolved"
 	| "rename_mismatch" | "unknown_observation" | "unknown_scope"
 	| "remote_identity_missing" | "case_alias_content_mismatch"
-	| "tracked_identity_multiple_occurrences";
+	| "tracked_identity_multiple_occurrences" | "preservation_destination_unavailable";
 
 export interface IdentityComponentDecision {
 	readonly component: IdentityComponent & { actions: SyncAction[] };
@@ -28,6 +30,7 @@ interface CurrentFacts {
 	readonly records: ReadonlyMap<string, SyncRecord>;
 	readonly observations: readonly PathObservation[];
 	readonly observationsByAddress: ReadonlyMap<string, readonly PathObservation[]>;
+	readonly candidateFacts: readonly CandidateFact[];
 	readonly scope: ScopeProjection;
 }
 
@@ -70,10 +73,10 @@ export function decideIdentityComponent(
 	for (const path of component.paths) {
 		if (baselinePaths?.has(path) && !current.records.has(path)) return fail("unknown_observation");
 	}
-	const reports = selectReportFamily(component.evidence.filter(
+	const renameReports = component.evidence.filter(
 		(item): item is RenameEvidence => item.kind === "rename",
-	));
-	if (reports.kind === "conflicting") return fail("rename_mismatch");
+	);
+	const reports = selectReportFamily(renameReports);
 	for (const entry of component.entries) {
 		for (const entity of [entry.local, entry.remote]) {
 			if (entity && !compatible(current, entry.path, entity.path)) return fail("unknown_scope");
@@ -95,12 +98,34 @@ export function decideIdentityComponent(
 		if (observation.kind === "alias" &&
 			!compatible(current, observation.requestedPath, observation.resolvedPath)) return fail("unknown_scope");
 	}
+	if (reports.kind === "conflicting" && renameReports.some((report) =>
+		[report.oldPath, report.newPath].some((path) => (["local", "remote"] as const).some((side) =>
+			observationsAt(current, side, path).length === 0)))) return fail("unknown_observation");
+	const cover = preservationCover(current, reports.kind === "conflicting");
+	if (typeof cover === "string") return fail(cover);
+	if (cover) return { component: { ...component,
+		actions: cover.protocol?.kind === "preservation_cover" &&
+			(cover.protocol.children.length > 0 || cover.protocol.cleanup.length > 0) ? [cover] : [],
+	}, reasons: [] };
+	if (reports.kind === "conflicting") {
+		if (current.local.size === 0 && current.remote.size === 0) return fail("unknown_observation");
+		const actions = ordinaryActionsAfterRelationAbandonment(current);
+		return typeof actions === "string" ? fail(actions) : {
+			component: { ...component, actions }, reasons: [],
+		};
+	}
 	const folders = reports.kind === "reported"
 		? reports.governingReports.filter((report) => report.isFolder) : [];
 	const folder = folders.find((report) => !settledRelation(current, report)) ??
 		aliasFolder(current);
 	if (folder) {
 		const actions = decideFolder(current, folder);
+		if (actions === "incomplete_folder_mapping" && relationRootsObserved(current, folder)) {
+			const fallback = ordinaryActionsAfterRelationAbandonment(current);
+			return typeof fallback === "string" ? fail(fallback) : {
+				component: { ...component, actions: fallback }, reasons: [],
+			};
+		}
 		return typeof actions === "string" ? fail(actions) : { component: { ...component, actions }, reasons: [] };
 	}
 	const bound = bindFiles(current, selected.filter((report) => !committedRelation(current, report)));
@@ -124,9 +149,149 @@ export function decideIdentityComponent(
 					(report.side === "remote" && file.remote?.identityKey !== undefined &&
 						current.remote.get(report.oldPath)?.identityKey !== undefined &&
 						file.remote.identityKey !== current.remote.get(report.oldPath)?.identityKey)))));
-		if (!accounted) return fail("rename_mismatch");
+		if (!accounted) {
+			const fallback = ordinaryActionsAfterRelationAbandonment(current);
+			return typeof fallback === "string" ? fail(fallback) : {
+				component: { ...component, actions: fallback }, reasons: [],
+			};
+		}
 	}
 	return { component: { ...component, actions }, reasons: [] };
+}
+
+function relationRootsObserved(facts: CurrentFacts, relation: FolderRelation): boolean {
+	return (["local", "remote"] as const).every((side) =>
+		[relation.oldPath, relation.newPath].every((path) => observationsAt(facts, side, path).some((item) =>
+			item.kind !== "unknown" && item.kind !== "present_unresolved")));
+}
+
+/** Reconcile exact current addresses independently after abandoning an unusable
+ * relation. Two-sided occurrences retain their comparison baseline; one-sided
+ * occurrences retain only CAS expectations, never deletion authority.
+ */
+function ordinaryActionsAfterRelationAbandonment(
+	facts: CurrentFacts,
+): SyncAction[] | AdmissionFailureReason {
+	const actions: SyncAction[] = [];
+	for (const path of [...new Set([...facts.local.keys(), ...facts.remote.keys()])].sort()) {
+		const local = facts.local.get(path);
+		const remote = facts.remote.get(path);
+		if (local?.isDirectory || remote?.isDirectory) continue;
+		if (!local && !absent(facts, "local", path)) return "unknown_observation";
+		if (!remote && !absent(facts, "remote", path)) return "unknown_observation";
+		const expected = facts.records.get(path);
+		const action = materializeFile({
+			path, local, remote, baseline: local && remote ? expected : undefined,
+			publication: { source: expected, destination: expected },
+		}, facts);
+		if (typeof action === "string") return action;
+		if (action && action.action !== "delete_local" && action.action !== "delete_remote") actions.push(action);
+	}
+	return actions;
+}
+
+/** Convert a positively observed file alias with unequal readable bytes into one
+ * non-destructive, stateless preservation group. Relation claims do not choose a
+ * winner; their only role here is proving that two requested paths address one
+ * current occurrence on a side.
+ */
+function preservationCover(
+	facts: CurrentFacts,
+	abandonedReportedRelation: boolean,
+): SyncAction | AdmissionFailureReason | null {
+	const candidateAddresses = new Set(facts.candidateFacts.flatMap((fact) => [
+		fact.requestedPath,
+		...[fact.local, fact.remote].flatMap((item) =>
+			item.kind === "exact" || item.kind === "alias" ? [item.entity.path] : []),
+	]));
+	const collisionWitnesses = facts.observations.filter((item): item is Extract<PathObservation, { kind: "alias" }> =>
+		item.kind === "alias" && !item.entity.isDirectory &&
+		!candidateAddresses.has(item.requestedPath) && !candidateAddresses.has(item.resolvedPath));
+	if (collisionWitnesses.length === 0) return null;
+	const originals = new Set<string>();
+	for (const witness of collisionWitnesses) {
+		originals.add(witness.requestedPath);
+		originals.add(witness.resolvedPath);
+	}
+	const sources: Array<{ side: SyncSide; entity: FileEntity }> = [
+		...[...facts.local.values()].map((entity) => ({ side: "local" as const, entity })),
+		...[...facts.remote.values()].map((entity) => ({ side: "remote" as const, entity })),
+	]
+		.filter((item) => !item.entity.isDirectory);
+	const uniqueSources = [...new Map(sources.map((item) => [`${item.side}\0${item.entity.path}`, item])).values()];
+	if (uniqueSources.length < 2) return null;
+	if (uniqueSources.some(({ entity }) => !entity.hash)) return "unknown_observation";
+	const anchor = [...originals].sort(compareUtf8)[0]!;
+	const versions = [...new Map(uniqueSources.map((item) => [`${item.entity.size}\0${item.entity.hash}`, item])).values()]
+		.sort((left, right) => `${left.side}\0${left.entity.path}`.localeCompare(`${right.side}\0${right.entity.path}`));
+	const currentCoverEvidence = versions.some((source) => {
+		const path = insertConflictSuffix(anchor, source.entity.hash);
+		const local = candidateEntity(facts, "local", path);
+		const remote = candidateEntity(facts, "remote", path);
+		return candidateBaseline(facts, path) !== undefined ||
+			(local !== undefined && local !== null) || (remote !== undefined && remote !== null);
+	});
+	if (!abandonedReportedRelation && [...originals].some((path) => facts.records.has(path)) && !currentCoverEvidence) return null;
+	if (!abandonedReportedRelation && !currentCoverEvidence && versions.length === 1) return null;
+	const children: PreservationCoverChild[] = [];
+	const candidatePaths: string[] = [];
+	const preservedPaths: string[] = [];
+	for (const source of versions) {
+		const candidatePath = insertConflictSuffix(anchor, source.entity.hash);
+		candidatePaths.push(candidatePath);
+		if (facts.scope.byEndpoint.get(candidatePath) !== "included") return "preservation_destination_unavailable";
+		const local = candidateEntity(facts, "local", candidatePath);
+		const remote = candidateEntity(facts, "remote", candidatePath);
+		if (local === undefined || remote === undefined) return "preservation_destination_unavailable";
+		const matchesVersion = (entity: FileEntity | null) => !entity || (!entity.isDirectory &&
+			entity.size === source.entity.size && entity.hash === source.entity.hash);
+		if (!matchesVersion(local) || !matchesVersion(remote)) return "preservation_destination_unavailable";
+		const baseline = candidateBaseline(facts, candidatePath);
+		const alreadyPublished = !!local && !!remote && !!baseline &&
+			sameSynchronizedContent(local, remote, baseline) && baseline.hash === source.entity.hash;
+		if (alreadyPublished) {
+			preservedPaths.push(candidatePath);
+			continue;
+		}
+		const missingSides = [...(!local ? ["local" as const] : []), ...(!remote ? ["remote" as const] : [])];
+		children.push({
+			source, content: { sha256: source.entity.hash, size: source.entity.size }, candidatePath,
+			expectedLocal: local, expectedRemote: remote,
+			missingSides,
+			publication: { source: baseline, destination: baseline },
+		});
+	}
+	const cleanup = [...facts.records.values()].filter((record) => originals.has(record.path) &&
+		!(facts.local.has(record.path) && facts.remote.has(record.path))).map((expected) => ({ path: expected.path, expected }));
+	return {
+		action: "conflict", path: anchor, protocol: {
+			kind: "preservation_cover", collisionWitnesses, candidatePaths, preservedPaths, children, cleanup,
+		},
+	};
+}
+
+function candidateEntity(facts: CurrentFacts, side: SyncSide, path: string): FileEntity | null | undefined {
+	const fact = facts.candidateFacts.find((item) => item.requestedPath === path);
+	const observation = fact?.[side];
+	if (observation?.kind === "absent" && observation.authority === "stat") return null;
+	if (observation?.kind === "exact" && observation.entity.pathAuthority === "actual_resolved") return observation.entity;
+	if (observation?.kind === "alias" && observation.entity.pathAuthority === "actual_resolved") return observation.entity;
+	return undefined;
+}
+
+function candidateBaseline(facts: CurrentFacts, path: string): SyncRecord | undefined {
+	const fact = facts.candidateFacts.find((item) => item.requestedPath === path);
+	return fact?.baseline?.path === path ? fact.baseline : undefined;
+}
+
+function compareUtf8(left: string, right: string): number {
+	const encoder = new TextEncoder();
+	const a = encoder.encode(left);
+	const b = encoder.encode(right);
+	for (let index = 0; index < Math.min(a.length, b.length); index++) {
+		if (a[index] !== b[index]) return a[index]! - b[index]!;
+	}
+	return a.length - b.length;
 }
 
 function indexFacts(component: IdentityComponent, scope: ScopeProjection): CurrentFacts | AdmissionFailureReason {
@@ -188,7 +353,8 @@ function indexFacts(component: IdentityComponent, scope: ScopeProjection): Curre
 		if (observation.kind === "absent" &&
 			(observation.side === "local" ? local : remote).has(observation.requestedPath)) return "conflicting_identity";
 	}
-	return { local, remote, records, observations: component.observations, observationsByAddress, scope };
+	return { local, remote, records, observations: component.observations, observationsByAddress, scope,
+		candidateFacts: component.candidateFacts ?? [] };
 }
 
 function bindFiles(facts: CurrentFacts, reports: readonly RenameEvidence[]): BoundFile[] | AdmissionFailureReason {
@@ -234,7 +400,7 @@ function bindFiles(facts: CurrentFacts, reports: readonly RenameEvidence[]): Bou
 		const path = localReport && local ? local.path : remote?.path !== baseline.path && remote
 			? remote.path : local?.path ?? remote?.path ?? baseline.path;
 		if (!compatible(facts, baseline.path, path)) return "unknown_scope";
-		if (remote && claimedRemote.has(remote.path)) continue;
+		if ((local && claimedLocal.has(local.path)) || (remote && claimedRemote.has(remote.path))) continue;
 		const recreated = path !== baseline.path && facts.remote.has(baseline.path) &&
 			facts.remote.get(baseline.path)?.identityKey !== baseline.remoteIdentityKey;
 		const destinationLocal = recreated ? facts.local.get(path) : local;

@@ -113,6 +113,13 @@ Execution runs in three phases (lane/tier scheduling — see [sync-pipeline.md](
 
 `SyncOrchestrator` also keeps an in-memory failed-action tracker. It never persists across plugin reloads. Only local-origin actions that are safe to skip after recovery (`push`, `delete_remote`, `rename_remote`) and whose failure classification is `permanent` with a stable `permanentCode` are eligible. If the same backend/action/path/permanentCode signature fails in two consecutive cycles, the third cycle records it in `result.blocked` without executing its I/O. Success, action/content changes, action type changes, a non-eligible failure classification, or the 5 minute TTL clear the block. Remote-origin and conflict actions are deliberately excluded, and `transient` / `rateLimit` failures are deliberately excluded so a recovered network/provider is retried immediately.
 
+A local source disappearing after a push write is not itself an action failure when
+the executor already captured the admitted bytes and proves the remote terminal contains
+them. It publishes that completed transfer as a historical baseline; any vault rename
+or edit recorded after the cycle snapshot remains pending for the next cycle. This does
+not apply when the old local path still exists with changed bytes, when the remote
+terminal is unproved, or when a pull's remote source disappears.
+
 ## Acknowledge pattern
 
 Each sync cycle captures a `snapshot()` of the tracker at the start — a frozen copy of `dirtyPaths`, `renamePairs`, `folderRenamePairs`, and `initialized` — drives change detection from it, and acknowledges exactly that snapshot at the end:
@@ -121,12 +128,16 @@ Each sync cycle captures a `snapshot()` of the tracker at the start — a frozen
 // In orchestrator.runSync(), once per do/while cycle:
 const snapshot = this.deps.localTracker.snapshot();
 // …change detection + execution read `snapshot`…
-this.deps.localTracker.acknowledge(snapshot);
+if (completion.kind === "clean") {
+  this.deps.localTracker.acknowledge(snapshot);
+} else {
+  this.deps.localTracker.acknowledgeRelations(snapshot);
+}
 ```
 
-`acknowledge(snapshot)` removes each of the snapshot's dirty paths from `dirtyPaths`, and clears each captured rename pair and folder-rename pair **only when the live entry still equals the snapshot's value** — a mid-cycle rename that re-created or overwrote that key (a fresh pair, or the same `newPath` with a different source) differs from the snapshot and survives. It then sets `initialized = true`. Acknowledging the start-of-cycle snapshot rather than the live set is deliberate: a `markDirty`/rename arriving mid-cycle (after the snapshot was taken) is left intact for the next cycle instead of being swept — keeping it on the fast hot path instead of degrading the next cycle to a warm full-scan. This is robustness, not correctness: even if a mid-cycle change were swept, the unchanged baseline would re-surface it via warm/cold detection.
+`acknowledge(snapshot)` removes each of the snapshot's dirty paths from `dirtyPaths`, and clears each captured rename pair and folder-rename pair **only when the live entry still equals the snapshot's value** — a mid-cycle rename that re-created or overwrote that key (a fresh pair, or the same `newPath` with a different source) differs from the snapshot and survives. It then sets `initialized = true`. `acknowledgeRelations(snapshot)` applies only that generation-aware relation removal and leaves dirty paths and initialization unchanged. Using the start-of-cycle snapshot rather than the live set is deliberate: a `markDirty`/rename arriving mid-cycle is never swept.
 
-`acknowledge` is reached only when `executeWithRetry()` returns a non-null result. A *fatal* error — `AuthError`, a non-rate-limit 403, a 404 (which breaks the retry loop), or retries exhausted — returns null, so `runSync` returns early at `if (!result) return;` and the snapshot is never acknowledged, preserving the dirty set for the next cycle. A *per-file* failure (recorded in `result.failed`, status `partial_error`) still completes the cycle, so the snapshot is acknowledged and its paths are cleared from the dirty set. Because a failed action never commits a `SyncRecord`, the baseline mismatch persists and the file is re-detected next cycle via warm/cold change detection, not via the dirty set.
+Full `acknowledge` is reached only after a clean non-null result. A *fatal* error — `AuthError`, a non-rate-limit 403, a 404 (which breaks the retry loop), or retries exhausted — returns null, so `runSync` returns early at `if (!result) return;` and preserves the whole snapshot. A terminal *partial* result calls `acknowledgeRelations(snapshot)` instead: captured dirty paths remain pending, while captured file/folder rename reports are removed only when their endpoint generations still match. This keeps a failed equal-mtime/equal-size content edit on HOT, but prevents a stale failed relation from replaying forever. Folder rename events put both root addresses in the dirty set; if those unbaselined roots are absent at address-local stat after relation abandonment, HOT promotes to WARM to rediscover descendants. A relation report recreated after capture survives for the next cycle.
 
 The `pullSingle()` method calls `acknowledgePath(path)` after completion (success or failure) to prevent re-triggering the file-open priority sync for the same path. Unlike `acknowledge`, it clears only that path's dirty and rename-pair entry, intentionally leaving `folderRenamePairs` and `initialized` untouched — a single-file pull must not wipe pending folder renames or flip the tracker out of its cold-start state.
 

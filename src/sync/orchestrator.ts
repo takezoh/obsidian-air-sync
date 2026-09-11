@@ -214,11 +214,14 @@ export class SyncOrchestrator {
 				}
 				await this.deps.logger?.flush();
 
-				// The tracker is an input buffer, not durable sync state. Consume its
-				// snapshot only after the whole cycle reached a terminal success; a
-				// failed cycle must be repeatable from the same observed local event.
+				// Checkpoint and tracker inputs have separate closeout rules. A clean
+				// cycle consumes every captured producer input. A terminal partial cycle
+				// abandons captured relation reports so stale rename claims cannot replay,
+				// but retains dirty paths so failed same-metadata content writes stay HOT.
 				if (result.outcome.completion.kind === "clean") {
 					this.deps.localTracker.acknowledge(snapshot);
+				} else {
+					this.deps.localTracker.acknowledgeRelations(snapshot);
 				}
 			} while (this.syncPending);
 
@@ -292,17 +295,17 @@ export class SyncOrchestrator {
 		return null;
 	}
 
-	async pullSingle(path: string): Promise<void> {
+	async pullSingle(path: string): Promise<"untracked" | undefined> {
 		if (this.isExcluded(path)) {
 			this.deps.logger?.debug("pullSingle: skipped — out of sync scope", { path });
 			return;
 		}
-		await this.priorityCoordinator.enqueue(path, async () => {
+		return this.priorityCoordinator.enqueue(path, async () => {
 			const localFs = this.deps.localFs();
 			const remoteFs = this.deps.remoteFs();
 			if (!localFs || !remoteFs) {
 				this.deps.logger?.warn("pullSingle: skipped — no local or remote fs", { path });
-				return;
+				return undefined;
 			}
 			const activeBatch = this.activeBatch;
 			const target = activeBatch
@@ -320,6 +323,7 @@ export class SyncOrchestrator {
 				logger: this.deps.logger,
 			});
 			this.deps.logger?.info("file-open priority completed", { path, outcome });
+			return outcome === "untracked" ? outcome : undefined;
 		});
 	}
 

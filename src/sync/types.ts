@@ -63,6 +63,15 @@ export type PathObservation =
 	| { kind: "absent"; side: SyncSide; requestedPath: string; authority: "stat" | "checkpoint_deleted" }
 	| { kind: "unknown"; side: SyncSide; requestedPath: string; reason: "not_observed" | "outside_tracked_root" };
 
+/** Frozen occupancy and requested-key baseline for one deterministic cover destination. */
+export interface CandidateFact {
+	readonly requestedPath: string;
+	readonly local: PathObservation;
+	readonly remote: PathObservation;
+	/** Required lookup result: null proves the requested key was read and absent. */
+	readonly baseline: SyncRecord | null;
+}
+
 export interface EntityOccurrence {
 	side: SyncSide;
 	phase: "baseline" | "current";
@@ -99,6 +108,8 @@ export interface ConflictRecord {
 	local?: FileEntity;
 	remote?: FileEntity;
 	duplicatePath?: string;
+	/** Ordered preservation outputs; duplicatePath remains the first for compatibility. */
+	duplicatePaths?: readonly string[];
 	hasConflictMarkers?: boolean;
 	resolvedAt: string;
 	sessionId: string;
@@ -135,6 +146,34 @@ export interface ObservedEndpoint {
 	readonly entity: FileEntity;
 }
 
+export interface PreservationCoverChild {
+	readonly source: ObservedEndpoint;
+	readonly content: { readonly sha256: string; readonly size: number };
+	readonly candidatePath: string;
+	readonly expectedLocal: FileEntity | null;
+	readonly expectedRemote: FileEntity | null;
+	readonly missingSides: readonly SyncSide[];
+	readonly publication: RecordPublication;
+}
+
+export interface ExactRecordCleanup {
+	readonly path: string;
+	readonly expected: SyncRecord;
+}
+
+export type ConflictProtocol =
+	| { readonly kind: "same_path" }
+	| {
+		readonly kind: "preservation_cover";
+		readonly collisionWitnesses: readonly PathObservation[];
+		/** Stable child order for terminal/audit projection. */
+		readonly candidatePaths: readonly string[];
+		/** Candidates already proven two-sided and published by current facts. */
+		readonly preservedPaths: readonly string[];
+		readonly children: readonly PreservationCoverChild[];
+		readonly cleanup: readonly ExactRecordCleanup[];
+	};
+
 /** A fixed rename protocol, not a programmable sequence of filesystem steps. */
 export type RenameContent =
 	| { readonly mode: "equal" }
@@ -160,6 +199,8 @@ interface SyncActionBase {
 	additionalRemote?: FileEntity;
 	/** A distinct local destination version that must survive replacement. */
 	additionalLocal?: FileEntity;
+	/** Closed conflict execution contract. Omitted only on legacy same-path actions. */
+	protocol?: ConflictProtocol;
 }
 
 /** Standard sync action (all types except rename actions) */

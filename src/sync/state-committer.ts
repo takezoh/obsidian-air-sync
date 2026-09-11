@@ -15,6 +15,17 @@ export interface StateCommitterContext {
 	logger?: Logger;
 }
 
+/** Publish an Admission-captured stale-record cleanup without creating file-delete authority. */
+export async function commitExactCleanup(
+	path: string,
+	expected: SyncRecord,
+	ctx: StateCommitterContext,
+): Promise<void> {
+	if (!await ctx.stateStore.compareAndDelete(path, expected)) {
+		throw new Error(`SyncRecord changed before cleanup: ${path}`);
+	}
+}
+
 /**
  * Build a SyncRecord from a local and remote FileEntity.
  * Centralised record construction for the sync pipeline.
@@ -43,6 +54,7 @@ async function maybeStoreMergeBase(
 	ctx: StateCommitterContext,
 	record: SyncRecord,
 	localEntity: FileEntity | undefined,
+	provedContent?: ArrayBuffer,
 ): Promise<void> {
 	const { path, localSize: size } = record;
 	const { stateStore, localFs, enableThreeWayMerge, logger } = ctx;
@@ -50,7 +62,7 @@ async function maybeStoreMergeBase(
 	try {
 		// The record key follows the admitted topology, while the entity path is the
 		// filesystem-resolved endpoint from which the successful bytes are readable.
-		const content = await localFs.read(localEntity.path);
+		const content = provedContent?.slice(0) ?? await localFs.read(localEntity.path);
 		// The local file may have changed after the admitted I/O. A CAS protects
 		// the record, but only byte verification can bind this read to that record.
 		if (!record.hash || content.byteLength !== record.localSize ||
@@ -109,7 +121,8 @@ export async function commitAction(
 			? await stateStore.compareAndMove(source, record, destination)
 			: await stateStore.compareAndPut(destination, record);
 		if (!committed) throw new Error(`SyncRecord changed before terminal publication: ${path}`);
-		await maybeStoreMergeBase(ctx, record, localEntity);
+		await maybeStoreMergeBase(ctx, record, localEntity,
+			proof?.action === action ? proof.intendedContent : undefined);
 		return record;
 	}
 	throw new Error(`Admission publication inputs missing: ${path}`);

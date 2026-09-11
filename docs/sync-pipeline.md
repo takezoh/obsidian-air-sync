@@ -35,7 +35,7 @@ File-open priority does not add another set of these stages. It reuses the store
 
 The same `isExcluded()` gates the vault-event dirty tracking (scheduler), so push and pull use one scope rule across hot and cold paths.
 
-`runSync()` is gated on a connected remote (`remoteFs` present), layout-ready, and not-connecting; it serializes via an `AsyncMutex`. A call arriving while a sync runs sets `syncPending` and returns; the lock holder re-runs in a `do/while (syncPending)` loop. A tracker snapshot is acknowledged only after a clean, terminal cycle; an unresolved rename input remains in that bounded producer buffer for the next invocation. Each cycle (`executeSyncOnce`) is wrapped by `executeWithRetry`, which normally retries up to `MAX_RETRIES = 3` with exponential backoff plus jitter (`2^(attempt-1) * 1000 * (0.5 + Math.random())` ms), honoring `Retry-After` (×1000) on 429/403. `AuthError`, a non-rate-limit 403, and 404 abort without retry. Before any incomplete attempt is classified or retried, its remote working view is aborted; no evidence or recovery instruction is persisted.
+`runSync()` is gated on a connected remote (`remoteFs` present), layout-ready, and not-connecting; it serializes via an `AsyncMutex`. A call arriving while a sync runs sets `syncPending` and returns; the lock holder re-runs in a `do/while (syncPending)` loop. A clean cycle acknowledges its complete captured tracker snapshot. A terminal partial cycle withholds the durable checkpoint, retains captured dirty paths, and abandons only captured file/folder rename reports; endpoint-generation checks retain relation reports recreated after capture. The next invocation therefore keeps failed content writes on HOT while re-observing relational work from current endpoints instead of replaying an unresolved rename report as retry state. Each cycle (`executeSyncOnce`) is wrapped by `executeWithRetry`, which normally retries up to `MAX_RETRIES = 3` with exponential backoff plus jitter (`2^(attempt-1) * 1000 * (0.5 + Math.random())` ms), honoring `Retry-After` (×1000) on 429/403. `AuthError`, a non-rate-limit 403, and 404 abort without retry. Before any incomplete attempt is classified or retried, its remote working view is aborted; no evidence or recovery instruction is persisted.
 
 ## Crash recovery
 
@@ -108,7 +108,7 @@ Before hash enrichment, `collectChanges()` creates observations for every curren
 
 ### Local changes
 
-`LocalChangeTracker` (`local-tracker.ts`) tracks dirty paths in memory via a `Set<string>`. Vault events (`create`, `modify`, `delete`) call `markDirty(path)`. The `rename` event calls `markRenamed(newPath, oldPath)`, which records the producer pair and marks both paths dirty. Rename chains are collapsed (A→B→C becomes A→C). At collection, `collectLocalRenameEvidence()` converts the captured pair exactly once into the normative `RenameEvidence`; any private action-shaping view is derived from that evidence rather than maintained as a second source of truth. Each sync cycle captures a `snapshot()` of the tracker at the start (a frozen copy of `dirtyPaths` / `renamePairs` / `folderRenamePairs` / `initialized`) and acknowledges exactly that snapshot at the end: `acknowledge(snapshot)` deletes the snapshot's paths from the dirty set and clears each captured rename / folder-rename pair only when the live entry still matches the snapshot's value (so a mid-cycle rename reusing a key survives), then sets `initialized = true`. Acknowledging the start-of-cycle snapshot rather than the live set keeps a `markDirty` arriving mid-cycle for the next cycle instead of sweeping it (see [Acknowledge pattern](error-handling.md#acknowledge-pattern)).
+`LocalChangeTracker` (`local-tracker.ts`) tracks dirty paths in memory via a `Set<string>`. Vault events (`create`, `modify`, `delete`) call `markDirty(path)`. File and folder rename events record a producer pair and mark both root endpoints dirty; they do not enumerate folder descendants. Rename chains are collapsed (A→B→C becomes A→C). At collection, `collectLocalRenameEvidence()` converts the captured pair exactly once into the normative `RenameEvidence`; any private action-shaping view is derived from that evidence rather than maintained as a second source of truth. Each sync cycle captures a `snapshot()` of the tracker at the start (a frozen copy of `dirtyPaths` / `renamePairs` / `folderRenamePairs` / `initialized`). Clean completion calls `acknowledge(snapshot)`, deleting captured dirty paths and generation-matching relations. Terminal partial completion calls `acknowledgeRelations(snapshot)`, deleting only generation-matching relations and retaining dirty paths. A mid-cycle event reusing a key survives either operation (see [Acknowledge pattern](error-handling.md#acknowledge-pattern)).
 
 Folder renames are captured separately at the event boundary: a `TFolder` routes to `markFolderRenamed(newPath, oldPath)`, recording a chain-collapsed producer pair while files use `markRenamed`. Unlike file rename capture, this does not mark every descendant dirty. Collection converts both maps into the same normative `RenameEvidence` shape (`isFolder` distinguishes them); Admission receives that single evidence collection and derives its private folder-shaping view.
 
@@ -174,6 +174,12 @@ rules:
 ### Local renames — hash-verified (`optimize-local-renames.ts`)
 
 For a local reported rename in `ChangeSet.identityEvidence`, Admission may shape `delete_remote(oldPath) + push(newPath)` → `rename_remote`. Hash verification is mandatory: `push.local.hash === del.baseline.hash` must hold, confirming content is unchanged. The private local helper enforces this rule for both file and folder renames.
+
+Current local and remote occurrences are claimed symmetrically while Admission binds a
+component. A destination baseline used as one rename/conflict publication expectation
+cannot independently bind the same occurrence again and create a second publisher at
+that key. Exact executor CAS remains a guard against external or priority publication,
+not a mechanism for resolving duplicate actions from one plan.
 
 - **File renames** (`optimizeLocalFileRenames`): Consumes the derived file view of local `RenameEvidence`.
 - **Folder renames** (`coalesceLocalFolderRenames`): Consumes the derived folder view and coalesces all mapped managed-descendant actions into one `rename_remote` with `isFolder: true`. Every managed descendant must pass hash verification. Excluded listing entries are absent from this view and do not prevent the opaque folder rename. Missing managed mappings still fail Admission.
@@ -254,6 +260,17 @@ The phases run behind **sequential barriers** (Phase 1 fully drains before Phase
 
 Phases 1 and 3 use `executeAction()`, which runs `runActionIO()` followed by `commitAction()` and records success in `result.succeeded`. Phase 2 (conflict) uses `executeConflictAction()` instead: it runs `resolveConflict()` per the configured strategy (`auto_merge` / `duplicate`), re-stats both local and remote sides, commits, and records the action in both `result.conflicts` and `result.succeeded`. In both paths, `AuthError` is re-thrown to abort the entire cycle (it rejects the phase's pool/lane and propagates); all other errors are caught per-action and recorded in `result.failed`.
 
+A push captures and validates its exact local bytes before writing. If a vault rename
+removes that old local address after the write, but the remote terminal proves the
+captured bytes, the transfer publishes those captured local facts as its historical
+`SyncRecord` half. The post-snapshot rename/edit remains pending in `LocalChangeTracker`
+and converges in the next cycle. An existing local source whose bytes changed is still
+rejected, as are an unproved remote terminal and a pull whose remote source disappeared;
+the latter has no local tracker evidence that can explain the remote transition.
+When three-way merge is enabled, the optional merge-base projection reuses these proved
+transfer bytes and validates them against the committed record instead of rereading the
+now-obsolete local path.
+
 Each normal action holds a `PriorityCoordinator` permit from immediately before its exact effect through `commitAction()` and terminal result publication. Queued file-open work therefore runs only at a safe point where no normal action is half-applied. Preparation through Admission and finalization through checkpoint commit are exclusive. The existing phase barriers remain authoritative; priority is allowed to replace only an unstarted Admission-projected singleton pull during the transfer phase.
 
 **Adaptive transfer concurrency + in-cycle retry.** Phase 1's `AdaptivePool` ramps its in-flight ceiling up on sustained success and halves it on a rate-limit signal, so a large initial/bulk sync discovers the provider's sustainable throughput instead of a fixed `5`. Admission has a **second dimension besides the count limit: a byte budget** (sum of in-flight transfer sizes ≤ desktop 1 GB / mobile 512 MB) — because each transfer holds the whole file as an `ArrayBuffer` (`requestUrl` is buffered, no streaming), the budget caps peak memory by *bytes* rather than letting it scale with file *count*, so small files run highly concurrent while large ones self-throttle. A single file larger than the budget still runs (it is admitted only when the pool is otherwise empty, so it transfers alone). Each action's network I/O is additionally wrapped in `withIoRetry`: a `rateLimit`/`transient` error is retried in-cycle (up to `MAX_ACTION_RETRIES = 3`, honoring `Retry-After`), and on a rate-limit the task signals the pool (`noteRateLimit`, before the backoff sleep) so the ceiling drops immediately while the rate-limited task holds its slot (a natural throttle). A rate-limited transfer therefore no longer defers to the next (forced-cold) cycle, so the cycle completes clean more often. See [error-handling.md → Two retry layers](error-handling.md#two-retry-layers). Conflict and deletes also get `withIoRetry`, but only transfers feed the `AdaptivePool` (conflict is serial; deletes use a fixed pool).
@@ -298,3 +315,17 @@ These triggers are **classified** ([ADR 0004](adr/0004-sync-reruns-are-classifie
 5. If an admitted singleton pull is still pending, supersede that exact action object; otherwise complete independently
 
 Unlike focus/visibility/online triggers, file-open is queued even while a batch runs. `PriorityCoordinator` drains queued opens after active normal actions finish and before later normal permits. It never interrupts an effect/commit pair, runs nothing during preparation/finalization, and does not alter the global phase order. Only a transfer-phase exact singleton regular-file pull with matching stable identity can be superseded. Missing capability/baseline, structural or ambiguous topology, a local edit, changed target token/identity, CAS loss, or a later phase fails closed to the normal lifecycle; no alternate action is invented. Duplicate opens of one pending path coalesce into one attempt.
+
+A missing baseline is classified more narrowly than other priority deferrals. It is an
+`untracked` result, not a safety failure: priority performs no immediate lifecycle
+request, and the scheduler feeds the result into the same resettable five-second
+debounce used by vault changes. Obsidian's create-plus-open sequence therefore waits for
+the note's name/content to settle, while an untracked open without a create event still
+gets a delayed normal scan. Baseline classification happens before capability and
+active-batch checks, so the result does not depend on whether file-open or create is
+observed first. It also re-arms a timer already consumed by an incomplete baseline-free
+cycle; a retained dirty path is not treated as proof that a debounce remains armed. The
+scheduler rechecks its destroyed state after the priority await so plugin unload cannot
+re-arm a cancelled timer. Present-but-incomplete tracking, active-batch deferral,
+missing capability, observation contradictions, invalidation, provider or baseline-read
+errors, and CAS loss keep their immediate normal-lifecycle behavior.

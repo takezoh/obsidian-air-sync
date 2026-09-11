@@ -8,7 +8,7 @@ import { captureBatchObservation } from "./sync-cycle-planning";
 import { PriorityBatchState } from "./priority-batch-state";
 import { executePlan } from "./plan-executor";
 
-async function arrange() {
+async function arrange(options: { tracked?: boolean; remoteIdentity?: boolean } = {}) {
 	const localFs = createMockLocalFs();
 	const remoteFs = createMockRemoteFs();
 	const stateStore = createMockStateStore();
@@ -26,10 +26,13 @@ async function arrange() {
 			entity: { ...remote },
 		},
 	};
-	await stateStore.put({
-		path: "note.md", hash: local.hash, localMtime: local.mtime, remoteMtime: 1,
-		localSize: local.size, remoteSize: local.size, remoteIdentityKey: "remote-id", syncedAt: 1,
-	});
+	if (options.tracked ?? true) {
+		await stateStore.put({
+			path: "note.md", hash: local.hash, localMtime: local.mtime, remoteMtime: 1,
+			localSize: local.size, remoteSize: local.size, syncedAt: 1,
+			...(options.remoteIdentity ?? true ? { remoteIdentityKey: "remote-id" } : {}),
+		});
+	}
 	const requestNormalLifecycle = vi.fn();
 	const supersede = vi.fn().mockReturnValue(true);
 	const invalidate = vi.fn().mockReturnValue(true);
@@ -46,6 +49,68 @@ async function arrange() {
 }
 
 describe("syncOpenedFilePriority", () => {
+	it.each(["dirty", "untracked", "no_capability", "active_batch"] as const)(
+		"returns the untracked outcome for a baseline-less %s path", async (condition) => {
+			const ctx = await arrange({ tracked: false });
+			if (condition === "dirty") ctx.localTracker.markDirty("note.md");
+			if (condition !== "no_capability") {
+				ctx.remoteFs.priority = { observe: vi.fn(), read: vi.fn() };
+			}
+			const target = condition === "active_batch"
+				? { kind: "defer" as const }
+				: ctx.base.target;
+
+			expect(await syncOpenedFilePriority({ ...ctx.base, target })).toBe("untracked");
+			expect(ctx.requestNormalLifecycle).not.toHaveBeenCalled();
+			if (condition === "dirty") {
+				expect(ctx.localTracker.getDirtyPaths().has("note.md")).toBe(true);
+			}
+		},
+	);
+
+	it.each(["no_capability", "active_batch", "record_without_identity"] as const)(
+		"immediately defers a tracked %s path", async (condition) => {
+			const ctx = await arrange({ remoteIdentity: condition !== "record_without_identity" });
+			if (condition !== "no_capability") {
+				ctx.remoteFs.priority = { observe: vi.fn(), read: vi.fn() };
+			}
+			const target = condition === "active_batch"
+				? { kind: "defer" as const }
+				: ctx.base.target;
+
+			expect(await syncOpenedFilePriority({ ...ctx.base, target })).toBe("deferred_to_batch");
+			expect(ctx.requestNormalLifecycle).toHaveBeenCalledOnce();
+		},
+	);
+
+	it("requests an immediate normal lifecycle after a remote observation error", async () => {
+		const ctx = await arrange();
+		ctx.remoteFs.priority = {
+			observe: vi.fn().mockRejectedValue(new Error("remote unavailable")),
+			read: vi.fn(),
+		};
+
+		expect(await syncOpenedFilePriority(ctx.base)).toBe("failed_retryable");
+		expect(ctx.requestNormalLifecycle).toHaveBeenCalledOnce();
+		expect(readText(ctx.localFs, "note.md")).toBe("old");
+	});
+
+	it.each(["no_capability", "active_batch"] as const)(
+		"requests an immediate normal lifecycle when baseline reading fails for %s", async (condition) => {
+			const ctx = await arrange();
+			vi.spyOn(ctx.stateStore, "get").mockRejectedValue(new Error("state unavailable"));
+			if (condition === "active_batch") {
+				ctx.remoteFs.priority = { observe: vi.fn(), read: vi.fn() };
+			}
+			const target = condition === "active_batch"
+				? { kind: "defer" as const }
+				: ctx.base.target;
+
+			expect(await syncOpenedFilePriority({ ...ctx.base, target })).toBe("failed_retryable");
+			expect(ctx.requestNormalLifecycle).toHaveBeenCalledOnce();
+		},
+	);
+
 	it("does not overwrite an edit observed while detached content is being read", async () => {
 		const ctx = await arrange();
 		const gate = deferred<ArrayBuffer>();

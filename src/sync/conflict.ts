@@ -7,6 +7,8 @@ export interface ConflictResolutionResult {
 	action: "kept_local" | "kept_remote" | "duplicated" | "merged";
 	/** If a duplicate was created, its path */
 	duplicatePath?: string;
+	/** Every preservation output path in admitted child order. */
+	duplicatePaths?: readonly string[];
 	/** True if the merged result contains unresolved conflict markers */
 	hasConflictMarkers?: boolean;
 	/** Verified preservation outputs created before any original-path effect. */
@@ -55,11 +57,28 @@ export async function generateConflictPath(
 	return insertConflictSuffix(path, Date.now());
 }
 
-function insertConflictSuffix(path: string, seq: number | string): string {
+export function insertConflictSuffix(path: string, seq: number | string): string {
 	const suffix = seq === 1 ? ".conflict" : `.conflict-${seq}`;
 	const lastDot = path.lastIndexOf(".");
 	if (lastDot === -1 || lastDot <= path.lastIndexOf("/")) {
 		return `${path}${suffix}`;
 	}
 	return `${path.substring(0, lastDot)}${suffix}${path.substring(lastDot)}`;
+}
+
+/** Reverse only the deterministic full-SHA preservation address. The result is
+ * an acquisition hint; callers must prove the base alias and candidate bytes.
+ */
+export function directConflictCandidateHint(
+	path: string,
+): { readonly basePath: string; readonly sha256: string } | undefined {
+	const slash = path.lastIndexOf("/");
+	const directory = slash === -1 ? "" : path.substring(0, slash + 1);
+	const filename = path.substring(slash + 1);
+	const match = /^(.*)\.conflict-([0-9a-f]{64})(\.[^.]*)?$/.exec(filename);
+	if (!match) return undefined;
+	const basePath = `${directory}${match[1]}${match[3] ?? ""}`;
+	const sha256 = match[2]!;
+	if ((!match[1] && !match[3]) || insertConflictSuffix(basePath, sha256) !== path) return undefined;
+	return { basePath, sha256 };
 }

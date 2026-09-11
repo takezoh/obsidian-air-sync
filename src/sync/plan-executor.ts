@@ -1,7 +1,7 @@
-/* eslint max-lines: ["error", 900] -- the executor owns fresh compound effects, destructive re-observation, cycle-local terminal proof, and proof-gated commit routing. */
+/* eslint max-lines: ["error", 960] -- the executor owns all fixed protocols, immediate pre-effect observation, terminal proof, and proof-gated commit routing. */
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
-import type { ConflictStrategy, RenameAction, SyncAction } from "./types";
+import type { ConflictStrategy, PreservationCoverChild, RenameAction, SyncAction } from "./types";
 import type { AuthorizedSyncPlan } from "./plan-admission";
 import type { StateCommitterContext } from "./state-committer";
 import { bytesMatch, captureContentSnapshot, ContentProofError } from "./content-snapshot";
@@ -11,7 +11,7 @@ import type {
 } from "./conflict-resolver";
 import type { VerifiedConflictOutput } from "./conflict";
 import type { Logger } from "../logging/logger";
-import { commitAction } from "./state-committer";
+import { commitAction, commitExactCleanup } from "./state-committer";
 import { resolveConflict } from "./conflict-resolver";
 import { AuthError, classifyHttpError } from "../fs/errors";
 import type { ErrorClassification } from "../fs/errors";
@@ -24,6 +24,7 @@ import type { NormalActionPermit } from "./priority-coordinator";
 import type { LocalMutationBarrier } from "./local-mutation-barrier";
 import { sameSynchronizedContent } from "./content-identity";
 import { hasChanged, hasRemoteChanged } from "./change-compare";
+import { sha256 } from "../utils/hash";
 export type { BlockedAction, CompletedAction, ExecutionResult, FailedAction, ResolvedConflict } from "./execution-result";
 export { toConflictRecords } from "./execution-result";
 
@@ -354,15 +355,21 @@ async function runActionIO(
 			const source = pushing ? localFs : remoteFs;
 			const target = pushing ? remoteFs : localFs;
 			const targetPath = (pushing ? action.remotePath : action.localPath) ?? path;
-			const { content } = await captureContentSnapshot(source, expected.path, expected);
+			const captured = await captureContentSnapshot(source, expected.path, expected);
+			const { content } = captured;
 			// Reading may yield to local edits or another writer. Revalidate the
 			// captured destination and record expectations before destructive use.
 			await checkPublicationInputs(action, ctx, []);
 			await target.write(targetPath, content.slice(0), expected.mtime);
-			const [localEntity, remoteEntity] = await Promise.all([
+			let [localEntity, remoteEntity] = await Promise.all([
 				localFs.stat(action.localPath ?? action.local?.path ?? path),
 				remoteFs.stat(action.remotePath ?? action.remote?.path ?? path),
 			]);
+			// A vault rename can remove a push source after its bytes were captured
+			// and written. Publish that completed transfer as historical baseline;
+			// the tracker retains the later rename/edit for the next cycle. A source
+			// that still exists must remain current and is verified below as before.
+			if (pushing && !localEntity) localEntity = captured.entity;
 			if (!localEntity || !remoteEntity) throw new ContentProofError("proof_mismatch", "Transfer terminal endpoint disappeared");
 			return { localEntity, remoteEntity, intendedContent: content };
 		}
@@ -469,7 +476,10 @@ async function runAdmittedRenameIO(action: RenameAction, ctx: ExecutionContext) 
 	await moving.rename(action.oldPath, action.path);
 	if (content && action.content?.mode === "copy") {
 		const write = action.content.write;
-		await (write.side === "local" ? ctx.localFs : ctx.remoteFs).write(write.path, content.slice(0), action.content.read.entity.mtime);
+		const writeFs = write.side === "local" ? ctx.localFs : ctx.remoteFs;
+		const movedEndpoint = write.side === "local" ? action.local : action.remote;
+		await unchangedEndpoint(writeFs, { ...movedEndpoint, path: write.path });
+		await writeFs.write(write.path, content.slice(0), action.content.read.entity.mtime);
 	}
 	const [localEntity, remoteEntity] = await Promise.all([
 		ctx.localFs.stat(action.path), ctx.remoteFs.stat(action.path),
@@ -737,6 +747,7 @@ async function executeConflictAction(
 	reportProgress: () => void,
 ): Promise<void> {
 	const permit = await ctx.acquireActionPermit?.();
+	let preservationProgress: ConflictResolutionResult | undefined;
 	try {
 		const start = ctx.beginAction?.(action) ?? "run";
 		if (typeof start !== "string") {
@@ -745,6 +756,18 @@ async function executeConflictAction(
 		}
 		if (start === "invalidated") {
 			result.blocked.push({ action, reason: "priority observation invalidated pending action" });
+			return;
+		}
+		if (action.protocol?.kind === "preservation_cover") {
+			const execute = () => executePreservationCover(action, ctx, (duplicatePaths) => {
+				preservationProgress = preservationResolution(duplicatePaths);
+			});
+			const paths = action.protocol.children.map((child) => child.candidatePath);
+			const resolution = ctx.mutationBarrier
+				? await ctx.mutationBarrier.run(paths, execute)
+				: await execute();
+			result.conflicts.push({ action, resolution });
+			result.succeeded.push({ action });
 			return;
 		}
 		const conflictCtx: ConflictResolverContext = {
@@ -790,6 +813,9 @@ async function executeConflictAction(
 		result.conflicts.push({ action, resolution, localEntity, remoteEntity, terminalProof });
 		result.succeeded.push({ action, localEntity, remoteEntity, terminalProof, terminalRecord });
 	} catch (err) {
+		if (preservationProgress) {
+			result.conflicts.push({ action, resolution: preservationProgress });
+		}
 		if (err instanceof TerminalInvariantError) {
 			ctx.onActionFatal?.(action, err);
 			throw err;
@@ -820,5 +846,109 @@ async function executeConflictAction(
 	} finally {
 		reportProgress();
 		permit?.release();
+	}
+}
+
+/** Execute Admission's fixed preservation children. Each verified child publishes
+ * before the next begins, so a later failure leaves a useful, restart-visible prefix.
+ */
+async function executePreservationCover(
+	action: SyncAction,
+	ctx: ExecutionContext,
+	onProgress: (duplicatePaths: readonly string[]) => void,
+): Promise<ConflictResolutionResult> {
+	if (action.protocol?.kind !== "preservation_cover") {
+		throw new TerminalInvariantError(`Preservation protocol missing: ${action.path}`);
+	}
+	const preserved = new Set(action.protocol.preservedPaths);
+	const projectPreserved = () => action.protocol?.kind === "preservation_cover"
+		? action.protocol.candidatePaths.filter((path) => preserved.has(path)) : [];
+	onProgress(projectPreserved());
+	for (const child of action.protocol.children) {
+		await executePreservationChild(child, ctx);
+		preserved.add(child.candidatePath);
+		onProgress(projectPreserved());
+	}
+	for (const cleanup of action.protocol.cleanup) {
+		try {
+			await commitExactCleanup(cleanup.path, cleanup.expected, ctx.committer);
+		} catch {
+			throw new ContentProofError("proof_mismatch", `Cleanup record changed: ${cleanup.path}`);
+		}
+	}
+	return preservationResolution(projectPreserved());
+}
+
+function preservationResolution(duplicatePaths: readonly string[]): ConflictResolutionResult {
+	return {
+		action: "duplicated",
+		duplicatePath: duplicatePaths[0],
+		duplicatePaths: [...duplicatePaths],
+		verifiedOutputs: [],
+	};
+}
+
+async function executePreservationChild(
+	child: PreservationCoverChild,
+	ctx: ExecutionContext,
+): Promise<void> {
+	const sourceFs = child.source.side === "local" ? ctx.localFs : ctx.remoteFs;
+	const captured = await captureContentSnapshot(sourceFs, child.source.entity.path, child.source.entity);
+	if (captured.content.byteLength !== child.content.size ||
+		await sha256(captured.content) !== child.content.sha256) {
+		throw new ContentProofError("proof_mismatch", `Preservation source changed: ${child.source.entity.path}`);
+	}
+	await assertAdmittedDestination(ctx.localFs, child.candidatePath, child.expectedLocal);
+	await assertAdmittedDestination(ctx.remoteFs, child.candidatePath, child.expectedRemote);
+	for (const side of child.missingSides) {
+		const fs = side === "local" ? ctx.localFs : ctx.remoteFs;
+		await assertAdmittedDestination(fs, child.candidatePath,
+			side === "local" ? child.expectedLocal : child.expectedRemote);
+		await fs.write(child.candidatePath, captured.content.slice(0), child.source.entity.mtime);
+	}
+	const [localEntity, remoteEntity] = await Promise.all([
+		ctx.localFs.stat(child.candidatePath), ctx.remoteFs.stat(child.candidatePath),
+	]);
+	if (!localEntity || !remoteEntity || localEntity.isDirectory || remoteEntity.isDirectory) {
+		throw new ContentProofError("proof_mismatch", `Preservation terminal missing: ${child.candidatePath}`);
+	}
+	for (const [fs, entity, expected] of [
+		[ctx.localFs, localEntity, child.expectedLocal],
+		[ctx.remoteFs, remoteEntity, child.expectedRemote],
+	] as const) {
+		const admittedPath = expected?.path ?? child.candidatePath;
+		if (entity.pathAuthority !== "actual_resolved" || entity.path !== admittedPath ||
+			entity.size !== child.content.size ||
+			(!await bytesMatch(captured.content, entity) && !buffersEqual(captured.content, await fs.read(child.candidatePath)))) {
+			throw new ContentProofError("proof_mismatch", `Preservation terminal bytes changed: ${child.candidatePath}`);
+		}
+	}
+	const publicationAction: SyncAction = {
+		action: "match", path: child.candidatePath, local: localEntity, remote: remoteEntity,
+		publication: child.publication,
+	};
+	await commitAction(publicationAction, localEntity, remoteEntity, ctx.committer);
+}
+
+async function assertAdmittedDestination(
+	fs: IFileSystem,
+	path: string,
+	expected: FileEntity | null,
+): Promise<void> {
+	const current = await fs.stat(path);
+	if (!expected) {
+		if (current) throw new ContentProofError("proof_mismatch", `Preservation destination appeared: ${path}`);
+		return;
+	}
+	if (!current || expected.pathAuthority !== "actual_resolved" ||
+		current.pathAuthority !== "actual_resolved" || current.path !== expected.path ||
+		current.isDirectory !== expected.isDirectory || current.size !== expected.size ||
+		!expected.hash ||
+		(expected.identityKey !== undefined && current.identityKey !== expected.identityKey)) {
+		throw new ContentProofError("proof_mismatch", `Preservation destination changed: ${path}`);
+	}
+	const currentHash = current.hash || await sha256(await fs.read(path));
+	if (currentHash !== expected.hash) {
+		throw new ContentProofError("proof_mismatch", `Preservation destination changed: ${path}`);
 	}
 }

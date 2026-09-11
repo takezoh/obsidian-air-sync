@@ -1,3 +1,4 @@
+/* eslint max-lines: ["error", 340] -- one policy owner must project entries, observations, candidate facts, and relation consequences atomically. */
 import type { ChangeSet } from "./change-detector";
 import type { AirSyncSettings } from "../settings";
 import { getEffectiveIgnorePatterns, getEffectiveSyncDotPaths } from "../config-sync";
@@ -87,6 +88,12 @@ export function applyScope(
 		}),
 		observations: changeSet.observations.flatMap((observation) =>
 			normalizeObservation(observation, isIncluded)),
+		candidateFacts: changeSet.candidateFacts.flatMap((fact) => {
+			if (!isIncluded(fact.requestedPath)) return [];
+			const local = normalizeObservation(fact.local, isIncluded)[0];
+			const remote = normalizeObservation(fact.remote, isIncluded)[0];
+			return local && remote ? [{ ...fact, local, remote }] : [];
+		}),
 		identityEvidence: changeSet.identityEvidence.flatMap((evidence) =>
 			normalizeIdentityEvidence(evidence, surfacePaths, isIncluded)),
 	};
@@ -145,7 +152,8 @@ function collectChangeSetPaths(changeSet: ChangeSet): Set<string> {
 		if (entry.remote) paths.add(entry.remote.path);
 		if (entry.prevSync) paths.add(entry.prevSync.path);
 	}
-	for (const observation of changeSet.observations) {
+	for (const observation of [...changeSet.observations,
+		...changeSet.candidateFacts.flatMap((fact) => [fact.local, fact.remote])]) {
 		paths.add(observation.requestedPath);
 		if (observation.kind === "exact" || observation.kind === "alias" ||
 			observation.kind === "present_unresolved") paths.add(observation.entity.path);
@@ -179,7 +187,7 @@ function crossesScope(
 
 /** Project mobile and observation completeness over already scoped facts. */
 export function projectScope(
-	changeSet: Pick<ChangeSet, "entries" | "observations" | "identityEvidence">,
+	changeSet: Pick<ChangeSet, "entries" | "observations" | "candidateFacts" | "identityEvidence">,
 	mobileMaxBytes?: number,
 ): ScopeProjection {
 	const requiredPaths = collectScopePaths(changeSet.identityEvidence);
@@ -190,7 +198,8 @@ export function projectScope(
 	for (const entry of changeSet.entries) {
 		if (entry.local || entry.remote) knownPaths.add(entry.path);
 	}
-	for (const observation of changeSet.observations) {
+	for (const observation of [...changeSet.observations,
+		...changeSet.candidateFacts.flatMap((fact) => [fact.local, fact.remote])]) {
 		if (isIncidentalDirectory(observation, requiredPaths)) continue;
 		paths.add(observation.requestedPath);
 		if (observation.kind === "unknown") {
@@ -214,7 +223,8 @@ export function projectScope(
 			if (entity) rememberLargestSize(sizes, entry.path, entity.size);
 		}
 	}
-	for (const observation of changeSet.observations) {
+	for (const observation of [...changeSet.observations,
+		...changeSet.candidateFacts.flatMap((fact) => [fact.local, fact.remote])]) {
 		if (isIncidentalDirectory(observation, requiredPaths)) continue;
 		if (observation.kind === "exact" || observation.kind === "present_unresolved") {
 			rememberLargestSize(sizes, observation.requestedPath, observation.entity.size);

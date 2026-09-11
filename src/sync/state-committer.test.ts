@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { commitAction, buildSyncRecord } from "./state-committer";
+import { commitAction, buildSyncRecord, commitExactCleanup } from "./state-committer";
 import type { SyncAction } from "./types";
 import { createMockLocalFs, type MockFileSystem, createMockStateStore, makeFile } from "../__mocks__/sync-test-helpers";
 import type { SyncStateStore } from "./state";
@@ -44,6 +44,21 @@ describe("buildSyncRecord", () => {
 
 		expect(record.remoteMtime).toBe(0);
 		expect(record.hash).toBe("abc123");
+	});
+});
+
+describe("commitExactCleanup", () => {
+	it("deletes only the exact captured stale record", async () => {
+		const stateStore = createMockStateStore();
+		const expected = buildSyncRecord(makeFile("old.md", "old", 1).entity,
+			makeFile("old.md", "old", 1).entity, "old.md");
+		stateStore.records.set(expected.path, expected);
+		await commitExactCleanup(expected.path, expected, { stateStore });
+		expect(stateStore.records.has(expected.path)).toBe(false);
+		stateStore.records.set(expected.path, { ...expected, syncedAt: expected.syncedAt + 1 });
+		await expect(commitExactCleanup(expected.path, expected, { stateStore })).rejects.toThrow(
+			"SyncRecord changed before cleanup",
+		);
 	});
 });
 
@@ -309,6 +324,23 @@ describe("commitAction", () => {
 
 		expect(stateStore.records.get("a.md")?.hash).toBe(local.hash);
 		expect(stateStore.contents.has("a.md")).toBe(false);
+	});
+
+	it("stores the proved transfer bytes when a completed push source was renamed", async () => {
+		const bytes = new TextEncoder().encode("captured").buffer;
+		const { entity: local } = makeFile("old.md", "captured", 1000);
+		local.hash = await sha256(bytes);
+		const remote = { ...local, identityKey: "remote-old" };
+		const action = withPublication({ path: "old.md", action: "push", local });
+		const warn = vi.fn();
+
+		await commitAction(action, local, remote, {
+			stateStore, localFs, enableThreeWayMerge: true,
+			logger: { warn } as unknown as Logger,
+		}, { action, intendedContent: bytes, verifiedOutputs: [] } as unknown as TerminalActionProof);
+
+		expect(new Uint8Array(stateStore.contents.get("old.md")!)).toEqual(new Uint8Array(bytes));
+		expect(warn).not.toHaveBeenCalled();
 	});
 
 	it("does not publish a merge base without a comparable committed content hash", async () => {

@@ -75,6 +75,19 @@ fast path fast and not burning a redundant full scan.
    slower or wasteful, never unsafe — review proposals on that axis, and do not reach for it to fix
    a convergence concern.
 
+5. **An untracked file-open joins the vault debounce.** Opening a newly created note is
+   not an independent request to publish its transient name. Priority classifies the
+   missing `SyncRecord` as `untracked`; the scheduler routes that typed result through
+   the same resettable five-second debounce as create/modify/rename. This classification
+   reads the current baseline before considering provider capability or active-batch
+   deferral, so it is independent of whether file-open or create arrives first. It also
+   re-arms a debounce already consumed by an incomplete cycle; a dirty mark is evidence
+   of local work, not evidence that a timer is still armed. A tracked priority
+   contradiction, active-batch deferral, missing capability, invalidation, provider or
+   baseline-read failure, or CAS loss remains an immediate normal-lifecycle request
+   because it protects an existing batch/checkpoint contract. If the plugin is destroyed
+   while priority lookup is pending, the completed result cannot arm a new timer.
+
 ## Consequences
 
 **Prohibited patterns** (each trades a real optimization for apparent tidiness):
@@ -83,7 +96,11 @@ fast path fast and not burning a redundant full scan.
 - routing **signal** events through `markDirty` + `debouncedSync` — a content-less re-check would
   masquerade as a dirty edit and defeat the in-flight discard;
 - routing **vault** events through `triggerSync` — a real local edit would be dropped whenever a
-  sync happened to be running.
+  sync happened to be running;
+- routing baseline-free file-open directly to `runSync` — Obsidian opens a new note as
+  part of creation, so this bypasses the vault debounce and publishes an intermediate name;
+- delaying every priority `deferred_to_batch` result — tracked safety failures must keep
+  their immediate lifecycle/invalidation path.
 
 **Pinned by tests** (keep green; extend, do not weaken):
 - `scheduler.test.ts` → *"trigger classification"*: a signal (`focus` / `online` /
@@ -94,3 +111,10 @@ fast path fast and not burning a redundant full scan.
   vault re-run has work to consume on HOT (the snapshot premise of decision 1).
 - `orchestrator.test.ts` → the `syncPending` coalescing suite (*a second `runSync` while locked sets
   `syncPending` and runs another cycle*; *notifies once for a coalesced burst*).
+- `opened-file-priority.test.ts` + `orchestrator.test.ts` → baseline absence is a typed
+  `untracked` result with no direct lifecycle request, while a tracked record without
+  remote identity still requests the normal lifecycle immediately.
+- `scheduler.test.ts` → create/file-open/rename share one quiet interval, an isolated
+  untracked open retains delayed liveness, a file-open re-arms the debounce after an
+  incomplete baseline-free cycle, final-path upload is independent of open/create event
+  order, and unload during priority lookup cannot revive the cancelled debounce.

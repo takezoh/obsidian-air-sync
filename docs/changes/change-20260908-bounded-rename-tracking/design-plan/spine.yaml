@@ -1,0 +1,266 @@
+artifact: design-plan-spine
+version: 2
+granularity_profile: protocol-bound
+
+contract_text:
+  - {id: C01, statement: Only complete current-cycle alias resolution authorizes a preservation collision., test_refs: [verify-current-alias-authority]}
+  - {id: C02, statement: P is the minimum UTF-8 bytes among current alias-resolved paths., test_refs: [verify-min-utf8-anchor]}
+  - {id: C03, statement: Each exact byte version has only insertConflictSuffix(P fullSha256) and no alternate., test_refs: [verify-direct-candidate-full-digest, verify-no-alternate-candidate]}
+  - {id: C04, statement: Observation candidate enrichment is fact-only and carries no edge action or selected P., test_refs: [verify-direct-candidate-fact-only]}
+  - {id: C05, statement: One Admission build partitions candidate facts without a frontier or rebuild., test_refs: [verify-one-build-candidate-partition]}
+  - {id: C06, statement: A same-byte candidate joins the collision and unions endpoint facts., test_refs: [verify-same-byte-candidate-union]}
+  - {id: C07, statement: A foreign candidate stays ordinary and its read-only witness yields preservation_destination_unavailable., test_refs: [verify-foreign-candidate-independent]}
+  - {id: C08, statement: An observed-absent candidate requires immediate authoritative stat and a race stops before effect., test_refs: [verify-absent-candidate-preflight, verify-no-same-cycle-reroute]}
+  - {id: C09, statement: One verified two-sided candidate per version plus exact publication and cleanup is the fixed point., test_refs: [verify-direct-candidate-fixed-point, verify-child-prefix-publication, verify-cleanup-no-delete-authority]}
+  - {id: C10, statement: A terminal partial cycle withholds the checkpoint, abandons only captured relation reports, and retains dirty paths; folder roots remain dirty and unbaselined absence promotes WARM so stale relations cannot loop while failed edits and descendants remain observable., test_refs: [verify-terminal-partial-tracker-consumption]}
+
+requirements:
+  - {id: FR-BRT-001, type: event_driven, priority: must}
+  - {id: FR-BRT-002, type: unwanted, priority: must}
+  - {id: FR-BRT-003, type: event_driven, priority: must}
+  - {id: FR-BRT-004, type: event_driven, priority: must}
+  - {id: FR-BRT-005, type: invariant, priority: must}
+  - {id: FR-BRT-006, type: invariant, priority: must}
+  - {id: FR-BRT-007, type: event_driven, priority: must}
+  - {id: FR-BRT-008, type: event_driven, priority: must}
+  - {id: FR-BRT-009, type: unwanted, priority: must}
+  - {id: FR-BRT-010, type: event_driven, priority: must}
+  - {id: FR-BRT-011, type: event_driven, priority: must}
+  - {id: FR-BRT-012, type: compatibility, priority: must}
+  - {id: FR-BRT-013, type: invariant, priority: must}
+  - {id: FR-BRT-014, type: unwanted, priority: must}
+  - {id: FR-BRT-015, type: unwanted, priority: must}
+  - {id: FR-BRT-016, type: invariant, priority: must}
+  - {id: FR-BRT-017, type: event_driven, priority: must}
+  - {id: INV-BRT-001, type: invariant, priority: must}
+  - {id: NFR-BRT-001, type: reliability, priority: must}
+  - {id: NFR-BRT-002, type: performance, priority: must}
+  - {id: NFR-BRT-003, type: maintainability, priority: must}
+  - {id: NFR-BRT-004, type: compatibility, priority: must}
+  - {id: NFR-BRT-005, type: maintainability, priority: must}
+
+adrs:
+  - id: adr-20260908-converge-relational-ambiguity-with-a-pre
+    requirement_refs: [FR-BRT-001, FR-BRT-002, FR-BRT-003, FR-BRT-004, FR-BRT-005, FR-BRT-006, FR-BRT-008, FR-BRT-009, FR-BRT-010, FR-BRT-011, FR-BRT-014, FR-BRT-015, FR-BRT-017, INV-BRT-001, NFR-BRT-001, NFR-BRT-003, NFR-BRT-004]
+
+components:
+  - id: component-observation-facts
+    kind: existing
+    paths: [src/sync/sync-cycle-planning.ts, src/sync/path-observation.ts, src/sync/change-hash-enrichment.ts, src/sync/scope-projection.ts]
+    contract_refs: [contract-observation-facts, contract-exact-byte-evidence]
+  - id: component-admission-authority
+    kind: existing
+    paths: [src/sync/identity-component-decision.ts, src/sync/identity-component-report-family.ts, src/sync/plan-admission.ts, src/sync/plan-admission-graph.ts, src/sync/types.ts]
+    contract_refs: [contract-finite-component-closure, contract-relation-abandonment, contract-byte-version-partition, contract-content-addressed-sibling, contract-preservation-cover-protocol, contract-cover-fixed-point, contract-stale-record-cleanup]
+  - id: component-conflict-execution-publication
+    kind: existing
+    paths: [src/sync/conflict.ts, src/sync/conflict-resolver.ts, src/sync/plan-executor.ts, src/sync/execution-result.ts, src/sync/state-committer.ts, src/sync/sync-cycle-finalization.ts]
+    contract_refs: [contract-preservation-cover-protocol, contract-write-preflight, contract-child-publication]
+  - id: component-result-projection
+    kind: existing
+    paths: [src/sync/sync-notification.ts, src/sync/conflict-history.ts]
+    contract_refs: [contract-audit-only-projection]
+  - id: component-cycle-orchestration
+    kind: existing
+    paths: [src/sync/orchestrator.ts, src/sync/local-tracker.ts]
+    contract_refs: [contract-terminal-tracker-consumption]
+
+contracts:
+  - id: contract-observation-facts
+    contract_text_refs: [C01, C04]
+    owner: component-observation-facts
+    requirement_refs: [FR-BRT-003, FR-BRT-004, FR-BRT-007, FR-BRT-013, FR-BRT-015, FR-BRT-016, NFR-BRT-001, NFR-BRT-003, NFR-BRT-004]
+    adr_refs: [adr-20260908-converge-relational-ambiguity-with-a-pre]
+    unit_refs: [unit-brt-1-frozen-observation]
+    acceptance_refs: [AC-BRT-001, AC-BRT-002, AC-BRT-004, AC-BRT-006, AC-BRT-010]
+    verification_refs: [verify-frozen-observation-facts, verify-direct-candidate-fact-only, verify-candidate-destination-scope-unavailable, verify-no-filesystem-contract-expansion, verify-unaddressable-occurrence]
+    partition:
+      outcomes: [affirmative_exact_or_alias_fact, provider_resolved_occurrence, absent, unknown]
+      default_policy: Observation freezes current exact/alias/stat/read/scope facts and one direct candidate per potential current-alias anchor/version; it never selects P, adds graph edges, predicts provider normalization, or proposes actions.
+  - id: contract-exact-byte-evidence
+    owner: component-observation-facts
+    requirement_refs: [FR-BRT-005, FR-BRT-006, FR-BRT-015, FR-BRT-016, NFR-BRT-001]
+    adr_refs: [adr-20260908-converge-relational-ambiguity-with-a-pre]
+    unit_refs: [unit-brt-1-frozen-observation]
+    acceptance_refs: [AC-BRT-002, AC-BRT-003, AC-BRT-006]
+    verification_refs: [verify-frozen-observation-facts, verify-distinct-byte-partition]
+  - id: contract-finite-component-closure
+    contract_text_refs: [C02, C05, C06, C07]
+    owner: component-admission-authority
+    requirement_refs: [FR-BRT-007, FR-BRT-013, FR-BRT-016, NFR-BRT-002, NFR-BRT-003]
+    adr_refs: [adr-20260908-converge-relational-ambiguity-with-a-pre]
+    unit_refs: [unit-brt-2-admission-closure-protocol]
+    acceptance_refs: [AC-BRT-004, AC-BRT-008]
+    verification_refs: [verify-one-component-per-path, verify-min-utf8-anchor, verify-one-build-candidate-partition, verify-same-byte-candidate-union, verify-foreign-candidate-independent, verify-unrelated-conflict-files-ordinary, verify-scope-closure, verify-admission-pure-no-fs]
+  - id: contract-relation-abandonment
+    contract_text_refs: [C01]
+    owner: component-admission-authority
+    requirement_refs: [FR-BRT-001, FR-BRT-002, FR-BRT-003, FR-BRT-004, FR-BRT-014, FR-BRT-015, INV-BRT-001]
+    adr_refs: [adr-20260908-converge-relational-ambiguity-with-a-pre]
+    unit_refs: [unit-brt-2-admission-closure-protocol]
+    acceptance_refs: [AC-BRT-001, AC-BRT-002, AC-BRT-006, AC-BRT-008]
+    verification_refs: [verify-current-alias-authority, verify-readable-ambiguity, verify-positive-distinct-paths, verify-observed-collision-cover, verify-unique-rename-control, verify-temperature-equivalence, verify-unaddressable-occurrence]
+    partition:
+      outcomes: [unique_relation, ordinary_exact_paths, observed_collision_cover, incomplete_observation]
+      default_policy: Complete relation defects preserve from affirmative existing facts; unavailable occurrences stay non-clean and no normalization heuristic substitutes.
+  - id: contract-byte-version-partition
+    owner: component-admission-authority
+    requirement_refs: [FR-BRT-005, FR-BRT-006, NFR-BRT-003]
+    adr_refs: [adr-20260908-converge-relational-ambiguity-with-a-pre]
+    unit_refs: [unit-brt-2-admission-closure-protocol]
+    acceptance_refs: [AC-BRT-002, AC-BRT-003, AC-BRT-006]
+    verification_refs: [verify-distinct-byte-partition, verify-distinct-path-equal-bytes, verify-admission-pure-no-fs]
+  - id: contract-preservation-cover-protocol
+    contract_text_refs: [C03, C06, C07]
+    owner: component-admission-authority
+    requirement_refs: [FR-BRT-004, FR-BRT-005, FR-BRT-007, FR-BRT-008, FR-BRT-012, NFR-BRT-003]
+    adr_refs: [adr-20260908-converge-relational-ambiguity-with-a-pre]
+    unit_refs: [unit-brt-2-admission-closure-protocol, unit-brt-3-cover-execution-preflight]
+    acceptance_refs: [AC-BRT-002, AC-BRT-003, AC-BRT-004, AC-BRT-008]
+    verification_refs: [verify-discriminated-protocol, verify-direct-candidate-full-digest, verify-no-alternate-candidate, verify-same-byte-candidate-union, verify-foreign-candidate-independent, verify-no-winner-or-original-mutation, verify-same-path-control]
+  - id: contract-content-addressed-sibling
+    contract_text_refs: [C02, C03, C04, C05, C06, C07, C08, C09]
+    owner: component-admission-authority
+    requirement_refs: [FR-BRT-007, FR-BRT-010, FR-BRT-013, FR-BRT-016, NFR-BRT-002, NFR-BRT-003]
+    adr_refs: [adr-20260908-converge-relational-ambiguity-with-a-pre]
+    unit_refs: [unit-brt-1-frozen-observation, unit-brt-2-admission-closure-protocol, unit-brt-4-fixed-point-cleanup]
+    acceptance_refs: [AC-BRT-002, AC-BRT-003, AC-BRT-004, AC-BRT-007, AC-BRT-008]
+    verification_refs: [verify-direct-candidate-fact-only, verify-direct-candidate-full-digest, verify-no-alternate-candidate, verify-one-build-candidate-partition, verify-same-byte-candidate-union, verify-foreign-candidate-independent, verify-unrelated-conflict-files-ordinary, verify-candidate-destination-scope-unavailable, verify-direct-candidate-fixed-point]
+    partition:
+      outcomes: [direct_candidate_absent, matching_bytes_union, foreign_bytes_independent_and_blocking, destination_scope_unavailable]
+      default_policy: Use exactly insertConflictSuffix(P, full SHA-256); matching bytes union, foreign bytes remain ordinary and yield preservation_destination_unavailable, and no alternate exists.
+  - id: contract-write-preflight
+    contract_text_refs: [C08]
+    owner: component-conflict-execution-publication
+    requirement_refs: [FR-BRT-008, FR-BRT-009, FR-BRT-015, FR-BRT-017, INV-BRT-001, NFR-BRT-003]
+    adr_refs: [adr-20260908-converge-relational-ambiguity-with-a-pre]
+    unit_refs: [unit-brt-3-cover-execution-preflight]
+    acceptance_refs: [AC-BRT-005, AC-BRT-006, AC-BRT-010]
+    verification_refs: [verify-absent-candidate-preflight, verify-latent-collision-preflight, verify-no-same-cycle-reroute, verify-next-cycle-cover, verify-unaddressable-same-path-duplicates]
+    partition:
+      outcomes: [expected_destination, unexpected_exact_occupant, unexpected_alias_or_cross_path_occupant, stat_failure]
+      default_policy: Execute only when authoritative stat matches. Otherwise stop before effect and re-observe; an ordinary destination enters same-path conflict or current-alias cover, while a direct cover candidate absorbs matching bytes or fails preservation_destination_unavailable on different bytes. No alternate is selected.
+  - id: contract-child-publication
+    contract_text_refs: [C09]
+    owner: component-conflict-execution-publication
+    requirement_refs: [FR-BRT-008, FR-BRT-009, FR-BRT-012, FR-BRT-015, INV-BRT-001]
+    adr_refs: [adr-20260908-converge-relational-ambiguity-with-a-pre]
+    unit_refs: [unit-brt-3-cover-execution-preflight, unit-brt-4-fixed-point-cleanup]
+    acceptance_refs: [AC-BRT-005, AC-BRT-007]
+    verification_refs: [verify-child-prefix-publication, verify-cleanup-order, verify-cas-retry]
+  - id: contract-terminal-tracker-consumption
+    contract_text_refs: [C10]
+    owner: component-cycle-orchestration
+    requirement_refs: [FR-BRT-009, FR-BRT-014, INV-BRT-001]
+    adr_refs: [adr-20260908-converge-relational-ambiguity-with-a-pre]
+    unit_refs: [unit-brt-4-fixed-point-cleanup]
+    acceptance_refs: [AC-BRT-005]
+    verification_refs: [verify-terminal-partial-tracker-consumption]
+  - id: contract-cover-fixed-point
+    contract_text_refs: [C09]
+    owner: component-admission-authority
+    requirement_refs: [FR-BRT-009, FR-BRT-010, FR-BRT-011, INV-BRT-001]
+    adr_refs: [adr-20260908-converge-relational-ambiguity-with-a-pre]
+    unit_refs: [unit-brt-4-fixed-point-cleanup]
+    acceptance_refs: [AC-BRT-005, AC-BRT-007, AC-BRT-010]
+    verification_refs: [verify-asymmetric-fixed-point, verify-direct-candidate-fixed-point, verify-cover-before-delete, verify-no-growth-retry]
+  - id: contract-stale-record-cleanup
+    owner: component-admission-authority
+    requirement_refs: [FR-BRT-010, FR-BRT-011, INV-BRT-001, NFR-BRT-003]
+    adr_refs: [adr-20260908-converge-relational-ambiguity-with-a-pre]
+    unit_refs: [unit-brt-4-fixed-point-cleanup]
+    acceptance_refs: [AC-BRT-007, AC-BRT-009]
+    verification_refs: [verify-retain-terminal-record, verify-foreign-candidate-independent, verify-retain-pending-ordinary-baseline, verify-reportless-retry-predicate, verify-cleanup-no-delete-authority]
+    partition:
+      outcomes: [eligible_abandoned_record, retained_terminal_pair, retained_candidate_or_foreign, retained_by_ordinary_action, absent_record]
+      default_policy: Only an exact captured baseline inside the current abandoned footprint and outside current terminal pairs, the selected same-byte candidate, and ordinary-action retained baselines is compareAndDelete eligible; a foreign candidate is an independent ordinary component and absence never grants delete authority.
+  - id: contract-audit-only-projection
+    owner: component-result-projection
+    requirement_refs: [FR-BRT-004, NFR-BRT-005]
+    adr_refs: [adr-20260908-converge-relational-ambiguity-with-a-pre]
+    unit_refs: [unit-brt-5-projections-docs]
+    acceptance_refs: [AC-BRT-002]
+    verification_refs: [verify-one-conflict-projection, verify-history-not-read]
+
+units:
+  - id: unit-brt-1-frozen-observation
+    depends_on: []
+    contract_refs: [contract-observation-facts, contract-exact-byte-evidence, contract-content-addressed-sibling]
+  - id: unit-brt-2-admission-closure-protocol
+    depends_on: [unit-brt-1-frozen-observation]
+    contract_refs: [contract-finite-component-closure, contract-relation-abandonment, contract-byte-version-partition, contract-content-addressed-sibling, contract-preservation-cover-protocol]
+  - id: unit-brt-3-cover-execution-preflight
+    depends_on: [unit-brt-2-admission-closure-protocol]
+    contract_refs: [contract-preservation-cover-protocol, contract-write-preflight, contract-child-publication]
+  - id: unit-brt-4-fixed-point-cleanup
+    depends_on: [unit-brt-3-cover-execution-preflight]
+    contract_refs: [contract-content-addressed-sibling, contract-child-publication, contract-terminal-tracker-consumption, contract-cover-fixed-point, contract-stale-record-cleanup]
+  - id: unit-brt-5-projections-docs
+    depends_on: [unit-brt-4-fixed-point-cleanup]
+    contract_refs: [contract-audit-only-projection]
+
+acceptance:
+  - {id: AC-BRT-001, ux_ref: UAC-BRT-001, test_refs: [verify-readable-ambiguity, verify-positive-distinct-paths]}
+  - {id: AC-BRT-002, ux_ref: UAC-BRT-002, test_refs: [verify-observed-collision-cover, verify-three-version-cover, verify-one-conflict-projection]}
+  - {id: AC-BRT-003, ux_ref: UAC-BRT-003, test_refs: [verify-distinct-byte-partition, verify-distinct-path-equal-bytes]}
+  - {id: AC-BRT-004, ux_ref: UAC-BRT-004, test_refs: [verify-direct-candidate-full-digest, verify-no-alternate-candidate, verify-same-byte-candidate-union, verify-foreign-candidate-independent, verify-unrelated-conflict-files-ordinary]}
+  - {id: AC-BRT-005, ux_ref: UAC-BRT-005, test_refs: [verify-child-prefix-publication, verify-terminal-partial-tracker-consumption, verify-no-growth-retry]}
+  - {id: AC-BRT-006, ux_ref: UAC-BRT-006, test_refs: [verify-unaddressable-occurrence, verify-unaddressable-same-path-duplicates]}
+  - {id: AC-BRT-007, ux_ref: UAC-BRT-007, test_refs: [verify-asymmetric-fixed-point, verify-cover-before-delete]}
+  - {id: AC-BRT-008, ux_ref: UAC-BRT-008, test_refs: [verify-unique-rename-control, verify-same-path-control, verify-one-build-candidate-partition, verify-unrelated-conflict-files-ordinary, verify-candidate-destination-scope-unavailable]}
+  - {id: AC-BRT-009, requirement_refs: [FR-BRT-010, FR-BRT-011, INV-BRT-001, NFR-BRT-003], test_refs: [verify-retain-terminal-record, verify-foreign-candidate-independent, verify-retain-pending-ordinary-baseline, verify-reportless-retry-predicate, verify-cleanup-no-delete-authority]}
+  - {id: AC-BRT-010, ux_ref: UAC-BRT-009, requirement_refs: [FR-BRT-008, FR-BRT-009, FR-BRT-015, FR-BRT-017, INV-BRT-001, NFR-BRT-003], test_refs: [verify-latent-collision-preflight, verify-no-same-cycle-reroute, verify-next-cycle-cover]}
+
+verification:
+  - {id: verify-frozen-observation-facts, tier: T0, command: "npm test -- --run src/sync/sync-cycle-planning.test.ts src/sync/path-observation.test.ts src/sync/change-hash-enrichment.test.ts"}
+  - {id: verify-direct-candidate-fact-only, tier: T0, command: "npm test -- --run src/sync/sync-cycle-planning.test.ts src/sync/path-observation.test.ts"}
+  - {id: verify-candidate-destination-scope-unavailable, tier: T0, command: "npm test -- --run src/sync/scope-projection.test.ts src/sync/plan-admission.test.ts"}
+  - {id: verify-no-filesystem-contract-expansion, tier: T2, command: "node --test sync-admission-authority-guard.test.mjs"}
+  - {id: verify-admission-pure-no-fs, tier: T2, command: "node --test sync-admission-authority-guard.test.mjs"}
+  - {id: verify-one-component-per-path, tier: T0, command: "npm test -- --run src/sync/plan-admission.test.ts"}
+  - {id: verify-one-build-candidate-partition, tier: T0, command: "npm test -- --run src/sync/plan-admission.test.ts"}
+  - {id: verify-same-byte-candidate-union, tier: T0, command: "npm test -- --run src/sync/plan-admission.test.ts"}
+  - {id: verify-foreign-candidate-independent, tier: T0, command: "npm test -- --run src/sync/plan-admission.test.ts src/sync/state-committer.test.ts"}
+  - {id: verify-unrelated-conflict-files-ordinary, tier: T0, command: "npm test -- --run src/sync/plan-admission.test.ts src/sync/sync-cycle-planning.test.ts"}
+  - {id: verify-scope-closure, tier: T0, command: "npm test -- --run src/sync/plan-admission.test.ts"}
+  - {id: verify-readable-ambiguity, tier: T0, command: "npm test -- --run src/sync/plan-admission.test.ts"}
+  - {id: verify-current-alias-authority, tier: T0, command: "npm test -- --run src/sync/plan-admission.test.ts src/sync/path-observation.test.ts"}
+  - {id: verify-min-utf8-anchor, tier: T0, command: "npm test -- --run src/sync/plan-admission.test.ts src/sync/conflict.test.ts"}
+  - {id: verify-positive-distinct-paths, tier: T0, command: "npm test -- --run src/sync/plan-admission.test.ts"}
+  - {id: verify-observed-collision-cover, tier: T0, command: "npm test -- --run src/sync/plan-admission.test.ts"}
+  - {id: verify-unaddressable-occurrence, tier: T0, command: "npm test -- --run src/sync/plan-admission.test.ts"}
+  - {id: verify-unaddressable-same-path-duplicates, tier: T1, command: "npm test -- --run src/sync/plan-admission.test.ts src/sync/plan-executor.test.ts"}
+  - {id: verify-three-version-cover, tier: T1, command: "npm test -- --run src/sync/plan-executor.test.ts src/sync/convergence.test.ts"}
+  - {id: verify-direct-candidate-full-digest, tier: T0, command: "npm test -- --run src/sync/conflict.test.ts src/sync/plan-admission.test.ts"}
+  - {id: verify-no-alternate-candidate, tier: T0, command: "npm test -- --run src/sync/conflict.test.ts src/sync/plan-admission.test.ts"}
+  - {id: verify-unique-rename-control, tier: T1, command: "npm test -- --run src/sync/fact-first-execution.test.ts"}
+  - {id: verify-temperature-equivalence, tier: T1, command: "npm test -- --run src/sync/orchestrator.test.ts"}
+  - {id: verify-distinct-byte-partition, tier: T0, command: "npm test -- --run src/sync/plan-admission.test.ts"}
+  - {id: verify-distinct-path-equal-bytes, tier: T0, command: "npm test -- --run src/sync/plan-admission.test.ts"}
+  - {id: verify-discriminated-protocol, tier: T0, command: "npm test -- --run src/sync/plan-admission.test.ts src/sync/plan-executor.test.ts"}
+  - {id: verify-no-winner-or-original-mutation, tier: T1, command: "npm test -- --run src/sync/plan-executor.test.ts"}
+  - {id: verify-same-path-control, tier: T1, command: "npm test -- --run src/sync/conflict-resolver.test.ts src/sync/conflict.test.ts"}
+  - {id: verify-latent-collision-preflight, tier: T1, command: "npm test -- --run src/sync/plan-executor.test.ts src/sync/convergence.test.ts"}
+  - {id: verify-absent-candidate-preflight, tier: T1, command: "npm test -- --run src/sync/plan-executor.test.ts src/sync/convergence.test.ts"}
+  - {id: verify-no-same-cycle-reroute, tier: T1, command: "npm test -- --run src/sync/plan-executor.test.ts"}
+  - {id: verify-next-cycle-cover, tier: T1, command: "npm test -- --run src/sync/convergence.test.ts src/sync/orchestrator.test.ts src/sync/conflict-resolver.test.ts"}
+  - {id: verify-child-prefix-publication, tier: T1, command: "npm test -- --run src/sync/plan-executor.test.ts src/sync/state-committer.test.ts"}
+  - {id: verify-terminal-partial-tracker-consumption, tier: T1, command: "npm test -- --run src/sync/local-tracker.test.ts src/sync/change-detector.test.ts src/sync/orchestrator.test.ts"}
+  - {id: verify-cleanup-order, tier: T1, command: "npm test -- --run src/sync/plan-executor.test.ts src/sync/state-committer.test.ts"}
+  - {id: verify-cas-retry, tier: T1, command: "npm test -- --run src/sync/state-committer.test.ts src/sync/convergence.test.ts"}
+  - {id: verify-asymmetric-fixed-point, tier: T1, command: "npm test -- --run src/sync/convergence.test.ts src/sync/orchestrator.test.ts"}
+  - {id: verify-direct-candidate-fixed-point, tier: T1, command: "npm test -- --run src/sync/convergence.test.ts src/sync/plan-admission.test.ts"}
+  - {id: verify-cover-before-delete, tier: T1, command: "npm test -- --run src/sync/delete-safety.test.ts src/sync/plan-admission.test.ts"}
+  - {id: verify-no-growth-retry, tier: T1, command: "npm test -- --run src/sync/convergence.test.ts src/sync/crash-safety.test.ts"}
+  - {id: verify-retain-terminal-record, tier: T0, command: "npm test -- --run src/sync/plan-admission.test.ts src/sync/state-committer.test.ts"}
+  - {id: verify-retain-pending-ordinary-baseline, tier: T0, command: "npm test -- --run src/sync/plan-admission.test.ts src/sync/state-committer.test.ts"}
+  - {id: verify-reportless-retry-predicate, tier: T1, command: "npm test -- --run src/sync/convergence.test.ts src/sync/plan-admission.test.ts"}
+  - {id: verify-cleanup-no-delete-authority, tier: T1, command: "npm test -- --run src/sync/delete-safety.test.ts src/sync/convergence.test.ts"}
+  - {id: verify-one-conflict-projection, tier: T1, command: "npm test -- --run src/sync/sync-notification.test.ts src/sync/conflict-history.test.ts"}
+  - {id: verify-history-not-read, tier: T1, command: "node --test sync-state-ownership-guard.test.mjs"}
+
+gates:
+  - {id: gate-lint, command: "npm run lint"}
+  - {id: gate-dashboard, command: "npm run lint:bot-repro"}
+  - {id: gate-build, command: "npm run build"}
+  - {id: gate-coverage, command: "npm run test:coverage"}

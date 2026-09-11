@@ -64,7 +64,11 @@ export class LocalChangeTracker {
 	markFolderRenamed(newPath: string, oldPath: string): void {
 		const resolved = this.folderRenamePairs.get(oldPath) ?? oldPath;
 		this.folderRenamePairs.delete(oldPath);
-		for (const path of new Set([oldPath, resolved, newPath])) this.bump(path);
+		// Folder relation evidence may be abandoned after a terminal partial cycle.
+		// Keep both endpoint addresses dirty, just like file renames, so HOT can see
+		// the affected component and promote to WARM breadth when descendants are
+		// needed. The dirty endpoints are producer facts, not recovery state.
+		for (const path of new Set([oldPath, resolved, newPath])) this.markDirty(path);
 		if (resolved === newPath) return;
 		this.folderRenamePairs.set(newPath, resolved);
 	}
@@ -117,6 +121,18 @@ export class LocalChangeTracker {
 		deleteMatching(this.renamePairs, snap.renamePairs, this.generations, snap.generations);
 		deleteMatching(this.folderRenamePairs, snap.folderRenamePairs, this.generations, snap.generations);
 		this.initialized = true;
+	}
+
+	/**
+	 * Consume only relation reports captured by a terminal partial cycle. Dirty
+	 * paths stay pending so a failed same-metadata content write remains on HOT;
+	 * rename/folder reports are abandoned because they are cycle evidence, not
+	 * cross-cycle retry authority. Generation checks retain reports recreated
+	 * after the snapshot.
+	 */
+	acknowledgeRelations(snap: TrackerSnapshot): void {
+		deleteMatching(this.renamePairs, snap.renamePairs, this.generations, snap.generations);
+		deleteMatching(this.folderRenamePairs, snap.folderRenamePairs, this.generations, snap.generations);
 	}
 
 	/**

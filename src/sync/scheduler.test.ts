@@ -42,7 +42,7 @@ function createDeps(
 
 	const runSync = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
 	const pullSingle = vi
-		.fn<(path: string) => Promise<void>>()
+		.fn<(path: string) => Promise<"untracked" | undefined>>()
 		.mockResolvedValue(undefined);
 
 	const deps: SyncSchedulerDeps & {
@@ -339,6 +339,180 @@ describe("SyncScheduler", () => {
 	});
 
 	describe("file-open priority sync", () => {
+		it("re-arms the vault debounce when an opened new file remains dirty after a failed cycle", async () => {
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs("actual_resolved");
+			remoteFs.priority = { observe: vi.fn(), read: vi.fn() };
+			const tracker = new LocalChangeTracker();
+			const settings = mockSettings({ vaultId: `failed-new-file-${Math.random()}` });
+			const runtime = new RuntimeSyncOrchestrator({
+				getSettings: () => settings, saveSettings: vi.fn().mockResolvedValue(undefined),
+				configDir: () => ".cfg", pluginId: () => "air-sync",
+				localFs: () => localFs, remoteFs: () => remoteFs, backendProvider: () => null,
+				onStatusChange: vi.fn(), onProgress: vi.fn(), notify: vi.fn(),
+				isMobile: () => false, localTracker: tracker,
+			});
+			const runSync = vi.spyOn(runtime, "runSync");
+			const writeRemote = remoteFs.write.bind(remoteFs);
+			let rejectUpload = true;
+			const upload = vi.spyOn(remoteFs, "write").mockImplementation(
+				(path, content, mtime) => rejectUpload
+					? Promise.reject(new Error("remote unavailable"))
+					: writeRemote(path, content, mtime),
+			);
+			scheduler.destroy();
+			deps = createDeps({ orchestrator: runtime, localTracker: tracker, remoteFs: () => remoteFs });
+			scheduler = new SyncScheduler(deps);
+			scheduler.start();
+			try {
+				await localFs.write("note.md", new TextEncoder().encode("content").buffer, Date.now());
+				await deps.vaultHandlers.get("create")!(makeFile("note.md"));
+				await vi.advanceTimersByTimeAsync(5000);
+				await runSync.mock.results[0]!.value;
+
+				expect(await runtime.state.get("note.md")).toBeUndefined();
+				expect(tracker.getDirtyPaths().has("note.md")).toBe(true);
+				rejectUpload = false;
+
+				await deps.workspaceHandlers.get("file-open")!(makeFile("note.md"));
+				await vi.advanceTimersByTimeAsync(4999);
+				expect(runSync).toHaveBeenCalledOnce();
+				await vi.advanceTimersByTimeAsync(1);
+				expect(runSync).toHaveBeenCalledTimes(2);
+				await runSync.mock.results[1]!.value;
+
+				expect(upload).toHaveBeenCalled();
+				expect(readText(remoteFs, "note.md")).toBe("content");
+				expect(await runtime.state.get("note.md")).toBeDefined();
+			} finally {
+				scheduler.destroy();
+				for (const result of runSync.mock.results) {
+					if (result.type === "return") await result.value;
+				}
+				await runtime.close();
+				vi.useRealTimers();
+			}
+		});
+
+		it.each(["open-first", "create-first"] as const)(
+			"keeps a new file's upload behind the vault debounce across open, rename, and modify (%s)",
+			async (eventOrder) => {
+				vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+				const localFs = createMockLocalFs();
+				const remoteFs = createMockRemoteFs("actual_resolved");
+				remoteFs.priority = { observe: vi.fn(), read: vi.fn() };
+				const tracker = new LocalChangeTracker();
+				const settings = mockSettings({
+					vaultId: `new-file-${Math.random()}`,
+					conflictStrategy: "auto_merge",
+				});
+				const onStatusChange = vi.fn();
+				const runtime = new RuntimeSyncOrchestrator({
+					getSettings: () => settings, saveSettings: vi.fn().mockResolvedValue(undefined),
+					configDir: () => ".cfg", pluginId: () => "air-sync",
+					localFs: () => localFs, remoteFs: () => remoteFs, backendProvider: () => null,
+					onStatusChange, onProgress: vi.fn(), notify: vi.fn(),
+					isMobile: () => false, localTracker: tracker,
+				});
+				const runSync = vi.spyOn(runtime, "runSync");
+				const upload = vi.spyOn(remoteFs, "write");
+				scheduler.destroy();
+				deps = createDeps({ orchestrator: runtime, localTracker: tracker, remoteFs: () => remoteFs });
+				scheduler = new SyncScheduler(deps);
+				scheduler.start();
+				try {
+					await localFs.write("Untitled.md", new ArrayBuffer(0), Date.now());
+					// File-open ordering is not a timing authority: a missing baseline
+					// always routes back to the scheduler-owned debounce.
+					const created = makeFile("Untitled.md");
+					if (eventOrder === "open-first") {
+						await deps.workspaceHandlers.get("file-open")!(created);
+						await deps.vaultHandlers.get("create")!(created);
+					} else {
+						await deps.vaultHandlers.get("create")!(created);
+						await deps.workspaceHandlers.get("file-open")!(created);
+					}
+					expect(runSync).not.toHaveBeenCalled();
+					expect(upload).not.toHaveBeenCalled();
+
+					await vi.advanceTimersByTimeAsync(1000);
+					await localFs.rename("Untitled.md", "final.md");
+					await deps.vaultHandlers.get("rename")!(makeFile("final.md"), "Untitled.md");
+					await deps.workspaceHandlers.get("file-open")!(makeFile("final.md"));
+					await vi.advanceTimersByTimeAsync(4000);
+					expect(runSync).not.toHaveBeenCalled();
+
+					await localFs.write(
+						"final.md",
+						new TextEncoder().encode("final content").buffer,
+						Date.now(),
+					);
+					await deps.vaultHandlers.get("modify")!(makeFile("final.md"));
+					await vi.advanceTimersByTimeAsync(4999);
+					expect(runSync).not.toHaveBeenCalled();
+					expect(upload).not.toHaveBeenCalled();
+					await vi.advanceTimersByTimeAsync(1);
+					expect(runSync).toHaveBeenCalledOnce();
+					await runSync.mock.results[0]!.value;
+
+					expect(upload.mock.calls.map(([path]) => path)).toEqual(["final.md"]);
+					expect(readText(remoteFs, "final.md")).toBe("final content");
+					expect([...remoteFs.files.keys()]).toEqual(["final.md"]);
+					expect([...localFs.files.keys()]).toEqual(["final.md"]);
+					expect(await runtime.state.get("final.md")).toBeDefined();
+					expect(onStatusChange).not.toHaveBeenCalledWith("partial_error");
+				} finally {
+					scheduler.destroy();
+					for (const result of runSync.mock.results) {
+						if (result.type === "return") await result.value;
+					}
+					await runtime.close();
+					vi.useRealTimers();
+				}
+			},
+		);
+
+		it("debounces an untracked open through the normal vault-change timer", async () => {
+			deps.pullSingle.mockResolvedValue("untracked");
+			await deps.workspaceHandlers.get("file-open")!(makeFile("new.md"));
+
+			vi.advanceTimersByTime(4999);
+			expect(deps.runSync).not.toHaveBeenCalled();
+			vi.advanceTimersByTime(1);
+			expect(deps.runSync).toHaveBeenCalledOnce();
+		});
+
+		it("coalesces create, file-open, and rename until the final quiet interval", async () => {
+			deps.pullSingle.mockResolvedValue("untracked");
+			const created = makeFile("Untitled.md");
+			(deps.vaultHandlers.get("create") as VaultHandler)(created);
+			await deps.workspaceHandlers.get("file-open")!(created);
+			vi.advanceTimersByTime(2000);
+			(deps.vaultHandlers.get("rename") as RenameHandler)(makeFile("final.md"), "Untitled.md");
+
+			vi.advanceTimersByTime(4999);
+			expect(deps.runSync).not.toHaveBeenCalled();
+			vi.advanceTimersByTime(1);
+			expect(deps.runSync).toHaveBeenCalledOnce();
+			expect(deps.localTracker.getRenamePairs().get("final.md")).toBe("Untitled.md");
+		});
+
+		it("does not revive the debounce after destroy while an untracked open settles", async () => {
+			let resolveOpen!: (value: "untracked") => void;
+			deps.pullSingle.mockReturnValue(new Promise<"untracked">((resolve) => {
+				resolveOpen = resolve;
+			}));
+			const opened = deps.workspaceHandlers.get("file-open")!(makeFile("new.md"));
+
+			scheduler.destroy();
+			resolveOpen("untracked");
+			await opened;
+			vi.advanceTimersByTime(5000);
+
+			expect(deps.runSync).not.toHaveBeenCalled();
+		});
+
 		it("routes an opened file without stale cache or baseline prechecks", async () => {
 			const handler = deps.workspaceHandlers.get("file-open")!;
 			await handler({ path: "note.md" });

@@ -6,6 +6,7 @@ import {
 } from "./plan-admission";
 import { captureBatchObservation } from "./sync-cycle-planning";
 import { decideIdentityComponent } from "./identity-component-decision";
+import { insertConflictSuffix } from "./conflict";
 import type { IdentityComponent } from "./plan-admission-graph";
 import type {
 	IdentityEvidence,
@@ -15,6 +16,7 @@ import type {
 	SyncAction,
 	SyncRecord,
 	MixedEntity,
+	CandidateFact,
 } from "./types";
 
 function entity(path: string, identityKey?: string): FileEntity {
@@ -37,6 +39,15 @@ function projection(entries: Record<string, ScopeDisposition>): ScopeProjection 
 	return { isConfiguredScopeCompatible: () => true, byEndpoint: new Map(Object.entries(entries)) };
 }
 
+function vacantCandidates(base: string, hashes: readonly string[]): PathObservation[] {
+	return hashes.flatMap((hash) => {
+		const path = insertConflictSuffix(base, hash);
+		return (["local", "remote"] as const).map((side) => ({
+			kind: "absent" as const, side, requestedPath: path, authority: "stat" as const,
+		}));
+	});
+}
+
 /** Legacy case fixtures contribute endpoint/record data only. Action kinds and
  * execution payloads are deliberately absent from the public Admission input.
  */
@@ -44,11 +55,38 @@ function captureFixtureFacts(
 	fixtures: { actions: SyncAction[] }, evidence: readonly IdentityEvidence[],
 	observations: readonly PathObservation[], scope: ScopeProjection, namespace: string,
 	baselinePaths?: readonly string[], entries: readonly MixedEntity[] = [],
+	candidateFacts: readonly CandidateFact[] = [],
 ) {
 	return captureBatchObservation([
 		...entries,
 		...fixtures.actions.map(({ path, local, remote, baseline }) => ({ path, local, remote, prevSync: baseline })),
-	], evidence, observations, scope, namespace, baselinePaths);
+	], evidence, observations, scope, namespace, baselinePaths, candidateFacts);
+}
+
+function fixtureCandidateFacts(
+	actions: readonly SyncAction[], entries: readonly MixedEntity[], evidence: readonly IdentityEvidence[],
+	observations: readonly PathObservation[], extra: readonly PathObservation[],
+): CandidateFact[] {
+	const allEntries = [
+		...entries,
+		...actions.map(({ path, local, remote, baseline }) => ({ path, local, remote, prevSync: baseline })),
+	];
+	const anchors = new Set(evidence.flatMap((item) => item.kind === "alias"
+		? [item.requestedPath, item.resolvedPath] : []));
+	const hashes = new Set(allEntries.flatMap((entry) => [entry.local?.hash, entry.remote?.hash]
+		.filter((hash): hash is string => !!hash)));
+	const requested = new Set([...anchors].flatMap((anchor) =>
+		[...hashes].map((hash) => insertConflictSuffix(anchor, hash))));
+	const allObservations = [...observations, ...extra];
+	return [...requested].flatMap((requestedPath) => {
+		const local = allObservations.find((item) => item.side === "local" && item.requestedPath === requestedPath);
+		const remote = allObservations.find((item) => item.side === "remote" && item.requestedPath === requestedPath);
+		if (!local || !remote) return [];
+		return [{
+			requestedPath, local, remote,
+			baseline: allEntries.find((entry) => entry.prevSync?.path === requestedPath)?.prevSync ?? null,
+		}];
+	});
 }
 
 function admit(
@@ -57,14 +95,16 @@ function admit(
 	observations: PathObservation[] = [],
 	scope?: ScopeProjection,
 	entries: MixedEntity[] = [],
+	candidateObservations: PathObservation[] = [],
 ) {
+	const candidateFacts = fixtureCandidateFacts(actions, entries, evidence, observations, candidateObservations);
 	return admitBatchObservation(captureFixtureFacts(
 		{ actions }, evidence, observations, scope ?? projection(Object.fromEntries([
 			...actions.map(({ path }) => path), ...entries.map(({ path }) => path),
 			...observations.map(({ requestedPath }) => requestedPath),
 			...evidence.flatMap((item) => item.kind === "rename" ? [item.oldPath, item.newPath]
 				: item.kind === "alias" ? [item.requestedPath, item.resolvedPath] : item.occurrences.map(({ path }) => path)),
-		].map((path) => [path, "included"]))), "backend\0root", undefined, entries,
+		].map((path) => [path, "included"]))), "backend\0root", undefined, entries, candidateFacts,
 	));
 }
 
@@ -835,7 +875,7 @@ describe("admitBatchObservation", () => {
 		expect(result.failures).toEqual([]);
 	});
 
-	it("rejects a case-alias component whose contents are not proven equal", () => {
+	it("preserves both readable versions when a case alias cannot prove one rename", () => {
 		const local = freshEntity("case.md", "local");
 		const remote = freshEntity("Case.md", "remote", "R");
 		const result = admit(
@@ -849,16 +889,414 @@ describe("admitBatchObservation", () => {
 				{ kind: "exact", side: "local", requestedPath: "case.md", entity: local },
 				{ kind: "exact", side: "remote", requestedPath: "Case.md", entity: remote },
 				{ kind: "absent", side: "remote", requestedPath: "case.md", authority: "stat" },
+				...vacantCandidates("Case.md", ["local", "remote"]),
 			],
-			projection({ "Case.md": "included", "case.md": "included" }),
+			projection({
+				"Case.md": "included", "case.md": "included",
+				"Case.conflict-local.md": "included", "Case.conflict-remote.md": "included",
+			}),
 			[
 				{ path: "Case.md", remote },
 				{ path: "case.md", local },
 			],
 		);
 
+		expect(result.failures).toEqual([]);
+		expect(result.executable.actions).toHaveLength(1);
+		expect(result.executable.actions[0]).toMatchObject({
+			action: "conflict",
+			path: "Case.md",
+			protocol: {
+				kind: "preservation_cover",
+				children: [
+					{ source: { side: "local", entity: local }, content: { sha256: "local", size: 1 }, candidatePath: "Case.conflict-local.md" },
+					{ source: { side: "remote", entity: remote }, content: { sha256: "remote", size: 1 }, candidatePath: "Case.conflict-remote.md" },
+				],
+			},
+		});
+	});
+
+	it("recognizes a two-sided published cover without allocating another suffix", () => {
+		const local = freshEntity("case.md", "local");
+		const remote = freshEntity("Case.md", "remote", "R");
+		const firstLocal = freshEntity("Case.conflict-remote.md", "remote");
+		const firstRemote = freshEntity("Case.conflict-remote.md", "remote", "C1");
+		const secondLocal = freshEntity("Case.conflict-local.md", "local");
+		const secondRemote = freshEntity("Case.conflict-local.md", "local", "C2");
+		const firstRecord = recordFor(firstRemote);
+		const secondRecord = recordFor(secondRemote);
+		const result = admit([], [
+			{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md" },
+		], [
+			{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md", entity: local },
+			{ kind: "exact", side: "local", requestedPath: "case.md", entity: local },
+			{ kind: "exact", side: "remote", requestedPath: "Case.md", entity: remote },
+			{ kind: "absent", side: "remote", requestedPath: "case.md", authority: "stat" },
+			{ kind: "exact", side: "local", requestedPath: firstLocal.path, entity: firstLocal },
+			{ kind: "exact", side: "remote", requestedPath: firstRemote.path, entity: firstRemote },
+			{ kind: "exact", side: "local", requestedPath: secondLocal.path, entity: secondLocal },
+			{ kind: "exact", side: "remote", requestedPath: secondRemote.path, entity: secondRemote },
+		], projection(Object.fromEntries(["Case.md", "case.md", firstLocal.path, secondLocal.path]
+			.map((path) => [path, "included" as const]))), [
+			{ path: "Case.md", remote }, { path: "case.md", local },
+			{ path: firstLocal.path, local: firstLocal, remote: firstRemote, prevSync: firstRecord },
+			{ path: secondLocal.path, local: secondLocal, remote: secondRemote, prevSync: secondRecord },
+		]);
+
+		expect(result.failures).toEqual([]);
 		expect(result.executable.actions).toEqual([]);
-		expect(result.failures[0]?.reasons).toEqual(["case_alias_content_mismatch"]);
+		expect(result.dispositions).toMatchObject([{ kind: "resolved_no_action" }]);
+	});
+
+	it("admits publication-only children when both candidate sides exist but the record is absent", () => {
+		const fixture = caseAliasFixture(freshEntity("case.md", "local"), freshEntity("Case.md", "remote", "R"));
+		const localCandidate = freshEntity("Case.conflict-local.md", "local");
+		const localCandidateRemote = freshEntity("Case.conflict-local.md", "local", "CL");
+		const remoteCandidate = freshEntity("Case.conflict-remote.md", "remote");
+		const remoteCandidateRemote = freshEntity("Case.conflict-remote.md", "remote", "CR");
+		const result = admit([], fixture.evidence, [
+			...fixture.observations,
+			{ kind: "exact", side: "local", requestedPath: localCandidate.path, entity: localCandidate },
+			{ kind: "exact", side: "remote", requestedPath: localCandidateRemote.path, entity: localCandidateRemote },
+			{ kind: "exact", side: "local", requestedPath: remoteCandidate.path, entity: remoteCandidate },
+			{ kind: "exact", side: "remote", requestedPath: remoteCandidateRemote.path, entity: remoteCandidateRemote },
+		], projection({
+			"Case.md": "included", "case.md": "included",
+			"Case.conflict-local.md": "included", "Case.conflict-remote.md": "included",
+		}), [
+			...fixture.entries,
+			{ path: localCandidate.path, local: localCandidate, remote: localCandidateRemote },
+			{ path: remoteCandidate.path, local: remoteCandidate, remote: remoteCandidateRemote },
+		]);
+
+		expect(result.failures).toEqual([]);
+		expect(result.executable.actions[0]?.protocol).toMatchObject({
+			kind: "preservation_cover",
+			children: [{ missingSides: [] }, { missingSides: [] }],
+		});
+	});
+
+	it("reconstructs cleanup-only cover from completed candidates after reports disappear", () => {
+		const local = freshEntity("case.md", "local");
+		const remote = freshEntity("Case.md", "remote", "R");
+		const localCandidatePath = "Case.conflict-local.md";
+		const remoteCandidatePath = "Case.conflict-remote.md";
+		const localCandidate = freshEntity("case.conflict-local.md", "local");
+		const localCandidateRemote = freshEntity("case.conflict-local.md", "local", "CL");
+		const remoteCandidate = freshEntity("case.conflict-remote.md", "remote");
+		const remoteCandidateRemote = freshEntity("case.conflict-remote.md", "remote", "CR");
+		const oldRecord = recordFor(remote);
+		const result = admit([], [
+			{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md" },
+		], [
+			{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md", entity: local },
+			{ kind: "exact", side: "local", requestedPath: "case.md", entity: local },
+			{ kind: "exact", side: "remote", requestedPath: "Case.md", entity: remote },
+			{ kind: "absent", side: "remote", requestedPath: "case.md", authority: "stat" },
+			{ kind: "alias", side: "local", requestedPath: localCandidatePath,
+				resolvedPath: localCandidate.path, entity: localCandidate },
+			{ kind: "alias", side: "remote", requestedPath: localCandidatePath,
+				resolvedPath: localCandidateRemote.path, entity: localCandidateRemote },
+			{ kind: "alias", side: "local", requestedPath: remoteCandidatePath,
+				resolvedPath: remoteCandidate.path, entity: remoteCandidate },
+			{ kind: "alias", side: "remote", requestedPath: remoteCandidatePath,
+				resolvedPath: remoteCandidateRemote.path, entity: remoteCandidateRemote },
+		], projection({
+			"Case.md": "included", "case.md": "included",
+			"Case.conflict-local.md": "included", "Case.conflict-remote.md": "included",
+			"case.conflict-local.md": "included", "case.conflict-remote.md": "included",
+		}), [
+			{ path: "Case.md", remote, prevSync: oldRecord }, { path: "case.md", local },
+			{ path: localCandidatePath, local: localCandidate, remote: localCandidateRemote,
+				prevSync: { ...recordFor(localCandidateRemote), path: localCandidatePath } },
+			{ path: remoteCandidatePath, local: remoteCandidate, remote: remoteCandidateRemote,
+				prevSync: { ...recordFor(remoteCandidateRemote), path: remoteCandidatePath } },
+		]);
+
+		expect(result.failures).toEqual([]);
+		expect(result.executable.actions).toMatchObject([{
+			action: "conflict", protocol: {
+				kind: "preservation_cover",
+				candidatePaths: ["Case.conflict-local.md", "Case.conflict-remote.md"],
+				preservedPaths: ["Case.conflict-local.md", "Case.conflict-remote.md"],
+				children: [], cleanup: [{ path: "Case.md", expected: oldRecord }],
+			},
+		}]);
+	});
+
+	it("reconstructs only the missing child after a published cover prefix", () => {
+		const local = freshEntity("case.md", "local");
+		const remote = freshEntity("Case.md", "remote", "R");
+		const candidateLocal = freshEntity("Case.conflict-local.md", "local");
+		const candidateRemote = freshEntity("Case.conflict-local.md", "local", "CL");
+		const candidateRecord = recordFor(candidateRemote);
+		const oldRecord = recordFor(remote);
+		const result = admit([], [{
+			kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md",
+		}], [
+			{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md", entity: local },
+			{ kind: "exact", side: "local", requestedPath: "case.md", entity: local },
+			{ kind: "exact", side: "remote", requestedPath: "Case.md", entity: remote },
+			{ kind: "absent", side: "remote", requestedPath: "case.md", authority: "stat" },
+			{ kind: "exact", side: "local", requestedPath: candidateLocal.path, entity: candidateLocal },
+			{ kind: "exact", side: "remote", requestedPath: candidateRemote.path, entity: candidateRemote },
+			...vacantCandidates("Case.md", ["remote"]),
+		], projection({
+			"Case.md": "included", "case.md": "included",
+			"Case.conflict-local.md": "included", "Case.conflict-remote.md": "included",
+		}), [
+			{ path: "Case.md", remote, prevSync: oldRecord }, { path: "case.md", local },
+			{ path: candidateLocal.path, local: candidateLocal, remote: candidateRemote, prevSync: candidateRecord },
+		]);
+
+		expect(result.failures).toEqual([]);
+		expect(result.executable.actions[0]?.protocol).toMatchObject({
+			kind: "preservation_cover",
+			candidatePaths: ["Case.conflict-local.md", "Case.conflict-remote.md"],
+			preservedPaths: ["Case.conflict-local.md"],
+			children: [{ content: { sha256: "remote" }, candidatePath: "Case.conflict-remote.md" }],
+			cleanup: [{ path: "Case.md", expected: oldRecord }],
+		});
+	});
+
+	it("keeps a foreign direct-candidate occupant ordinary and fails without an alternate", () => {
+		const fixture = caseAliasFixture(freshEntity("case.md", "local"), freshEntity("Case.md", "remote", "R"));
+		const occupiedPath = insertConflictSuffix("Case.md", "local");
+		const foreign = freshEntity(occupiedPath, "foreign");
+		const remoteCandidate = insertConflictSuffix("Case.md", "remote");
+		const result = admit(fixture.actions, fixture.evidence, [
+			...fixture.observations,
+			{ kind: "exact", side: "local", requestedPath: occupiedPath, entity: foreign },
+			{ kind: "absent", side: "remote", requestedPath: occupiedPath, authority: "stat" },
+			...vacantCandidates("Case.md", ["remote"]),
+		], projection({
+			"Case.md": "included", "case.md": "included",
+			[occupiedPath]: "included", [remoteCandidate]: "included",
+		}), [...fixture.entries, { path: occupiedPath, local: foreign }]);
+
+		expect(result.failures.map((failure) => failure.reasons))
+			.toContainEqual(["preservation_destination_unavailable"]);
+		expect(result.executable.actions).toContainEqual(expect.objectContaining({
+			action: "push", path: occupiedPath,
+		}));
+		expect(result.executable.actions.some((action) => action.protocol?.kind === "preservation_cover")).toBe(false);
+	});
+
+	it("absorbs a same-byte direct candidate and writes only its missing side", () => {
+		const fixture = caseAliasFixture(freshEntity("case.md", "local"), freshEntity("Case.md", "remote", "R"));
+		const candidatePath = insertConflictSuffix("Case.md", "local");
+		const existing = freshEntity(candidatePath, "local");
+		const result = admit(fixture.actions, fixture.evidence, [
+			...fixture.observations,
+			{ kind: "exact", side: "local", requestedPath: candidatePath, entity: existing },
+			{ kind: "absent", side: "remote", requestedPath: candidatePath, authority: "stat" },
+			...vacantCandidates("Case.md", ["remote"]),
+		], projection({
+			"Case.md": "included", "case.md": "included",
+			[candidatePath]: "included", "Case.conflict-remote.md": "included",
+		}), [...fixture.entries, { path: candidatePath, local: existing }]);
+
+		expect(result.failures).toEqual([]);
+		const cover = result.executable.actions.find((action) => action.protocol?.kind === "preservation_cover");
+		expect(cover?.protocol).toMatchObject({ kind: "preservation_cover", children: [
+			{ candidatePath, expectedLocal: existing, expectedRemote: null, missingSides: ["remote"] },
+			{ candidatePath: "Case.conflict-remote.md", missingSides: ["local", "remote"] },
+		] });
+	});
+
+	it("does not absorb a mixed same-path candidate with one foreign endpoint", () => {
+		const fixture = caseAliasFixture(freshEntity("case.md", "local"), freshEntity("Case.md", "remote", "R"));
+		const candidatePath = insertConflictSuffix("Case.md", "local");
+		const candidateLocal = freshEntity(candidatePath, "local");
+		const candidateRemote = freshEntity(candidatePath, "foreign", "F");
+		const result = admit(fixture.actions, fixture.evidence, [
+			...fixture.observations,
+			{ kind: "exact", side: "local", requestedPath: candidatePath, entity: candidateLocal },
+			{ kind: "exact", side: "remote", requestedPath: candidatePath, entity: candidateRemote },
+			...vacantCandidates("Case.md", ["remote"]),
+		], projection({
+			"Case.md": "included", "case.md": "included", [candidatePath]: "included",
+			"Case.conflict-remote.md": "included",
+		}), [...fixture.entries, { path: candidatePath, local: candidateLocal, remote: candidateRemote }]);
+
+		expect(result.failures.map((failure) => failure.reasons))
+			.toContainEqual(["preservation_destination_unavailable"]);
+		expect(result.executable.actions).toContainEqual(expect.objectContaining({
+			action: "conflict", path: candidatePath,
+		}));
+		expect(result.executable.actions.some((action) => action.protocol?.kind === "preservation_cover")).toBe(false);
+	});
+
+	it("keeps a foreign resolved candidate endpoint outside the original cover", () => {
+		const fixture = caseAliasFixture(freshEntity("case.md", "local"), freshEntity("Case.md", "remote", "R"));
+		const candidatePath = insertConflictSuffix("Case.md", "local");
+		const resolvedPath = candidatePath.toLowerCase();
+		const candidateLocal = freshEntity(candidatePath, "local");
+		const foreignRemote = freshEntity(resolvedPath, "foreign", "F");
+		const result = admit(fixture.actions, fixture.evidence, [
+			...fixture.observations,
+			{ kind: "exact", side: "local", requestedPath: candidatePath, entity: candidateLocal },
+			{ kind: "absent", side: "local", requestedPath: resolvedPath, authority: "stat" },
+			{ kind: "exact", side: "remote", requestedPath: resolvedPath, entity: foreignRemote },
+			...vacantCandidates("Case.md", ["remote"]),
+		], projection({
+			"Case.md": "included", "case.md": "included", [candidatePath]: "included",
+			[resolvedPath]: "included", "Case.conflict-remote.md": "included",
+		}), [...fixture.entries,
+			{ path: candidatePath, local: candidateLocal },
+			{ path: resolvedPath, remote: foreignRemote },
+		], [
+			{ kind: "exact", side: "local", requestedPath: candidatePath, entity: candidateLocal },
+			{ kind: "alias", side: "remote", requestedPath: candidatePath,
+				resolvedPath, entity: foreignRemote },
+		]);
+
+		expect(result.failures.map((failure) => failure.reasons))
+			.toContainEqual(["preservation_destination_unavailable"]);
+		expect(result.executable.actions).toContainEqual(expect.objectContaining({
+			action: "pull", path: resolvedPath,
+		}));
+		expect(result.executable.actions.some((action) =>
+			action.protocol?.kind === "preservation_cover")).toBe(false);
+	});
+
+	it("keeps unrelated conflict-looking files in their ordinary component", () => {
+		const fixture = caseAliasFixture(freshEntity("case.md", "local"), freshEntity("Case.md", "remote", "R"));
+		const unrelated = freshEntity("Case.conflict-manual.md", "manual");
+		const result = admit(fixture.actions, fixture.evidence, [
+			...fixture.observations, ...vacantCandidates("Case.md", ["local", "remote"]),
+			{ kind: "exact", side: "local", requestedPath: unrelated.path, entity: unrelated },
+			{ kind: "absent", side: "remote", requestedPath: unrelated.path, authority: "stat" },
+		], projection({
+			"Case.md": "included", "case.md": "included",
+			"Case.conflict-local.md": "included", "Case.conflict-remote.md": "included",
+			[unrelated.path]: "included",
+		}), [...fixture.entries, { path: unrelated.path, local: unrelated }]);
+
+		expect(result.failures).toEqual([]);
+		expect(result.executable.actions).toContainEqual(expect.objectContaining({
+			action: "push", path: unrelated.path,
+		}));
+		expect(result.executable.actions.some((action) =>
+			action.action === "conflict" && action.protocol?.kind === "preservation_cover")).toBe(true);
+	});
+
+	it("selects the collision anchor by UTF-8 bytes and uses only full-digest candidates", () => {
+		const utf16Earlier = freshEntity("😀.md", "remote", "R");
+		const utf8Earlier = freshEntity(".md", "local");
+		const paths = [insertConflictSuffix(".md", "local"), insertConflictSuffix(".md", "remote")];
+		const result = admit([], [{
+			kind: "alias", side: "local", requestedPath: "😀.md", resolvedPath: ".md",
+		}], [
+			{ kind: "alias", side: "local", requestedPath: "😀.md", resolvedPath: ".md", entity: utf8Earlier },
+			{ kind: "exact", side: "local", requestedPath: ".md", entity: utf8Earlier },
+			{ kind: "exact", side: "remote", requestedPath: "😀.md", entity: utf16Earlier },
+			{ kind: "absent", side: "remote", requestedPath: ".md", authority: "stat" },
+			...vacantCandidates(".md", ["local", "remote"]),
+		], projection(Object.fromEntries(["😀.md", ".md", ...paths]
+			.map((path) => [path, "included" as const]))), [
+			{ path: "😀.md", remote: utf16Earlier }, { path: ".md", local: utf8Earlier },
+		]);
+
+		expect(result.failures).toEqual([]);
+		expect(result.executable.actions[0]).toMatchObject({
+			path: ".md", protocol: { kind: "preservation_cover", children: [
+				{ candidatePath: paths[0] }, { candidatePath: paths[1] },
+			] },
+		});
+	});
+
+	it("covers a third readable version in the same closed collision component", () => {
+		const local = freshEntity("case.md", "local");
+		const remote = freshEntity("Case.md", "remote", "R");
+		const third = freshEntity("third.md", "third");
+		const candidates = ["Case.conflict-local.md", "Case.conflict-third.md", "Case.conflict-remote.md"];
+		const result = admit([], [
+			{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md" },
+			{ kind: "rename", side: "local", oldPath: "Case.md", newPath: "third.md",
+				isFolder: false, authority: "reported" },
+			{ kind: "rename", side: "remote", oldPath: "case.md", newPath: "third.md",
+				isFolder: false, authority: "reported" },
+		], [
+			{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md", entity: local },
+			{ kind: "exact", side: "local", requestedPath: "case.md", entity: local },
+			{ kind: "exact", side: "remote", requestedPath: "Case.md", entity: remote },
+			{ kind: "exact", side: "local", requestedPath: "third.md", entity: third },
+			{ kind: "absent", side: "remote", requestedPath: "case.md", authority: "stat" },
+			{ kind: "absent", side: "remote", requestedPath: "third.md", authority: "stat" },
+			...vacantCandidates("Case.md", ["local", "third", "remote"]),
+		], projection(Object.fromEntries(["Case.md", "case.md", "third.md", ...candidates]
+			.map((path) => [path, "included" as const]))), [
+			{ path: "Case.md", remote }, { path: "case.md", local }, { path: "third.md", local: third },
+		]);
+
+		expect(result.failures).toEqual([]);
+		expect(result.executable.actions[0]?.protocol).toMatchObject({
+			kind: "preservation_cover",
+			children: [
+				{ content: { sha256: "local" }, candidatePath: candidates[0] },
+				{ content: { sha256: "third" }, candidatePath: candidates[1] },
+				{ content: { sha256: "remote" }, candidatePath: candidates[2] },
+			],
+		});
+	});
+
+	it("creates one child for three equal occurrences under contradictory reports", () => {
+		const local = freshEntity("case.md", "same");
+		const remote = freshEntity("Case.md", "same", "R");
+		const third = freshEntity("third.md", "same");
+		const candidate = insertConflictSuffix("Case.md", "same");
+		const result = admit([], [
+			{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md" },
+			{ kind: "rename", side: "local", oldPath: "Case.md", newPath: "third.md", isFolder: false, authority: "reported" },
+			{ kind: "rename", side: "remote", oldPath: "case.md", newPath: "third.md", isFolder: false, authority: "reported" },
+		], [
+			{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md", entity: local },
+			{ kind: "exact", side: "local", requestedPath: "case.md", entity: local },
+			{ kind: "exact", side: "remote", requestedPath: "Case.md", entity: remote },
+			{ kind: "exact", side: "local", requestedPath: "third.md", entity: third },
+			{ kind: "absent", side: "remote", requestedPath: "case.md", authority: "stat" },
+			{ kind: "absent", side: "remote", requestedPath: "third.md", authority: "stat" },
+			...vacantCandidates("Case.md", ["same"]),
+		], projection(Object.fromEntries(["Case.md", "case.md", "third.md", candidate]
+			.map((path) => [path, "included" as const]))), [
+			{ path: "Case.md", remote }, { path: "case.md", local }, { path: "third.md", local: third },
+		]);
+
+		expect(result.failures).toEqual([]);
+		expect(result.executable.actions[0]?.protocol).toMatchObject({
+			kind: "preservation_cover", children: [{ candidatePath: candidate }],
+		});
+	});
+
+	it("never allocates an excluded preservation candidate", () => {
+		const fixture = caseAliasFixture(freshEntity("case.md", "local"), freshEntity("Case.md", "remote", "R"));
+		const observations = [...fixture.observations, ...vacantCandidates("Case.md", ["local", "remote"])];
+		const result = admit(fixture.actions, fixture.evidence, observations, projection({
+			"Case.md": "included", "case.md": "included",
+			"Case.conflict-remote.md": "included",
+		}), fixture.entries);
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.failures).toMatchObject([{ reasons: ["preservation_destination_unavailable"] }]);
+	});
+
+	it("does not trust a baseline hash when existing candidate bytes are unproved", () => {
+		const fixture = caseAliasFixture(freshEntity("case.md", "local"), freshEntity("Case.md", "remote", "R"));
+		const unproved = freshEntity("Case.conflict-local.md", "");
+		const baseline = { ...recordFor(unproved), hash: "local" };
+		const result = admit(fixture.actions, fixture.evidence, [
+			...fixture.observations,
+			{ kind: "exact", side: "local", requestedPath: unproved.path, entity: unproved },
+			{ kind: "absent", side: "remote", requestedPath: unproved.path, authority: "stat" },
+			...vacantCandidates("Case.md", ["local", "remote"]).filter((item) => item.requestedPath !== unproved.path),
+		], projection({
+			"Case.md": "included", "case.md": "included",
+			"Case.conflict-local.md": "included", "Case.conflict-remote.md": "included",
+		}), [...fixture.entries, { path: unproved.path, local: unproved, prevSync: baseline }]);
+
+		expect(result.executable.actions).toEqual([]);
+		expect(result.failures.map((failure) => failure.reasons)).toContainEqual(["unknown_observation"]);
 	});
 
 	it("keeps the case-alias decision unchanged when unrelated terminal state exists", () => {
@@ -986,7 +1424,7 @@ describe("admitBatchObservation", () => {
 		expect(result.failures[0]?.reasons).toEqual(["conflicting_identity"]);
 	});
 
-	it("rejects unproven or size-mismatched unbaselined case aliases", () => {
+	it("rejects unknown bytes but preserves independently proven size variants", () => {
 		const unhashed = caseAliasFixture(
 			freshEntity("case.md", ""), freshEntity("Case.md", "", "R"),
 		);
@@ -994,15 +1432,22 @@ describe("admitBatchObservation", () => {
 			unhashed.actions, unhashed.evidence, unhashed.observations, unhashed.scope, unhashed.entries,
 		);
 		const mismatched = caseAliasFixture(
-			entity("case.md"), { ...entity("Case.md", "R"), size: 2 },
+			entity("case.md"), { ...freshEntity("Case.md", "h2", "R"), size: 2 },
 		);
 		const differentSize = admit(
-			mismatched.actions, mismatched.evidence, mismatched.observations,
-			mismatched.scope, mismatched.entries,
+			mismatched.actions, mismatched.evidence,
+			[...mismatched.observations, ...vacantCandidates("Case.md", ["h", "h2"])],
+			projection({
+				"Case.md": "included", "case.md": "included",
+				"Case.conflict-h.md": "included", "Case.conflict-h2.md": "included",
+			}), mismatched.entries,
 		);
 
-		expect(unproven.failures[0]?.reasons).toEqual(["case_alias_content_mismatch"]);
-		expect(differentSize.failures[0]?.reasons).toEqual(["case_alias_content_mismatch"]);
+		expect(unproven.failures[0]?.reasons).toEqual(["unknown_observation"]);
+		expect(differentSize.failures).toEqual([]);
+		expect(differentSize.executable.actions[0]).toMatchObject({
+			action: "conflict", protocol: { kind: "preservation_cover", children: [{}, {}] },
+		});
 	});
 
 	it("does not authorize a case alias with unknown scope", () => {
@@ -1253,6 +1698,33 @@ describe("admitBatchObservation", () => {
 		]);
 	});
 
+	it("retains the exact-path comparison baseline after abandoning a relation", () => {
+		const baselineEntity = freshEntity("B.md", "base", "X");
+		const baseline = recordFor(baselineEntity);
+		const local = freshEntity("B.md", "local");
+		const actions: SyncAction[] = [
+			{ path: "A.md", action: "pull", remote: entity("A.md", "Y") },
+			{ path: "B.md", action: "conflict", local, remote: baselineEntity, baseline },
+		];
+		const observations: PathObservation[] = [
+			{ kind: "exact", side: "remote", requestedPath: "A.md", entity: entity("A.md", "Y") },
+			{ kind: "exact", side: "remote", requestedPath: "B.md", entity: baselineEntity },
+			{ kind: "exact", side: "local", requestedPath: "B.md", entity: local },
+			{ kind: "absent", side: "local", requestedPath: "A.md", authority: "stat" },
+		];
+		const scope = projection({ "A.md": "included", "B.md": "included" });
+
+		const result = admit(actions, [remoteRename()], observations, scope);
+
+		expect(result.failures).toEqual([]);
+		expect(result.executable.actions).toEqual([
+			{ action: "pull", path: "A.md", remote: entity("A.md", "Y"),
+				publication: { source: undefined, destination: undefined } },
+			{ action: "push", path: "B.md", local, remote: baselineEntity, baseline,
+				publication: { source: baseline, destination: baseline } },
+		]);
+	});
+
 	it("defers a folder rename when a projected descendant is not mapped", () => {
 		const fixture = folderFacts(["known.md", "missing.md"]);
 		fixture.entries = fixture.entries.filter(({ path }) => path !== "B/missing.md");
@@ -1274,7 +1746,7 @@ describe("admitBatchObservation", () => {
 		expect(result.failures[0]!.reasons).toEqual(["unknown_scope"]);
 	});
 
-	it("defers a folder rename whose descendant relative paths are crossed", () => {
+	it("abandons a crossed folder relation and preserves each exact descendant path", () => {
 		const fixture = folderFacts(["x.md", "y.md"]);
 		fixture.evidence.push(
 			remoteRename({ oldPath: "A/x.md", newPath: "B/y.md", identityKey: "file:y.md" }),
@@ -1282,11 +1754,14 @@ describe("admitBatchObservation", () => {
 		);
 		const result = admit([], fixture.evidence, fixture.observations, fixture.scope, fixture.entries);
 
-		expect(result.executable.actions).toEqual([]);
-		expect(result.failures[0]!.reasons).toEqual(["rename_mismatch"]);
+		expect(result.failures).toEqual([]);
+		expect(result.executable.actions.map(({ action, path }) => ({ action, path }))).toEqual([
+			{ action: "push", path: "A/x.md" }, { action: "push", path: "A/y.md" },
+			{ action: "pull", path: "B/x.md" }, { action: "pull", path: "B/y.md" },
+		]);
 	});
 
-	it("rejects conflicting reports before selecting any candidate family", () => {
+	it("classifies conflicting reports with missing counterpart facts as observation failure", () => {
 		const actions: SyncAction[] = [
 			{ path: "A.md", action: "delete_local", local: entity("A.md") },
 			{ path: "B.md", action: "pull", remote: entity("B.md", "X") },
@@ -1304,13 +1779,13 @@ describe("admitBatchObservation", () => {
 
 			expect(result.executable.actions).toEqual([]);
 			expect(result.dispositions).toHaveLength(1);
-			expect(result.dispositions[0]).toMatchObject({
-				kind: "failed", reasons: ["rename_mismatch"], actions: [],
-			});
+				expect(result.dispositions[0]).toMatchObject({
+					kind: "failed", reasons: ["unknown_observation"], actions: [],
+				});
 		}
 	});
 
-	it("does not fall back to a complete alias candidate when reports conflict", () => {
+	it("does not use an alias when conflicting report endpoints remain unobserved", () => {
 		const fixture = caseAliasFixture();
 		const reports: IdentityEvidence[] = [
 			remoteRename({ oldPath: "Case.md", newPath: "X.md" }),
@@ -1335,7 +1810,7 @@ describe("admitBatchObservation", () => {
 			);
 			expect(result.executable.actions).toEqual([]);
 			expect(result.dispositions).toHaveLength(1);
-			expect(result.failures[0]!.reasons).toEqual(["rename_mismatch"]);
+			expect(result.failures[0]!.reasons).toEqual(["unknown_observation"]);
 		}
 	});
 
@@ -1446,7 +1921,7 @@ describe("admitBatchObservation", () => {
 		const result = admit([], fixture.evidence, fixture.observations, fixture.scope, fixture.entries);
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.failures[0]!.reasons).toEqual(["incomplete_folder_mapping"]);
+		expect(result.failures[0]!.reasons).toEqual(["unknown_observation"]);
 	});
 
 	it("rejects two current identities claiming the same folder descendant endpoint", () => {
@@ -1491,7 +1966,7 @@ describe("admitBatchObservation", () => {
 		expect(result.executable.actions).toMatchObject([action]);
 	});
 
-	it("rejects a file endpoint as the binding for a reported folder root", () => {
+	it("preserves an observed file when an invalid folder relation is abandoned", () => {
 		const fixture = folderFacts([]);
 		fixture.entries[0]!.local = entity("A");
 		fixture.observations[0] = { kind: "exact", side: "local", requestedPath: "A", entity: entity("A") };
@@ -1500,8 +1975,8 @@ describe("admitBatchObservation", () => {
 		};
 		const result = admit([action], fixture.evidence, fixture.observations, fixture.scope, fixture.entries);
 
-		expect(result.executable.actions).toEqual([]);
-		expect(result.failures[0]!.reasons).toEqual(["incomplete_folder_mapping"]);
+		expect(result.failures).toEqual([]);
+		expect(result.executable.actions).toMatchObject([{ action: "push", path: "A" }]);
 	});
 
 	it("uses the shallowest aligned folder report as the governing root", () => {
@@ -1620,7 +2095,7 @@ describe("admitBatchObservation", () => {
 				remoteRename({ oldPath: "A/x.md", newPath: "B/x.md", identityKey: "Y" }),
 			],
 		},
-	])("rejects folder report identity conflict: $name", ({ children }) => {
+	])("keeps an unobserved folder report identity conflict non-clean: $name", ({ children }) => {
 		const action: SyncAction = {
 			path: "B", oldPath: "A", action: "rename_local", isFolder: true,
 			descendants: [{ oldPath: "A/x.md", newPath: "B/x.md" }],
@@ -1633,7 +2108,7 @@ describe("admitBatchObservation", () => {
 		}));
 
 		expect(result.executable.actions).toEqual([]);
-		expect(result.failures[0]!.reasons).toEqual(["rename_mismatch"]);
+		expect(result.failures[0]!.reasons).toEqual(["unknown_observation"]);
 	});
 
 	it("constructs complete folder coverage independently of incomplete proposed mappings and their order", () => {

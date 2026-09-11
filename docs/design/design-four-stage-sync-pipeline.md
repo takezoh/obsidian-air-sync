@@ -30,7 +30,10 @@ invariants:
   statement: A cycle is clean only after every exact admitted obligation has successful
     terminal publication and the working view closes once. Sibling effects settle
     before commit or abort; incomplete attempts abort before classification or retry.
-    Only clean completion acknowledges captured tracker generations.
+    Clean completion acknowledges the captured tracker snapshot. Terminal partial
+    completion abandons only captured file/folder rename reports and retains dirty
+    paths; later relation generations survive. Only clean completion advances the
+    durable checkpoint.
   enforcement: test
 - id: INV-004
   statement: Configured-scope projection removes excluded metadata and identity edges
@@ -41,7 +44,9 @@ invariants:
 - id: INV-005
   statement: Admission decisions depend only on current component facts and component-local
     terminal baseline; acquisition temperature, global store state, previous errors,
-    and database version are not decision inputs.
+    and database version are not decision inputs. A dirty unbaselined address absent
+    from both HOT endpoint stats promotes to WARM breadth so an abandoned folder root
+    cannot hide descendants.
   enforcement: test
 - id: INV-006
   statement: Admission binds current component identity, endpoints and committed baseline
@@ -49,15 +54,17 @@ invariants:
     and intended effects never serve as identity or completeness evidence.
   enforcement: contract
 - id: INV-007
-  statement: Admission selects one authority family from current component facts and
-    emits exactly one disposition. Coherent reports precede aliases; unresolved claims
-    have no weaker-family fallback. A report is already satisfied only when its current
-    endpoints and identity claims are positively accounted for.
+  statement: Admission selects native rename only from one unique complete current-fact
+    relation. Complete readable relation ambiguity abandons the relation and selects
+    exact-path synchronization or one preservation cover; it is not an Admission error
+    and has no weaker identity inference.
   enforcement: contract
 - id: INV-008
-  statement: A selected folder-root claim governs only exact, complete, unique, suffix-preserving,
-    included descendants proven by immutable call-local data that is discarded with
-    the component decision.
+  statement: Before actions exist, Admission closes each finite component over current
+    exact endpoints, current alias facts, baselines, relations, and effect footprints,
+    assigning each current path to exactly one component in one build. A same-byte
+    direct candidate joins and unions endpoint facts; a different-byte candidate remains
+    ordinary and contributes only a read-only blocking occupancy witness.
   enforcement: test
 - id: INV-009
   statement: Execution preserves component order through each action's terminal publication;
@@ -78,6 +85,25 @@ invariants:
     evidence, failures or recovery instructions, or introduce another retained in-memory
     correctness owner.'
   enforcement: contract
+- id: INV-012
+  statement: In a current-cycle alias collision group, the preservation unit is each
+    distinct exact byte version, not source-path cardinality. A clean cover proves
+    every such version at its anchor-plus-full-SHA-256 sibling on both sides; original
+    path topology may remain asymmetric.
+  enforcement: test
+- id: INV-013
+  statement: Cleanup is admitted only for an exact captured baseline key/value inside
+    an abandoned original relation footprint and outside the selected same-byte candidate,
+    current same-exact-path terminal pairs, and retaining ordinary actions. A foreign
+    candidate occupant stays an independent ordinary component and is never cleanup
+    input. Cleanup uses exact compareAndDelete; absence is never delete authority.
+  enforcement: test
+- id: INV-014
+  statement: For current alias-resolved paths, P is the minimum UTF-8 bytes and each
+    preservation version has exactly insertConflictSuffix(P, full SHA-256). Matching
+    bytes join and union endpoint facts; foreign bytes remain ordinary and cause preservation_destination_unavailable.
+    No alternate, ordinal, family, or frontier exists.
+  enforcement: test
 boundaries:
   provides:
   - id: BOUNDARY-001
@@ -101,11 +127,23 @@ boundaries:
       APIs, action-bearing observations, and correctness proofs retained at module
       scope or across calls are forbidden.
   - id: BOUNDARY-008
-    statement: Conflict resolution cannot mutate originals or select separate ordinary
-      and rename execution routes. One capture and policy-required preservation contract
-      precedes executor-owned effects, source revalidation, terminal proof and publication.
-      Newly arriving destinations are precondition failures, never deletion authority;
-      interrupted work is re-observed without compensating recovery state.
+    statement: Conflict resolution cannot mutate originals or choose a content winner
+      for a preservation cover. The discriminated preservation_cover protocol fixes
+      ordered capture, revalidation, missing-side writes, two-sided proof, per-child
+      publication, and cover-before-cleanup; execution cannot reroute its admitted
+      candidate. Every ordinary or cover write performs the admitted authoritative
+      destination stat immediately before effect; an unexpected occupant blocks without
+      overwrite or same-cycle policy conversion. Fresh same-exact-path foreign bytes
+      use existing conflict handling; only a resolved alias/cross-path collision uses
+      preservation_cover. The protocol carries immutable candidate order, currently
+      proven published candidates, and only the remaining executable children so terminal
+      partial results are complete without replaying completed work.
+  - id: BOUNDARY-010
+    statement: Admission and plan-admission-graph cannot receive a filesystem capability
+      or invoke read, stat, or list. Observation alone freezes existing exact, alias,
+      current alias, scope, SHA-256-and-size, and direct-candidate facts; candidate
+      enrichment remains fact-only and Admission is a pure consumer. Execution alone
+      performs the admitted immediate pre-effect destination stat.
 variability:
   fixed:
   - id: FIXED-001
@@ -130,7 +168,13 @@ failure_responsibilities:
 - id: FAILURE-001
   statement: Observation failures abort before authorization.
 - id: FAILURE-002
-  statement: Admission ambiguity fails closed with no executable destructive action.
+  statement: Readable complete relation contradictions select preservation. Admission
+    fails only when a required occurrence cannot be completely enumerated, independently
+    addressed through existing facts, read, byte-compared, scoped, or revalidated.
+    A latent occupant discovered by the executor's immediate destination stat stops
+    before effect and is re-observed. A fresh same-exact-path foreign version uses
+    existing conflict handling, a fresh resolved alias/cross-path collision uses the
+    cover, and an independently unobservable occurrence remains non-clean.
 - id: FAILURE-003
   statement: Execution failures remain exact per-action outcomes.
 - id: FAILURE-004
@@ -148,6 +192,7 @@ tags: []
 owners: []
 relations:
 - {type: references, target: adr-20260905-fact-first-component-admission}
+- {type: references, target: adr-20260908-converge-relational-ambiguity-with-a-pre}
 source_paths:
 - src/sync/sync-cycle-planning.ts
 - src/sync/plan-admission.ts
@@ -155,6 +200,20 @@ source_paths:
 - src/sync/sync-cycle-finalization.ts
 - src/sync/identity-component-decision.ts
 - src/sync/conflict-resolver.ts
+- src/sync/change-detector.ts
+- src/sync/change-hash-enrichment.ts
+- src/sync/collision-content-observation.ts
+- src/sync/conflict.ts
+- src/sync/execution-result.ts
+- src/sync/hot-acquisition-completeness.ts
+- src/sync/hot-warm-promotion.ts
+- src/sync/local-tracker.ts
+- src/sync/orchestrator.ts
+- src/sync/plan-admission-graph.ts
+- src/sync/scope-projection.ts
+- src/sync/state-committer.ts
+- src/sync/types.ts
+- sync-admission-authority-guard.test.mjs
 summary: Current responsibility and dependency boundaries for the four-stage sync
   pipeline.
 updated: '2026-09-04'
@@ -225,6 +284,9 @@ and terminal endpoints are verified before publication, and exact record CAS pro
 concurrent records. The resolver does not mutate originals or choose a separate
 ordinary-conflict execution route. Stored bytes may be proven by authoritative
 checksums; only affected endpoints lacking that proof require fallback reads.
+Preservation-cover projection is derived only from immutable current-attempt Admission
+facts and successful child publications: it is neither a durable recovery ledger nor
+another correctness owner.
 
 ## Failure Responsibility
 
@@ -232,9 +294,12 @@ Observation and Admission failures do not authorize effects. Execution reports e
 outcomes; already successful file publications remain durable when later work fails.
 Finalization settles siblings and closes each attempt exactly once: commit only when
 wholly clean, otherwise abort the live derived view before classification or retry,
-without erasing the durable checkpoint. Only clean completion acknowledges captured
-tracker generations. Interrupted work is re-observed under the same rules, including
-partial merges; no compensating rollback or recovery instruction is required.
+without erasing the durable checkpoint. Clean completion consumes the full captured
+tracker snapshot. Terminal partial completion abandons only captured relation reports,
+retains dirty paths, and preserves later relation generations. Interrupted relational
+work is re-observed from current endpoints, successful per-file publications, and the
+unchanged checkpoint; failed content writes remain HOT. No compensating rollback or
+recovery instruction is required.
 
 ## Variability
 

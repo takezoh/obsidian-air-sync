@@ -11,6 +11,7 @@ import type { SyncAction, SyncRecord } from "./types";
 export type OpenedFilePriorityResult =
 	| "applied"
 	| "already_current"
+	| "untracked"
 	| "deferred_to_batch"
 	| "failed_retryable";
 
@@ -33,12 +34,13 @@ interface OpenedFilePriorityContext {
 export async function syncOpenedFilePriority(
 	ctx: OpenedFilePriorityContext,
 ): Promise<OpenedFilePriorityResult> {
-	if (ctx.target.kind === "defer" || !ctx.remoteFs.priority) return deferToBatch(ctx);
-	const expectedRecord = await ctx.stateStore.get(ctx.path);
-	if (!expectedRecord?.remoteIdentityKey) return deferToBatch(ctx);
-	const expectedGeneration = ctx.localTracker.generation(ctx.path);
-
 	try {
+		const expectedRecord = await ctx.stateStore.get(ctx.path);
+		if (!expectedRecord) return "untracked";
+		if (ctx.target.kind === "defer" || !ctx.remoteFs.priority) return deferToBatch(ctx);
+		if (!expectedRecord.remoteIdentityKey) return deferToBatch(ctx);
+		const expectedGeneration = ctx.localTracker.generation(ctx.path);
+
 		const [localBefore, observed] = await Promise.all([
 			ctx.localFs.stat(ctx.path),
 			ctx.remoteFs.priority.observe({

@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { collectChanges } from "./change-detector";
-import { enrichHashesForRenames } from "./change-hash-enrichment";
+import {
+	enrichHashesForRenames, observeDirectConflictCandidates,
+} from "./change-hash-enrichment";
+import { captureAliasCollisionContents } from "./collision-content-observation";
 import { compareContent } from "./decision-engine";
 import type { ChangeDetectorDeps } from "./change-detector";
 import { LocalChangeTracker } from "./local-tracker";
@@ -10,8 +13,9 @@ import type { IdentityEvidence, MixedEntity, PathObservation, SyncRecord } from 
 import { md5 } from "../utils/md5";
 import { sha256, sha1 } from "../utils/hash";
 import { applyScope } from "./scope-projection";
-import { captureBatchObservation } from "./sync-cycle-planning";
+import { captureBatchObservation, prepareSyncCycleSnapshot } from "./sync-cycle-planning";
 import { admitBatchObservation } from "./plan-admission";
+import { insertConflictSuffix } from "./conflict";
 
 function makeRecord(path: string, overrides: Partial<SyncRecord> = {}): SyncRecord {
 	return {
@@ -406,15 +410,19 @@ describe("collectChanges — temperature selection", () => {
 			expect(entry?.prevSync).toBeDefined();
 		});
 
-		it("retains confirmed empty endpoints for Admission without manufacturing work", async () => {
-			await stateStore.put(makeRecord("a.md"));
+		it("reacquires an unbaselined empty dirty address without manufacturing work", async () => {
+			const content = new TextEncoder().encode("content");
+			await stateStore.put(makeRecord("a.md", {
+				hash: await sha256(content.buffer), localSize: content.byteLength, remoteSize: content.byteLength,
+			}));
 			addFile(localFs, "a.md", "content", 1000);
+			addFile(remoteFs, "a.md", "content", 1000);
 			localTracker.acknowledge(localTracker.snapshot()); // initialize
 			localTracker.markDirty("orphan.md"); // dirty path that doesn't exist anywhere
 
 			const result = await collectChanges(makeDeps());
 
-			expect(result.temperature).toBe("hot");
+			expect(result.temperature).toBe("warm");
 			// Observation retains current absence; Admission owns the no-action decision.
 			const entry = result.entries.find((e) => e.path === "orphan.md");
 			expect(entry).toEqual({ path: "orphan.md", local: undefined, remote: undefined, prevSync: undefined });
@@ -749,6 +757,31 @@ describe("collectChanges — temperature selection", () => {
 			expect(local?.hash).not.toBe(remoteEntry?.hash);
 		});
 
+		it("carries production alias candidates through planning into Admission", async () => {
+			addFile(localFs, "case.md", "local", 1000);
+			const remote = addFile(remoteFs, "Case.md", "remote", 1000);
+			remote.identityKey = "R";
+			const exactLocalStat = localFs.stat.bind(localFs);
+			localFs.stat = async (path) => path === "Case.md"
+				? { ...(await exactLocalStat("case.md"))!, path: "case.md", pathAuthority: "actual_resolved" }
+				: exactLocalStat(path);
+
+			const changes = await collectChanges(makeDeps(), { forceFullScan: true });
+			const { snapshot } = prepareSyncCycleSnapshot(changes, "backend\0root", { ignorePatterns: [] });
+			const admission = admitBatchObservation(snapshot);
+
+			const hashes = changes.entries.flatMap((entry) => [entry.local?.hash, entry.remote?.hash]
+				.filter((hash): hash is string => !!hash));
+			for (const hash of hashes) {
+				const candidate = insertConflictSuffix("Case.md", hash);
+				expect(snapshot.candidateFacts)
+					.toContainEqual(expect.objectContaining({ requestedPath: candidate }));
+			}
+			expect(admission.failures).toEqual([]);
+			expect(admission.executable.actions.some((action) =>
+				action.protocol?.kind === "preservation_cover")).toBe(true);
+		});
+
 		it("recomputes case-alias hashes instead of trusting equal stale metadata", async () => {
 			const local = addFile(localFs, "case.md", "local", 1000);
 			const remote = addFile(remoteFs, "Case.md", "remote", 1000);
@@ -767,6 +800,330 @@ describe("collectChanges — temperature selection", () => {
 			expect(localHash).not.toBe("stale");
 			expect(remoteHash).not.toBe("stale");
 			expect(localHash).not.toBe(remoteHash);
+		});
+
+		it("captures all three current occurrences in an unreported alias collision", async () => {
+			addFile(localFs, "case.md", "local", 1000);
+			addFile(remoteFs, "Case.md", "remote-uppercase", 1000).identityKey = "R1";
+			addFile(remoteFs, "case.md", "remote-lower", 1000).identityKey = "R2";
+			const exactLocalStat = localFs.stat.bind(localFs);
+			localFs.stat = async (path) => path === "Case.md"
+				? { ...(await exactLocalStat("case.md"))!, path: "case.md", pathAuthority: "actual_resolved" }
+				: exactLocalStat(path);
+
+			const changes = await collectChanges(makeDeps(), { forceFullScan: true });
+			const { snapshot } = prepareSyncCycleSnapshot(changes, "backend\0root", { ignorePatterns: [] });
+			const admission = admitBatchObservation(snapshot);
+			const versions = changes.entries.flatMap((entry) => [entry.local, entry.remote])
+				.filter((entity): entity is FileEntity => !!entity && !entity.isDirectory);
+
+			expect(new Set(versions.map((entity) => entity.hash)).size).toBe(3);
+			expect(versions.every((entity) => !!entity.hash)).toBe(true);
+			expect(admission.failures).toEqual([]);
+			const cover = admission.executable.actions.find((action) =>
+				action.protocol?.kind === "preservation_cover");
+			expect(cover?.protocol).toMatchObject({ kind: "preservation_cover" });
+			if (cover?.protocol?.kind !== "preservation_cover") throw new Error("Expected preservation cover");
+			expect(cover.protocol.children).toHaveLength(3);
+		});
+
+		it("captures a non-case remote alias collision without rename evidence", async () => {
+			addFile(localFs, "B.md", "local", 1000);
+			addFile(remoteFs, "Case.md", "remote", 1000).identityKey = "R";
+			const exactRemoteStat = remoteFs.stat.bind(remoteFs);
+			remoteFs.stat = async (path) => path === "B.md"
+				? { ...(await exactRemoteStat("Case.md"))!, path: "Case.md", pathAuthority: "actual_resolved" }
+				: exactRemoteStat(path);
+
+			const changes = await collectChanges(makeDeps(), { forceFullScan: true });
+			const { snapshot } = prepareSyncCycleSnapshot(changes, "backend\0root", { ignorePatterns: [] });
+			const admission = admitBatchObservation(snapshot);
+
+			expect(changes.entries.flatMap((entry) => [entry.local?.hash, entry.remote?.hash])
+				.filter(Boolean)).toHaveLength(2);
+			expect(admission.failures).toEqual([]);
+			expect(admission.executable.actions.some((action) =>
+				action.protocol?.kind === "preservation_cover")).toBe(true);
+		});
+
+		it("keeps a foreign resolved candidate ordinary in the production snapshot", async () => {
+			addFile(localFs, "case.md", "local", 1000);
+			addFile(remoteFs, "Case.md", "remote", 1000).identityKey = "R";
+			const localHash = await sha256(new TextEncoder().encode("local").buffer);
+			const candidatePath = insertConflictSuffix("Case.md", localHash);
+			const resolvedPath = candidatePath.toLowerCase();
+			addFile(localFs, candidatePath, "local", 1000);
+			addFile(remoteFs, resolvedPath, "foreign", 1000).identityKey = "F";
+			const exactLocalStat = localFs.stat.bind(localFs);
+			localFs.stat = async (path) => path === "Case.md"
+				? { ...(await exactLocalStat("case.md"))!, path: "case.md", pathAuthority: "actual_resolved" }
+				: exactLocalStat(path);
+			const exactRemoteStat = remoteFs.stat.bind(remoteFs);
+			remoteFs.stat = async (path) => path === candidatePath
+				? { ...(await exactRemoteStat(resolvedPath))!, path: resolvedPath, pathAuthority: "actual_resolved" }
+				: exactRemoteStat(path);
+
+			const changes = await collectChanges(makeDeps(), { forceFullScan: true });
+			const { snapshot } = prepareSyncCycleSnapshot(changes, "backend\0root", { ignorePatterns: [] });
+			const admission = admitBatchObservation(snapshot);
+
+			const candidateFact = snapshot.candidateFacts.find((fact) => fact.requestedPath === candidatePath);
+			expect(candidateFact?.remote).toMatchObject({
+				kind: "alias", side: "remote", resolvedPath,
+			});
+			expect(admission.failures.map((failure) => failure.reasons))
+				.toContainEqual(["preservation_destination_unavailable"]);
+			expect(admission.executable.actions).toContainEqual(expect.objectContaining({
+				action: "pull", path: resolvedPath,
+			}));
+			expect(admission.executable.actions.some((action) =>
+				action.protocol?.kind === "preservation_cover")).toBe(false);
+		});
+
+		it.each(["cold", "warm", "hot"] as const)(
+			"reconstructs a completed lowercase candidate cover from a %s trigger",
+			async (temperature) => {
+				addFile(localFs, "case.md", "local", 1000);
+				addFile(remoteFs, "Case.md", "remote", 1000).identityKey = "R";
+				const versions = await Promise.all(["local", "remote"].map(async (content) => ({
+					content,
+					hash: await sha256(new TextEncoder().encode(content).buffer),
+				})));
+				const candidatePaths = versions.map(({ hash }) => insertConflictSuffix("Case.md", hash));
+				for (const [index, { content, hash }] of versions.entries()) {
+					const requestedPath = candidatePaths[index]!;
+					addFile(localFs, requestedPath.toLowerCase(), content, 1000);
+					addFile(remoteFs, requestedPath, content, 1000).identityKey = `C${index}`;
+					await stateStore.put({
+						path: requestedPath, hash, localMtime: 1000, remoteMtime: 1000,
+						localSize: content.length, remoteSize: content.length,
+						remoteIdentityKey: `C${index}`, syncedAt: 900,
+					});
+				}
+				const exactLocalStat = localFs.stat.bind(localFs);
+				localFs.stat = async (path) => {
+					if (path === "Case.md") {
+						return { ...(await exactLocalStat("case.md"))!, path: "case.md", pathAuthority: "actual_resolved" };
+					}
+					const candidateIndex = candidatePaths.indexOf(path);
+					if (candidateIndex !== -1) {
+						const resolvedPath = path.toLowerCase();
+						return { ...(await exactLocalStat(resolvedPath))!, path: resolvedPath,
+							pathAuthority: "actual_resolved" };
+					}
+					return exactLocalStat(path);
+				};
+				if (temperature === "hot") {
+					localTracker.acknowledge(localTracker.snapshot());
+					localTracker.markDirty("Case.md");
+					localTracker.markDirty("case.md");
+				}
+
+				const changes = await collectChanges(makeDeps(),
+					temperature === "cold" ? { forceFullScan: true } : {});
+				const { snapshot } = prepareSyncCycleSnapshot(changes, "backend\0root", { ignorePatterns: [] });
+				const admission = admitBatchObservation(snapshot);
+
+				expect(changes.temperature).toBe(temperature === "hot" ? "warm" : temperature);
+				for (const requestedPath of candidatePaths) {
+					const fact = snapshot.candidateFacts.find((item) => item.requestedPath === requestedPath);
+					expect(fact?.baseline?.path).toBe(requestedPath);
+					expect(fact?.local).toMatchObject({
+						kind: "alias", resolvedPath: requestedPath.toLowerCase(),
+					});
+				}
+				expect(admission.failures).toEqual([]);
+				expect(admission.executable.actions).toEqual([]);
+			},
+		);
+
+		it("falls back from a partial single-dirty HOT view to the completed cover facts", async () => {
+			addFile(localFs, "case.md", "local", 1000);
+			addFile(remoteFs, "Case.md", "remote", 1000).identityKey = "R";
+			const versions = await Promise.all(["local", "remote"].map(async (content) => ({
+				content, hash: await sha256(new TextEncoder().encode(content).buffer),
+			})));
+			const candidatePaths = versions.map(({ hash }) => insertConflictSuffix("Case.md", hash));
+			for (const [index, { content, hash }] of versions.entries()) {
+				const requestedPath = candidatePaths[index]!;
+				addFile(localFs, requestedPath, content, 1000);
+				addFile(remoteFs, requestedPath, content, 1000).identityKey = `C${index}`;
+				await stateStore.put({
+					path: requestedPath, hash, localMtime: 1000, remoteMtime: 1000,
+					localSize: content.length, remoteSize: content.length,
+					remoteIdentityKey: `C${index}`, syncedAt: 900,
+				});
+			}
+			const exactLocalStat = localFs.stat.bind(localFs);
+			localFs.stat = async (path) => path === "Case.md"
+				? { ...(await exactLocalStat("case.md"))!, path: "case.md", pathAuthority: "actual_resolved" }
+				: exactLocalStat(path);
+			localTracker.acknowledge(localTracker.snapshot());
+			localTracker.markDirty("case.md");
+
+			const changes = await collectChanges(makeDeps());
+			const { snapshot } = prepareSyncCycleSnapshot(changes, "backend\0root", { ignorePatterns: [] });
+			const admission = admitBatchObservation(snapshot);
+
+			expect(changes.temperature).toBe("warm");
+			expect(admission.failures).toEqual([]);
+			expect(admission.executable.actions).toEqual([]);
+		});
+
+		it("falls back for a single unbaselined new file and still admits its ordinary push", async () => {
+			addFile(localFs, "new.md", "new", 1000);
+			localTracker.acknowledge(localTracker.snapshot());
+			localTracker.markDirty("new.md");
+
+			const changes = await collectChanges(makeDeps());
+			const { snapshot } = prepareSyncCycleSnapshot(changes, "backend\0root", { ignorePatterns: [] });
+			const admission = admitBatchObservation(snapshot);
+
+			expect(changes.temperature).toBe("warm");
+			expect(admission.failures).toEqual([]);
+			expect(admission.executable.actions).toMatchObject([{ action: "push", path: "new.md" }]);
+		});
+
+		it("reacquires a two-sided untracked conflict before ordinary conflict admission", async () => {
+			addFile(localFs, "new.md", "local", 1000);
+			addFile(remoteFs, "new.md", "remote", 1000);
+			localTracker.acknowledge(localTracker.snapshot());
+			localTracker.markDirty("new.md");
+
+			const changes = await collectChanges(makeDeps());
+			const { snapshot } = prepareSyncCycleSnapshot(changes, "backend\0root", { ignorePatterns: [] });
+			const admission = admitBatchObservation(snapshot);
+
+			expect(changes.temperature).toBe("warm");
+			expect(admission.failures).toEqual([]);
+			expect(admission.executable.actions).toMatchObject([{ action: "conflict", path: "new.md" }]);
+		});
+
+		it("reacquires multiple unbaselined new files and admits both pushes", async () => {
+			addFile(localFs, "first.md", "first", 1000);
+			addFile(localFs, "second.md", "second", 1000);
+			localTracker.acknowledge(localTracker.snapshot());
+			localTracker.markDirty("first.md");
+			localTracker.markDirty("second.md");
+
+			const changes = await collectChanges(makeDeps());
+			const { snapshot } = prepareSyncCycleSnapshot(changes, "backend\0root", { ignorePatterns: [] });
+			const admission = admitBatchObservation(snapshot);
+
+			expect(changes.temperature).toBe("warm");
+			expect(admission.failures).toEqual([]);
+			expect(admission.executable.actions).toMatchObject([
+				{ action: "push", path: "first.md" },
+				{ action: "push", path: "second.md" },
+			]);
+		});
+
+		it("rejects a WARM listing that conflicts with the acquired HOT stat", async () => {
+			await stateStore.put(makeRecord("edited.md", { localMtime: 1000, localSize: 4 }));
+			addFile(localFs, "edited.md", "new!", 1000);
+			addFile(remoteFs, "edited.md", "old!", 1000);
+			addFile(localFs, "new.md", "new", 2000);
+			localTracker.acknowledge(localTracker.snapshot());
+			localTracker.markDirty("edited.md");
+			localTracker.markDirty("new.md");
+			const exactList = localFs.list.bind(localFs);
+			localFs.list = async () => (await exactList()).map((entity) => entity.path === "edited.md"
+				? { ...entity, size: entity.size + 1 }
+				: entity);
+
+			await expect(collectChanges(makeDeps())).rejects.toThrow(
+				"HOT/WARM observation changed for local:edited.md",
+			);
+		});
+
+		it("promotes a fully absent unbaselined dirty address to WARM breadth", async () => {
+			localTracker.acknowledge(localTracker.snapshot());
+			localTracker.markDirty("absent.md");
+
+			const changes = await collectChanges(makeDeps());
+			const { snapshot } = prepareSyncCycleSnapshot(changes, "backend\0root", { ignorePatterns: [] });
+			const admission = admitBatchObservation(snapshot);
+
+			expect(changes.temperature).toBe("warm");
+			expect(admission.failures).toEqual([]);
+			expect(admission.executable.actions).toEqual([]);
+		});
+
+		it("keeps a digest-shaped conflict file ordinary without a current base alias", async () => {
+			const digest = "a".repeat(64);
+			const path = `ordinary.conflict-${digest}.md`;
+			addFile(localFs, path, "ordinary", 1000);
+
+			const changes = await collectChanges(makeDeps(), { forceFullScan: true });
+			const { snapshot } = prepareSyncCycleSnapshot(changes, "backend\0root", { ignorePatterns: [] });
+			const admission = admitBatchObservation(snapshot);
+
+			expect(snapshot.candidateFacts).toEqual([]);
+			expect(admission.failures).toEqual([]);
+			expect(admission.executable.actions).toMatchObject([{ action: "push", path }]);
+		});
+
+		it("reconstructs a completed three-version cover from current candidates in warm acquisition", async () => {
+			addFile(localFs, "case.md", "local", 1000);
+			addFile(remoteFs, "Case.md", "remote", 1000).identityKey = "R";
+			const versions = await Promise.all(["local", "remote", "third"].map(async (content) => ({
+				content, hash: await sha256(new TextEncoder().encode(content).buffer),
+			})));
+			const candidatePaths = versions.map(({ hash }) => insertConflictSuffix("Case.md", hash));
+			for (const [index, { content, hash }] of versions.entries()) {
+				const path = candidatePaths[index]!;
+				addFile(localFs, path, content, 1000);
+				addFile(remoteFs, path, content, 1000).identityKey = `C${index}`;
+				await stateStore.put({
+					path, hash, localMtime: 1000, remoteMtime: 1000,
+					localSize: content.length, remoteSize: content.length,
+					remoteIdentityKey: `C${index}`, syncedAt: 900,
+				});
+			}
+			const exactLocalStat = localFs.stat.bind(localFs);
+			localFs.stat = async (path) => path === "Case.md"
+				? { ...(await exactLocalStat("case.md"))!, path: "case.md", pathAuthority: "actual_resolved" }
+				: exactLocalStat(path);
+
+			const changes = await collectChanges(makeDeps());
+			const { snapshot } = prepareSyncCycleSnapshot(changes, "backend\0root", { ignorePatterns: [] });
+			const admission = admitBatchObservation(snapshot);
+
+			expect(changes.temperature).toBe("warm");
+			expect(admission.failures).toEqual([]);
+			expect(admission.executable.actions).toEqual([]);
+			const original = admission.dispositions.find((item) => item.paths.includes("Case.md"));
+			for (const path of candidatePaths) expect(original?.paths).toContain(path);
+		});
+
+		it("derives candidates after report-driven source hash enrichment", async () => {
+			addFile(localFs, "case.md", "local", 1000);
+			const remoteBytes = new TextEncoder().encode("remote").buffer;
+			const remote = addFileWithChecksum(remoteFs, "Case.md", "remote", 1000, {
+				algo: "md5", value: md5(remoteBytes),
+			});
+			remote.identityKey = "R";
+			localTracker.markRenamed("case.md", "Case.md");
+			const exactLocalStat = localFs.stat.bind(localFs);
+			localFs.stat = async (path) => path === "Case.md"
+				? { ...(await exactLocalStat("case.md"))!, path: "case.md", pathAuthority: "actual_resolved" }
+				: exactLocalStat(path);
+
+			const result = await collectChanges(makeDeps(), { forceFullScan: true });
+			const { snapshot } = prepareSyncCycleSnapshot(result, "backend\0root", { ignorePatterns: [] });
+			const admission = admitBatchObservation(snapshot);
+			const hashes = result.entries.flatMap((entry) => [entry.local?.hash, entry.remote?.hash]
+				.filter((hash): hash is string => !!hash));
+
+			expect(new Set(hashes).size).toBe(2);
+			for (const hash of new Set(hashes)) {
+				expect(snapshot.candidateFacts).toContainEqual(expect.objectContaining({
+					requestedPath: insertConflictSuffix("Case.md", hash),
+				}));
+			}
+			expect(admission.failures).toEqual([]);
+			expect(admission.executable.actions.some((action) =>
+				action.protocol?.kind === "preservation_cover")).toBe(true);
 		});
 
 		it("collects the same case-alias facts when unrelated records exist", async () => {
@@ -820,7 +1177,7 @@ describe("collectChanges — temperature selection", () => {
 			}));
 		});
 
-		it("collects complete case-alias facts through ordinary HOT acquisition", async () => {
+		it("reacquires complete case-alias facts before ordinary admission", async () => {
 			addFile(localFs, "case.md", "same", 1000);
 			const remote = addFile(remoteFs, "Case.md", "same", 1000);
 			remote.identityKey = "R";
@@ -837,7 +1194,7 @@ describe("collectChanges — temperature selection", () => {
 
 			const result = await collectChanges(makeDeps());
 
-			expect(result.temperature).toBe("hot");
+			expect(result.temperature).toBe("warm");
 			expect(result.identityEvidence).toContainEqual({
 				kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md",
 			});
@@ -1102,7 +1459,60 @@ describe("collectChanges — temperature selection", () => {
 		});
 	});
 
-		describe("enrichHashesForRenames (unit)", () => {
+	describe("captureAliasCollisionContents", () => {
+		it("freezes direct candidates and proves exact bytes of an occupied candidate", async () => {
+			const local = addFile(localFs, "case.md", "local", 1000);
+			const third = addFile(localFs, "third.md", "third", 1000);
+			third.hash = await sha256(new TextEncoder().encode("third").buffer);
+			const remote = addFile(remoteFs, "Case.md", "remote", 1000);
+			const localHash = await sha256(new TextEncoder().encode("local").buffer);
+			const occupied = addFile(remoteFs, insertConflictSuffix("Case.md", localHash), "local", 1000);
+			const entries: MixedEntity[] = [
+				{ path: "Case.md", remote }, { path: "case.md", local }, { path: "third.md", local: third },
+				{ path: occupied.path, remote: occupied },
+			];
+			const observations: PathObservation[] = [{
+				kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md", entity: local,
+			}];
+			const evidence: IdentityEvidence[] = [{
+				kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md",
+			}, {
+				kind: "rename", side: "local", oldPath: "Case.md", newPath: "third.md",
+				isFolder: false, authority: "reported",
+			}];
+
+			await captureAliasCollisionContents(entries, observations, evidence, localFs, remoteFs);
+			observations.push({
+				kind: "alias", side: "remote", requestedPath: occupied.path,
+				resolvedPath: occupied.path.toLowerCase(), entity: { ...occupied, path: occupied.path.toLowerCase() },
+			});
+			evidence.push({
+				kind: "alias", side: "remote", requestedPath: occupied.path,
+				resolvedPath: occupied.path.toLowerCase(),
+			});
+			const remoteStat = vi.spyOn(remoteFs, "stat");
+			const candidateFacts = await observeDirectConflictCandidates(
+				entries, observations, evidence, localFs, remoteFs,
+			);
+
+			const exactOccupied = candidateFacts.find((item) => item.requestedPath === occupied.path)?.remote;
+			expect(exactOccupied).toMatchObject({ kind: "exact" });
+			if (exactOccupied?.kind === "exact") {
+				expect(exactOccupied.entity.hash).toBe(localHash);
+			}
+			expect(entries.find((entry) => entry.path === occupied.path)?.remote?.hash).not.toBe("");
+			const thirdHash = await sha256(new TextEncoder().encode("third").buffer);
+			const thirdCandidate = insertConflictSuffix("Case.md", thirdHash);
+			expect(candidateFacts).toContainEqual(expect.objectContaining({
+				requestedPath: thirdCandidate,
+				local: { kind: "absent", side: "local", requestedPath: thirdCandidate, authority: "stat" },
+				remote: { kind: "absent", side: "remote", requestedPath: thirdCandidate, authority: "stat" },
+			}));
+			expect(remoteStat).not.toHaveBeenCalledWith(insertConflictSuffix(occupied.path, localHash));
+		});
+	});
+
+	describe("enrichHashesForRenames (unit)", () => {
 		let observations: PathObservation[];
 		function reports(pairs: ReadonlyMap<string, string>, isFolder = false): IdentityEvidence[] {
 			return [...pairs].map(([newPath, oldPath]) => ({

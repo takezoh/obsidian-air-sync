@@ -25,7 +25,7 @@ function projection(oldDisposition: ScopeDisposition, newDisposition: ScopeDispo
 
 function changeSet(overrides: Partial<ChangeSet> = {}): ChangeSet {
 	return {
-		entries: [], observations: [], identityEvidence: [], temperature: "hot", ...overrides,
+		entries: [], observations: [], candidateFacts: [], identityEvidence: [], temperature: "hot", ...overrides,
 	};
 }
 

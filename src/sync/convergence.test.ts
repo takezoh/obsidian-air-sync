@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { collectChanges } from "./change-detector";
 import { executePlan } from "./plan-executor";
 import { LocalChangeTracker } from "./local-tracker";
@@ -11,8 +11,10 @@ import {
 import type { RenamePair, SyncPlan } from "./types";
 import { admitBatchObservation } from "./plan-admission";
 import { projectScope } from "./scope-projection";
-import { captureBatchObservation } from "./sync-cycle-planning";
+import { captureBatchObservation, prepareSyncCycleSnapshot } from "./sync-cycle-planning";
 import { finalizeSyncCycle } from "./sync-cycle-finalization";
+import { insertConflictSuffix } from "./conflict";
+import type { Logger } from "../logging/logger";
 
 /**
  * Convergence (fixed-point) contract — the emergent property the whole engine
@@ -69,6 +71,7 @@ async function runCycle(env: Env): Promise<SyncPlan> {
 	const scope = projectScope(changeSet);
 	const admission = admitBatchObservation(captureBatchObservation(
 		changeSet.entries, changeSet.identityEvidence, changeSet.observations, scope, "convergence-test",
+		undefined, changeSet.candidateFacts,
 	));
 	expect(admission.failures).toEqual([]);
 	const result = await executePlan(admission.executable, {
@@ -92,6 +95,62 @@ function actionTypes(plan: SyncPlan): string[] {
 }
 
 describe("sync converges to a fixed point", () => {
+	it("publishes a completed first push when its local source is renamed in flight, then converges the edit", async () => {
+		const env = makeEnv();
+		addFile(env.localFs, "Untitled 3.md", "", 1000);
+		const firstSnapshot = env.localTracker.snapshot();
+		const firstChanges = await collectChanges({
+			localFs: env.localFs, remoteFs: env.remoteFs, stateStore: env.stateStore,
+			changes: firstSnapshot,
+		});
+		const firstAdmission = admitBatchObservation(captureBatchObservation(
+			firstChanges.entries, firstChanges.identityEvidence, firstChanges.observations,
+			projectScope(firstChanges), "rename-during-first-push", undefined, firstChanges.candidateFacts,
+		));
+		expect(firstAdmission.executable.actions).toMatchObject([{
+			action: "push", path: "Untitled 3.md",
+		}]);
+		const remoteWrite = env.remoteFs.write.bind(env.remoteFs);
+		vi.spyOn(env.remoteFs, "write").mockImplementation(async (path, content, mtime) => {
+			const written = await remoteWrite(path, content, mtime);
+			env.remoteFs.files.get(path)!.entity.identityKey = "R";
+			await env.localFs.rename("Untitled 3.md", "a.md");
+			addFile(env.localFs, "a.md", "a", 2000);
+			env.localTracker.markRenamed("a.md", "Untitled 3.md");
+			return written;
+		});
+		const warn = vi.fn();
+
+		const firstResult = await executePlan(firstAdmission.executable, {
+			localFs: env.localFs, remoteFs: env.remoteFs,
+			committer: {
+				stateStore: env.stateStore, localFs: env.localFs,
+				enableThreeWayMerge: true, logger: { warn } as unknown as Logger,
+			},
+			conflictStrategy: "duplicate",
+		});
+
+		expect(firstResult.failed).toEqual([]);
+		expect(firstResult.blocked).toEqual([]);
+		expect(warn).not.toHaveBeenCalled();
+		expect(await env.stateStore.get("Untitled 3.md")).toBeDefined();
+		expect((await finalizeSyncCycle({
+			admission: firstAdmission, result: firstResult,
+			checkpoint: env.remoteFs.checkpoint, scopeFingerprint: "rename-during-first-push",
+		})).kind).toBe("clean");
+		env.localTracker.acknowledge(firstSnapshot);
+		vi.restoreAllMocks();
+
+		const second = await runCycle(env);
+		expect(second.actions).toMatchObject([{
+			action: "rename_remote", oldPath: "Untitled 3.md", path: "a.md",
+		}]);
+		expect(readText(env.remoteFs, "a.md")).toBe("a");
+		expect(env.remoteFs.files.has("Untitled 3.md")).toBe(false);
+		expect([...env.localFs.files.keys()].some((path) => path.includes(".conflict"))).toBe(false);
+		expect((await runCycle(env)).actions).toEqual([]);
+	});
+
 	it("local-only files push, then a re-sync plans nothing", async () => {
 		const env = makeEnv();
 		addFile(env.localFs, "a.md", "alpha", 1000);
@@ -138,6 +197,322 @@ describe("sync converges to a fixed point", () => {
 			expect(readText(fs, "local-only.md")).toBe("L");
 			expect(readText(fs, "remote-only.md")).toBe("R");
 		}
+	});
+
+	it("retries publication-only cover children after candidate writes outlive a record CAS failure", async () => {
+		const env = makeEnv();
+		addFile(env.localFs, "case.md", "local", 1000);
+		const remoteSeed = addFile(env.remoteFs, "Case.md", "remote", 1000);
+		remoteSeed.identityKey = "R";
+		const local = (await env.localFs.stat("case.md"))!;
+		const remote = (await env.remoteFs.stat("Case.md"))!;
+		const candidatePaths = [local, remote].map((entity) => insertConflictSuffix("Case.md", entity.hash));
+		const exactLocalStat = env.localFs.stat.bind(env.localFs);
+		env.localFs.stat = async (path) => path === "Case.md"
+			? { ...(await exactLocalStat("case.md"))!, path: "case.md", pathAuthority: "actual_resolved" }
+			: exactLocalStat(path);
+		const executeCold = async () => {
+			const changes = await collectChanges({
+				localFs: env.localFs, remoteFs: env.remoteFs, stateStore: env.stateStore,
+				changes: env.localTracker.snapshot(),
+			}, { forceFullScan: true });
+			const { snapshot } = prepareSyncCycleSnapshot(
+				changes, "publication-retry", { ignorePatterns: [] },
+			);
+			const admission = admitBatchObservation(snapshot);
+			expect(admission.failures).toEqual([]);
+			const result = await executePlan(admission.executable, {
+				committer: { stateStore: env.stateStore },
+				localFs: env.localFs, remoteFs: env.remoteFs, conflictStrategy: "auto_merge",
+			});
+			return { admission, result };
+		};
+		const compareAndPut = env.stateStore.compareAndPut.bind(env.stateStore);
+		let rejectedPath: string | undefined;
+		const compareSpy = vi.spyOn(env.stateStore, "compareAndPut").mockImplementation((expected, record) => {
+			if (!rejectedPath && candidatePaths.includes(record.path)) {
+				rejectedPath = record.path;
+				return Promise.resolve(false);
+			}
+			return compareAndPut(expected, record);
+		});
+
+		const first = await executeCold();
+		expect(first.result.failed).toHaveLength(1);
+		expect(rejectedPath).toBeDefined();
+		expect(env.localFs.files.has(rejectedPath!)).toBe(true);
+		expect(env.remoteFs.files.has(rejectedPath!)).toBe(true);
+		compareSpy.mockRestore();
+
+		const second = await executeCold();
+		const children = second.admission.executable.actions.flatMap((action) =>
+			action.protocol?.kind === "preservation_cover" ? action.protocol.children : []);
+		expect(children).toContainEqual(expect.objectContaining({
+			candidatePath: rejectedPath, missingSides: [],
+		}));
+		expect(second.result.failed).toEqual([]);
+		expect(second.result.blocked).toEqual([]);
+		for (const path of candidatePaths) expect(await env.stateStore.get(path)).toBeDefined();
+	});
+
+	it("rejects requested-echo preservation terminals before publication and checkpoint commit", async () => {
+		const env = makeEnv();
+		env.remoteFs = createMockRemoteFs();
+		addFile(env.localFs, "case.md", "local", 1000);
+		addFile(env.remoteFs, "Case.md", "remote", 1000).identityKey = "R";
+		const exactLocalStat = env.localFs.stat.bind(env.localFs);
+		env.localFs.stat = async (path) => path === "Case.md"
+			? { ...(await exactLocalStat("case.md"))!, path: "case.md", pathAuthority: "actual_resolved" }
+			: exactLocalStat(path);
+		const changes = await collectChanges({
+			localFs: env.localFs, remoteFs: env.remoteFs, stateStore: env.stateStore,
+			changes: env.localTracker.snapshot(),
+		}, { forceFullScan: true });
+		const { snapshot } = prepareSyncCycleSnapshot(changes, "requested-echo", { ignorePatterns: [] });
+		const admission = admitBatchObservation(snapshot);
+		expect(admission.failures).toEqual([]);
+		const result = await executePlan(admission.executable, {
+			committer: { stateStore: env.stateStore },
+			localFs: env.localFs, remoteFs: env.remoteFs, conflictStrategy: "auto_merge",
+		});
+		const commit = vi.spyOn(env.remoteFs.checkpoint!, "commitCheckpoint");
+		const abort = vi.spyOn(env.remoteFs.checkpoint!, "abortWorkingView");
+
+		const completion = await finalizeSyncCycle({
+			admission, result, checkpoint: env.remoteFs.checkpoint, scopeFingerprint: "requested-echo",
+		});
+
+		expect(result.failed).toEqual([]);
+		expect(result.blocked).toHaveLength(1);
+		expect(await env.stateStore.get(admission.executable.actions[0]?.protocol?.kind === "preservation_cover"
+			? admission.executable.actions[0].protocol.children[0]!.candidatePath : "missing")).toBeUndefined();
+		expect(completion).toEqual({ kind: "incomplete" });
+		expect(commit).not.toHaveBeenCalled();
+		expect(abort).toHaveBeenCalledOnce();
+	});
+
+	it("reacquires a completed cover when another true new file is dirty", async () => {
+		const env = makeEnv();
+		addFile(env.localFs, "case.md", "local", 1000);
+		addFile(env.remoteFs, "Case.md", "remote", 1000).identityKey = "R";
+		const exactLocalStat = env.localFs.stat.bind(env.localFs);
+		env.localFs.stat = async (path) => path === "Case.md"
+			? { ...(await exactLocalStat("case.md"))!, path: "case.md", pathAuthority: "actual_resolved" }
+			: exactLocalStat(path);
+
+		const initial = await runCycle(env);
+		expect(initial.actions.some((action) => action.protocol?.kind === "preservation_cover")).toBe(true);
+
+		addFile(env.localFs, "new.md", "new", 2000);
+		env.localTracker.markDirty("case.md");
+		env.localTracker.markDirty("new.md");
+		const delta = vi.spyOn(env.remoteFs.checkpoint!, "getChangedPaths");
+
+		const retry = await runCycle(env);
+
+		expect(retry.actions).toMatchObject([{ action: "push", path: "new.md" }]);
+		expect(delta).toHaveBeenCalledOnce();
+		expect(env.remoteFs.files.has("case.md")).toBe(false);
+		expect(readText(env.remoteFs, "new.md")).toBe("new");
+	});
+
+	it("retains a same-metadata tracked edit when an untracked file promotes HOT to WARM", async () => {
+		const env = makeEnv();
+		addFile(env.localFs, "edited.md", "old!", 1000);
+		expect(actionTypes(await runCycle(env))).toEqual(["push"]);
+
+		addFile(env.localFs, "edited.md", "new!", 1000);
+		addFile(env.localFs, "new.md", "new", 2000);
+		env.localTracker.markDirty("edited.md");
+		env.localTracker.markDirty("new.md");
+
+		const promoted = await runCycle(env);
+
+		expect(promoted.actions).toMatchObject([
+			{ action: "push", path: "edited.md" },
+			{ action: "push", path: "new.md" },
+		]);
+		expect(readText(env.remoteFs, "edited.md")).toBe("new!");
+		expect((await runCycle(env)).actions).toEqual([]);
+	});
+
+	it("reacquires a completed three-version cover from one dirty exact path", async () => {
+		const env = makeEnv();
+		addFile(env.localFs, "case.md", "local-a", 1000);
+		addFile(env.remoteFs, "Case.md", "remote-b", 1000).identityKey = "B";
+		addFile(env.remoteFs, "case.md", "remote-c", 1000).identityKey = "C";
+		const exactLocalStat = env.localFs.stat.bind(env.localFs);
+		env.localFs.stat = async (path) => path === "Case.md"
+			? { ...(await exactLocalStat("case.md"))!, path: "case.md", pathAuthority: "actual_resolved" }
+			: exactLocalStat(path);
+
+		const initial = await runCycle(env);
+		const cover = initial.actions.find((action) => action.protocol?.kind === "preservation_cover");
+		expect(cover?.protocol?.kind === "preservation_cover" ? cover.protocol.children : []).toHaveLength(3);
+		env.localTracker.markDirty("case.md");
+
+		const retry = await runCycle(env);
+
+		expect(retry.actions).toEqual([]);
+		expect(readText(env.remoteFs, "case.md")).toBe("remote-c");
+		expect(env.localFs.files.has("case.conflict.md")).toBe(false);
+	});
+
+	it("retains a three-version cover prefix and retries only the missing version", async () => {
+		const env = makeEnv();
+		addFile(env.localFs, "case.md", "local-a", 1000);
+		addFile(env.remoteFs, "Case.md", "remote-b", 1000).identityKey = "B";
+		addFile(env.remoteFs, "case.md", "remote-c", 1000).identityKey = "C";
+		const exactLocalStat = env.localFs.stat.bind(env.localFs);
+		env.localFs.stat = async (path) => path === "Case.md"
+			? { ...(await exactLocalStat("case.md"))!, path: "case.md", pathAuthority: "actual_resolved" }
+			: exactLocalStat(path);
+		const runCold = async () => {
+			const changes = await collectChanges({
+				localFs: env.localFs, remoteFs: env.remoteFs, stateStore: env.stateStore,
+				changes: env.localTracker.snapshot(),
+			}, { forceFullScan: true });
+			const { snapshot } = prepareSyncCycleSnapshot(changes, "three-version-partial", { ignorePatterns: [] });
+			const admission = admitBatchObservation(snapshot);
+			const result = await executePlan(admission.executable, {
+				localFs: env.localFs, remoteFs: env.remoteFs,
+				committer: { stateStore: env.stateStore }, conflictStrategy: "auto_merge",
+			});
+			return { admission, result };
+		};
+		const remoteWrite = env.remoteFs.write.bind(env.remoteFs);
+		const firstWrites: string[] = [];
+		vi.spyOn(env.remoteFs, "write").mockImplementation((path, content, mtime) => {
+			firstWrites.push(path);
+			return firstWrites.length === 3
+				? Promise.reject(new Error("third child failed"))
+				: remoteWrite(path, content, mtime);
+		});
+		const commitCheckpoint = vi.spyOn(env.remoteFs.checkpoint!, "commitCheckpoint");
+		const abortWorkingView = vi.spyOn(env.remoteFs.checkpoint!, "abortWorkingView");
+
+		const first = await runCold();
+		const candidatePaths = first.admission.executable.actions.flatMap((action) =>
+			action.protocol?.kind === "preservation_cover"
+				? action.protocol.children.map((child) => child.candidatePath) : []);
+		const missingCandidate = firstWrites[2]!;
+		expect(first.admission.failures).toEqual([]);
+		expect(first.result.failed).toHaveLength(1);
+		expect(first.result.conflicts[0]?.resolution.duplicatePaths).toEqual(firstWrites.slice(0, 2));
+		expect((await finalizeSyncCycle({
+			admission: first.admission, result: first.result,
+			checkpoint: env.remoteFs.checkpoint, scopeFingerprint: "three-version-partial",
+		})).kind).toBe("incomplete");
+		expect(commitCheckpoint).not.toHaveBeenCalled();
+		expect(abortWorkingView).toHaveBeenCalledOnce();
+		expect(firstWrites).toContain(missingCandidate);
+
+		vi.restoreAllMocks();
+		const secondWrites: string[] = [];
+		vi.spyOn(env.remoteFs, "write").mockImplementation((path, content, mtime) => {
+			secondWrites.push(path);
+			return remoteWrite(path, content, mtime);
+		});
+		const second = await runCold();
+		expect(second.admission.failures).toEqual([]);
+		expect(second.result.failed).toEqual([]);
+		expect(second.result.blocked).toEqual([]);
+		expect(secondWrites).toEqual([missingCandidate]);
+		expect(second.result.conflicts[0]?.resolution.duplicatePaths).toEqual(candidatePaths);
+
+		vi.restoreAllMocks();
+		const third = await runCold();
+		expect(third.admission.failures).toEqual([]);
+		expect(third.admission.executable.actions).toEqual([]);
+	});
+
+	it("fails closed when a provider lists unaddressable duplicate objects at one exact path", async () => {
+		const env = makeEnv();
+		addFile(env.remoteFs, "duplicate.md", "version-a", 1000).identityKey = "A";
+		addFile(env.remoteFs, "other.md", "version-b", 1000).identityKey = "B";
+		const visible = (await env.remoteFs.stat("duplicate.md"))!;
+		const hidden = { ...(await env.remoteFs.stat("other.md"))!, path: "duplicate.md" };
+		env.remoteFs.list = () => Promise.resolve([visible, hidden]);
+		const remoteWrite = vi.spyOn(env.remoteFs, "write");
+		const remoteDelete = vi.spyOn(env.remoteFs, "delete");
+		const remoteRename = vi.spyOn(env.remoteFs, "rename");
+		const commitCheckpoint = vi.spyOn(env.remoteFs.checkpoint!, "commitCheckpoint");
+		const abortWorkingView = vi.spyOn(env.remoteFs.checkpoint!, "abortWorkingView");
+
+		const changes = await collectChanges({
+			localFs: env.localFs, remoteFs: env.remoteFs, stateStore: env.stateStore,
+			changes: env.localTracker.snapshot(),
+		}, { forceFullScan: true });
+		const { snapshot } = prepareSyncCycleSnapshot(changes, "provider-duplicate", { ignorePatterns: [] });
+		const admission = admitBatchObservation(snapshot);
+		const result = await executePlan(admission.executable, {
+			localFs: env.localFs, remoteFs: env.remoteFs,
+			committer: { stateStore: env.stateStore }, conflictStrategy: "auto_merge",
+		});
+
+		expect(admission.failures).toMatchObject([{ reasons: ["conflicting_identity"] }]);
+		expect(result.succeeded).toEqual([]);
+		expect(remoteWrite).not.toHaveBeenCalled();
+		expect(remoteDelete).not.toHaveBeenCalled();
+		expect(remoteRename).not.toHaveBeenCalled();
+		expect((await finalizeSyncCycle({
+			admission, result, checkpoint: env.remoteFs.checkpoint,
+			scopeFingerprint: "provider-duplicate",
+		})).kind).toBe("incomplete");
+		expect(commitCheckpoint).not.toHaveBeenCalled();
+		expect(abortWorkingView).toHaveBeenCalledOnce();
+	});
+
+	it("re-observes a latent write alias as a cover on the next cycle", async () => {
+		const env = makeEnv();
+		addFile(env.localFs, "Case.md", "local", 1000);
+		const acquire = async () => {
+			const changes = await collectChanges({
+				localFs: env.localFs, remoteFs: env.remoteFs, stateStore: env.stateStore,
+				changes: env.localTracker.snapshot(),
+			}, { forceFullScan: true });
+			const { snapshot } = prepareSyncCycleSnapshot(changes, "latent-write-alias", { ignorePatterns: [] });
+			return admitBatchObservation(snapshot);
+		};
+		const execute = (admission: ReturnType<typeof admitBatchObservation>) => executePlan(
+			admission.executable,
+			{
+				localFs: env.localFs, remoteFs: env.remoteFs,
+				committer: { stateStore: env.stateStore }, conflictStrategy: "auto_merge",
+			},
+		);
+		const firstAdmission = await acquire();
+		expect(firstAdmission.executable.actions).toMatchObject([{ action: "push", path: "Case.md" }]);
+		addFile(env.remoteFs, "case.md", "remote", 2000).identityKey = "R";
+		const exactRemoteStat = env.remoteFs.stat.bind(env.remoteFs);
+		env.remoteFs.stat = (path) => path === "Case.md" ? exactRemoteStat("case.md") : exactRemoteStat(path);
+		const firstWrite = vi.spyOn(env.remoteFs, "write");
+		const commitCheckpoint = vi.spyOn(env.remoteFs.checkpoint!, "commitCheckpoint");
+
+		const firstResult = await execute(firstAdmission);
+		expect(firstResult.blocked).toHaveLength(1);
+		expect(firstResult.conflicts).toEqual([]);
+		expect(firstWrite).not.toHaveBeenCalled();
+		expect((await finalizeSyncCycle({
+			admission: firstAdmission, result: firstResult,
+			checkpoint: env.remoteFs.checkpoint, scopeFingerprint: "latent-write-alias",
+		})).kind).toBe("incomplete");
+		expect(commitCheckpoint).not.toHaveBeenCalled();
+
+		vi.restoreAllMocks();
+		const secondAdmission = await acquire();
+		expect(secondAdmission.failures).toEqual([]);
+		expect(secondAdmission.executable.actions).toMatchObject([{
+			action: "conflict", protocol: { kind: "preservation_cover" },
+		}]);
+		const secondResult = await execute(secondAdmission);
+		expect(secondResult.failed).toEqual([]);
+		expect(secondResult.blocked).toEqual([]);
+		expect(secondResult.conflicts).toHaveLength(1);
+
+		const thirdAdmission = await acquire();
+		expect(thirdAdmission.failures).toEqual([]);
+		expect(thirdAdmission.executable.actions).toEqual([]);
 	});
 
 	it("identical files first seen together resolve to match (hash-based), then converge", async () => {
