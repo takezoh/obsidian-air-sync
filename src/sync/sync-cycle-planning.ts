@@ -1,4 +1,5 @@
 import type { Logger } from "../logging/logger";
+import type { IFileSystem } from "../fs/interface";
 import type { ChangeSet } from "./change-detector";
 import type { AdmissionResult } from "./plan-admission";
 import { applyScope, type ScopeProjectionPolicy } from "./scope-projection";
@@ -8,8 +9,10 @@ import type {
 	MixedEntity,
 	PathObservation,
 	CandidateFact,
+	ConflictStrategy,
 	ScopeProjection,
 } from "./types";
+import { enrichHashesForPreferLocal } from "./change-hash-enrichment";
 
 export type CycleEvidenceItem =
 	| { readonly role: "local_rename_candidate"; readonly evidence: LocalRenameEvidence }
@@ -182,6 +185,35 @@ export function prepareSyncCycleSnapshot(
 	policy: ScopeProjectionPolicy,
 	logger?: Logger,
 ) {
+	const { scopedChangeSet, projection } = scopeSyncCycle(changeSet, policy, logger);
+	return captureScopedSnapshot(scopedChangeSet, projection, namespace);
+}
+
+/** Production preparation: scope first, then acquire Prefer-local-only content facts. */
+export async function prepareSyncCycleSnapshotForExecution(
+	changeSet: ChangeSet,
+	namespace: string,
+	policy: ScopeProjectionPolicy,
+	strategy: ConflictStrategy,
+	localFs: IFileSystem,
+	remoteFs: IFileSystem,
+	logger?: Logger,
+) {
+	const { scopedChangeSet, projection } = scopeSyncCycle(changeSet, policy, logger);
+	if (strategy === "prefer_local") {
+		await enrichHashesForPreferLocal(
+			scopedChangeSet.entries, scopedChangeSet.observations,
+			scopedChangeSet.identityEvidence, localFs, remoteFs,
+		);
+	}
+	return captureScopedSnapshot(scopedChangeSet, projection, namespace);
+}
+
+function scopeSyncCycle(
+	changeSet: ChangeSet,
+	policy: ScopeProjectionPolicy,
+	logger?: Logger,
+): { scopedChangeSet: ChangeSet; projection: ScopeProjection } {
 	const { changeSet: scopedChangeSet, projection } = applyScope(changeSet, policy);
 	const admittedEntries = scopedChangeSet.entries.filter((entry) =>
 		projection.byEndpoint.get(entry.path) === "included");
@@ -192,8 +224,17 @@ export function prepareSyncCycleSnapshot(
 			excluded: changeSet.entries.length - admittedEntries.length,
 		});
 	}
+	scopedChangeSet.entries = admittedEntries;
+	return { scopedChangeSet, projection };
+}
+
+function captureScopedSnapshot(
+	scopedChangeSet: ChangeSet,
+	projection: ScopeProjection,
+	namespace: string,
+) {
 	const snapshot = captureBatchObservation(
-		admittedEntries,
+		scopedChangeSet.entries,
 		scopedChangeSet.identityEvidence,
 		scopedChangeSet.observations,
 		projection,

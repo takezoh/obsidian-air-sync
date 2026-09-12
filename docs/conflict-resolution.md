@@ -2,16 +2,23 @@
 
 ## Conflict strategies
 
-`conflict-resolver.ts` exposes 2 user-facing strategies via `ConflictStrategy`:
+`conflict-resolver.ts` exposes 3 user-facing strategies via `ConflictStrategy`:
 
 | Strategy | Behavior |
 |----------|----------|
 | `auto_merge` | Try a 3-way merge; if the file is ineligible, the base content is missing, or the merge throws, fall back to newer-wins. Two narrower cases produce a duplicate: within newer-wins, equal or unknown mtimes with differing content; and for `.json`/`.canvas`, a merge that produced conflict markers or invalid JSON. |
+| `prefer_local` | Keep local at the original path only for a simple same-path edit/edit conflict whose local and remote SHA-256 values both differ from the same non-empty committed baseline and from each other. Otherwise use the same preservation behavior as `duplicate`. |
 | `duplicate` | Delete-aware (see below). When both sides exist, save remote as a `.conflict` file and keep local at the original path. |
 
-The setting is stored as `conflictStrategy` in `AirSyncSettings` (values `auto_merge` \| `duplicate`).
+The setting is stored as `conflictStrategy` in `AirSyncSettings` (values `auto_merge` \| `prefer_local` \| `duplicate`).
 
 > NOTE: an interactive `ask` strategy existed in an earlier version. It was removed (it always fell back to `duplicate` anyway). A vault saved while it was selected is normalized to `duplicate` on load (`normalizeConflictStrategy` in `settings-normalize.ts`).
+
+## prefer_local proof boundary
+
+`prefer_local` is a conflict-resolution policy, not a general direction rule. Ordinary one-sided changes still push or pull normally. Admission authorizes local-wins only when current facts prove a bilateral edit of the same previously synchronized file. The proof is deliberately unavailable without a committed baseline, for edit/delete conflicts, or for compound identity/topology conflicts; those cases preserve the surviving or competing versions through the existing duplicate route.
+
+This boundary prevents an old device from overwriting newer remote content merely because it cold-started. A first sync, schema cold-start, cleared sync state, or any missing hash cannot establish which side is the intended local edit, so differing files are preserved as two versions. COLD, WARM, and HOT acquisition therefore produce the same decision from the same complete facts.
 
 ## auto_merge fallback chain
 

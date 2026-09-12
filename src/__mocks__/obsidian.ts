@@ -42,12 +42,19 @@ export class SecretComponent {
 
 /**
  * Test hooks for driving Modal/Setting interactions without a DOM. Populated as
- * the UI renders; reset these between tests (`__ui.buttons = []; __ui.lastModal = null`).
+ * the UI renders; reset these between tests.
  */
 export const __ui: {
 	buttons: { name: string; click: () => void }[];
+	dropdowns: {
+		name: string;
+		description: string;
+		options: Array<{ value: string; display: string }>;
+		value: string;
+		change: (value: string) => unknown;
+	}[];
 	lastModal: { close: () => void } | null;
-} = { buttons: [], lastModal: null };
+} = { buttons: [], dropdowns: [], lastModal: null };
 
 /** Minimal stand-in for Obsidian's augmented HTMLElement (createEl/empty). */
 class FakeEl {
@@ -86,12 +93,14 @@ export class Modal {
 export class Setting {
 	settingEl = new FakeEl() as unknown as HTMLElement;
 	private _name = "";
+	private _description = "";
 	constructor(_containerEl: HTMLElement) {}
 	setName(name: string) {
 		this._name = name;
 		return this;
 	}
-	setDesc(_desc: string) {
+	setDesc(desc: string | DocumentFragment) {
+		this._description = typeof desc === "string" ? desc : "";
 		return this;
 	}
 	setHeading() {
@@ -113,7 +122,33 @@ export class Setting {
 	addText(_cb: (t: unknown) => unknown) {
 		return this;
 	}
-	addDropdown(_cb: (d: unknown) => unknown) {
+	addDropdown(cb: (d: unknown) => unknown) {
+		const options: Array<{ value: string; display: string }> = [];
+		let value = "";
+		let handler: (next: string) => unknown = () => {};
+		const dropdown = {
+			addOption: (optionValue: string, display: string) => {
+				options.push({ value: optionValue, display });
+				return dropdown;
+			},
+			setValue: (next: string) => {
+				value = next;
+				return dropdown;
+			},
+			setDisabled: (_disabled: boolean) => dropdown,
+			onChange: (next: (selected: string) => unknown) => {
+				handler = next;
+				return dropdown;
+			},
+		};
+		cb(dropdown);
+		__ui.dropdowns.push({
+			name: this._name,
+			description: this._description,
+			options,
+			get value() { return value; },
+			change: (next: string) => handler(next),
+		});
 		return this;
 	}
 	addToggle(_cb: (t: unknown) => unknown) {

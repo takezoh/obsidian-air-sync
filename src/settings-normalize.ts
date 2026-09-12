@@ -55,7 +55,7 @@ export function liftActiveBackendData(
  */
 export function normalizeConflictStrategy(settings: AirSyncSettings): boolean {
 	const strategy = settings.conflictStrategy as string;
-	if (strategy === "auto_merge" || strategy === "duplicate") return false;
+	if (strategy === "auto_merge" || strategy === "prefer_local" || strategy === "duplicate") return false;
 	settings.conflictStrategy = strategy === "ask" ? "duplicate" : "auto_merge";
 	return true;
 }

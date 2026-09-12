@@ -1,0 +1,191 @@
+artifact: design-plan-spine
+version: 2
+granularity_profile: boundary-complete
+
+scope_expansion_signals:
+  - id: scope-signal-pl-shared-enrichment
+    kind: shared_boundary
+    target_ref: contract-pl-proof-acquisition
+    witness: Audited necessary — the existing change-hash-enrichment path gains only Prefer-local post-scope candidate SHA-256 FileEntity.hash completion; other strategies have zero added reads, and no exact snapshot enters BatchObservation or Admission.
+    requirement_refs: [FR-PL-003, FR-PL-007, NFR-PL-001]
+    authority_refs: [/workspace/obsidian-air-sync/AGENTS.md#coding-conventions, /workspace/obsidian-air-sync/docs/changes/change-20260912-issue73-local-win/requirements.md#functional-requirements, /workspace/obsidian-air-sync/docs/changes/change-20260912-issue73-local-win/requirements.md#non-functional-requirements]
+
+requirements:
+  - {id: FR-PL-001, type: event-driven, priority: must, statement: Prefer local is selectable beside existing strategies with an accessibly associated three-part safety explanation.}
+  - {id: FR-PL-002, type: ubiquitous, priority: must, statement: Prefer local changes only admitted conflicts and preserves ordinary bidirectional edits and creations.}
+  - {id: FR-PL-003, type: conditional, priority: must, statement: Only a simple same-path edit/edit with a non-empty SyncRecord SHA-256 baseline and three proven SHA-256 inequalities may local-win.}
+  - {id: FR-PL-004, type: conditional, priority: must, statement: Unproved simple collisions preserve both; edit/delete preserves the survivor; compound conflicts preserve required versions; unstable capture is non-clean.}
+  - {id: FR-PL-005, type: ubiquitous, priority: must, statement: Facts carry no action; Admission alone decides and the existing resolver/executor route consumes without re-decision.}
+  - {id: FR-PL-006, type: ubiquitous, priority: must, statement: Evidence is attempt-only and the two existing commit-last publication points and current-facts retry remain exclusive.}
+  - {id: FR-PL-007, type: ubiquitous, priority: must, statement: Existing strategies have zero added proof reads and unchanged outcomes; saved ask/default/unknown and temperature equivalence remain compatible.}
+  - {id: NFR-PL-001, type: performance, priority: must, statement: Proof I/O converges on K qualified Prefer-local candidates and bodies/directives are neither logged nor persisted.}
+
+components:
+  - {id: component-pl-settings, kind: existing, contract_refs: [contract-pl-settings], paths: [src/sync/types.ts, src/settings-normalize.ts, src/ui/settings.ts]}
+  - {id: component-pl-fact-acquisition, kind: existing, contract_refs: [contract-pl-proof-acquisition], paths: [src/sync/change-hash-enrichment.ts, src/sync/change-detector.ts, src/sync/sync-cycle-planning.ts]}
+  - {id: component-pl-admission, kind: existing, contract_refs: [contract-pl-admission], paths: [src/sync/identity-component-decision.ts]}
+  - {id: component-pl-execution, kind: existing, contract_refs: [contract-pl-execution], paths: [src/sync/conflict-resolver.ts, src/sync/plan-executor.ts]}
+  - {id: component-pl-verification, kind: existing, contract_refs: [contract-pl-verification], paths: [src/sync]}
+
+contracts:
+  - id: contract-pl-proof-acquisition
+    dimension: Strategy-gated candidate-bounded current SHA-256 FileEntity.hash completion
+    owner: component-pl-fact-acquisition
+    requirement_refs: [FR-PL-003, FR-PL-004, FR-PL-007, NFR-PL-001]
+    unit_refs: [Chunk 2 — strategy-gated SHA-256 fact completion, Chunk 5 — cycle and lifecycle acceptance]
+    verification:
+      - {id: verify-pl-read-gate, tier: T0, command: npm test -- src/sync/change-detector.test.ts}
+      - {id: verify-pl-temperature, tier: T1, command: npm test -- src/sync/change-detector.test.ts src/sync/convergence.test.ts}
+    partition:
+      outcomes: [determinate, unknown, conflicting]
+      default_policy: Only complete stable facts proceed; unavailable/stale required capture is non-clean and not-applicable strategies retain zero added reads.
+  - id: contract-pl-admission
+    dimension: Sole Admission common-SHA proof and binary Prefer-local conflict disposition partition
+    owner: component-pl-admission
+    requirement_refs: [FR-PL-002, FR-PL-003, FR-PL-004, FR-PL-005]
+    unit_refs: [Chunk 3 — Admission proof partition]
+    verification:
+      - {id: verify-pl-proof-table, tier: T0, command: npm test -- src/sync/plan-admission.test.ts src/sync/decision-engine.test.ts}
+      - {id: verify-pl-admission-guard, tier: T1, command: npm test}
+    partition:
+      outcomes: [determinate, unknown, conflicting]
+      default_policy: Prefer-local conflicts carry exactly local_win_allowed or preservation_required; match and existing survivor/compound paths precede that binary decision, and missing or invalid conflict disposition is a fatal contract violation.
+    discretion:
+      - id: discretion-pl-private-names
+        unit_ref: Chunk 3 — Admission proof partition
+        question: Choose private names and placement within existing owning modules; a new helper is not required.
+        scope:
+          files: [src/sync/identity-component-decision.ts, src/sync/decision-engine.ts]
+          component: component-pl-admission
+          visibility: private
+        constraints: [No mandatory new helper, no exact snapshot in BatchObservation or Admission, no persisted/public wire, no Admission I/O, no action-bearing observation, no second policy owner.]
+        verification_refs: [verify-pl-proof-table, verify-pl-admission-guard]
+        escalate_when: [Any owner, outcome, read count, publication, or persistence contract would change.]
+  - id: contract-pl-execution
+    dimension: Single conflict route, preservation-before-destruction, terminal proof, and commit-last publication
+    owner: component-pl-execution
+    requirement_refs: [FR-PL-004, FR-PL-005, FR-PL-006]
+    unit_refs: [Chunk 4 — single-route consumption, Chunk 5 — cycle and lifecycle acceptance]
+    verification:
+      - {id: verify-pl-effects, tier: T1, command: npm test -- src/sync/conflict-resolver.test.ts src/sync/plan-executor.test.ts src/sync/fact-first-execution.test.ts}
+      - {id: verify-pl-lifecycle, tier: T1, command: npm test -- src/sync/convergence.test.ts src/sync/crash-safety.test.ts src/sync/sync-cycle-finalization.test.ts}
+    partition:
+      outcomes: [determinate, conflicting]
+      default_policy: Missing or invalid Prefer-local authority fails fast; external preservation or stability failure blocks destructive suffix and publication.
+  - id: contract-pl-settings
+    dimension: Additive strategy setting, legacy normalization, and accessible semantic association
+    owner: component-pl-settings
+    requirement_refs: [FR-PL-001, FR-PL-007]
+    unit_refs: [Chunk 1 — strategy wire and setting, Chunk 6 — public contract and full gate]
+    verification:
+      - {id: verify-pl-settings, tier: T0, command: npm test -- src/settings-normalize.test.ts}
+    partition:
+      outcomes: [determinate, inconclusive]
+      default_policy: ask maps to duplicate, unknown/default to auto_merge, and prefer_local remains prefer_local.
+  - id: contract-pl-verification
+    dimension: UAC, temperature, failure injection, ownership guards, and repository gate closure
+    owner: component-pl-verification
+    requirement_refs: [FR-PL-001, FR-PL-002, FR-PL-003, FR-PL-004, FR-PL-005, FR-PL-006, FR-PL-007, NFR-PL-001]
+    unit_refs: [Chunk 5 — cycle and lifecycle acceptance, Chunk 6 — public contract and full gate]
+    verification:
+      - {id: verify-pl-full-gate, tier: T2, command: npm run lint && npm run lint:bot-repro && npm run build && npm run test:coverage}
+    partition:
+      outcomes: [determinate, inconclusive]
+      default_policy: Any UAC, guard, read-count, injected-failure, or gate failure leaves the change unclosable.
+
+adrs: []
+
+units:
+  - title: Chunk 1 — strategy wire and setting
+    chunk: "1"
+    contract_refs: [contract-pl-settings]
+    files: [src/sync/types.ts, src/settings-normalize.ts, src/settings-normalize.test.ts, src/ui/settings.ts]
+    depends_on: []
+    acceptance: [UAC-001, UAC-013]
+    objective: Add the peer strategy and closed attempt wire without enabling execution.
+    output_format: Strict TypeScript setting/wire changes and focused UI/normalization tests.
+    tool_guidance: Keep default Auto merge and ask-to-Duplicate compatibility.
+    task_boundaries: No proof acquisition or conflict effects; invalid wires fail type/tests with no rollback state.
+    decision_closure_reason: Strategy values, compatibility mapping, accessibility semantics, and persistence behavior are fixed.
+  - title: Chunk 2 — strategy-gated SHA-256 fact completion
+    chunk: "2"
+    contract_refs: [contract-pl-proof-acquisition]
+    files: [src/sync/change-hash-enrichment.ts, src/sync/change-detector.ts, src/sync/sync-cycle-planning.ts, src/sync/change-detector.test.ts]
+    depends_on: [Chunk 1 — strategy wire and setting]
+    acceptance: [UAC-006, UAC-007, UAC-008, UAC-014]
+    objective: Complete missing current SHA-256 FileEntity.hash facts only for qualified Prefer-local candidates.
+    output_format: Localized fact-only hash enrichment and read-count/failure-injection tests with no exact snapshot observation carrier.
+    tool_guidance: Apply the exact post-scope Prefer-local predicate and never emit actions.
+    task_boundaries: Required unavailable/stale capture is non-clean with no action/publication; next attempt re-observes.
+    decision_closure_reason: Inputs, strategy gate, proof algorithm, read bound, and unavailable outcomes are fixed.
+  - title: Chunk 3 — Admission proof partition
+    chunk: "3"
+    contract_refs: [contract-pl-admission]
+    files: [src/sync/identity-component-decision.ts, src/sync/decision-engine.ts, src/sync/plan-admission.test.ts, src/sync/decision-engine.test.ts]
+    depends_on: [Chunk 1 — strategy wire and setting, Chunk 2 — strategy-gated SHA-256 fact completion]
+    acceptance: [UAC-006, UAC-007, UAC-008, UAC-009, UAC-010, UAC-014]
+    objective: Issue only local_win_allowed or preservation_required for Prefer-local conflict actions from the common SHA-256 proof table while retaining existing match, survivor, and compound routes.
+    output_format: Pure Admission predicate, action disposition, table tests, and authority guard coverage.
+    tool_guidance: Preserve match/survivor/compound precedence and reject metadata as proof.
+    task_boundaries: Incomplete proof cannot local-win and invalid internal input fails fast; no recovery marker.
+    decision_closure_reason: Only private names and placement within existing owning modules remain delegated by discretion-pl-private-names; no new helper is required.
+  - title: Chunk 4 — single-route consumption
+    chunk: "4"
+    contract_refs: [contract-pl-execution]
+    files: [src/sync/conflict-resolver.ts, src/sync/plan-executor.ts, src/sync/conflict-resolver.test.ts, src/sync/plan-executor.test.ts, src/sync/fact-first-execution.test.ts]
+    depends_on: [Chunk 3 — Admission proof partition]
+    acceptance: [UAC-006, UAC-007, UAC-008, UAC-009, UAC-010, UAC-015, UAC-016]
+    objective: Consume Admission authority through existing preservation and publication effects.
+    output_format: Resolver/executor integration and exact effect/failure tests.
+    tool_guidance: Preserve before destruction; resolver never mutates originals or re-decides policy.
+    task_boundaries: Partial preservation/terminal proof blocks suffix and receipts; no compensating rollback.
+    decision_closure_reason: Route, ordering, effect owner, preservation, terminal proof, and publication are fixed.
+  - title: Chunk 5 — cycle and lifecycle acceptance
+    chunk: "5"
+    contract_refs: [contract-pl-proof-acquisition, contract-pl-execution, contract-pl-verification]
+    files: [src/sync/convergence.test.ts, src/sync/crash-safety.test.ts, src/sync/sync-cycle-finalization.test.ts]
+    depends_on: [Chunk 4 — single-route consumption]
+    acceptance: [UAC-002, UAC-003, UAC-004, UAC-005, UAC-006, UAC-007, UAC-008, UAC-009, UAC-010, UAC-011, UAC-012, UAC-013, UAC-014, UAC-015, UAC-016, UAC-017, UAC-018]
+    objective: Prove temperature equivalence, zero-read compatibility, interruption, publication, and current-facts retry.
+    output_format: Composed deterministic lifecycle, read-count, and injected-failure tests.
+    tool_guidance: Exercise exact effects across COLD/WARM/HOT and both interruption boundaries.
+    task_boundaries: Incomplete cycles abort attempt view and withhold checkpoint; no stopped-state branch.
+    decision_closure_reason: All UAC and lifecycle outcomes are fixed by the contracts.
+  - title: Chunk 6 — public contract and full gate
+    chunk: "6"
+    contract_refs: [contract-pl-settings, contract-pl-verification]
+    files: [README.md, ARCHITECTURE.md, docs/conflict-resolution.md, docs/sync-pipeline.md, docs/code-enforcement.md]
+    depends_on: [Chunk 5 — cycle and lifecycle acceptance]
+    acceptance: [UAC-001, UAC-011, UAC-012, UAC-013, UAC-017, UAC-018]
+    objective: Document exact behavior and pass the repository gate without a new ADR.
+    output_format: Updated public/architecture documentation and green gate evidence.
+    tool_guidance: Run all four mandated gate commands and retain guard coverage.
+    task_boundaries: Any gate failure blocks closure; do not disable rules/tests or create an ADR.
+    decision_closure_reason: This chunk records and verifies closed decisions only.
+
+acceptance:
+  - {id: UAC-001, criteria: Prefer local is accessibly selectable with its safety boundary visible before selection., requirement_refs: [FR-PL-001]}
+  - {id: UAC-002, criteria: Local-only edit pushes without a conflict copy., requirement_refs: [FR-PL-002]}
+  - {id: UAC-003, criteria: Remote-only edit pulls without stale-local overwrite., requirement_refs: [FR-PL-002]}
+  - {id: UAC-004, criteria: Local-only creation pushes., requirement_refs: [FR-PL-002]}
+  - {id: UAC-005, criteria: Remote-only creation pulls., requirement_refs: [FR-PL-002]}
+  - {id: UAC-006, criteria: Proven bilateral edit/edit makes both originals exact local bytes with no ordinary copy., requirement_refs: [FR-PL-003, FR-PL-005]}
+  - {id: UAC-007, criteria: No-baseline differing collision preserves local original and remote preservation on both sides without prompting., requirement_refs: [FR-PL-004]}
+  - {id: UAC-008, criteria: Content-proof-unavailable collision preserves both rather than local-win., requirement_refs: [FR-PL-004]}
+  - {id: UAC-009, criteria: Edit/delete preserves the edited survivor regardless of side., requirement_refs: [FR-PL-004]}
+  - {id: UAC-010, criteria: Preservable compound conflict completes with result and required preserved versions., requirement_refs: [FR-PL-004, FR-PL-005]}
+  - {id: UAC-011, criteria: Auto merge retains clean three-way merge., requirement_refs: [FR-PL-007]}
+  - {id: UAC-012, criteria: Duplicate retains selection and preservation placement., requirement_refs: [FR-PL-007]}
+  - {id: UAC-013, criteria: Saved ask normalizes to noninteractive Duplicate., requirement_refs: [FR-PL-007]}
+  - {id: UAC-014, criteria: Equal current bytes match without extra copy., requirement_refs: [FR-PL-004]}
+  - {id: UAC-015, criteria: Uncertain preservation failure is non-clean and does not destructively replace either recoverable input., requirement_refs: [FR-PL-004, FR-PL-006]}
+  - {id: UAC-016, criteria: Compound preservation failure does not complete destructive replacement and can retry from current facts., requirement_refs: [FR-PL-004, FR-PL-006]}
+  - {id: UAC-017, criteria: Auto merge retains orderable newer-side fallback., requirement_refs: [FR-PL-007]}
+  - {id: UAC-018, criteria: Auto merge retains unordered Duplicate fallback., requirement_refs: [FR-PL-007]}
+
+dispositions:
+  - {decision_input_ref: decision-admission-owner, disposition: adopted, contract_refs: [contract-pl-admission]}
+  - {decision_input_ref: decision-attempt-evidence, disposition: adopted, contract_refs: [contract-pl-proof-acquisition, contract-pl-execution]}
+  - {decision_input_ref: decision-single-route, disposition: adopted, contract_refs: [contract-pl-execution]}
+  - {decision_input_ref: decision-two-publications, disposition: adopted, contract_refs: [contract-pl-execution]}
+  - {decision_input_ref: decision-content-proof, disposition: adopted, contract_refs: [contract-pl-proof-acquisition, contract-pl-admission]}

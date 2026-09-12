@@ -1,0 +1,404 @@
+artifact: requirements-plan-spine
+version: 1
+mode: specify
+
+user_goals:
+  - id: goal-select-local-preference
+  - id: goal-resolve-proven-edit-conflict
+  - id: goal-preserve-uncertain-versions
+  - id: goal-keep-bidirectional-sync
+  - id: goal-protect-edits-and-compound-conflicts
+
+flows:
+  - id: F-001
+    goal_refs: [goal-select-local-preference]
+    experience_contract_refs: [exp-settings]
+    acceptance_scenario_refs: [UAC-001]
+  - id: F-002
+    goal_refs: [goal-keep-bidirectional-sync]
+    experience_contract_refs: [exp-ordinary-sync]
+    acceptance_scenario_refs: [UAC-002, UAC-003, UAC-004, UAC-005, UAC-014]
+  - id: F-003
+    goal_refs: [goal-resolve-proven-edit-conflict]
+    experience_contract_refs: [exp-proven-conflict]
+    acceptance_scenario_refs: [UAC-006]
+  - id: F-004
+    goal_refs: [goal-preserve-uncertain-versions]
+    experience_contract_refs: [exp-uncertain]
+    acceptance_scenario_refs: [UAC-007, UAC-008, UAC-015]
+  - id: F-005
+    goal_refs: [goal-protect-edits-and-compound-conflicts]
+    experience_contract_refs: [exp-edit-delete]
+    acceptance_scenario_refs: [UAC-009]
+  - id: F-006
+    goal_refs: [goal-protect-edits-and-compound-conflicts]
+    experience_contract_refs: [exp-compound]
+    acceptance_scenario_refs: [UAC-010, UAC-016]
+  - id: F-007
+    goal_refs: [goal-select-local-preference]
+    experience_contract_refs: [exp-compatibility]
+    acceptance_scenario_refs: [UAC-011, UAC-012, UAC-013, UAC-017, UAC-018]
+
+experience_contracts:
+  - id: exp-settings
+    goal_refs: [goal-select-local-preference]
+    flow_refs: [F-001]
+    context_refs: [selection-modality]
+    scenario_refs: [UAC-001]
+    observations:
+      - phase: entry
+      - phase: progress
+      - phase: success
+      - phase: exit
+    phase_exclusions:
+      - phase: failure
+        reason: 方針を選択できない場合の表示は現行設定体験を変更する要求ではない。
+      - phase: recovery
+        reason: 設定操作の回復手順を追加する要求ではない。
+    open_product_choices: []
+  - id: exp-ordinary-sync
+    goal_refs: [goal-keep-bidirectional-sync]
+    flow_refs: [F-002]
+    context_refs: [ordinary-change-shape, equal-content]
+    scenario_refs: [UAC-002, UAC-003, UAC-004, UAC-005, UAC-014]
+    observations:
+      - phase: entry
+      - phase: success
+      - phase: exit
+    phase_exclusions:
+      - phase: progress
+        reason: 通常同期の進行表示を変更する要求ではない。
+      - phase: failure
+        reason: 通常同期の失敗表示を変更する要求ではない。
+      - phase: recovery
+        reason: 通常同期の回復操作を変更する要求ではない。
+    open_product_choices: []
+  - id: exp-proven-conflict
+    goal_refs: [goal-resolve-proven-edit-conflict]
+    flow_refs: [F-003]
+    context_refs: [proven-conflict-result]
+    scenario_refs: [UAC-006]
+    observations:
+      - phase: entry
+      - phase: progress
+      - phase: success
+      - phase: failure
+      - phase: recovery
+      - phase: exit
+    phase_exclusions: []
+    open_product_choices: []
+  - id: exp-uncertain
+    goal_refs: [goal-preserve-uncertain-versions]
+    flow_refs: [F-004]
+    context_refs: [uncertainty-cause, uncertain-outcome]
+    scenario_refs: [UAC-007, UAC-008, UAC-015]
+    observations:
+      - phase: entry
+      - phase: progress
+      - phase: success
+      - phase: failure
+      - phase: recovery
+      - phase: exit
+    phase_exclusions: []
+    open_product_choices: []
+  - id: exp-edit-delete
+    goal_refs: [goal-protect-edits-and-compound-conflicts]
+    flow_refs: [F-005]
+    context_refs: [edited-side]
+    scenario_refs: [UAC-009]
+    observations:
+      - phase: entry
+      - phase: success
+      - phase: exit
+    phase_exclusions:
+      - phase: progress
+        reason: 競合処理の進行表示を変更する要求ではない。
+      - phase: failure
+        reason: 現行の失敗表示を変更する要求ではない。
+      - phase: recovery
+        reason: 追加の回復操作を導入する要求ではない。
+    open_product_choices: []
+  - id: exp-compound
+    goal_refs: [goal-protect-edits-and-compound-conflicts]
+    flow_refs: [F-006]
+    context_refs: [compound-outcome]
+    scenario_refs: [UAC-010, UAC-016]
+    observations:
+      - phase: entry
+      - phase: success
+      - phase: failure
+      - phase: recovery
+      - phase: exit
+    phase_exclusions:
+      - phase: progress
+        reason: 複合競合の進行表示を変更する要求ではない。
+    open_product_choices: []
+  - id: exp-compatibility
+    goal_refs: [goal-select-local-preference]
+    flow_refs: [F-007]
+    context_refs: [strategy-outcome]
+    scenario_refs: [UAC-011, UAC-012, UAC-013, UAC-017, UAC-018]
+    observations:
+      - phase: entry
+      - phase: progress
+      - phase: success
+      - phase: exit
+    phase_exclusions:
+      - phase: failure
+        reason: 既存同期の失敗表示を変更する要求ではない。
+      - phase: recovery
+        reason: 既存同期の回復操作を変更する要求ではない。
+    open_product_choices: []
+
+acceptance_scenarios:
+  - {id: UAC-001, flow_ref: F-001, contract_refs: [exp-settings], vs_legacy: must-fail}
+  - {id: UAC-002, flow_ref: F-002, contract_refs: [exp-ordinary-sync], vs_legacy: must-pass}
+  - {id: UAC-003, flow_ref: F-002, contract_refs: [exp-ordinary-sync], vs_legacy: must-pass}
+  - {id: UAC-004, flow_ref: F-002, contract_refs: [exp-ordinary-sync], vs_legacy: must-pass}
+  - {id: UAC-005, flow_ref: F-002, contract_refs: [exp-ordinary-sync], vs_legacy: must-pass}
+  - {id: UAC-006, flow_ref: F-003, contract_refs: [exp-proven-conflict], vs_legacy: must-fail}
+  - {id: UAC-007, flow_ref: F-004, contract_refs: [exp-uncertain], vs_legacy: must-pass}
+  - {id: UAC-008, flow_ref: F-004, contract_refs: [exp-uncertain], vs_legacy: must-pass}
+  - {id: UAC-009, flow_ref: F-005, contract_refs: [exp-edit-delete], vs_legacy: must-pass}
+  - {id: UAC-010, flow_ref: F-006, contract_refs: [exp-compound], vs_legacy: must-pass}
+  - {id: UAC-011, flow_ref: F-007, contract_refs: [exp-compatibility], vs_legacy: must-pass}
+  - {id: UAC-012, flow_ref: F-007, contract_refs: [exp-compatibility], vs_legacy: must-pass}
+  - {id: UAC-013, flow_ref: F-007, contract_refs: [exp-compatibility], vs_legacy: must-fail}
+  - {id: UAC-014, flow_ref: F-002, contract_refs: [exp-ordinary-sync], vs_legacy: must-pass}
+  - {id: UAC-015, flow_ref: F-004, contract_refs: [exp-uncertain], vs_legacy: must-pass}
+  - {id: UAC-016, flow_ref: F-006, contract_refs: [exp-compound], vs_legacy: must-pass}
+  - {id: UAC-017, flow_ref: F-007, contract_refs: [exp-compatibility], vs_legacy: must-pass}
+  - {id: UAC-018, flow_ref: F-007, contract_refs: [exp-compatibility], vs_legacy: must-pass}
+
+experience_dimensions:
+  - id: selection-modality
+    values: [pointer, keyboard, touch, screen-reader]
+  - id: ordinary-change-shape
+    values: [local-edit, remote-edit, local-new, remote-new]
+  - id: equal-content
+    values: [same-content-no-extra-copy]
+  - id: proven-conflict-result
+    values: [local-content-on-originals]
+  - id: uncertainty-cause
+    values: [no-common-history, content-winner-unproven]
+  - id: uncertain-outcome
+    values: [preservation-succeeds, preservation-fails]
+  - id: edited-side
+    values: [local, remote]
+  - id: compound-outcome
+    values: [preservation-succeeds, preservation-unavailable]
+  - id: strategy-outcome
+    values: [auto-merge-three-way, auto-merge-newer, auto-merge-unordered, duplicate, legacy-ask]
+
+scenario_sets:
+  set-settings-all-modalities: [UAC-001]
+  set-edit-delete-both-sides: [UAC-009]
+
+coverage_claims:
+  - {contract_ref: exp-settings, dimension_id: selection-modality, value: pointer, scenario_set_ref: set-settings-all-modalities}
+  - {contract_ref: exp-settings, dimension_id: selection-modality, value: keyboard, scenario_set_ref: set-settings-all-modalities}
+  - {contract_ref: exp-settings, dimension_id: selection-modality, value: touch, scenario_set_ref: set-settings-all-modalities}
+  - {contract_ref: exp-settings, dimension_id: selection-modality, value: screen-reader, scenario_set_ref: set-settings-all-modalities}
+  - {contract_ref: exp-ordinary-sync, dimension_id: ordinary-change-shape, value: local-edit, scenario_refs: [UAC-002]}
+  - {contract_ref: exp-ordinary-sync, dimension_id: ordinary-change-shape, value: remote-edit, scenario_refs: [UAC-003]}
+  - {contract_ref: exp-ordinary-sync, dimension_id: ordinary-change-shape, value: local-new, scenario_refs: [UAC-004]}
+  - {contract_ref: exp-ordinary-sync, dimension_id: ordinary-change-shape, value: remote-new, scenario_refs: [UAC-005]}
+  - {contract_ref: exp-ordinary-sync, dimension_id: equal-content, value: same-content-no-extra-copy, scenario_refs: [UAC-014]}
+  - {contract_ref: exp-proven-conflict, dimension_id: proven-conflict-result, value: local-content-on-originals, scenario_refs: [UAC-006]}
+  - {contract_ref: exp-uncertain, dimension_id: uncertainty-cause, value: no-common-history, scenario_refs: [UAC-007]}
+  - {contract_ref: exp-uncertain, dimension_id: uncertainty-cause, value: content-winner-unproven, scenario_refs: [UAC-008]}
+  - {contract_ref: exp-uncertain, dimension_id: uncertain-outcome, value: preservation-succeeds, scenario_refs: [UAC-007, UAC-008]}
+  - {contract_ref: exp-uncertain, dimension_id: uncertain-outcome, value: preservation-fails, scenario_refs: [UAC-015]}
+  - {contract_ref: exp-edit-delete, dimension_id: edited-side, value: local, scenario_set_ref: set-edit-delete-both-sides}
+  - {contract_ref: exp-edit-delete, dimension_id: edited-side, value: remote, scenario_set_ref: set-edit-delete-both-sides}
+  - {contract_ref: exp-compound, dimension_id: compound-outcome, value: preservation-succeeds, scenario_refs: [UAC-010]}
+  - {contract_ref: exp-compound, dimension_id: compound-outcome, value: preservation-unavailable, scenario_refs: [UAC-016]}
+  - {contract_ref: exp-compatibility, dimension_id: strategy-outcome, value: auto-merge-three-way, scenario_refs: [UAC-011]}
+  - {contract_ref: exp-compatibility, dimension_id: strategy-outcome, value: auto-merge-newer, scenario_refs: [UAC-017]}
+  - {contract_ref: exp-compatibility, dimension_id: strategy-outcome, value: auto-merge-unordered, scenario_refs: [UAC-018]}
+  - {contract_ref: exp-compatibility, dimension_id: strategy-outcome, value: duplicate, scenario_refs: [UAC-012]}
+  - {contract_ref: exp-compatibility, dimension_id: strategy-outcome, value: legacy-ask, scenario_refs: [UAC-013]}
+
+decision_points:
+  - id: DP-CONFLICT-SCOPE
+    decision_key: conflict-scope
+    layer: product
+    subject: outcome
+    consultation_policy: must_ask
+    contract_effect: normative
+    answer_status: answered
+    validation_status: not_applicable
+    selected_option_ref: OPT-CONFLICT-ONLY
+    option_refs: [OPT-CONFLICT-ONLY, OPT-DIRECTION-OVERRIDE]
+    user_impact: [Prefer local を選んでも通常の双方向同期は変わらない。]
+    provenance: &prov_conflict_scope
+      source: explicit_user_requirement
+      confidence: confirmed
+      evidence_refs: [discovered-conflict-policy-boundary]
+      rationale: Issue 73 の確定境界である。
+  - id: DP-CONTENT-PROOF
+    decision_key: content-proof-unavailable
+    layer: product
+    subject: outcome
+    consultation_policy: must_ask
+    contract_effect: normative
+    answer_status: answered
+    validation_status: not_applicable
+    selected_option_ref: OPT-PRESERVE-BOTH-NO-PROMPT
+    option_refs: [OPT-PRESERVE-BOTH-NO-PROMPT, OPT-LOCAL-WITHOUT-PROOF]
+    user_impact: [古い端末が新しい共有内容を回収不能にせず、自動同期も入力待ちにならない。]
+    provenance: &prov_content_proof
+      source: user_consultation
+      confidence: confirmed
+      evidence_refs: [user-decisions:decision-content-proof-unavailable]
+      rationale: ユーザーが承認したデータ損失防止境界である。
+  - id: DP-POLICY-ENTRY
+    decision_key: policy-entry
+    layer: interaction
+    subject: default
+    consultation_policy: must_ask
+    contract_effect: default
+    answer_status: answered
+    validation_status: not_applicable
+    selected_option_ref: OPT-PEER-STRATEGY
+    option_refs: [OPT-PEER-STRATEGY, OPT-LAYERED-PREFERENCE]
+    user_impact: [既存の一段の競合設定から第三の一般方針を選べる。]
+    provenance: &prov_policy_entry
+      source: user_consultation
+      confidence: confirmed
+      evidence_refs: [conversation:user-confirmed-recommended-policy-shape, consultation-issue73-policy-shape]
+      rationale: 推奨された peer strategy をユーザーが承認した。
+  - id: DP-POLICY-NAME
+    decision_key: policy-name
+    layer: presentation
+    subject: default
+    consultation_policy: must_ask
+    contract_effect: default
+    answer_status: answered
+    validation_status: not_applicable
+    selected_option_ref: OPT-PREFER-LOCAL
+    option_refs: [OPT-PREFER-LOCAL, OPT-PREFER-LOCAL-WHEN-SAFE]
+    user_impact: [短い名称を保ち、安全条件を関連説明で確認できる。]
+    provenance: &prov_policy_name
+      source: user_consultation
+      confidence: confirmed
+      evidence_refs: [conversation:user-confirmed-recommended-policy-shape, consultation-issue73-policy-shape]
+      rationale: Prefer local という表示名をユーザーが承認した。
+  - id: DP-UNCERTAIN-PLACEMENT
+    decision_key: uncertain-collision-placement
+    layer: product
+    subject: default
+    consultation_policy: may_default
+    contract_effect: default
+    answer_status: defaulted
+    validation_status: not_applicable
+    selected_option_ref: OPT-LOCAL-ORIGINAL-REMOTE-PRESERVED
+    option_refs: [OPT-LOCAL-ORIGINAL-REMOTE-PRESERVED, OPT-REMOTE-ORIGINAL-LOCAL-PRESERVED]
+    user_impact: [不確実衝突後はローカル版を元の場所、同期前のリモート版を保全版として両側から開ける。]
+    recommendation:
+      option_ref: OPT-LOCAL-ORIGINAL-REMOTE-PRESERVED
+      basis: repository_constraint
+      evidence_refs: [discovered-duplicate-observable-outcome, requirements.integrator.close-product-choice]
+      confidence: high
+      reversibility: moderate
+    provenance: &prov_uncertain_placement
+      source: existing_product_behavior
+      confidence: confirmed
+      evidence_refs: [discovered-duplicate-observable-outcome, critique:F-004-uncertain-placement]
+      rationale: 両版保全という確定結果を既存 Duplicate の配置で閉じれば、新しい設定や操作を追加せず同期後の通常パスを一意にできる。
+
+product_decisions:
+  - {id: decision-conflict-scope, decision_ref: DP-CONFLICT-SCOPE, selected_option_ref: OPT-CONFLICT-ONLY, contract_effect: normative, provenance: *prov_conflict_scope}
+  - {id: decision-content-proof, decision_ref: DP-CONTENT-PROOF, selected_option_ref: OPT-PRESERVE-BOTH-NO-PROMPT, contract_effect: normative, provenance: *prov_content_proof}
+  - {id: decision-policy-entry, decision_ref: DP-POLICY-ENTRY, selected_option_ref: OPT-PEER-STRATEGY, contract_effect: default, provenance: *prov_policy_entry}
+  - {id: decision-policy-name, decision_ref: DP-POLICY-NAME, selected_option_ref: OPT-PREFER-LOCAL, contract_effect: default, provenance: *prov_policy_name}
+  - {id: decision-uncertain-placement, decision_ref: DP-UNCERTAIN-PLACEMENT, selected_option_ref: OPT-LOCAL-ORIGINAL-REMOTE-PRESERVED, contract_effect: default, provenance: *prov_uncertain_placement}
+
+product_decisions_remaining: []
+design_handoffs: []
+
+legacy_context:
+  replaced_behaviors:
+    - 証明済み両側編集競合に限定した local win を再び選べるようにする
+    - 保存済み旧 ask を新しい Prefer local として扱わない
+
+legacy_behavior_traces:
+  - behavior: 証明済み両側編集競合に限定した local win を再び選べるようにする
+    scenario_refs: [UAC-006]
+  - behavior: 保存済み旧 ask を新しい Prefer local として扱わない
+    scenario_refs: [UAC-013]
+
+edge_cases:
+  - {id: edge-same-content, scenario_refs: [UAC-014]}
+  - {id: edge-unproven-content, scenario_refs: [UAC-007, UAC-008]}
+  - {id: edge-uncertain-preservation-failure, scenario_refs: [UAC-015]}
+  - {id: edge-one-sided-new, scenario_refs: [UAC-004, UAC-005]}
+  - {id: edge-compound-preservation, scenario_refs: [UAC-010, UAC-016]}
+  - {id: edge-auto-merge-fallbacks, scenario_refs: [UAC-017, UAC-018]}
+
+assumptions:
+  - id: assumption-entry-comprehension
+    validation: 代表利用者が設定候補を見て通常同期、証明済み競合、不確実衝突の結果を説明できるか確認する。
+    invalidation_behavior: 提示表現を再検討し、確定済みの結果契約は維持する。
+    scenario_refs: [UAC-001]
+
+critique_resolutions:
+  - issue_ref: critique:exp-uncertain-missing-failure-path
+    change_class: close_required_failure_path
+    disposition: patch_contract
+    provenance:
+      source: critic_proposal
+      confidence: confirmed
+      evidence_refs: [critique:exp-uncertain-UAC-007-UAC-008, UAC-015]
+      rationale: 保全失敗時の非成功、非破壊、再同期可能性を独立シナリオで固定した。
+  - issue_ref: critique:compound-non-discriminating
+    change_class: clarify_existing_contract
+    disposition: patch_contract
+    provenance:
+      source: critic_proposal
+      confidence: confirmed
+      evidence_refs: [critique:UAC-010, UAC-010, UAC-016]
+      rationale: 保全可能時の成功と保全不能時の失敗を分離し、常時未完了と破壊的完了の双方を拒否した。
+  - issue_ref: critique:auto-merge-fallback-gap
+    change_class: clarify_existing_contract
+    disposition: patch_contract
+    provenance:
+      source: critic_proposal
+      confidence: confirmed
+      evidence_refs: [critique:UAC-011, UAC-011, UAC-017, UAC-018]
+      rationale: 三者マージに加えて順序づけ可能・不能の既存 fallback を判別的に固定した。
+  - issue_ref: critique:uncertain-placement-ambiguity
+    change_class: new_product_capability
+    disposition: create_decision_point
+    provenance:
+      source: critic_proposal
+      confidence: confirmed
+      evidence_refs: [critique:F-004-uncertain-placement, DP-UNCERTAIN-PLACEMENT]
+      rationale: 既存 Duplicate と同じ配置を default として選び、追加操作なしで通常パスの内容を一意にした。
+  - issue_ref: critique:same-content-gap
+    change_class: clarify_existing_contract
+    disposition: patch_contract
+    provenance:
+      source: critic_proposal
+      confidence: confirmed
+      evidence_refs: [critique:edge-same-content, UAC-014]
+      rationale: 同内容で余分な保全版を作る退縮を独立シナリオで拒否した。
+  - issue_ref: critique:UAC-008-internal-observation
+    change_class: clarify_existing_contract
+    disposition: patch_contract
+    provenance:
+      source: critic_proposal
+      confidence: confirmed
+      evidence_refs: [critique:UAC-008, UAC-008]
+      rationale: 内部記録の有無を除き、利用者が観察できる内容と勝者不明の状態へ書き換えた。
+
+dispositions:
+  - decision_input_ref: recovery:unknown-startup-evidence-stale
+    disposition: stale startup index を根拠から除外し、直接確認済みのコード、テスト、文書、履歴で続行した。
+    contract_refs: [exp-settings, exp-ordinary-sync, exp-proven-conflict, exp-uncertain, exp-edit-delete, exp-compound, exp-compatibility]
+  - decision_input_ref: explore:ALT-LAYERED-PREFERENCE
+    disposition: peer strategy の承認により不採用。Specify で復活させない。
+    contract_refs: [exp-settings]
+  - decision_input_ref: explore:rejected-improvement-run-workflow
+    disposition: Like air の自動運転制約に反するため不採用。専用実行入口を追加しない。
+    contract_refs: [exp-settings, exp-proven-conflict, exp-uncertain]

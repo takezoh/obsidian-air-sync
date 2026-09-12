@@ -17,7 +17,7 @@ import { CycleSummary, type SyncCycleOutcome, type SyncCycleResult } from "./syn
 import {
 	logChangeDetection,
 	logSyncCyclePlan,
-	prepareSyncCycleSnapshot,
+	prepareSyncCycleSnapshotForExecution,
 } from "./sync-cycle-planning";
 import { runSyncCycleAttempt, WorkingViewAbortError } from "./sync-cycle-finalization";
 import { admitBatchObservation } from "./plan-admission";
@@ -365,15 +365,21 @@ export class SyncOrchestrator {
 			});
 		const { renamePairs } = snapshot;
 
-		const planning = prepareSyncCycleSnapshot(changeSet, namespace, captureScopePolicy(
-			settings, this.deps.configDir(), this.deps.pluginId(), this.deps.isMobile(),
-		), this.deps.logger);
+		const planning = await prepareSyncCycleSnapshotForExecution(
+			changeSet,
+			namespace,
+			captureScopePolicy(settings, this.deps.configDir(), this.deps.pluginId(), this.deps.isMobile()),
+			settings.conflictStrategy,
+			localFs,
+			remoteFs,
+			this.deps.logger,
+		);
 		const visiblePaths = new Set(planning.snapshot.scope.byEndpoint.keys());
 		logChangeDetection(changeSet, renamePairs, this.deps.logger, visiblePaths);
 
 		// This call is the authorization cut point. Exceptions from this line onward
 		// are not reclassified as evidence-acquisition recovery.
-		const admission = admitBatchObservation(planning.snapshot);
+		const admission = admitBatchObservation(planning.snapshot, settings.conflictStrategy);
 		logSyncCyclePlan(this.deps.logger, admission);
 		const { folderRenamePairs } = snapshot;
 

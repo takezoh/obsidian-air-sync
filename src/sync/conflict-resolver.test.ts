@@ -327,6 +327,41 @@ describe("resolveConflict", () => {
 		});
 	});
 
+	describe("prefer_local strategy", () => {
+		it("selects exact local bytes without a conflict copy when Admission allows local win", async () => {
+			const local = addFile(localFs, "file.md", "local content", 2000);
+			const remote = addFile(remoteFs, "file.md", "remote content", 3000);
+
+			const result = await resolveConflict(
+				{ path: "file.md", localFs, remoteFs, local, remote },
+				"prefer_local",
+				"local_win_allowed",
+			);
+
+			expect(result.action).toBe("kept_local");
+			expect(new TextDecoder().decode(result.targetContent)).toBe("local content");
+			expect(result.verifiedOutputs).toEqual([]);
+			expect(await localFs.stat("file.conflict.md")).toBeNull();
+			expect(await remoteFs.stat("file.conflict.md")).toBeNull();
+		});
+
+		it("uses Duplicate placement when Admission requires preservation", async () => {
+			const local = addFile(localFs, "file.md", "local content", 2000);
+			const remote = addFile(remoteFs, "file.md", "remote content", 3000);
+
+			const result = await resolveConflict(
+				{ path: "file.md", localFs, remoteFs, local, remote },
+				"prefer_local",
+				"preservation_required",
+			);
+
+			expect(result.action).toBe("duplicated");
+			expect(result.duplicatePath).toBe("file.conflict.md");
+			expect(readText(localFs, "file.conflict.md")).toBe("remote content");
+			expect(readText(remoteFs, "file.conflict.md")).toBe("remote content");
+		});
+	});
+
 	describe("auto_merge strategy", () => {
 		it("preserves exact primary R and additional Y before merging only the primary", async () => {
 			const base = "one\ntwo\nthree\nfour\nfive\n";
