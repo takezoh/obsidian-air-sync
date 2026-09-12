@@ -286,3 +286,84 @@ test("guard accepts a pure call-local proof", () => {
 	);
 	assert.doesNotThrow(() => assertNoModuleState(source));
 });
+
+function callsNamed(node, name) {
+	let found = false;
+	const visit = (current) => {
+		if (ts.isCallExpression(current) && ts.isIdentifier(current.expression) && current.expression.text === name) found = true;
+		current.forEachChild(visit);
+	};
+	node.forEachChild(visit);
+	return found;
+}
+
+function namedFunction(source, name) {
+	return source.statements.find((statement) => ts.isFunctionDeclaration(statement) && statement.name?.text === name);
+}
+
+function assertNoDirectExactMaterialization(source) {
+	for (const name of ["ordinaryActionsAfterRelationAbandonment", "bindFiles"]) {
+		const functionDeclaration = namedFunction(source, name);
+		assert.ok(!functionDeclaration?.body || !callsNamed(functionDeclaration.body, "materializeFile"),
+			`${name} must not hand-build an exact materialization`);
+	}
+}
+
+function assertExactBindingDispatch(source) {
+	const binder = namedFunction(source, "bindFiles");
+	assert.ok(binder?.body, "bindFiles must remain the exact-binding dispatcher");
+	const exactBindingPaths = [];
+	const visit = (node) => {
+		if (ts.isObjectLiteralExpression(node)) {
+			const kind = node.properties.find((property) => ts.isPropertyAssignment(property) &&
+				property.name.getText(source) === "kind");
+			const path = node.properties.find((property) =>
+				(ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property)) &&
+				property.name.getText(source) === "path");
+			const capability = node.properties.find((property) => ts.isPropertyAssignment(property) &&
+				property.name.getText(source) === "capability");
+			if (kind && ts.isPropertyAssignment(kind) && ts.isStringLiteral(kind.initializer) &&
+				kind.initializer.text === "exact" && path &&
+				capability && ts.isPropertyAssignment(capability) && ts.isObjectLiteralExpression(capability.initializer) &&
+				capability.initializer.properties.some((property) => ts.isPropertyAssignment(property) &&
+					property.name.getText(source) === "kind" && ts.isStringLiteral(property.initializer) &&
+					property.initializer.text === "propagate_confirmed_deletion")) {
+				exactBindingPaths.push(ts.isPropertyAssignment(path)
+					? path.initializer.getText(source) : path.name.getText(source));
+			}
+		}
+		node.forEachChild(visit);
+	};
+	visit(binder.body);
+	assert.deepEqual(exactBindingPaths.sort(), ["baseline.path", "path"],
+		"bindFiles must dispatch baseline and unmatched-current paths through deletion-capable exact bindings");
+}
+
+test("one outcome-capability helper owns exact-path comparison and publication materialization", () => {
+	const source = parseSource(readFileSync(join(ROOT, DECISION_FILE), "utf8"), DECISION_FILE);
+	const capability = source.statements.find((statement) => ts.isTypeAliasDeclaration(statement) &&
+		statement.type.getText(source).includes('"propagate_confirmed_deletion"') &&
+		statement.type.getText(source).includes('"preserve_present_side"'));
+	assert.ok(capability, "the exact-path capability must discriminate outcomes, not caller origin");
+	const helper = source.statements.find((statement) => ts.isFunctionDeclaration(statement) &&
+		statement.parameters.some((parameter) => parameter.type?.getText(source) === capability.name.text) &&
+		statement.body && callsNamed(statement.body, "materializeFile"));
+	assert.ok(helper && helper.name, "an outcome-capability exact-path helper must materialize the sole comparison/publication binding");
+	const ordinary = namedFunction(source, "ordinaryActionsAfterRelationAbandonment");
+	const binder = namedFunction(source, "bindFiles");
+	const decision = namedFunction(source, "decideIdentityComponent");
+	assert.ok(ordinary?.body && callsNamed(ordinary.body, helper.name.text), "relation abandonment must dispatch through the canonical helper");
+	assert.ok(decision?.body && callsNamed(decision.body, helper.name.text), "exact bindings must dispatch through the canonical helper");
+	assert.ok(binder?.body, "bindFiles must remain the exact-binding dispatcher");
+	assertNoDirectExactMaterialization(source);
+	assertExactBindingDispatch(source);
+	const bypass = parseSource(`function ordinaryActionsAfterRelationAbandonment() { return materializeFile({ path: "a.md" }); }`, "fixture.ts");
+	assert.throws(() => assertNoDirectExactMaterialization(bypass));
+	const structuralTail = parseSource(`
+		function bindFiles() {
+			bound.push({ kind: "exact", path, capability: { kind: "propagate_confirmed_deletion" } });
+			bound.push({ kind: "structural", binding: { path, publication: {} } });
+		}
+	`, "fixture.ts");
+	assert.throws(() => assertExactBindingDispatch(structuralTail));
+});

@@ -291,6 +291,47 @@ describe("sync converges to a fixed point", () => {
 		expect(abort).toHaveBeenCalledOnce();
 	});
 
+	it("pushes a new local a.md after an incomplete cycle without inventing a conflict, then reaches a fixed point", async () => {
+		const env = makeEnv();
+		env.remoteFs = createMockRemoteFs();
+		addFile(env.localFs, "case.md", "local", 1000);
+		addFile(env.remoteFs, "Case.md", "remote", 1000).identityKey = "R";
+		const exactLocalStat = env.localFs.stat.bind(env.localFs);
+		env.localFs.stat = async (path) => path === "Case.md"
+			? { ...(await exactLocalStat("case.md"))!, path: "case.md", pathAuthority: "actual_resolved" }
+			: exactLocalStat(path);
+		const incompleteChanges = await collectChanges({
+			localFs: env.localFs, remoteFs: env.remoteFs, stateStore: env.stateStore,
+			changes: env.localTracker.snapshot(),
+		}, { forceFullScan: true });
+		const incompleteAdmission = admitBatchObservation(prepareSyncCycleSnapshot(
+			incompleteChanges, "new-after-incomplete", { ignorePatterns: [] },
+		).snapshot);
+		const incompleteResult = await executePlan(incompleteAdmission.executable, {
+			committer: { stateStore: env.stateStore }, localFs: env.localFs, remoteFs: env.remoteFs,
+			conflictStrategy: "auto_merge",
+		});
+		expect((await finalizeSyncCycle({
+			admission: incompleteAdmission, result: incompleteResult,
+			checkpoint: env.remoteFs.checkpoint, scopeFingerprint: "new-after-incomplete",
+		})).kind).toBe("incomplete");
+
+		await env.localFs.delete("case.md");
+		await env.remoteFs.delete("Case.md");
+		env.remoteFs = createMockRemoteFs("actual_resolved");
+		env.localFs.stat = exactLocalStat;
+		addFile(env.localFs, "a.md", "a", 2000);
+		env.localTracker.markDirty("a.md");
+		const retry = await runCycle(env);
+
+		expect(retry.actions).toContainEqual(expect.objectContaining({ action: "push", path: "a.md" }));
+		expect(retry.actions.some((action) => action.path === "a.md" && action.action === "conflict")).toBe(false);
+		expect(env.localFs.files.has("a.conflict.md")).toBe(false);
+		expect(env.remoteFs.files.has("a.conflict.md")).toBe(false);
+		expect(readText(env.remoteFs, "a.md")).toBe("a");
+		expect((await runCycle(env)).actions).toEqual([]);
+	});
+
 	it("reacquires a completed cover when another true new file is dirty", async () => {
 		const env = makeEnv();
 		addFile(env.localFs, "case.md", "local", 1000);

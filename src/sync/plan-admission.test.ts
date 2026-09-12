@@ -875,6 +875,100 @@ describe("admitBatchObservation", () => {
 		expect(result.failures).toEqual([]);
 	});
 
+	it("does not rebind an exact-owned occurrence through a later local alias", () => {
+		const baseline = recordFor(freshEntity("case.md", "base"));
+		const local = freshEntity("case.md", "new");
+		const remote = freshEntity("Case.md", "new", "R");
+		const decision = decideIdentityComponent({
+			paths: new Set(["Case.md", "case.md"]),
+			entries: [
+				{ path: "case.md", local, prevSync: baseline },
+				{ path: "Case.md", remote },
+			],
+			evidence: [{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md" }],
+			observations: [
+				{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md", entity: local },
+				{ kind: "exact", side: "local", requestedPath: "case.md", entity: local },
+				{ kind: "exact", side: "remote", requestedPath: "Case.md", entity: remote },
+				{ kind: "absent", side: "remote", requestedPath: "case.md", authority: "stat" },
+			],
+		}, projection({ "Case.md": "included", "case.md": "included" }));
+
+		expect(decision.component.actions).toEqual([]);
+		expect(decision.reasons).toEqual(["unknown_observation"]);
+	});
+
+	it("does not let a later exact baseline rebind an alias-owned occurrence", () => {
+		const aliasBaseline = recordFor(freshEntity("Case.md", "new", "R"));
+		const exactBaseline = recordFor(freshEntity("case.md", "base"));
+		const local = freshEntity("case.md", "new");
+		const remote = freshEntity("Case.md", "new", "R");
+		const decision = decideIdentityComponent({
+			paths: new Set(["Case.md", "case.md"]),
+			entries: [
+				{ path: "Case.md", remote, prevSync: aliasBaseline },
+				{ path: "case.md", local, prevSync: exactBaseline },
+			],
+			evidence: [{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md" }],
+			observations: [
+				{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md", entity: local },
+				{ kind: "exact", side: "local", requestedPath: "case.md", entity: local },
+				{ kind: "exact", side: "remote", requestedPath: "Case.md", entity: remote },
+				{ kind: "absent", side: "remote", requestedPath: "case.md", authority: "stat" },
+			],
+		}, projection({ "Case.md": "included", "case.md": "included" }));
+
+		expect(decision.reasons).toEqual([]);
+		expect(decision.component.actions).toHaveLength(1);
+		expect(decision.component.actions[0]).toMatchObject({
+			action: "rename_remote", oldPath: "Case.md", path: "case.md",
+		});
+	});
+
+	it("does not exact-bind a historical identity record over another tracked identity", () => {
+		const replacedBaseline = recordFor(freshEntity("Case.md", "old-X", "X"));
+		const trackedBaseline = recordFor(freshEntity("case.md", "same-Y", "Y"));
+		const remote = freshEntity("Case.md", "same-Y", "Y");
+		const decision = decideIdentityComponent({
+			paths: new Set(["Case.md", "case.md"]),
+			entries: [
+				{ path: "Case.md", remote, prevSync: replacedBaseline },
+				{ path: "case.md", prevSync: trackedBaseline },
+			],
+			evidence: [],
+			observations: [
+				{ kind: "exact", side: "remote", requestedPath: "Case.md", entity: remote },
+				{ kind: "absent", side: "local", requestedPath: "Case.md", authority: "stat" },
+				{ kind: "absent", side: "local", requestedPath: "case.md", authority: "stat" },
+				{ kind: "absent", side: "remote", requestedPath: "case.md", authority: "stat" },
+			],
+		}, projection({ "Case.md": "included", "case.md": "included" }));
+
+		expect(decision.reasons).toEqual([]);
+		expect(decision.component.actions).toHaveLength(1);
+		expect(decision.component.actions[0]).toMatchObject({
+			action: "delete_remote", path: "case.md", remotePath: "Case.md",
+		});
+	});
+
+	it("claims the exact remote occurrence when its stable identity is unavailable", () => {
+		const baseline = recordFor(freshEntity("a.md", "old", "OLD"));
+		const remote = freshEntity("a.md", "new");
+		const decision = decideIdentityComponent({
+			paths: new Set(["a.md"]),
+			entries: [{ path: "a.md", remote, prevSync: baseline }],
+			evidence: [],
+			observations: [
+				{ kind: "absent", side: "local", requestedPath: "a.md", authority: "stat" },
+				{ kind: "exact", side: "remote", requestedPath: "a.md", entity: remote },
+			],
+		}, projection({ "a.md": "included" }));
+
+		expect(decision.reasons).toEqual([]);
+		expect(decision.component.actions).toHaveLength(1);
+		expect(decision.component.actions[0]).toMatchObject({ action: "conflict", path: "a.md" });
+	});
+
 	it("preserves both readable versions when a case alias cannot prove one rename", () => {
 		const local = freshEntity("case.md", "local");
 		const remote = freshEntity("Case.md", "remote", "R");
@@ -1723,6 +1817,123 @@ describe("admitBatchObservation", () => {
 			{ action: "push", path: "B.md", local, remote: baselineEntity, baseline,
 				publication: { source: baseline, destination: baseline } },
 		]);
+	});
+
+	it("abandons relations by preserving a present side while retaining its exact publication CAS", () => {
+		const baseline = recordFor(freshEntity("B.md", "base", "X"));
+		const local = freshEntity("B.md", "local");
+		const component: IdentityComponent = {
+			paths: new Set(["A.md", "B.md", "C.md"]),
+			entries: [{ path: "B.md", local, prevSync: baseline }],
+			evidence: [remoteRename(), remoteRename({ newPath: "C.md" })],
+			observations: [
+				...(["A.md", "C.md"] as const).flatMap((path) => ([
+					{ kind: "absent" as const, side: "local" as const, requestedPath: path, authority: "stat" as const },
+					{ kind: "absent" as const, side: "remote" as const, requestedPath: path, authority: "stat" as const },
+				])),
+				{ kind: "exact", side: "local", requestedPath: "B.md", entity: local },
+				{ kind: "absent", side: "remote", requestedPath: "B.md", authority: "stat" },
+			],
+		};
+
+		const decision = decideIdentityComponent(component, projection({
+			"A.md": "included", "B.md": "included", "C.md": "included",
+		}));
+
+		expect(decision.reasons).toEqual([]);
+		expect(decision.component.actions).toEqual([{
+			action: "push", path: "B.md", local, remote: undefined, baseline: undefined,
+			publication: { source: baseline, destination: baseline },
+		}]);
+	});
+
+	it("preserves a remote-only side after abandoning a relation", () => {
+		const baseline = recordFor(freshEntity("B.md", "base", "X"));
+		const remote = freshEntity("B.md", "remote", "X");
+		const component: IdentityComponent = {
+			paths: new Set(["A.md", "B.md", "C.md"]),
+			entries: [{ path: "B.md", remote, prevSync: baseline }],
+			evidence: [remoteRename(), remoteRename({ newPath: "C.md" })],
+			observations: [
+				...(["A.md", "C.md"] as const).flatMap((path) => ([
+					{ kind: "absent" as const, side: "local" as const, requestedPath: path, authority: "stat" as const },
+					{ kind: "absent" as const, side: "remote" as const, requestedPath: path, authority: "stat" as const },
+				])),
+				{ kind: "absent", side: "local", requestedPath: "B.md", authority: "stat" },
+				{ kind: "exact", side: "remote", requestedPath: "B.md", entity: remote },
+			],
+		};
+
+		const decision = decideIdentityComponent(component, projection({
+			"A.md": "included", "B.md": "included", "C.md": "included",
+		}));
+
+		expect(decision.reasons).toEqual([]);
+		expect(decision.component.actions).toEqual([{
+			action: "pull", path: "B.md", local: undefined, remote, baseline: undefined,
+			publication: { source: baseline, destination: baseline },
+		}]);
+	});
+
+	it("retains exact cleanup when a committed path is authoritatively absent on both sides", () => {
+		const baseline = recordFor(freshEntity("gone.md", "base", "X"));
+		const decision = decideIdentityComponent({
+			paths: new Set(["gone.md"]), entries: [{ path: "gone.md", prevSync: baseline }], evidence: [],
+			observations: [
+				{ kind: "absent", side: "local", requestedPath: "gone.md", authority: "stat" },
+				{ kind: "absent", side: "remote", requestedPath: "gone.md", authority: "stat" },
+			],
+		}, projection({ "gone.md": "included" }));
+
+		expect(decision.reasons).toEqual([]);
+		expect(decision.component.actions).toEqual([{
+			action: "cleanup", path: "gone.md", local: undefined, remote: undefined, baseline,
+			publication: { source: baseline, destination: baseline },
+		}]);
+	});
+
+	it.each([
+		{ name: "local-only change", localHash: "local", remoteHash: "base", action: "push" },
+		{ name: "remote-only change", localHash: "base", remoteHash: "remote", action: "pull" },
+		{ name: "divergent changes", localHash: "local", remoteHash: "remote", action: "conflict" },
+		{ name: "same new bytes", localHash: "new", remoteHash: "new", action: "match" },
+		{ name: "unchanged bytes", localHash: "base", remoteHash: "base", action: undefined },
+	])("keeps two-sided exact comparison and publication identical after relation abandonment: $name", ({ localHash, remoteHash, action }) => {
+		const baseline = recordFor(freshEntity("B.md", "base", "X"));
+		const local = freshEntity("B.md", localHash);
+		const remote = freshEntity("B.md", remoteHash, "X");
+		const observations: PathObservation[] = [
+			{ kind: "exact", side: "local", requestedPath: "B.md", entity: local },
+			{ kind: "exact", side: "remote", requestedPath: "B.md", entity: remote },
+		];
+		const direct: IdentityComponent = {
+			paths: new Set(["B.md"]), entries: [{ path: "B.md", local, remote, prevSync: baseline }],
+			evidence: [], observations,
+		};
+		const abandoned: IdentityComponent = {
+			paths: new Set(["A.md", "B.md", "C.md"]),
+			entries: [{ path: "B.md", local, remote, prevSync: baseline }],
+			evidence: [remoteRename(), remoteRename({ newPath: "C.md" })],
+			observations: [
+				...observations,
+				...(["A.md", "C.md"] as const).flatMap((path) => ([
+					{ kind: "absent" as const, side: "local" as const, requestedPath: path, authority: "stat" as const },
+					{ kind: "absent" as const, side: "remote" as const, requestedPath: path, authority: "stat" as const },
+				])),
+			],
+		};
+		const directDecision = decideIdentityComponent(direct, projection({ "B.md": "included" }));
+		const abandonedDecision = decideIdentityComponent(abandoned, projection({
+			"A.md": "included", "B.md": "included", "C.md": "included",
+		}));
+
+		expect(directDecision.reasons).toEqual([]);
+		expect(abandonedDecision.reasons).toEqual([]);
+		expect(abandonedDecision.component.actions).toEqual(directDecision.component.actions);
+		expect(directDecision.component.actions.map((item) => item.action)).toEqual(action ? [action] : []);
+		for (const item of directDecision.component.actions) {
+			expect(item.publication).toEqual({ source: baseline, destination: baseline });
+		}
 	});
 
 	it("defers a folder rename when a projected descendant is not mapped", () => {

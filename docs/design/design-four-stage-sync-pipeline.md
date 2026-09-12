@@ -49,9 +49,12 @@ invariants:
     cannot hide descendants.
   enforcement: test
 - id: INV-006
-  statement: Admission binds current component identity, endpoints and committed baseline
-    before subordinate content comparison and constructs ordered actions once. Actions
-    and intended effects never serve as identity or completeness evidence.
+  statement: Admission's single exact-path constructor binds current component identity,
+    endpoints, committed comparison baseline, and source/destination publication expectation
+    before subordinate content comparison. Relation abandonment may omit a one-sided
+    record only from comparison to preserve the present side, never from its publication
+    CAS; ordinary deletion propagation retains the record and its existing authority
+    checks. Actions and intended effects never serve as identity or completeness evidence.
   enforcement: contract
 - id: INV-007
   statement: Admission selects native rename only from one unique complete current-fact

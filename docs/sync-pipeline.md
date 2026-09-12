@@ -211,7 +211,17 @@ fail closed as a whole, including state-only actions. Only actions from `authori
 dispositions are projected into the nominal `AuthorizedSyncPlan`; disconnected
 ordinary work retains proposal order, while a proved component replacement occupies
 that component's place.
+
 `executePlan()` cannot accept a plain proposal through the supported typed API.
+
+For every non-relational same-address file and every abandoned relation fallback, one
+private exact-path binding constructor derives the current endpoints, exact-key record,
+comparison baseline, and identical source/destination publication expectation. A
+preservation fallback omits an existing record only from a one-sided content comparison,
+so it produces a push or pull while retaining that record for publication CAS; it cannot
+authorize deletion, cleanup, or a synthetic conflict. Ordinary deletion propagation uses
+the same constructor with deletion authority intact, including the remote
+`checkpoint_deleted` witness required for `delete_local`.
 
 Within each identity component, Admission selects rename authority once from the raw
 facts before candidate shaping. A coherent reported rename family precedes alias-only

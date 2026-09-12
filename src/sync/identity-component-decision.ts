@@ -1,4 +1,4 @@
-/* eslint max-lines: ["error", 700] -- relation abandonment and preservation-cover authorization must stay under the sole identity-policy owner. */
+/* eslint max-lines: ["error", 750] -- relation abandonment, exact-path binding, and preservation-cover authorization must stay under the sole identity-policy owner. */
 import type { FileEntity } from "../fs/types";
 import type { IdentityComponent } from "./plan-admission-graph";
 import { selectReportFamily } from "./identity-component-report-family";
@@ -51,6 +51,19 @@ interface BoundFile {
 	/** A preceding bound identity leaves this address through its admitted move. */
 	readonly releasedRemote?: boolean;
 }
+
+type ExactPathCapability =
+	| { readonly kind: "propagate_confirmed_deletion" }
+	| { readonly kind: "preserve_present_side" };
+
+interface ExactPathBinding {
+	readonly path: string;
+	readonly capability: ExactPathCapability;
+}
+
+type FileBinding =
+	| { readonly kind: "structural"; readonly binding: BoundFile }
+	| ({ readonly kind: "exact" } & ExactPathBinding);
 
 /** A current endpoint relation, without inventing report provenance for aliases. */
 interface FolderRelation {
@@ -132,7 +145,9 @@ export function decideIdentityComponent(
 	if (typeof bound === "string") return fail(bound);
 	const actions: SyncAction[] = [];
 	for (const file of bound) {
-		const action = materializeStandaloneFile(file, current);
+		const action = file.kind === "structural"
+			? materializeStandaloneFile(file.binding, current)
+			: materializeExactPath(current, file.path, file.capability);
 		if (typeof action === "string") return fail(action);
 		if (action) actions.push(action);
 	}
@@ -142,13 +157,20 @@ export function decideIdentityComponent(
 		// exists. Only complete current absence and no committed keys retire it.
 		if (report.side === "local" && [report.oldPath, report.newPath].every((path) =>
 			!current.records.has(path) && absent(current, "local", path) && absent(current, "remote", path))) continue;
-		const accounted = bound.some((file) =>
-			(file.path === report.newPath || (report.side === "remote" && file.remote?.path === report.newPath)) &&
-			(file.publication.source?.path === report.oldPath || file.move?.from === report.oldPath ||
-				(!file.baseline && (absent(current, "remote", report.oldPath) ||
-					(report.side === "remote" && file.remote?.identityKey !== undefined &&
+		const structuralAccounted = bound.some((item) => item.kind === "structural" &&
+			(item.binding.path === report.newPath || (report.side === "remote" && item.binding.remote?.path === report.newPath)) &&
+			(item.binding.publication.source?.path === report.oldPath || item.binding.move?.from === report.oldPath ||
+				(!item.binding.baseline && (absent(current, "remote", report.oldPath) ||
+					(report.side === "remote" && item.binding.remote?.identityKey !== undefined &&
 						current.remote.get(report.oldPath)?.identityKey !== undefined &&
-						file.remote.identityKey !== current.remote.get(report.oldPath)?.identityKey)))));
+						item.binding.remote?.identityKey !== current.remote.get(report.oldPath)?.identityKey)))));
+		const exactAccounted = bound.some((file) => file.kind === "exact" && file.path === report.newPath &&
+				!current.records.has(file.path) &&
+				(absent(current, "remote", report.oldPath) ||
+					(report.side === "remote" && current.remote.get(report.newPath)?.identityKey !== undefined &&
+						current.remote.get(report.oldPath)?.identityKey !== undefined &&
+						current.remote.get(report.newPath)?.identityKey !== current.remote.get(report.oldPath)?.identityKey)));
+		const accounted = structuralAccounted || exactAccounted;
 		if (!accounted) {
 			const fallback = ordinaryActionsAfterRelationAbandonment(current);
 			return typeof fallback === "string" ? fail(fallback) : {
@@ -174,18 +196,9 @@ function ordinaryActionsAfterRelationAbandonment(
 ): SyncAction[] | AdmissionFailureReason {
 	const actions: SyncAction[] = [];
 	for (const path of [...new Set([...facts.local.keys(), ...facts.remote.keys()])].sort()) {
-		const local = facts.local.get(path);
-		const remote = facts.remote.get(path);
-		if (local?.isDirectory || remote?.isDirectory) continue;
-		if (!local && !absent(facts, "local", path)) return "unknown_observation";
-		if (!remote && !absent(facts, "remote", path)) return "unknown_observation";
-		const expected = facts.records.get(path);
-		const action = materializeFile({
-			path, local, remote, baseline: local && remote ? expected : undefined,
-			publication: { source: expected, destination: expected },
-		}, facts);
+		const action = materializeExactPath(facts, path, { kind: "preserve_present_side" });
 		if (typeof action === "string") return action;
-		if (action && action.action !== "delete_local" && action.action !== "delete_remote") actions.push(action);
+		if (action) actions.push(action);
 	}
 	return actions;
 }
@@ -357,8 +370,8 @@ function indexFacts(component: IdentityComponent, scope: ScopeProjection): Curre
 		candidateFacts: component.candidateFacts ?? [] };
 }
 
-function bindFiles(facts: CurrentFacts, reports: readonly RenameEvidence[]): BoundFile[] | AdmissionFailureReason {
-	const bound: BoundFile[] = [];
+function bindFiles(facts: CurrentFacts, reports: readonly RenameEvidence[]): FileBinding[] | AdmissionFailureReason {
+	const bound: FileBinding[] = [];
 	const claimedLocal = new Set<string>();
 	const claimedRemote = new Set<string>();
 	const relocated = new Set<string>();
@@ -373,9 +386,9 @@ function bindFiles(facts: CurrentFacts, reports: readonly RenameEvidence[]): Bou
 		if (!local || !remote || local.isDirectory || remote.isDirectory) continue;
 		const additionalRemote = facts.remote.get(report.newPath);
 		if (!additionalRemote && !vacant(facts, "remote", report.newPath, report.oldPath)) return "unknown_observation";
-		bound.push({ path: report.newPath, local, remote, move: { side: "remote", from: report.oldPath },
+		bound.push({ kind: "structural", binding: { path: report.newPath, local, remote, move: { side: "remote", from: report.oldPath },
 			remoteIdentitySource: remote, additionalRemote, replacement: !!additionalRemote,
-			publication: { source: undefined, destination: facts.records.get(report.newPath) } });
+			publication: { source: undefined, destination: facts.records.get(report.newPath) } } });
 		claimedLocal.add(local.path);
 		claimedRemote.add(remote.path);
 		if (additionalRemote) claimedRemote.add(additionalRemote.path);
@@ -394,13 +407,32 @@ function bindFiles(facts: CurrentFacts, reports: readonly RenameEvidence[]): Bou
 			(remote && absent(facts, "local", baseline.path) ? facts.local.get(remote.path) : undefined);
 		if (remote?.isDirectory || local?.isDirectory) continue;
 		// Historical records at another identity's current destination are exact
-		// replacement expectations, not duplicate current-identity claims.
+		// replacement expectations, not duplicate current-identity claims. Exclude
+		// them before exact binding can claim that other identity's occurrence.
 		if (!remote && baseline.remoteIdentityKey && facts.remote.get(baseline.path)?.identityKey &&
 			facts.remote.get(baseline.path)?.identityKey !== baseline.remoteIdentityKey) continue;
+		const occurrenceClaimed = (local && claimedLocal.has(local.path)) ||
+			(remote && claimedRemote.has(remote.path));
+		// Same-address endpoints have no relocation proof to bind here. Leave their
+		// comparison and publication construction to the canonical exact-path owner.
+		const relationTouchesBaseline = reports.some((report) =>
+			report.oldPath === baseline.path || report.newPath === baseline.path);
+		if (!occurrenceClaimed && !relationTouchesBaseline && !remoteReport && !localReport &&
+			(!local || local.path === baseline.path) && (!remote || remote.path === baseline.path)) {
+			bound.push({ kind: "exact", path: baseline.path,
+				capability: { kind: "propagate_confirmed_deletion" } });
+			// Claim the endpoints the exact materializer reads, including a remote
+			// whose optional stable identity could not populate trackedRemote.
+			const exactLocal = facts.local.get(baseline.path);
+			const exactRemote = facts.remote.get(baseline.path);
+			if (exactLocal && !exactLocal.isDirectory) claimedLocal.add(exactLocal.path);
+			if (exactRemote && !exactRemote.isDirectory) claimedRemote.add(exactRemote.path);
+			continue;
+		}
 		const path = localReport && local ? local.path : remote?.path !== baseline.path && remote
 			? remote.path : local?.path ?? remote?.path ?? baseline.path;
 		if (!compatible(facts, baseline.path, path)) return "unknown_scope";
-		if ((local && claimedLocal.has(local.path)) || (remote && claimedRemote.has(remote.path))) continue;
+		if (occurrenceClaimed) continue;
 		const recreated = path !== baseline.path && facts.remote.has(baseline.path) &&
 			facts.remote.get(baseline.path)?.identityKey !== baseline.remoteIdentityKey;
 		const destinationLocal = recreated ? facts.local.get(path) : local;
@@ -409,7 +441,7 @@ function bindFiles(facts: CurrentFacts, reports: readonly RenameEvidence[]): Bou
 				from: path === local.path ? remote.path : local.path } : undefined;
 		const additionalRemote = move?.side === "remote" && remote?.path !== path ? facts.remote.get(path) : undefined;
 		if (move && !additionalRemote && !vacant(facts, move.side, path, move.from)) return "conflicting_identity";
-		bound.push({ path, local: destinationLocal, remote,
+		bound.push({ kind: "structural", binding: { path, local: destinationLocal, remote,
 			// The local source belongs to the later source-address decision. Its
 			// existence cannot turn an unmaterialized destination into a deletion.
 			baseline: recreated ? undefined : baseline, move,
@@ -417,7 +449,7 @@ function bindFiles(facts: CurrentFacts, reports: readonly RenameEvidence[]): Bou
 			additionalLocal: recreated && destinationLocal && remote && !equal(destinationLocal, remote) ? destinationLocal : undefined,
 			replacement: (recreated && !!destinationLocal) || !!additionalRemote ||
 				(!!remote && !!baseline.remoteIdentityKey && remote.identityKey !== baseline.remoteIdentityKey),
-			publication: { source: baseline, destination: facts.records.get(path) } });
+			publication: { source: baseline, destination: facts.records.get(path) } } });
 		if (destinationLocal) claimedLocal.add(destinationLocal.path);
 		if (remote) claimedRemote.add(remote.path);
 		if (additionalRemote) claimedRemote.add(additionalRemote.path);
@@ -432,9 +464,9 @@ function bindFiles(facts: CurrentFacts, reports: readonly RenameEvidence[]): Bou
 		const occupant = facts.remote.get(report.oldPath);
 		if (!remote?.identityKey || !occupant?.identityKey || remote.identityKey === occupant.identityKey) continue;
 		const local = facts.local.get(report.newPath);
-		bound.push({ path: report.newPath, local, remote, replacement: !!local,
+		bound.push({ kind: "structural", binding: { path: report.newPath, local, remote, replacement: !!local,
 			additionalLocal: local && !equal(local, remote) ? local : undefined,
-			publication: { source: undefined, destination: facts.records.get(report.newPath) } });
+			publication: { source: undefined, destination: facts.records.get(report.newPath) } } });
 		if (local) claimedLocal.add(local.path);
 		claimedRemote.add(remote.path);
 	}
@@ -448,8 +480,8 @@ function bindFiles(facts: CurrentFacts, reports: readonly RenameEvidence[]): Bou
 			return facts.remote.has(local.path) ? "conflicting_identity" : "unknown_observation";
 		}
 		if (!equal(local, remote)) return "case_alias_content_mismatch";
-		bound.push({ path: local.path, local, remote, move: { side: "remote", from: remote.path },
-			publication: { source: undefined, destination: facts.records.get(local.path) } });
+		bound.push({ kind: "structural", binding: { path: local.path, local, remote, move: { side: "remote", from: remote.path },
+			publication: { source: undefined, destination: facts.records.get(local.path) } } });
 		claimedLocal.add(local.path);
 		claimedRemote.add(remote.path);
 	}
@@ -457,14 +489,18 @@ function bindFiles(facts: CurrentFacts, reports: readonly RenameEvidence[]): Bou
 		const local = claimedLocal.has(path) ? undefined : facts.local.get(path);
 		const remote = claimedRemote.has(path) ? undefined : facts.remote.get(path);
 		if ((!local && !remote) || local?.isDirectory || remote?.isDirectory) continue;
+		if (!claimedLocal.has(path) && !claimedRemote.has(path) && !relocated.has(path)) {
+			bound.push({ kind: "exact", path, capability: { kind: "propagate_confirmed_deletion" } });
+			continue;
+		}
 		const baseline = facts.records.get(path);
 		const expected = relocated.has(path) ? undefined : baseline;
 		const releasedRemote = !remote && claimedRemote.has(path) &&
-			bound.some((file) => file.move?.side === "remote" && file.move.from === path);
-		bound.push({ path, local, remote, baseline: releasedRemote ? undefined : baseline, releasedRemote,
+			bound.some((file) => file.kind === "structural" && file.binding.move?.side === "remote" && file.binding.move.from === path);
+		bound.push({ kind: "structural", binding: { path, local, remote, baseline: releasedRemote ? undefined : baseline, releasedRemote,
 			publication: { source: expected, destination: expected },
 			replacement: relocated.has(path) || (!!baseline?.remoteIdentityKey && !!remote?.identityKey &&
-				baseline.remoteIdentityKey !== remote.identityKey) });
+				baseline.remoteIdentityKey !== remote.identityKey) } });
 	}
 	return bound;
 }
@@ -477,6 +513,29 @@ function materializeStandaloneFile(file: BoundFile, facts: CurrentFacts): SyncAc
 			baseline: file.baseline, publication: file.publication };
 	}
 	return action;
+}
+
+/** The sole exact-address materializer owns endpoints, comparison, action, and CAS. */
+function materializeExactPath(
+	facts: CurrentFacts,
+	path: string,
+	capability: ExactPathCapability,
+): SyncAction | AdmissionFailureReason | null {
+	const local = facts.local.get(path);
+	const remote = facts.remote.get(path);
+	if (local?.isDirectory || remote?.isDirectory) return null;
+	if (!local && !absent(facts, "local", path)) return "unknown_observation";
+	if (!remote && !absent(facts, "remote", path)) return "unknown_observation";
+	const expected = facts.records.get(path);
+	const comparisonBaseline = capability.kind === "preserve_present_side" && (!local || !remote)
+		? undefined : expected;
+	const binding: BoundFile = {
+		path, local, remote, baseline: comparisonBaseline,
+		publication: { source: expected, destination: expected },
+		replacement: !!expected?.remoteIdentityKey && !!remote?.identityKey &&
+			expected.remoteIdentityKey !== remote.identityKey,
+	};
+	return materializeFile(binding, facts);
 }
 
 function materializeFile(file: BoundFile, facts: CurrentFacts): SyncAction | AdmissionFailureReason | null {
