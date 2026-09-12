@@ -191,6 +191,24 @@ describe("executePlan", () => {
 		expect(fatal).toHaveBeenCalledOnce();
 	});
 
+	it("treats an invalid Prefer-local disposition as a fatal plan invariant", async () => {
+		const fatal = vi.fn();
+		const ctx = makeCtx({ conflictStrategy: "prefer_local", onActionFatal: fatal });
+		const localFs = ctx.localFs as MockFileSystem;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
+		const local = addFile(localFs, "note.md", "local", 2000);
+		const remote = addFile(remoteFs, "note.md", "remote", 3000);
+		const action = {
+			action: "conflict", path: "note.md", local, remote,
+			preferLocalDisposition: "invalid",
+		} as unknown as SyncAction;
+
+		await expect(executePlan(makePlan([action]), ctx))
+			.rejects.toThrow("Prefer-local conflict disposition invalid");
+		expect(fatal).toHaveBeenCalledOnce();
+		expect(await remoteFs.stat("note.conflict.md")).toBeNull();
+	});
+
 	it("publishes a completed push from its captured bytes when the local source disappears during the write", async () => {
 		const ctx = makeCtx();
 		const source = ctx.localFs as MockFileSystem;

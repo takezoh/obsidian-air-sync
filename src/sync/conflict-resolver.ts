@@ -57,6 +57,10 @@ export type PreparedConflict =
 
 export type { ConflictResolutionResult };
 
+export function isPreferLocalDisposition(value: unknown): value is PreferLocalDisposition {
+	return value === "local_win_allowed" || value === "preservation_required";
+}
+
 /** Bounded read-only capture; no path allocation, resolver call, or mutation. */
 export async function prepareConflict(ctx: ConflictResolverContext): Promise<PreparedConflict> {
 	if (!ctx.remote) throw new ContentProofError("proof_mismatch", "Conflict primary is absent");
@@ -116,8 +120,10 @@ async function resolvePreparedWithStrategy(
 	preferLocalDisposition?: PreferLocalDisposition,
 ): Promise<ConflictResolutionResult> {
 	const localContent = localSnapshot?.content.slice(0);
-	if (strategy === "prefer_local" && !preferLocalDisposition) {
-		throw new Error("Prefer-local conflict disposition is missing");
+	if (strategy === "prefer_local" && !isPreferLocalDisposition(preferLocalDisposition)) {
+		throw new Error(preferLocalDisposition === undefined
+			? "Prefer-local conflict disposition missing"
+			: "Prefer-local conflict disposition invalid");
 	}
 	if (strategy === "duplicate" || preferLocalDisposition === "preservation_required") {
 		return {

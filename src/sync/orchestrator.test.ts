@@ -1111,6 +1111,55 @@ describe("SyncOrchestrator", () => {
 	});
 
 	describe("runSync()", () => {
+		it("keeps one conflict strategy throughout a cycle while settings change", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs("actual_resolved");
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: "test-" + Math.random(),
+				lastSyncedIdentity: "test:root", conflictStrategy: "prefer_local",
+				enableThreeWayMerge: false,
+			});
+			addFile(localFs, "note.md", "local", 2000);
+			addFile(remoteFs, "note.md", "remote", 3000).identityKey = "R";
+			const proofStarted = deferred();
+			const releaseProof = deferred();
+			const originalRead = localFs.read.bind(localFs);
+			let delayNextRead = true;
+			vi.spyOn(localFs, "read").mockImplementation(async (path) => {
+				if (delayNextRead && path === "note.md") {
+					delayNextRead = false;
+					proofStarted.resolve();
+					await releaseProof.promise;
+				}
+				return originalRead(path);
+			});
+			const recordConflicts = vi.fn().mockResolvedValue(undefined);
+			const deps = createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+				recordConflicts,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			await orchestrator.state.put({
+				path: "note.md", hash: await sha256(new TextEncoder().encode("base").buffer),
+				localMtime: 1000, remoteMtime: 1000, localSize: 4, remoteSize: 4,
+				remoteIdentityKey: "R", syncedAt: 900,
+			});
+
+			const cycle = orchestrator.runSync();
+			await proofStarted.promise;
+			settings.conflictStrategy = "auto_merge";
+			releaseProof.resolve();
+			await cycle;
+
+			expect(readText(localFs, "note.md")).toBe("local");
+			expect(readText(remoteFs, "note.md")).toBe("local");
+			expect(recordConflicts).toHaveBeenCalledWith([
+				expect.objectContaining({ path: "note.md", strategy: "prefer_local", action: "kept_local" }),
+			]);
+			expect(deps.onStatusChange).toHaveBeenLastCalledWith("idle");
+			await orchestrator.close();
+		});
+
 		it("does not notify when remoteFs is not available", async () => {
 			const debugFn = vi.fn();
 			const deps = createDeps({

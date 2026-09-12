@@ -12,7 +12,7 @@ import { executePlan, toConflictRecords, DESKTOP_TRANSFER_POOL, MOBILE_TRANSFER_
 import type { ExecutionContext } from "./plan-executor";
 import { classifyHttpError } from "../fs/errors";
 import { decideRetry, sleep } from "./error";
-import type { ConflictRecord, SyncStatus } from "./types";
+import type { ConflictRecord, ConflictStrategy, SyncStatus } from "./types";
 import { CycleSummary, type SyncCycleOutcome, type SyncCycleResult } from "./sync-notification";
 import {
 	logChangeDetection,
@@ -167,9 +167,11 @@ export class SyncOrchestrator {
 				// One snapshot per cycle, captured above the retry loop, drives both
 				// detection and the acknowledge (see TrackerSnapshot for why).
 				const snapshot = this.deps.localTracker.snapshot();
+				const settings = this.deps.getSettings();
+				const conflictStrategy = settings.conflictStrategy;
 
 				const scopeFingerprint = await computeScopeFingerprint(
-					this.deps.getSettings(),
+					settings,
 					this.deps.configDir(),
 					this.deps.pluginId(),
 				);
@@ -181,7 +183,7 @@ export class SyncOrchestrator {
 					: false;
 				const forceFullScan = noCheckpoint || scopeChanged;
 				const result = await this.executeWithRetry(
-					forceFullScan, scopeChanged, snapshot, scopeFingerprint,
+					forceFullScan, scopeChanged, snapshot, scopeFingerprint, conflictStrategy,
 				);
 				if (!result) return; // Fatal error already handled
 
@@ -209,7 +211,7 @@ export class SyncOrchestrator {
 				const conflictRecords = result.outcome.execution.conflicts;
 				if (conflictRecords.length > 0) {
 					await this.deps.recordConflicts?.(toConflictRecords(conflictRecords,
-						this.deps.getSettings().conflictStrategy, this.sessionId, new Date().toISOString()))
+						conflictStrategy, this.sessionId, new Date().toISOString()))
 						?.catch((err) => this.deps.logger?.warn("Failed to record conflict history", { message: err instanceof Error ? err.message : String(err) }));
 				}
 				await this.deps.logger?.flush();
@@ -241,6 +243,7 @@ export class SyncOrchestrator {
 		scopeChanged: boolean,
 		snapshot: TrackerSnapshot,
 		scopeFingerprint: string,
+		conflictStrategy: ConflictStrategy,
 	): Promise<SyncCycleResult | null> {
 		let lastError: unknown = null;
 		let lastOutcome: SyncCycleOutcome | null = null;
@@ -248,7 +251,9 @@ export class SyncOrchestrator {
 		for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
 			try {
 				this.deps.logger?.info("Sync started", { forceFullScan, scopeChanged, attempt });
-				lastOutcome = await this.executeSyncOnce(forceFullScan, snapshot, scopeFingerprint);
+				lastOutcome = await this.executeSyncOnce(
+					forceFullScan, snapshot, scopeFingerprint, conflictStrategy,
+				);
 				const { execution, admissionFailures } = lastOutcome;
 				return {
 					outcome: lastOutcome,
@@ -339,7 +344,12 @@ export class SyncOrchestrator {
 		return this.syncMutex.isLocked ? "syncing" : "idle";
 	}
 
-	private async executeSyncOnce(forceFullScan: boolean, snapshot: TrackerSnapshot, scopeFingerprint: string) {
+	private async executeSyncOnce(
+		forceFullScan: boolean,
+		snapshot: TrackerSnapshot,
+		scopeFingerprint: string,
+		conflictStrategy: ConflictStrategy,
+	) {
 		const localFs = this.deps.localFs();
 		const remoteFs = this.deps.remoteFs();
 		if (!localFs || !remoteFs) {
@@ -369,7 +379,7 @@ export class SyncOrchestrator {
 			changeSet,
 			namespace,
 			captureScopePolicy(settings, this.deps.configDir(), this.deps.pluginId(), this.deps.isMobile()),
-			settings.conflictStrategy,
+			conflictStrategy,
 			localFs,
 			remoteFs,
 			this.deps.logger,
@@ -379,7 +389,7 @@ export class SyncOrchestrator {
 
 		// This call is the authorization cut point. Exceptions from this line onward
 		// are not reclassified as evidence-acquisition recovery.
-		const admission = admitBatchObservation(planning.snapshot, settings.conflictStrategy);
+		const admission = admitBatchObservation(planning.snapshot, conflictStrategy);
 		logSyncCyclePlan(this.deps.logger, admission);
 		const { folderRenamePairs } = snapshot;
 
@@ -408,7 +418,7 @@ export class SyncOrchestrator {
 				localFs,
 				logger: this.deps.logger,
 			},
-			conflictStrategy: settings.conflictStrategy,
+			conflictStrategy,
 			onProgress: (completed: number) => {
 				if (total > 0) this.deps.onProgress(`Syncing ${completed}/${total}...`);
 			},

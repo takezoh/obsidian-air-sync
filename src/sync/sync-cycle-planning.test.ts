@@ -319,6 +319,33 @@ describe("batch observation boundary", () => {
 		expect(remoteRead).not.toHaveBeenCalled();
 	});
 
+	it("does not read a Prefer-local candidate whose remote identity replaced the baseline", async () => {
+		const localFs = createMockLocalFs();
+		const remoteFs = createMockRemoteFs("actual_resolved");
+		const local = addFile(localFs, "note.md", "local", 2000);
+		const remote = addFile(remoteFs, "note.md", "remote", 3000);
+		local.hash = "";
+		remote.hash = "";
+		remote.remoteChecksum = undefined;
+		remote.identityKey = "current-remote";
+		const changeSet: ChangeSet = {
+			entries: [{
+				path: "note.md", local, remote,
+				prevSync: { ...baseline("note.md"), remoteIdentityKey: "baseline-remote" },
+			}],
+			observations: [], identityEvidence: [], temperature: "warm", candidateFacts: [],
+		};
+		const localRead = vi.spyOn(localFs, "read");
+		const remoteRead = vi.spyOn(remoteFs, "read");
+
+		await prepareSyncCycleSnapshotForExecution(
+			changeSet, "backend\0root", { ignorePatterns: [] }, "prefer_local", localFs, remoteFs,
+		);
+
+		expect(localRead).not.toHaveBeenCalled();
+		expect(remoteRead).not.toHaveBeenCalled();
+	});
+
 	it("reads each isolated Prefer-local proof candidate exactly once per side", async () => {
 		const localFs = createMockLocalFs();
 		const remoteFs = createMockRemoteFs("actual_resolved");
@@ -447,6 +474,31 @@ describe("batch observation boundary", () => {
 		expect(snapshot.evidence).toEqual([]);
 		expect([...snapshot.scope.byEndpoint.keys()]).toEqual(["old.md"]);
 		expect([...snapshot.baselinePaths]).toEqual(["old.md"]);
+	});
+
+	it("retains scoped baseline paths when a large entry is deferred on mobile", () => {
+		const smallRecord = baseline("small.md");
+		const largeRecord = baseline("large.md");
+		const changeSet: ChangeSet = {
+			entries: [
+				{
+					path: "small.md", prevSync: smallRecord,
+					local: { path: "small.md", size: 4, mtime: 2, hash: "small", isDirectory: false },
+				},
+				{
+					path: "large.md", prevSync: largeRecord,
+					local: { path: "large.md", size: 20, mtime: 2, hash: "large", isDirectory: false },
+				},
+			],
+			observations: [], identityEvidence: [], temperature: "warm", candidateFacts: [],
+		};
+
+		const { snapshot } = prepareSyncCycleSnapshot(
+			changeSet, "backend\0root", { ignorePatterns: [], mobileMaxBytes: 10 },
+		);
+
+		expect(snapshot.entries.map((entry) => entry.path)).toEqual(["small.md"]);
+		expect([...snapshot.baselinePaths]).toEqual(["small.md", "large.md"]);
 	});
 
 	it.each([

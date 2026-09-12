@@ -185,8 +185,8 @@ export function prepareSyncCycleSnapshot(
 	policy: ScopeProjectionPolicy,
 	logger?: Logger,
 ) {
-	const { scopedChangeSet, projection } = scopeSyncCycle(changeSet, policy, logger);
-	return captureScopedSnapshot(scopedChangeSet, projection, namespace);
+	const { scopedChangeSet, projection, baselinePaths } = scopeSyncCycle(changeSet, policy, logger);
+	return captureScopedSnapshot(scopedChangeSet, projection, namespace, baselinePaths);
 }
 
 /** Production preparation: scope first, then acquire Prefer-local-only content facts. */
@@ -199,22 +199,24 @@ export async function prepareSyncCycleSnapshotForExecution(
 	remoteFs: IFileSystem,
 	logger?: Logger,
 ) {
-	const { scopedChangeSet, projection } = scopeSyncCycle(changeSet, policy, logger);
+	const { scopedChangeSet, projection, baselinePaths } = scopeSyncCycle(changeSet, policy, logger);
 	if (strategy === "prefer_local") {
 		await enrichHashesForPreferLocal(
 			scopedChangeSet.entries, scopedChangeSet.observations,
 			scopedChangeSet.identityEvidence, localFs, remoteFs,
 		);
 	}
-	return captureScopedSnapshot(scopedChangeSet, projection, namespace);
+	return captureScopedSnapshot(scopedChangeSet, projection, namespace, baselinePaths);
 }
 
 function scopeSyncCycle(
 	changeSet: ChangeSet,
 	policy: ScopeProjectionPolicy,
 	logger?: Logger,
-): { scopedChangeSet: ChangeSet; projection: ScopeProjection } {
+): { scopedChangeSet: ChangeSet; projection: ScopeProjection; baselinePaths: string[] } {
 	const { changeSet: scopedChangeSet, projection } = applyScope(changeSet, policy);
+	const baselinePaths = scopedChangeSet.entries.flatMap((entry) =>
+		entry.prevSync ? [entry.prevSync.path] : []);
 	const admittedEntries = scopedChangeSet.entries.filter((entry) =>
 		projection.byEndpoint.get(entry.path) === "included");
 	if (admittedEntries.length !== changeSet.entries.length) {
@@ -225,13 +227,14 @@ function scopeSyncCycle(
 		});
 	}
 	scopedChangeSet.entries = admittedEntries;
-	return { scopedChangeSet, projection };
+	return { scopedChangeSet, projection, baselinePaths };
 }
 
 function captureScopedSnapshot(
 	scopedChangeSet: ChangeSet,
 	projection: ScopeProjection,
 	namespace: string,
+	baselinePaths: readonly string[],
 ) {
 	const snapshot = captureBatchObservation(
 		scopedChangeSet.entries,
@@ -239,7 +242,7 @@ function captureScopedSnapshot(
 		scopedChangeSet.observations,
 		projection,
 		namespace,
-		scopedChangeSet.entries.flatMap((entry) => entry.prevSync ? [entry.prevSync.path] : []),
+		baselinePaths,
 		scopedChangeSet.candidateFacts,
 	);
 	return { snapshot };
