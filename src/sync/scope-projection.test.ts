@@ -144,6 +144,26 @@ describe("applyScope", () => {
 		}), { ignorePatterns: ["private/**"] });
 
 		expect(result.changeSet.entries).toEqual([]);
+		expect(result.changeSet.observations).toEqual([]);
+	});
+
+	it("also drops a wholly-ignored directory's own OBSERVATIONS, not just its entry", () => {
+		// Regression: buildFactComponents/indexFacts can reconstruct a fact for a
+		// path straight from a surviving "exact" observation, entirely independent
+		// of `entries` — so if only the entry were dropped (and the local+remote
+		// observations survived), the directory would still resolve to a fresh
+		// "match" action every cycle, forever (never converging, since it can never
+		// earn a baseline while permanently excluded from `entries`).
+		const result = applyScope(changeSet({
+			entries: [{ path: "private", local: directory("private"), remote: directory("private") }],
+			observations: [
+				{ kind: "exact", side: "local", requestedPath: "private", entity: directory("private") },
+				{ kind: "exact", side: "remote", requestedPath: "private", entity: directory("private") },
+			],
+		}), { ignorePatterns: ["private/**"] });
+
+		expect(result.changeSet.entries).toEqual([]);
+		expect(result.changeSet.observations).toEqual([]);
 	});
 
 	it("keeps a directory included when its ignore pattern only excludes some children", () => {
