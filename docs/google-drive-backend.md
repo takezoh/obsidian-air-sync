@@ -74,6 +74,7 @@ Key operations:
 - `removeTree(path)`: removes a path and all descendants (via `collectDescendants()`).
 - `rewriteChildPaths(old, new)`: rewrites descendant paths when a folder is renamed.
 - `googleDriveFileToEntity(path, googleDriveFile)`: converts cached metadata to `FileEntity` without downloading content. Folders → `{ isDirectory:true, size:0, mtime:0, hash:"" }` (no `backendMeta`). Files → `size = parseInt(size||"0")`, `mtime = new Date(modifiedTime).getTime()` (0 if NaN/absent), `hash:""`, `remoteChecksum:{ algo:"md5", value: md5Checksum }`, `backendMeta:{ googleDriveId }`. That `remoteChecksum` (Google Drive md5) is what makes hash-enrichment and `hasRemoteChanged()` work without a download.
+- Name-colliding siblings: unlike the other backends, Google Drive does not enforce unique names within a folder, so `GoogleDriveMetadataCache` overrides the shared `AbstractMetadataCache`'s `allowsSiblingNameCollisions()` hook to `true`. On `bulkLoad()` (a full-scan snapshot, the only place two simultaneously-alive objects sharing a path can be proven rather than assumed to be an ordinary re-key), `disambiguateSiblingPaths()` keeps the lexicographically-lowest id at the collided path and reassigns every other id to a deterministic, id-derived path, cascading the same rewrite to a colliding folder's own descendants.
 
 ## Incremental sync
 

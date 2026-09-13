@@ -28,6 +28,13 @@ export class GoogleDriveMetadataCache extends AbstractMetadataCache<GoogleDriveF
 		return file.mimeType === FOLDER_MIME;
 	}
 
+	/** Google Drive does not enforce unique names within a folder — two distinct
+	 * objects (files, folders, or one of each) can genuinely share a name and
+	 * parent. */
+	protected allowsSiblingNameCollisions(): boolean {
+		return true;
+	}
+
 	/**
 	 * Build a FileEntity from cached GoogleDriveFile metadata (no download).
 	 * hash is always "" because computing it would require downloading the

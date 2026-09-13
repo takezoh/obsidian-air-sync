@@ -348,6 +348,14 @@ export default defineConfig(
 		rules: { "max-lines": ["error", { max: 364, skipBlankLines: true, skipComments: true }] },
 	},
 	{
+		// The path↔id maps, tree mutation, and path-resolution algorithms are one
+		// data-structure owner. Name-colliding-sibling disambiguation (only Google
+		// Drive allows two distinct objects to share a name) is a property of that
+		// same path-keyed structure, not a separate concept worth its own module.
+		files: ["src/fs/caching/metadata-cache.ts"],
+		rules: { "max-lines": ["error", { max: 349, skipBlankLines: true, skipComments: true }] },
+	},
+	{
 		// Dropbox's detached identity/path seams belong beside its other API-addressing
 		// seams. Its case-only rename lifecycle is also provider-specific and cannot be
 		// moved into the shared cache or priority layers without crossing ownership.
