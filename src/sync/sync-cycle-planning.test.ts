@@ -58,7 +58,7 @@ describe("batch observation boundary", () => {
 		expect(snapshot.entries[0]!.local?.hash).toBe(await sha256(new TextEncoder().encode("local").buffer));
 		expect(snapshot.entries[0]!.remote?.hash).toBe(await sha256(new TextEncoder().encode("remote").buffer));
 		expect(admission.executable.actions).toMatchObject([{
-			action: "conflict", preferLocalDisposition: "local_win_allowed",
+			action: "conflict", protocol: { kind: "same_path" }, conflictPolicy: { mode: "local_win", strategy: "prefer_local" },
 		}]);
 	});
 
@@ -92,7 +92,7 @@ describe("batch observation boundary", () => {
 		expect(remoteRead).not.toHaveBeenCalled();
 		expect(snapshot.entries[0]!.remote?.hash).toBe(remote.remoteChecksum.value);
 		expect(admitBatchObservation(snapshot, "prefer_local").executable.actions).toMatchObject([{
-			action: "conflict", preferLocalDisposition: "local_win_allowed",
+			action: "conflict", protocol: { kind: "same_path" }, conflictPolicy: { mode: "local_win", strategy: "prefer_local" },
 		}]);
 	});
 
@@ -176,7 +176,7 @@ describe("batch observation boundary", () => {
 		expect(localRead).not.toHaveBeenCalled();
 		expect(remoteRead).not.toHaveBeenCalled();
 		expect(admitBatchObservation(snapshot, "prefer_local").executable.actions).toMatchObject([{
-			action: "conflict", preferLocalDisposition: "preservation_required",
+			action: "conflict", protocol: { kind: "same_path" }, conflictPolicy: { mode: "preserve", strategy: "prefer_local" },
 		}]);
 	});
 

@@ -1,5 +1,5 @@
 import type { FileEntity } from "../fs/types";
-import type { ConflictRecord, ConflictStrategy, RenameAction, SyncAction, SyncRecord } from "./types";
+import type { ConflictAction, ConflictRecord, RenameAction, SyncAction, SyncRecord } from "./types";
 import type { ConflictResolutionResult } from "./conflict-resolver";
 import type { TerminalActionProof } from "./plan-executor";
 
@@ -29,7 +29,7 @@ export interface BlockedAction {
 }
 
 export interface ResolvedConflict {
-	action: SyncAction;
+	action: ConflictAction;
 	resolution: ConflictResolutionResult;
 	localEntity?: FileEntity;
 	remoteEntity?: FileEntity;
@@ -66,14 +66,13 @@ export function* orderedChildReceipts(action: RenameAction, completed: readonly 
 
 export function toConflictRecords(
 	conflicts: ResolvedConflict[],
-	strategy: ConflictStrategy,
 	sessionId: string,
 	resolvedAt: string,
 ): ConflictRecord[] {
 	return conflicts.map((c) => ({
 		path: c.action.path,
 		actionType: c.action.action,
-		strategy,
+		strategy: c.action.conflictPolicy.strategy,
 		action: c.resolution.action,
 		local: c.localEntity,
 		remote: c.remoteEntity,

@@ -11,6 +11,12 @@ Each sync cycle has exactly four top-level responsibility stages:
 
 These stages describe responsibility owners, not one separately scheduled pass per helper function. Evidence completion, scope projection, and immutable fact capture belong to **Observation**. The path-local decision table, component build, conflict policy, and component-local rename shaping are private to **Admission**. They add no extra network scan merely by being named.
 
+The cycle captures `conflictStrategy` once. Observation consults it only through a
+responsibility-local pure predicate that decides whether Prefer-local proof hashes must
+be acquired. Admission is the sole policy compiler: every conflict action contains a
+required closed `ConflictExecutionPolicy` and protocol. Execution, the resolver, and
+audit never receive the raw cycle strategy and cannot reinterpret it.
+
 The lower-level cycle sequence within those boundaries is:
 
 1. `collectChanges()` selects HOT/WARM/COLD collection, records authoritative path observations and identity evidence, confirms uncertain absences, and completes required hashes/identity facts.
@@ -270,7 +276,7 @@ observable pipeline stage.
 
 The phases run behind **sequential barriers** (Phase 1 fully drains before Phase 2 before Phase 3). This preserves two safety properties: no content write (Phase 1) runs concurrently with a same-subtree structural rename/delete (Phase 3), and conflict (Phase 2, which touches both sides + a sibling path) never overlaps either. Renames stay serial so Admission's destination-occupancy proof is not deliberately invalidated by another rename in the same lane; pooled deletes are safe even for the legitimate folder+descendant overlap via the inline delete CAS guard (the folder's `removeTree` evicts the child entry, so the child delete short-circuits) — see [ADR 0001 → T7](adr/0001-metadata-cache-is-subordinate-to-commit-last.md).
 
-Phases 1 and 3 use `executeAction()`, which runs `runActionIO()` followed by `commitAction()` and records success in `result.succeeded`. Phase 2 (conflict) uses `executeConflictAction()` instead: it runs `resolveConflict()` per the configured strategy (`auto_merge` / `duplicate` / `prefer_local`), re-stats both local and remote sides, commits, and records the action in both `result.conflicts` and `result.succeeded`. For `prefer_local`, the resolver requires Admission's cycle-local `local_win_allowed` or `preservation_required` disposition and fails closed if it is absent. In both paths, `AuthError` is re-thrown to abort the entire cycle (it rejects the phase's pool/lane and propagates); all other errors are caught per-action and recorded in `result.failed`.
+Phases 1 and 3 use `executeAction()`, which runs `runActionIO()` followed by `commitAction()` and records success in `result.succeeded`. Phase 2 (conflict) uses `executeConflictAction()` instead: before I/O it validates the action's required protocol and `ConflictExecutionPolicy`, then `resolveConflict()` dispatches on the admitted policy mode (`auto_merge` / `local_win` / `preserve`), re-stats both local and remote sides, commits, and records the action in both `result.conflicts` and `result.succeeded`. Missing, malformed, or protocol-incompatible policy fails closed before conflict I/O; there is no downstream default or raw-settings lookup. In both paths, `AuthError` is re-thrown to abort the entire cycle (it rejects the phase's pool/lane and propagates); all other errors are caught per-action and recorded in `result.failed`.
 
 A push captures and validates its exact local bytes before writing. If a vault rename
 removes that old local address after the write, but the remote terminal proves the

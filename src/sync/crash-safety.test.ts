@@ -63,7 +63,6 @@ async function runCycle(
 		localFs,
 		remoteFs,
 		committer: { stateStore },
-		conflictStrategy: "auto_merge",
 	});
 	// The orchestrator acknowledges the snapshot's dirty paths after a cycle
 	// regardless of per-action success — so a failed action is NOT kept "dirty"

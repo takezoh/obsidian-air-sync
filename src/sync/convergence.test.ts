@@ -85,7 +85,6 @@ async function runCycle(env: Env): Promise<SyncPlan> {
 		localFs,
 		remoteFs,
 		committer: { stateStore },
-		conflictStrategy: "auto_merge",
 	});
 	expect(result.failed).toEqual([]);
 	expect(result.blocked).toEqual([]);
@@ -141,13 +140,12 @@ describe("sync converges to a fixed point", () => {
 			const admission = admitBatchObservation(snapshot, "prefer_local");
 			expect(admission.failures).toEqual([]);
 			expect(admission.executable.actions).toMatchObject([{
-				action: "conflict", preferLocalDisposition: "local_win_allowed",
+				action: "conflict", protocol: { kind: "same_path" }, conflictPolicy: { mode: "local_win", strategy: "prefer_local" },
 			}]);
 			const result = await executePlan(admission.executable, {
 				localFs: env.localFs,
 				remoteFs: env.remoteFs,
 				committer: { stateStore: env.stateStore },
-				conflictStrategy: "prefer_local",
 			});
 			expect(result.failed).toEqual([]);
 			expect(result.blocked).toEqual([]);
@@ -179,7 +177,6 @@ describe("sync converges to a fixed point", () => {
 			localFs: env.localFs,
 			remoteFs: env.remoteFs,
 			committer: { stateStore: env.stateStore },
-			conflictStrategy: strategy,
 		});
 
 		expect(result.failed).toEqual([]);
@@ -229,7 +226,7 @@ describe("sync converges to a fixed point", () => {
 					const admission = admitBatchObservation(planning.snapshot, "prefer_local");
 					const result = await executePlan(admission.executable, {
 						localFs: env.localFs, remoteFs: env.remoteFs,
-						committer: { stateStore: env.stateStore }, conflictStrategy: "prefer_local",
+						committer: { stateStore: env.stateStore },
 					});
 					return { admission, result };
 				},
@@ -291,7 +288,7 @@ describe("sync converges to a fixed point", () => {
 				const admission = admitBatchObservation(planning.snapshot, "prefer_local");
 				const result = await executePlan(admission.executable, {
 					localFs: env.localFs, remoteFs: env.remoteFs,
-					committer: { stateStore: env.stateStore }, conflictStrategy: "prefer_local",
+					committer: { stateStore: env.stateStore },
 				});
 				return { admission, result };
 			},
@@ -341,7 +338,6 @@ describe("sync converges to a fixed point", () => {
 				stateStore: env.stateStore, localFs: env.localFs,
 				enableThreeWayMerge: true, logger: { warn } as unknown as Logger,
 			},
-			conflictStrategy: "duplicate",
 		});
 
 		expect(firstResult.failed).toEqual([]);
@@ -437,7 +433,7 @@ describe("sync converges to a fixed point", () => {
 			expect(admission.failures).toEqual([]);
 			const result = await executePlan(admission.executable, {
 				committer: { stateStore: env.stateStore },
-				localFs: env.localFs, remoteFs: env.remoteFs, conflictStrategy: "auto_merge",
+				localFs: env.localFs, remoteFs: env.remoteFs,
 			});
 			return { admission, result };
 		};
@@ -487,7 +483,7 @@ describe("sync converges to a fixed point", () => {
 		expect(admission.failures).toEqual([]);
 		const result = await executePlan(admission.executable, {
 			committer: { stateStore: env.stateStore },
-			localFs: env.localFs, remoteFs: env.remoteFs, conflictStrategy: "auto_merge",
+			localFs: env.localFs, remoteFs: env.remoteFs,
 		});
 		const commit = vi.spyOn(env.remoteFs.checkpoint!, "commitCheckpoint");
 		const abort = vi.spyOn(env.remoteFs.checkpoint!, "abortWorkingView");
@@ -523,7 +519,6 @@ describe("sync converges to a fixed point", () => {
 		).snapshot);
 		const incompleteResult = await executePlan(incompleteAdmission.executable, {
 			committer: { stateStore: env.stateStore }, localFs: env.localFs, remoteFs: env.remoteFs,
-			conflictStrategy: "auto_merge",
 		});
 		expect((await finalizeSyncCycle({
 			admission: incompleteAdmission, result: incompleteResult,
@@ -631,7 +626,7 @@ describe("sync converges to a fixed point", () => {
 			const admission = admitBatchObservation(snapshot);
 			const result = await executePlan(admission.executable, {
 				localFs: env.localFs, remoteFs: env.remoteFs,
-				committer: { stateStore: env.stateStore }, conflictStrategy: "auto_merge",
+				committer: { stateStore: env.stateStore },
 			});
 			return { admission, result };
 		};
@@ -702,7 +697,7 @@ describe("sync converges to a fixed point", () => {
 		const admission = admitBatchObservation(snapshot);
 		const result = await executePlan(admission.executable, {
 			localFs: env.localFs, remoteFs: env.remoteFs,
-			committer: { stateStore: env.stateStore }, conflictStrategy: "auto_merge",
+			committer: { stateStore: env.stateStore },
 		});
 
 		expect(admission.failures).toMatchObject([{ reasons: ["conflicting_identity"] }]);
@@ -733,7 +728,7 @@ describe("sync converges to a fixed point", () => {
 			admission.executable,
 			{
 				localFs: env.localFs, remoteFs: env.remoteFs,
-				committer: { stateStore: env.stateStore }, conflictStrategy: "auto_merge",
+				committer: { stateStore: env.stateStore },
 			},
 		);
 		const firstAdmission = await acquire();

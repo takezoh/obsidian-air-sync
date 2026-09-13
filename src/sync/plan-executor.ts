@@ -1,7 +1,11 @@
 /* eslint max-lines: ["error", 960] -- the executor owns all fixed protocols, immediate pre-effect observation, terminal proof, and proof-gated commit routing. */
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
-import type { ConflictStrategy, PreservationCoverChild, RenameAction, SyncAction } from "./types";
+import type {
+	ConflictAction,
+	PreservationCoverChild, RenameAction, SyncAction,
+} from "./types";
+import { conflictContractViolation } from "./conflict-action-contract";
 import type { AuthorizedSyncPlan } from "./plan-admission";
 import type { StateCommitterContext } from "./state-committer";
 import { bytesMatch, captureContentSnapshot, ContentProofError } from "./content-snapshot";
@@ -12,7 +16,7 @@ import type {
 import type { VerifiedConflictOutput } from "./conflict";
 import type { Logger } from "../logging/logger";
 import { commitAction, commitExactCleanup } from "./state-committer";
-import { isPreferLocalDisposition, resolveConflict } from "./conflict-resolver";
+import { resolveConflict } from "./conflict-resolver";
 import { AuthError, classifyHttpError } from "../fs/errors";
 import type { ErrorClassification } from "../fs/errors";
 import { AsyncPool, AdaptivePool } from "../queue/async-queue";
@@ -29,7 +33,6 @@ export type { BlockedAction, CompletedAction, ExecutionResult, FailedAction, Res
 export { toConflictRecords } from "./execution-result";
 
 const terminalActionProofBrand: unique symbol = Symbol("TerminalActionProof");
-
 /** Executor-owned proof seam consumed by the state committer in the following unit. */
 export interface TerminalActionProof {
 	readonly [terminalActionProofBrand]: true;
@@ -51,7 +54,6 @@ export interface ExecutionContext {
 	localFs: IFileSystem;
 	remoteFs: IFileSystem;
 	committer: StateCommitterContext;
-	conflictStrategy: ConflictStrategy;
 	onProgress?: (completed: number, total: number) => void;
 	logger?: Logger;
 	/**
@@ -741,7 +743,7 @@ async function assertPreservedSourceUnchanged(
 }
 
 async function executeConflictAction(
-	action: SyncAction,
+	action: ConflictAction,
 	ctx: ExecutionContext,
 	result: ExecutionResult,
 	reportProgress: () => void,
@@ -758,11 +760,7 @@ async function executeConflictAction(
 			result.blocked.push({ action, reason: "priority observation invalidated pending action" });
 			return;
 		}
-		if (ctx.conflictStrategy === "prefer_local" &&
-			!isPreferLocalDisposition(action.preferLocalDisposition)) {
-			const kind = action.preferLocalDisposition === undefined ? "missing" : "invalid";
-			throw new TerminalInvariantError("Prefer-local conflict disposition " + kind + ": " + action.path);
-		}
+		validateConflictContract(action);
 		if (action.protocol?.kind === "preservation_cover") {
 			const execute = () => executePreservationCover(action, ctx, (duplicatePaths) => {
 				preservationProgress = preservationResolution(duplicatePaths);
@@ -801,7 +799,7 @@ async function executeConflictAction(
 		const execute = async () => {
 			await checkPublicationInputs(action, ctx, result.succeeded);
 			const resolution = await (ctx.conflictResolver ?? resolveConflict)(
-				conflictCtx, ctx.conflictStrategy, action.preferLocalDisposition,
+				conflictCtx, action.conflictPolicy,
 			);
 			const { localEntity, remoteEntity, terminalProof } = await executePreparedConflictEffects(action, ctx, resolution);
 			const terminalRecord = await commitAction(action, localEntity, remoteEntity, ctx.committer,
@@ -854,19 +852,23 @@ async function executeConflictAction(
 	}
 }
 
+function validateConflictContract(action: ConflictAction): void {
+	const violation = conflictContractViolation(action);
+	if (violation) throw new TerminalInvariantError(violation);
+}
 /** Execute Admission's fixed preservation children. Each verified child publishes
  * before the next begins, so a later failure leaves a useful, restart-visible prefix.
  */
 async function executePreservationCover(
-	action: SyncAction,
+	action: ConflictAction,
 	ctx: ExecutionContext,
 	onProgress: (duplicatePaths: readonly string[]) => void,
 ): Promise<ConflictResolutionResult> {
-	if (action.protocol?.kind !== "preservation_cover") {
+	if (action.protocol.kind !== "preservation_cover") {
 		throw new TerminalInvariantError(`Preservation protocol missing: ${action.path}`);
 	}
 	const preserved = new Set(action.protocol.preservedPaths);
-	const projectPreserved = () => action.protocol?.kind === "preservation_cover"
+	const projectPreserved = () => action.protocol.kind === "preservation_cover"
 		? action.protocol.candidatePaths.filter((path) => preserved.has(path)) : [];
 	onProgress(projectPreserved());
 	for (const child of action.protocol.children) {
@@ -892,7 +894,6 @@ function preservationResolution(duplicatePaths: readonly string[]): ConflictReso
 		verifiedOutputs: [],
 	};
 }
-
 async function executePreservationChild(
 	child: PreservationCoverChild,
 	ctx: ExecutionContext,

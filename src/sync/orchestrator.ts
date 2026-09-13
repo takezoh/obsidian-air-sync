@@ -211,7 +211,7 @@ export class SyncOrchestrator {
 				const conflictRecords = result.outcome.execution.conflicts;
 				if (conflictRecords.length > 0) {
 					await this.deps.recordConflicts?.(toConflictRecords(conflictRecords,
-						conflictStrategy, this.sessionId, new Date().toISOString()))
+						this.sessionId, new Date().toISOString()))
 						?.catch((err) => this.deps.logger?.warn("Failed to record conflict history", { message: err instanceof Error ? err.message : String(err) }));
 				}
 				await this.deps.logger?.flush();
@@ -418,7 +418,6 @@ export class SyncOrchestrator {
 				localFs,
 				logger: this.deps.logger,
 			},
-			conflictStrategy,
 			onProgress: (completed: number) => {
 				if (total > 0) this.deps.onProgress(`Syncing ${completed}/${total}...`);
 			},

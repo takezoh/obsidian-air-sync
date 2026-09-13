@@ -89,7 +89,6 @@ describe("§2-1 (fixed): a lone deletion is no longer silently aborted", () => {
 				committer: {
 					stateStore: stateStore,
 				},
-				conflictStrategy: "auto_merge",
 			},
 		);
 

@@ -5,7 +5,7 @@ import { captureBatchObservation } from "./sync-cycle-planning";
 import { executePlan, type ExecutionContext } from "./plan-executor";
 import { buildSyncRecord } from "./state-committer";
 import { digest } from "../utils/hash";
-import type { MixedEntity, PathObservation } from "./types";
+import type { ConflictStrategy, MixedEntity, PathObservation } from "./types";
 
 /** Observe through filesystem/store interfaces; no caller-supplied action fixture. */
 async function renamedFixture(side: "local" | "remote" = "remote") {
@@ -22,7 +22,7 @@ async function renamedFixture(side: "local" | "remote" = "remote") {
 	const original = (await (side === "remote" ? localFs : remoteFs).stat("A.md"))!;
 	const baseline = buildSyncRecord(original, { ...original, identityKey: "R" }, "A.md");
 	await stateStore.put(baseline);
-	const observe = async () => {
+	const observe = async (conflictStrategy: ConflictStrategy = "duplicate") => {
 		const entries: MixedEntity[] = [];
 		const observations: PathObservation[] = [];
 		for (const path of ["A.md", "B.md"]) {
@@ -41,13 +41,16 @@ async function renamedFixture(side: "local" | "remote" = "remote") {
 		}], observations, {
 			byEndpoint: new Map([["A.md", "included"], ["B.md", "included"]]),
 			isConfiguredScopeCompatible: () => true,
-		}, "test:root"));
+		}, "test:root"), conflictStrategy);
 	};
-	const execute = async (overrides: Partial<ExecutionContext> = {}) => {
-		const admission = await observe();
+	const execute = async (
+		overrides: Partial<ExecutionContext> = {},
+		conflictStrategy: ConflictStrategy = "duplicate",
+	) => {
+		const admission = await observe(conflictStrategy);
 		expect(admission.failures).toEqual([]);
 		return executePlan(admission.executable, {
-			localFs, remoteFs, committer: { stateStore }, conflictStrategy: "duplicate",
+			localFs, remoteFs, committer: { stateStore },
 			...overrides,
 		});
 	};
@@ -84,7 +87,7 @@ describe("fact-first Admission through terminal publication", () => {
 		addFile(remoteFs, "f.md", "remote", 1000).identityKey = "X";
 		const admission = admitBatchObservation(captureBatchObservation([{
 			path: "f.md", local: (await localFs.stat("f.md"))!, remote: (await remoteFs.stat("f.md"))!,
-		}], [], [], { byEndpoint: new Map([["f.md", "included"]]), isConfiguredScopeCompatible: () => true }, "test:root"));
+		}], [], [], { byEndpoint: new Map([["f.md", "included"]]), isConfiguredScopeCompatible: () => true }, "test:root"), "duplicate");
 		const write = remoteFs.write.bind(remoteFs);
 		remoteFs.write = async (path, content, mtime) => {
 			const result = await write(path, content, mtime);
@@ -92,7 +95,7 @@ describe("fact-first Admission through terminal publication", () => {
 			if (cut === "copy_during_target_write" && path === "f.md") addFile(remoteFs, "f.conflict.md", "broken", 1000);
 			return result;
 		};
-		const result = await executePlan(admission.executable, { localFs, remoteFs, committer: { stateStore }, conflictStrategy: "duplicate" });
+		const result = await executePlan(admission.executable, { localFs, remoteFs, committer: { stateStore } });
 		expect(result.succeeded).toEqual([]);
 		expect(result.blocked).toHaveLength(1);
 		expect(stateStore.records.size).toBe(0);
@@ -116,13 +119,13 @@ describe("fact-first Admission through terminal publication", () => {
 		addFile(remoteFs, "f.md", "one\ntwo\nthree\nfour\nREMOTE\n", 2000).identityKey = "X";
 		const observe = async () => admitBatchObservation(captureBatchObservation([{
 			path: "f.md", local: (await localFs.stat("f.md"))!, remote: (await remoteFs.stat("f.md"))!, prevSync: await stateStore.get("f.md"),
-		}], [], [], { byEndpoint: new Map([["f.md", "included"]]), isConfiguredScopeCompatible: () => true }, "test:root"));
+		}], [], [], { byEndpoint: new Map([["f.md", "included"]]), isConfiguredScopeCompatible: () => true }, "test:root"), conflictStrategy);
 		const write = remoteFs.write.bind(remoteFs);
 		remoteFs.write = async (path, content, mtime) => {
 			if (path === "f.md") throw new Error("target write interrupted");
 			return write(path, content, mtime);
 		};
-		const context = { localFs, remoteFs, committer: { stateStore }, conflictStrategy };
+		const context = { localFs, remoteFs, committer: { stateStore } };
 		const first = await executePlan((await observe()).executable, context);
 		expect(first.failed).toHaveLength(1);
 		expect(first.succeeded).toEqual([]);
@@ -156,10 +159,10 @@ describe("fact-first Admission through terminal publication", () => {
 			{ path: "A.md", remote: (await remoteFs.stat("A.md"))! }, { path: "B.md", local, remote, prevSync },
 		], [{ kind: "rename", side: "local", oldPath: "A.md", newPath: "B.md", isFolder: false, authority: "reported" }],
 		[{ kind: "absent", side: "local", requestedPath: "A.md", authority: "stat" }],
-		{ byEndpoint: new Map([["A.md", "included"], ["B.md", "included"]]), isConfiguredScopeCompatible: () => true }, "test:root"));
+		{ byEndpoint: new Map([["A.md", "included"], ["B.md", "included"]]), isConfiguredScopeCompatible: () => true }, "test:root"), "duplicate");
 		expect(admission.failures).toEqual([]);
 		expect(admission.executable.actions.map(({ path, action }) => [path, action])).toEqual([["B.md", "conflict"]]);
-		const result = await executePlan(admission.executable, { localFs, remoteFs, committer: { stateStore }, conflictStrategy: "duplicate" });
+		const result = await executePlan(admission.executable, { localFs, remoteFs, committer: { stateStore } });
 		expect(result.failed).toEqual([]);
 		expect(result.blocked).toEqual([]);
 		expect((await remoteFs.stat("B.md"))?.identityKey).toBe("X");
@@ -179,8 +182,8 @@ describe("fact-first Admission through terminal publication", () => {
 		remoteFs.write = async (path, content, mtime) => write(path,
 			path.includes(".conflict") ? new TextEncoder().encode("broken").buffer : content, mtime);
 		const admission = admitBatchObservation(captureBatchObservation([{ path: "f.md", local, remote }], [], [],
-			{ byEndpoint: new Map([["f.md", "included"]]), isConfiguredScopeCompatible: () => true }, "test:root"));
-		const result = await executePlan(admission.executable, { localFs, remoteFs, committer: { stateStore }, conflictStrategy: "duplicate" });
+			{ byEndpoint: new Map([["f.md", "included"]]), isConfiguredScopeCompatible: () => true }, "test:root"), "duplicate");
+		const result = await executePlan(admission.executable, { localFs, remoteFs, committer: { stateStore } });
 		expect(result.succeeded).toEqual([]);
 		expect(result.blocked).toHaveLength(1);
 		expect(readText(localFs, "f.md")).toBe("local");
@@ -208,7 +211,7 @@ describe("fact-first Admission through terminal publication", () => {
 		const admission = admitBatchObservation(captureBatchObservation([{ path: "f.md", remote }], [], [
 			{ kind: "absent", side: "local", requestedPath: "f.md", authority: "stat" },
 		], { byEndpoint: new Map([["f.md", "included"]]), isConfiguredScopeCompatible: () => true }, "test:root"));
-		const result = await executePlan(admission.executable, { localFs, remoteFs, committer: { stateStore }, conflictStrategy: "duplicate" });
+		const result = await executePlan(admission.executable, { localFs, remoteFs, committer: { stateStore } });
 		expect(result.succeeded).toEqual([]);
 		expect(result.blocked).toHaveLength(1);
 		expect(write).not.toHaveBeenCalled();
@@ -268,14 +271,14 @@ describe("fact-first Admission through terminal publication", () => {
 			}
 			return admitBatchObservation(captureBatchObservation(entries, [{ kind: "rename", side: "local",
 				oldPath: "A.md", newPath: "B.md", isFolder: false, authority: "reported" }], observations,
-			{ byEndpoint: new Map([["A.md", "included"], ["B.md", "included"]]), isConfiguredScopeCompatible: () => true }, "test:root"));
+			{ byEndpoint: new Map([["A.md", "included"], ["B.md", "included"]]), isConfiguredScopeCompatible: () => true }, "test:root"), "duplicate");
 		};
 		const admission = await observe();
 		expect(admission.failures).toEqual([]);
 		expect(admission.executable.actions.map(({ path, action }) => [path, action])).toEqual([
 			["B.md", target === "equal" ? "rename_remote" : "conflict"], ["A.md", "push"],
 		]);
-		const context = { localFs, remoteFs, committer: { stateStore }, conflictStrategy: "duplicate" as const };
+		const context = { localFs, remoteFs, committer: { stateStore } };
 		const publish = vi.spyOn(stateStore, "compareAndMove");
 		if (cut === "publication") publish.mockResolvedValueOnce(false);
 		const write = remoteFs.write.bind(remoteFs);
@@ -326,7 +329,7 @@ describe("fact-first Admission through terminal publication", () => {
 		], { byEndpoint: new Map([["f.md", "included"]]), isConfiguredScopeCompatible: () => true }, "test:root"));
 		expect(admission.failures).toEqual([]);
 		expect(admission.executable.actions.map(({ action }) => action)).toEqual(["pull"]);
-		const result = await executePlan(admission.executable, { localFs, remoteFs, committer: { stateStore }, conflictStrategy: "duplicate" });
+		const result = await executePlan(admission.executable, { localFs, remoteFs, committer: { stateStore } });
 		expect(result.failed).toEqual([]);
 		expect(result.blocked).toEqual([]);
 		expect(result.succeeded).toHaveLength(1);
@@ -346,7 +349,7 @@ describe("fact-first Admission through terminal publication", () => {
 		const local = (await localFs.stat("f.md"))!;
 		const remote = (await remoteFs.stat("f.md"))!;
 		const admission = admitBatchObservation(captureBatchObservation([{ path: "f.md", local, remote }], [], [],
-			{ byEndpoint: new Map([["f.md", "included"]]), isConfiguredScopeCompatible: () => true }, "test:root"));
+			{ byEndpoint: new Map([["f.md", "included"]]), isConfiguredScopeCompatible: () => true }, "test:root"), "duplicate");
 		expect(admission.failures).toEqual([]);
 		expect(admission.executable.actions.map(({ action }) => action)).toEqual(["conflict"]);
 		const write = remoteFs.write.bind(remoteFs);
@@ -355,7 +358,7 @@ describe("fact-first Admission through terminal publication", () => {
 			if (path === "f.md") await (side === "local" ? localFs : remoteFs).delete(path);
 			return result;
 		};
-		const result = await executePlan(admission.executable, { localFs, remoteFs, committer: { stateStore }, conflictStrategy: "duplicate" });
+		const result = await executePlan(admission.executable, { localFs, remoteFs, committer: { stateStore } });
 		expect(result.succeeded).toEqual([]);
 		expect(result.blocked).toHaveLength(1);
 		expect(await stateStore.get("f.md")).toBeUndefined();
@@ -404,7 +407,7 @@ describe("fact-first Admission through terminal publication", () => {
 		expect(first.executable.actions.map(({ action, path }) => [action, path])).toEqual([
 			["rename_local", "B/x.md"], ["rename_local", "B/y.md"],
 		]);
-		const context = { localFs, remoteFs, committer: { stateStore }, conflictStrategy: "duplicate" as const };
+		const context = { localFs, remoteFs, committer: { stateStore } };
 		const result = await executePlan(first.executable, context);
 		expect(result.blocked).toEqual([]);
 		expect(result.failed).toHaveLength(cut === "none" ? 0 : 1);
@@ -460,7 +463,7 @@ describe("fact-first Admission through terminal publication", () => {
 		expect(admission.executable.actions.map(({ action }) => action)).toEqual([
 			side === "local" ? "delete_remote" : "delete_local", side === "local" ? "rename_remote" : "rename_local",
 		]);
-		const result = await executePlan(admission.executable, { localFs, remoteFs, committer: { stateStore }, conflictStrategy: "duplicate" });
+		const result = await executePlan(admission.executable, { localFs, remoteFs, committer: { stateStore } });
 		expect(result.failed).toEqual([]);
 		expect(result.blocked).toEqual([]);
 		expect(result.succeeded).toHaveLength(2);
@@ -504,7 +507,7 @@ describe("fact-first Admission through terminal publication", () => {
 			return admitBatchObservation(captureBatchObservation(entries, [{
 				kind: "rename", side: "local", oldPath: "A", newPath: "B", isFolder: true, authority: "reported",
 			}], observations, { byEndpoint: new Map(paths.map((path) => [path, "included"])),
-				isConfiguredScopeCompatible: () => true }, "test:root"));
+				isConfiguredScopeCompatible: () => true }, "test:root"), "duplicate");
 		};
 		const admission = await observe();
 		expect(admission.failures).toEqual([]);
@@ -528,7 +531,7 @@ describe("fact-first Admission through terminal publication", () => {
 				addFile(remoteFs, "B/x.conflict.md", "tampered", 3000);
 			}
 		};
-		const result = await executePlan(admission.executable, { localFs, remoteFs, committer: { stateStore }, conflictStrategy: "duplicate" });
+		const result = await executePlan(admission.executable, { localFs, remoteFs, committer: { stateStore } });
 		expect(result.failed).toEqual([]);
 		if (race === "unchanged") {
 			expect(result.blocked).toEqual([]);
@@ -547,7 +550,7 @@ describe("fact-first Admission through terminal publication", () => {
 				const next = await observe();
 				expect(next.failures).toEqual([]);
 				expect(next.executable.actions.map((action) => action.action)).toEqual(["pull"]);
-				const replay = await executePlan(next.executable, { localFs, remoteFs, committer: { stateStore }, conflictStrategy: "duplicate" });
+				const replay = await executePlan(next.executable, { localFs, remoteFs, committer: { stateStore } });
 				expect(replay.failed).toEqual([]);
 				expect(replay.blocked).toEqual([]);
 				expect(await stateStore.get("A/x.md")).toBeUndefined();
@@ -588,7 +591,7 @@ describe("fact-first Admission through terminal publication", () => {
 			confirmMockPath(fixture.remoteFs, result.path);
 			return result;
 		};
-		const result = await fixture.execute({ conflictStrategy: "auto_merge" });
+		const result = await fixture.execute({}, "auto_merge");
 		expect(result.failed).toEqual([]);
 		expect(result.blocked).toEqual([]);
 		expect(readText(fixture.localFs, "B.md")).toBe("original");

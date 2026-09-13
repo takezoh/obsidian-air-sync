@@ -200,13 +200,18 @@ export async function prepareSyncCycleSnapshotForExecution(
 	logger?: Logger,
 ) {
 	const { scopedChangeSet, projection, baselinePaths } = scopeSyncCycle(changeSet, policy, logger);
-	if (strategy === "prefer_local") {
+	if (requiresConflictHashEnrichment(strategy)) {
 		await enrichHashesForPreferLocal(
 			scopedChangeSet.entries, scopedChangeSet.observations,
 			scopedChangeSet.identityEvidence, localFs, remoteFs,
 		);
 	}
 	return captureScopedSnapshot(scopedChangeSet, projection, namespace, baselinePaths);
+}
+
+/** Observation-local acquisition policy; it never authorizes a sync action. */
+function requiresConflictHashEnrichment(strategy: ConflictStrategy): boolean {
+	return strategy === "prefer_local";
 }
 
 function scopeSyncCycle(

@@ -8,6 +8,7 @@ const ROOT = process.cwd();
 const SOURCE_ROOT = join(ROOT, "src");
 const DECISION_FILE = "src/sync/identity-component-decision.ts";
 const REPORT_FAMILY_FILE = "src/sync/identity-component-report-family.ts";
+const POLICY_COMPILER_FILE = "src/sync/conflict-policy-admission.ts";
 const VALUE_IMPORT_OWNERS = new Map([
 	["src/sync/decision-engine.ts", new Map([["*", new Set([DECISION_FILE])]])],
 	[DECISION_FILE, new Map([["*", new Set(["src/sync/plan-admission.ts"])]])],
@@ -18,6 +19,10 @@ const VALUE_IMPORT_OWNERS = new Map([
 	["src/sync/optimize-local-renames.ts", new Map([["*", new Set()]])],
 	["src/sync/optimize-remote-renames.ts", new Map([["*", new Set()]])],
 	["src/sync/plan-admission-case-alias.ts", new Map([["*", new Set()]])],
+	[POLICY_COMPILER_FILE, new Map([["*", new Set([DECISION_FILE])]])],
+	["src/sync/plan-admission.ts", new Map([
+		["admitBatchObservation", new Set(["src/sync/orchestrator.ts"])],
+	])],
 ]);
 
 function productionTypeScriptFiles(root = SOURCE_ROOT) {
@@ -40,18 +45,19 @@ function valueImports(sourceFile) {
 			const moduleName = statement.moduleSpecifier.text;
 			const clause = statement.importClause;
 			if (!clause) {
-				result.push({ moduleName, importedName: "*" });
+				result.push({ kind: "import", moduleName, importedName: "*" });
 				continue;
 			}
 			if (clause.isTypeOnly) continue;
-			if (clause.name) result.push({ moduleName, importedName: "default" });
+			if (clause.name) result.push({ kind: "import", moduleName, importedName: "default" });
 			const bindings = clause.namedBindings;
 			if (bindings && ts.isNamespaceImport(bindings)) {
-				result.push({ moduleName, importedName: "*" });
+				result.push({ kind: "import", moduleName, importedName: "*" });
 			} else if (bindings && ts.isNamedImports(bindings)) {
 				for (const element of bindings.elements) {
 					if (!element.isTypeOnly) {
 						result.push({
+							kind: "import",
 							moduleName,
 							importedName: element.propertyName?.text ?? element.name.text,
 						});
@@ -62,18 +68,19 @@ function valueImports(sourceFile) {
 			ts.isStringLiteral(statement.moduleSpecifier)) {
 			const moduleName = statement.moduleSpecifier.text;
 			if (!statement.exportClause) {
-				result.push({ moduleName, importedName: "*" });
+				result.push({ kind: "export", moduleName, importedName: "*" });
 			} else if (ts.isNamespaceExport(statement.exportClause)) {
-				result.push({ moduleName, importedName: "*" });
+				result.push({ kind: "export", moduleName, importedName: "*" });
 			} else if (ts.isNamedExports(statement.exportClause)) {
 				if (statement.exportClause.elements.length === 0) {
-					result.push({ moduleName, importedName: "*" });
+					result.push({ kind: "export", moduleName, importedName: "*" });
 				}
 				for (const element of statement.exportClause.elements) {
 					if (!element.isTypeOnly) {
-						result.push({
-							moduleName,
-							importedName: element.propertyName?.text ?? element.name.text,
+					result.push({
+						kind: "export",
+						moduleName,
+						importedName: element.propertyName?.text ?? element.name.text,
 						});
 					}
 				}
@@ -83,7 +90,7 @@ function valueImports(sourceFile) {
 	const visitDynamicImports = (node) => {
 		if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword &&
 			node.arguments.length === 1 && ts.isStringLiteralLike(node.arguments[0])) {
-			result.push({ moduleName: node.arguments[0].text, importedName: "*" });
+			result.push({ kind: "dynamic", moduleName: node.arguments[0].text, importedName: "*" });
 		}
 		node.forEachChild(visitDynamicImports);
 	};
@@ -100,10 +107,32 @@ function assertClosedValueImports(files = productionTypeScriptFiles()) {
 }
 
 function assertAllowedValueImports(file, sourceFile) {
+	const compilerBindings = new Set();
+	for (const statement of sourceFile.statements) {
+		if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier) ||
+			resolveTypeScriptModule(file, statement.moduleSpecifier.text) !== POLICY_COMPILER_FILE) continue;
+		const bindings = statement.importClause?.namedBindings;
+		if (!bindings || !ts.isNamedImports(bindings)) continue;
+		for (const element of bindings.elements) {
+			if (!element.isTypeOnly && (element.propertyName?.text ?? element.name.text) ===
+				"compileSamePathConflictContract") compilerBindings.add(element.name.text);
+		}
+	}
+	for (const statement of sourceFile.statements) {
+		if (!ts.isExportDeclaration(statement) || statement.moduleSpecifier ||
+			!statement.exportClause || !ts.isNamedExports(statement.exportClause)) continue;
+		for (const element of statement.exportClause.elements) {
+			const localName = element.propertyName?.text ?? element.name.text;
+			assert.ok(!compilerBindings.has(localName),
+				`${file} must not locally re-export the Admission conflict-policy compiler`);
+		}
+	}
 	for (const item of valueImports(sourceFile)) {
 		const target = resolveTypeScriptModule(file, item.moduleName);
 		const moduleOwners = target ? VALUE_IMPORT_OWNERS.get(target) : undefined;
 		if (!moduleOwners) continue;
+		assert.notEqual(item.kind === "export" ? target : undefined, POLICY_COMPILER_FILE,
+			`${file} must not re-export the Admission conflict-policy compiler`);
 		const owners = moduleOwners.get(item.importedName) ?? moduleOwners.get("*");
 		assert.ok(owners?.has(file), `${file} must not value-import ${item.importedName} from ${item.moduleName}`);
 	}
@@ -178,8 +207,163 @@ function assertFactOnlyBoundary(file, source) {
 	visit(source);
 }
 
+const RAW_STRATEGY_CARRIER_FILES = new Set([
+	"src/__mocks__/sync-test-helpers.ts",
+	"src/settings-normalize.ts",
+	"src/settings.ts",
+	"src/ui/settings.ts",
+	"src/sync/types.ts",
+	"src/sync/orchestrator.ts",
+	"src/sync/sync-cycle-planning.ts",
+	"src/sync/plan-admission.ts",
+	DECISION_FILE,
+	POLICY_COMPILER_FILE,
+	"src/sync/conflict-action-contract.ts",
+]);
+
+const RAW_STRATEGY_SEMANTIC_FILES = new Set([
+	"src/__mocks__/sync-test-helpers.ts",
+	"src/settings-normalize.ts",
+	"src/settings.ts",
+	"src/ui/settings.ts",
+	"src/sync/types.ts",
+	DECISION_FILE,
+	POLICY_COMPILER_FILE,
+]);
+
+const RAW_STRATEGY_SEMANTIC_FUNCTIONS = new Map([
+	["src/sync/sync-cycle-planning.ts", new Set(["requiresConflictHashEnrichment"])],
+	["src/sync/plan-admission.ts", new Set(["admitBatchObservation"])],
+	["src/sync/conflict-action-contract.ts", new Set(["conflictContractViolation", "isConflictExecutionPolicy"])],
+]);
+
+function isAllowedRawStrategySite(node, file) {
+	if (RAW_STRATEGY_SEMANTIC_FILES.has(file)) return true;
+	const functions = RAW_STRATEGY_SEMANTIC_FUNCTIONS.get(file);
+	if (!functions) return false;
+	for (let current = node; current; current = current.parent) {
+		if (ts.isFunctionDeclaration(current) && current.name && functions.has(current.name.text)) return true;
+	}
+	return false;
+}
+
+function isAuditStrategyProjection(node, file) {
+	if (file !== "src/sync/execution-result.ts" || !ts.isPropertyAccessExpression(node) ||
+		node.name.text !== "strategy") return false;
+	const assignment = node.parent;
+	return ts.isPropertyAssignment(assignment) && assignment.initializer === node &&
+		assignment.name.getText() === "strategy" && node.expression.getText().endsWith(".action.conflictPolicy");
+}
+
+function isStrategyPropertyReference(node) {
+	if (ts.isPropertyAccessExpression(node)) return node.name.text === "strategy";
+	if (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)) {
+		return node.argumentExpression.text === "strategy";
+	}
+	if (!ts.isBindingElement(node)) return false;
+	const property = node.propertyName ?? node.name;
+	return (ts.isIdentifier(property) || ts.isStringLiteralLike(property)) && property.text === "strategy";
+}
+
+function assertConflictPolicyBoundary(file, source) {
+	let conflictActionSeen = false;
+	const visit = (node) => {
+		if (ts.isIdentifier(node)) {
+			assert.notEqual(node.text, "preferLocalDisposition",
+				`${file}: retired optional Prefer-local policy must not return`);
+			if (!RAW_STRATEGY_CARRIER_FILES.has(file)) {
+				assert.notEqual(node.text, "conflictStrategy",
+					`${file}: non-owner must not receive raw conflict strategy`);
+				assert.notEqual(node.text, "ConflictStrategy",
+					`${file}: non-owner must not type or branch on raw conflict strategy`);
+			}
+		}
+		if (ts.isStringLiteralLike(node) && ["auto_merge", "prefer_local", "duplicate"].includes(node.text) &&
+			!isAllowedRawStrategySite(node, file)) {
+			assert.fail(`${file}: non-owner must not reinterpret a raw conflict strategy literal`);
+		}
+		if (isStrategyPropertyReference(node) &&
+			!isAllowedRawStrategySite(node, file) && !isAuditStrategyProjection(node, file)) {
+			assert.fail(`${file}: action strategy provenance may only be projected into audit output`);
+		}
+		if (ts.isInterfaceDeclaration(node) && node.name.text === "ConflictAction") {
+			conflictActionSeen = true;
+			const members = new Map(node.members.map((member) => [member.name?.getText(source), member]));
+			for (const name of ["action", "protocol", "conflictPolicy"]) {
+				const member = members.get(name);
+				assert.ok(member && !member.questionToken, `ConflictAction.${name} must be required`);
+			}
+		}
+		node.forEachChild(visit);
+	};
+	visit(source);
+	if (file === "src/sync/types.ts") assert.ok(conflictActionSeen, "ConflictAction contract is required");
+}
+
 test("production has only the fact-first Admission contract", () => {
-	for (const file of productionTypeScriptFiles()) assertFactOnlyBoundary(file, parseSource(readFileSync(file, "utf8"), file));
+	for (const path of productionTypeScriptFiles()) {
+		const file = relative(ROOT, path);
+		const source = parseSource(readFileSync(path, "utf8"), file);
+		assertFactOnlyBoundary(file, source);
+		assertConflictPolicyBoundary(file, source);
+	}
+});
+
+test("guard rejects optional or downstream raw conflict policy", () => {
+	assert.throws(() => assertConflictPolicyBoundary("src/sync/types.ts", parseSource(
+		"interface ConflictAction { action: 'conflict'; protocol?: unknown; conflictPolicy?: unknown }",
+		"src/sync/types.ts",
+	)));
+	assert.throws(() => assertConflictPolicyBoundary("src/sync/plan-executor.ts", parseSource(
+		"interface ExecutionContext { conflictStrategy: string }",
+		"src/sync/plan-executor.ts",
+	)));
+	assert.throws(() => assertConflictPolicyBoundary("src/sync/conflict-resolver.ts", parseSource(
+		"function use(preferLocalDisposition: string) {}",
+		"src/sync/conflict-resolver.ts",
+	)));
+	assert.throws(() => assertConflictPolicyBoundary("src/sync/conflict-resolver.ts", parseSource(
+		"function resolve(strategy: ConflictStrategy) { return strategy === 'auto_merge'; }",
+		"src/sync/conflict-resolver.ts",
+	)));
+	assert.throws(() => assertAllowedValueImports("src/sync/plan-executor.ts", parseSource(
+		'import { compileSamePathConflictContract } from "./conflict-policy-admission";',
+		"src/sync/plan-executor.ts",
+	)));
+	assert.throws(() => assertConflictPolicyBoundary("src/sync/conflict-resolver.ts", parseSource(
+		"const selected = action.conflictPolicy.strategy; if (selected === 'duplicate') usePreservation();",
+		"src/sync/conflict-resolver.ts",
+	)));
+	assert.throws(() => assertConflictPolicyBoundary("src/sync/conflict-resolver.ts", parseSource(
+		"const { strategy } = action.conflictPolicy; if (strategy.startsWith('prefer')) useLocal();",
+		"src/sync/conflict-resolver.ts",
+	)));
+	assert.throws(() => assertConflictPolicyBoundary("src/sync/conflict-resolver.ts", parseSource(
+		"const selected = action.conflictPolicy['strategy']; if (selected) usePolicy();",
+		"src/sync/conflict-resolver.ts",
+	)));
+	assert.throws(() => assertConflictPolicyBoundary("src/sync/sync-cycle-finalization.ts", parseSource(
+		"function close(selected: ConflictStrategy) { return selected === 'prefer_local'; }",
+		"src/sync/sync-cycle-finalization.ts",
+	)));
+	assert.throws(() => assertAllowedValueImports(DECISION_FILE, parseSource(
+		'export { compileSamePathConflictContract } from "./conflict-policy-admission";',
+		DECISION_FILE,
+	)));
+	assert.throws(() => assertAllowedValueImports(DECISION_FILE, parseSource(
+		'import { compileSamePathConflictContract } from "./conflict-policy-admission";\n' +
+		'export { compileSamePathConflictContract };',
+		DECISION_FILE,
+	)));
+	assert.throws(() => assertAllowedValueImports("src/sync/plan-executor.ts", parseSource(
+		'import { reexportedCompiler } from "./plan-admission";',
+		"src/sync/plan-executor.ts",
+	)));
+	assert.throws(() => assertConflictPolicyBoundary("src/sync/conflict-action-contract.ts", parseSource(
+		'export function compileAgain(strategy) { return strategy === "prefer_local"\n' +
+		' ? { mode: "local_win", strategy } : { mode: "preserve", strategy }; }',
+		"src/sync/conflict-action-contract.ts",
+	)));
 });
 
 test("guard rejects action-first API and action-bearing observation", () => {
@@ -198,7 +382,7 @@ test("content comparison and fact binding cannot become independent policy stage
 });
 
 test("identity decision and subordinate proofs retain no module-scope state", () => {
-	for (const file of [DECISION_FILE, REPORT_FAMILY_FILE]) {
+	for (const file of [DECISION_FILE, REPORT_FAMILY_FILE, POLICY_COMPILER_FILE]) {
 		assertNoModuleState(parseSource(readFileSync(join(ROOT, file), "utf8"), file));
 	}
 });

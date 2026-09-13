@@ -6,11 +6,12 @@ import { compareContent } from "./decision-engine";
 import { sameContent, sameSynchronizedContent } from "./content-identity";
 import { isDotPrefixed } from "../utils/path";
 import { insertConflictSuffix } from "./conflict";
+import { compileSamePathConflictContract } from "./conflict-policy-admission";
 import type {
 	CandidateFact, PathObservation, RenameEvidence, ScopeProjection, SyncAction, SyncRecord,
 	RecordPublication, RenameContent, SyncSide,
 	PreservationCoverChild,
-	ConflictStrategy,
+	ConflictStrategy, ConflictAction,
 } from "./types";
 
 export type AdmissionFailureReason =
@@ -19,7 +20,6 @@ export type AdmissionFailureReason =
 	| "rename_mismatch" | "unknown_observation" | "unknown_scope"
 	| "remote_identity_missing" | "case_alias_content_mismatch"
 	| "tracked_identity_multiple_occurrences" | "preservation_destination_unavailable";
-
 export interface IdentityComponentDecision {
 	readonly component: IdentityComponent & { actions: SyncAction[] };
 	readonly reasons: readonly AdmissionFailureReason[];
@@ -218,7 +218,7 @@ function preservationCover(
 	facts: CurrentFacts,
 	abandonedReportedRelation: boolean,
 	conflictStrategy: ConflictStrategy,
-): SyncAction | AdmissionFailureReason | null {
+): ConflictAction | AdmissionFailureReason | null {
 	const candidateAddresses = new Set(facts.candidateFacts.flatMap((fact) => [
 		fact.requestedPath,
 		...[fact.local, fact.remote].flatMap((item) =>
@@ -287,7 +287,7 @@ function preservationCover(
 		action: "conflict", path: anchor, protocol: {
 			kind: "preservation_cover", collisionWitnesses, candidatePaths, preservedPaths, children, cleanup,
 		},
-		...(conflictStrategy === "prefer_local" ? { preferLocalDisposition: "preservation_required" as const } : {}),
+		conflictPolicy: { mode: "preserve", strategy: conflictStrategy },
 	};
 }
 
@@ -579,7 +579,7 @@ function materializeFile(
 		if (!local || !remote || (!remote.identityKey && !equal(local, remote))) return "remote_identity_missing";
 		if (kind === "conflict") return {
 			action: "conflict", path, local, remote, baseline, publication,
-			...preferLocalDisposition(file, conflictStrategy, allowPreferLocalWin),
+			...compileSamePathConflictContract(conflictFacts(file), conflictStrategy, allowPreferLocalWin),
 			remoteIdentitySource: file.remoteIdentitySource, additionalRemote: file.additionalRemote, additionalLocal: file.additionalLocal,
 		};
 		let content: RenameContent;
@@ -592,29 +592,33 @@ function materializeFile(
 		return { action: move.side === "local" ? "rename_local" : "rename_remote",
 			oldPath: move.from, path, local, remote, baseline, publication, content };
 	}
+	if (kind === "conflict") return { action: kind, path, local, remote, baseline, publication,
+		...compileSamePathConflictContract(conflictFacts(file), conflictStrategy, allowPreferLocalWin),
+		remoteIdentitySource: file.remoteIdentitySource,
+		additionalRemote: file.additionalRemote, additionalLocal: file.additionalLocal,
+		...(file.localPath ? { localPath: file.localPath } : {}),
+		...(file.remotePath ? { remotePath: file.remotePath } : {}),
+	};
 	if (kind) return { action: kind, path, local, remote, baseline, publication,
-		...(kind === "conflict" ? preferLocalDisposition(file, conflictStrategy, allowPreferLocalWin) : {}),
-		...(kind === "conflict" ? { remoteIdentitySource: file.remoteIdentitySource,
-			additionalRemote: file.additionalRemote, additionalLocal: file.additionalLocal } : {}),
 		...(file.localPath ? { localPath: file.localPath } : {}),
 		...(file.remotePath ? { remotePath: file.remotePath } : {}),
 	};
 	return null;
 }
 
-function preferLocalDisposition(
-	file: BoundFile,
-	strategy: ConflictStrategy,
-	allowLocalWin: boolean,
-): { readonly preferLocalDisposition?: "local_win_allowed" | "preservation_required" } {
-	if (strategy !== "prefer_local") return {};
-	const { path, local, remote, baseline } = file;
-	const simple = allowLocalWin && !!local && !!remote && !!baseline?.hash && baseline.path === path &&
-		local.path === path && remote.path === path && !file.move && !file.replacement &&
-		!file.additionalRemote && !file.additionalLocal && !file.localPath && !file.remotePath;
-	const proven = simple && !!local.hash && !!remote.hash &&
-		local.hash !== baseline.hash && remote.hash !== baseline.hash && local.hash !== remote.hash;
-	return { preferLocalDisposition: proven ? "local_win_allowed" : "preservation_required" };
+function conflictFacts(file: BoundFile) {
+	return {
+		path: file.path,
+		local: file.local,
+		remote: file.remote,
+		baseline: file.baseline,
+		hasMove: !!file.move,
+		replacement: !!file.replacement,
+		hasAdditionalRemote: !!file.additionalRemote,
+		hasAdditionalLocal: !!file.additionalLocal,
+		hasLocalPathOverride: !!file.localPath,
+		hasRemotePathOverride: !!file.remotePath,
+	};
 }
 
 function equal(local: FileEntity, remote: FileEntity): boolean {
