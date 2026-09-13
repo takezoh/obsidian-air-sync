@@ -1,4 +1,4 @@
-/* eslint max-lines: ["error", 960] -- the executor owns all fixed protocols, immediate pre-effect observation, terminal proof, and proof-gated commit routing. */
+/* eslint max-lines: ["error", 972] -- the executor owns all fixed protocols, immediate pre-effect observation, terminal proof, proof-gated commit routing, and the directory mkdir branch shared by push/pull. */
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
 import type {
@@ -357,6 +357,18 @@ async function runActionIO(
 			const source = pushing ? localFs : remoteFs;
 			const target = pushing ? remoteFs : localFs;
 			const targetPath = (pushing ? action.remotePath : action.localPath) ?? path;
+			if (expected.isDirectory) {
+				await checkPublicationInputs(action, ctx, []);
+				await target.mkdir(targetPath);
+				const [localEntity, remoteEntity] = await Promise.all([
+					localFs.stat(action.localPath ?? action.local?.path ?? path),
+					remoteFs.stat(action.remotePath ?? action.remote?.path ?? path),
+				]);
+				if (!localEntity || !remoteEntity) {
+					throw new ContentProofError("proof_mismatch", "Folder terminal endpoint missing after mkdir");
+				}
+				return { localEntity, remoteEntity };
+			}
 			const captured = await captureContentSnapshot(source, expected.path, expected);
 			const { content } = captured;
 			// Reading may yield to local edits or another writer. Revalidate the
@@ -549,7 +561,7 @@ async function proveFolderDescendants(action: RenameAction, ctx: ExecutionContex
 		const record = child.after ? receipt?.terminalRecord : child.source;
 		const [local, remote] = await Promise.all([ctx.localFs.stat(child.newPath), ctx.remoteFs.stat(child.newPath)]);
 		if (!record || !isExactPath(local, child.newPath) || !isExactPath(remote, child.newPath) ||
-			local.isDirectory || remote.isDirectory ||
+			local.isDirectory !== remote.isDirectory ||
 			(record.remoteIdentityKey && remote.identityKey !== record.remoteIdentityKey) ||
 			hasChanged(local, record) || hasRemoteChanged(remote, record) || !sameSynchronizedContent(local, remote, record)) {
 			throw new ContentProofError("proof_mismatch", `Folder descendant changed: ${child.newPath}`);

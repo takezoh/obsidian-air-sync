@@ -137,6 +137,33 @@ describe("applyScope", () => {
 		]));
 	});
 
+	it("drops a directory entry whose contents are universally ignored (never leaks the folder name)", () => {
+		const result = applyScope(changeSet({
+			entries: [{ path: "private", local: directory("private") }],
+			observations: [{ kind: "exact", side: "local", requestedPath: "private", entity: directory("private") }],
+		}), { ignorePatterns: ["private/**"] });
+
+		expect(result.changeSet.entries).toEqual([]);
+	});
+
+	it("keeps a directory included when its ignore pattern only excludes some children", () => {
+		const result = applyScope(changeSet({
+			entries: [{ path: "mixed", local: directory("mixed") }],
+			observations: [{ kind: "exact", side: "local", requestedPath: "mixed", entity: directory("mixed") }],
+		}), { ignorePatterns: ["mixed/*.secret"] });
+
+		expect(result.changeSet.entries.map((entry) => entry.path)).toEqual(["mixed"]);
+	});
+
+	it("never applies the wholly-ignored-directory probe to an ordinary file entry", () => {
+		const result = applyScope(changeSet({
+			entries: [{ path: "private.md", local: entity("private.md") }],
+			observations: [{ kind: "exact", side: "local", requestedPath: "private.md", entity: entity("private.md") }],
+		}), { ignorePatterns: ["private/**"] });
+
+		expect(result.changeSet.entries.map((entry) => entry.path)).toEqual(["private.md"]);
+	});
+
 	it("drops folder rename evidence when a descendant crosses scope", () => {
 		const folderRename: RenameEvidence = {
 			...rename("local", "old", "new"), isFolder: true,

@@ -26,6 +26,14 @@ export function exactEntity(observation: PathObservation): FileEntity | undefine
 		: undefined;
 }
 
+/** Like {@link exactEntity}, but also surfaces a directory at its exact requested
+ * path. Used only where a directory is a legitimate first-class fact (change
+ * detection's entries) — never where content identity matters (hash enrichment,
+ * alias-collision preservation stay file-only and keep using exactEntity). */
+export function resolvedEntity(observation: PathObservation): FileEntity | undefined {
+	return observation.kind === "exact" ? observation.entity : undefined;
+}
+
 /** Replace listing uncertainty with authoritative stat observations before planning absence. */
 export async function confirmEntryAbsences(
 	changeSet: { entries: MixedEntity[]; observations: PathObservation[] },
@@ -65,7 +73,7 @@ export async function confirmEntryAbsences(
 		} else {
 			changeSet.observations[index] = observation;
 		}
-		const entity = exactEntity(observation);
+		const entity = resolvedEntity(observation);
 		if (side === "local") entry.local = entity;
 		else entry.remote = entity;
 	}

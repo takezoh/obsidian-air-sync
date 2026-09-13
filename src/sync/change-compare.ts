@@ -29,6 +29,11 @@ import { checksumsEqual } from "./content-identity";
  * hash nor a usable mtime is conservatively treated as changed.
  */
 export function hasChanged(file: FileEntity, record: SyncRecord): boolean {
+	// A directory has no usable mtime (LocalFs.list() always reports 0 for
+	// folders) or hash, so the "no signal → assume changed" fallback below would
+	// make every synced folder look changed forever. Its presence, not its
+	// content, is what's tracked; absence is handled elsewhere.
+	if (file.isDirectory) return false;
 	// Authoritative when both sides carry a hash (the local stat path computed one).
 	if (file.hash && record.hash) {
 		return file.hash !== record.hash;
@@ -57,6 +62,8 @@ export function hasChanged(file: FileEntity, record: SyncRecord): boolean {
  * the remote change-detection contract pins.
  */
 export function hasRemoteChanged(file: FileEntity, record: SyncRecord): boolean {
+	// See hasChanged: a directory has no usable mtime/checksum signal either.
+	if (file.isDirectory) return false;
 	// Compare the backend checksum only when both sides have one of the SAME algorithm:
 	// a backend uses one algo per vault, so a mismatch (or a missing side) means "not
 	// comparable" → undefined, and we fall through to mtime / conservative.

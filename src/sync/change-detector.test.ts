@@ -80,16 +80,15 @@ describe("collectChanges — temperature selection", () => {
 			expect(paths).toEqual(["a.md", "b.md"]);
 		});
 
-		it("skips directories", async () => {
+		it("surfaces a directory as its own entry, alongside the file inside it", async () => {
 			addFile(localFs, "notes/a.md", "hello", 1000);
 			// notes/ directory is auto-created by addFile
 
 			const result = await collectChanges(makeDeps());
 
-			for (const entry of result.entries) {
-				expect(entry.local?.isDirectory ?? false).toBe(false);
-				expect(entry.remote?.isDirectory ?? false).toBe(false);
-			}
+			const notes = result.entries.find((entry) => entry.path === "notes");
+			expect(notes?.local?.isDirectory).toBe(true);
+			expect(result.entries.some((entry) => entry.path === "notes/a.md")).toBe(true);
 		});
 
 		it("returns empty entries when both sides are empty", async () => {
@@ -259,6 +258,34 @@ describe("collectChanges — temperature selection", () => {
 			expect(entry?.prevSync).toBeUndefined();
 		});
 
+		it("detects a new local folder with no sync record, alongside a new file", async () => {
+			addFile(localFs, "new-local.md", "brand new", 2000);
+			// "notes/" is auto-created as a side effect of addFile below.
+			addFile(localFs, "notes/child.md", "inside", 2000);
+			await stateStore.put(makeRecord("existing.md"));
+			addFile(localFs, "existing.md", "content", 1000);
+
+			const result = await collectChanges(makeDeps());
+
+			expect(result.temperature).toBe("warm");
+			const notes = result.entries.find((entry) => entry.path === "notes");
+			expect(notes?.local?.isDirectory).toBe(true);
+			expect(notes?.prevSync).toBeUndefined();
+		});
+
+		it("escalates to a full COLD collection when a previously-tracked folder is gone locally", async () => {
+			await stateStore.put(makeRecord("notes", { isDirectory: true, localSize: 0, remoteSize: 0 }));
+			// "notes" is not recreated locally — it was deleted.
+			addFile(remoteFs, "notes/child.md", "still there", 1000);
+
+			const result = await collectChanges(makeDeps());
+
+			// WARM cannot safely tell whether "notes" still has live remote
+			// descendants from its own targeted stats alone, so it escalates to a
+			// full COLD collection instead of admitting a possibly-unsafe delete.
+			expect(result.temperature).toBe("cold");
+		});
+
 		it("includes remote changed paths from getChangedPaths", async () => {
 			await stateStore.put(makeRecord("remote-changed.md"));
 			addFile(remoteFs, "remote-changed.md", "remote new content", 2000);
@@ -304,6 +331,22 @@ describe("collectChanges — temperature selection", () => {
 			const result = await collectChanges(makeDeps());
 
 			expect(result.temperature).toBe("hot");
+		});
+
+		it("surfaces a dirty local folder as its own directory entry", async () => {
+			addFile(localFs, "notes/child.md", "inside", 2000);
+			localTracker.acknowledge(localTracker.snapshot()); // initialize
+			localTracker.markDirty("notes");
+
+			const result = await collectChanges(makeDeps());
+
+			// A brand-new, unbaselined directory can escalate HOT into a WARM
+			// component acquisition (the same as an unbaselined file would) —
+			// what matters here is that the folder itself surfaces as a real
+			// directory entry either way, not which temperature got there.
+			expect(["hot", "warm"]).toContain(result.temperature);
+			const notes = result.entries.find((entry) => entry.path === "notes");
+			expect(notes?.local?.isDirectory).toBe(true);
 		});
 
 		it("only fetches stat for dirty paths", async () => {

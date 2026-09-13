@@ -27,6 +27,24 @@ describe("buildSyncRecord", () => {
 		expect(record.syncedAt).toBeGreaterThan(0);
 	});
 
+	it("sets isDirectory: true only when either side is a directory", () => {
+		const localDir = { path: "notes", isDirectory: true, size: 0, mtime: 0, hash: "" };
+		const remoteDir = { path: "notes", isDirectory: true, size: 0, mtime: 0, hash: "" };
+
+		const record = buildSyncRecord(localDir, remoteDir, "notes");
+
+		expect(record.isDirectory).toBe(true);
+	});
+
+	it("omits isDirectory entirely for an ordinary file record (never sets it false)", () => {
+		const local = makeFile("a.md", "hello", 1000).entity;
+		const remote = makeFile("a.md", "hello", 2000).entity;
+
+		const record = buildSyncRecord(local, remote, "a.md");
+
+		expect("isDirectory" in record).toBe(false);
+	});
+
 	it("handles missing local (pull from remote only)", () => {
 		const remote = makeFile("a.md", "hello", 2000).entity;
 		remote.hash = "remote-hash";

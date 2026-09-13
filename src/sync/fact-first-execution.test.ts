@@ -549,7 +549,10 @@ describe("fact-first Admission through terminal publication", () => {
 			if (race === "content") {
 				const next = await observe();
 				expect(next.failures).toEqual([]);
-				expect(next.executable.actions.map((action) => action.action)).toEqual(["pull"]);
+				// "B" (the folder itself, now present on both sides after the rename but
+				// with no baseline of its own yet) independently establishes one via
+				// "match", alongside the content pull.
+				expect(next.executable.actions.map((action) => action.action)).toEqual(["pull", "match"]);
 				const replay = await executePlan(next.executable, { localFs, remoteFs, committer: { stateStore } });
 				expect(replay.failed).toEqual([]);
 				expect(replay.blocked).toEqual([]);

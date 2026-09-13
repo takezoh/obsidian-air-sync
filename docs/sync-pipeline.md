@@ -162,6 +162,26 @@ hash costs I/O, so it leads with the hash only when one is already on hand):
 
 For no-baseline rows the localChanged/remoteChanged columns do not apply — `hasChanged`/`hasRemoteChanged` are not evaluated. `match` requires BOTH hashes present and equal plus equal sizes; because `list()` returns `hash: ""`, an unenriched entry has empty hashes and routes to `conflict` even when sizes match — see [Hash enrichment](#hash-enrichment).
 
+## Empty folders
+
+A directory is a first-class fact through the whole pipeline, not just an implicit
+side effect of a file underneath it — see [ADR 0009](adr/0009-empty-folders-are-a-first-class-sync-fact.md)
+for the full rationale. It reuses the same decision table above and the same
+`push`/`pull`/`match`/`delete_local`/`delete_remote` action kinds a file gets;
+`sameContent()` treats two directories as always identical (nothing to compare),
+and `hasChanged`/`hasRemoteChanged` treat a directory as always unchanged (no
+usable mtime/checksum signal), so an already-synced empty folder costs nothing on
+later cycles. The executor calls `mkdir()` instead of reading/writing content when
+the source entity is a directory.
+
+Folder *deletion* is guarded more conservatively than creation: `delete_local`/
+`delete_remote` for a directory are only admitted once the component's current
+facts show no live descendant still under that path — deferring, never guessing,
+when one is visible. A directory whose entire contents match an ignore pattern
+(e.g. `"private/**"`) is also excluded from scope entirely, even though such a
+pattern's own glob semantics don't match the bare directory path — otherwise an
+"invisible" folder would still leak its name to the remote as an empty container.
+
 ## Deletion safety
 
 There is no volume-based abort gate. Deletion safety rests on four independent layers:
@@ -170,6 +190,7 @@ There is no volume-based abort gate. Deletion safety rests on four independent l
 2. **layoutReady gate** -- sync does not run before the Obsidian vault index is loaded. `SyncScheduler` defers its event wiring, and `runSync()` is gated on `app.workspace.layoutReady`, so a `list()` that under-reports during startup cannot be mistaken for mass local deletions.
 3. **Authoritative observation** -- listing absence is re-`stat()`'d before it can authorize deletion. `LocalFs.stat()` falls back to the vault adapter on an index miss. `actual_resolved` proves an exact/alias path; `requested_echo` proves presence only; `null` proves absence; a thrown stat aborts the cycle. HOT checkpoint tombstones remain authoritative remote absence (Issue #44).
 4. **Whole-component admission** -- rename, alias, unresolved-presence, and stable-ID edges connect related managed paths. Paths excluded by system-junk rules, user ignore patterns, dot-path scope, Config Sync policy, or reserved-path policy are absent from the Admission snapshot. An included-to-included folder rename is one opaque folder operation; excluded physical entries are not identity nodes and do not participate in mapping completeness. If the component decision cannot prove that every managed resource survives, `admitDestructivePlan()` fails it before execution. Deletions are additionally soft (trash), but recoverability is not used as authorization.
+5. **Folder-descendant visibility** -- a directory delete is additionally deferred (not admitted) whenever this cycle's facts still show a live child under it (see Empty folders above); WARM escalates to a full COLD collection when a previously-tracked folder is missing locally, since only a complete listing can prove its remote descendants are genuinely gone.
 
 ## Identity-component action shaping
 

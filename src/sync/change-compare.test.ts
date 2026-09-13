@@ -93,6 +93,12 @@ describe("hasChanged", () => {
 		const record = makeRecord({ localMtime: 0, hash: "abc" });
 		expect(hasChanged(file, record)).toBe(true);
 	});
+
+	it("a directory is always unchanged, even with mtime 0 and no hash (no content signal to speak of)", () => {
+		const file = makeFile({ isDirectory: true, mtime: 0, hash: "" });
+		const record = makeRecord({ localMtime: 0, hash: "" });
+		expect(hasChanged(file, record)).toBe(false);
+	});
 });
 
 describe("hasRemoteChanged", () => {
@@ -207,5 +213,11 @@ describe("hasRemoteChanged", () => {
 		const file = makeFile({ mtime: 2000, remoteChecksum: { algo: "sha1", value: "same" } });
 		const record = makeRecord({ remoteMtime: 1000, remoteChecksum: { algo: "md5", value: "same" } });
 		expect(hasRemoteChanged(file, record)).toBe(true);
+	});
+
+	it("a directory is always unchanged remotely too, regardless of mtime drift", () => {
+		const file = makeFile({ isDirectory: true, mtime: 2000, hash: "" });
+		const record = makeRecord({ remoteMtime: 1000, hash: "" });
+		expect(hasRemoteChanged(file, record)).toBe(false);
 	});
 });

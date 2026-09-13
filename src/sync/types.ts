@@ -22,6 +22,8 @@ export interface SyncRecord {
 	backendMeta?: Record<string, unknown>;
 	/** Timestamp when this sync completed (Unix epoch ms) */
 	syncedAt: number;
+	/** Set only for a synced directory; omitted (never `false`) for every file record. */
+	isDirectory?: true;
 }
 
 /** Exact record expectations for one admitted successful path relocation. */

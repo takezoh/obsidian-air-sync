@@ -39,6 +39,9 @@ export function checksumsEqual(a: RemoteChecksum, b: RemoteChecksum): boolean {
  * then tie-breaks) rather than risk a cross-algorithm verdict.
  */
 export function sameContent(a: FileEntity, b: FileEntity): boolean {
+	// A directory has no bytes to compare — its identity is its existence and
+	// location, not its content, so two directories are always "the same".
+	if (a.isDirectory && b.isDirectory) return true;
 	const ka = contentKey(a);
 	const kb = contentKey(b);
 	return ka !== null && kb !== null && checksumsEqual(ka, kb);

@@ -1,3 +1,4 @@
+/* eslint max-lines: ["error", 373] -- the COLD/WARM/HOT acquisition strategies, their directory-fact handling, and the WARM-to-COLD folder-delete escalation are one acquisition owner. */
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
 import type { CandidateFact, IdentityEvidence, MixedEntity, PathObservation, SyncRecord } from "./types";
@@ -27,7 +28,7 @@ import {
 	confirmRenameOppositeEndpoints,
 	confirmUnknownRenameEndpoints,
 	ensureRenameEndpointObservations,
-	exactEntity,
+	resolvedEntity,
 	observePath,
 } from "./path-observation";
 
@@ -193,8 +194,8 @@ async function collectHot(
 		const prevSync = syncRecords.get(path);
 		return {
 			path,
-			local: exactEntity(localObservation),
-			remote: exactEntity(remoteObservation),
+			local: resolvedEntity(localObservation),
+			remote: resolvedEntity(remoteObservation),
 			prevSync,
 		};
 	});
@@ -227,6 +228,18 @@ async function collectWarm(
 			await remoteSnapshotAfterDelta(remoteFs),
 		);
 	}
+	if (allRecords.some((record) => record.isDirectory && !localFiles.some((file) => file.path === record.path))) {
+		// A previously-tracked folder is gone locally. Propagating that to remote
+		// (delete_remote) needs remote-descendant completeness that WARM's targeted
+		// stats can't prove — escalate, mirroring the folder-rename case above.
+		return collectCold(
+			deps,
+			allRecords,
+			remoteChanges,
+			localFiles,
+			await remoteSnapshotAfterDelta(remoteFs),
+		);
+	}
 
 	const recordMap = new Map(allRecords.map((r) => [r.path, r]));
 	const changedPaths = new Set<string>();
@@ -245,7 +258,6 @@ async function collectWarm(
 
 	// Compare local listing against sync records
 	for (const file of localFiles) {
-		if (file.isDirectory) continue;
 		const record = recordMap.get(file.path);
 		if (!record || hasChanged(file, record)) {
 			changedPaths.add(file.path);
@@ -253,7 +265,7 @@ async function collectWarm(
 	}
 
 	// Include paths that existed in records but are no longer in local listing (local deletions)
-	const localPathSet = new Set(localFiles.filter((f) => !f.isDirectory).map((f) => f.path));
+	const localPathSet = new Set(localFiles.map((f) => f.path));
 	for (const record of allRecords) {
 		if (!localPathSet.has(record.path)) {
 			changedPaths.add(record.path);
@@ -278,7 +290,7 @@ async function collectWarm(
 	const observations: PathObservation[] = localFiles.map((file) =>
 		observePath("local", file.path, file, "stat", "list"));
 	const localFileMap = new Map(observations.flatMap((observation) => {
-		const entity = exactEntity(observation);
+		const entity = resolvedEntity(observation);
 		return entity ? [[entity.path, entity] as const] : [];
 	}));
 
@@ -295,7 +307,7 @@ async function collectWarm(
 		return {
 			path,
 			local: localFileMap.get(path),
-			remote: exactEntity(remoteObservation),
+			remote: resolvedEntity(remoteObservation),
 			prevSync: recordMap.get(path),
 		};
 	});
@@ -336,14 +348,14 @@ async function collectCold(
 	for (const file of localFiles) {
 		const observation = observePath("local", file.path, file, "stat", "list");
 		observations.push(observation);
-		const entity = exactEntity(observation);
+		const entity = resolvedEntity(observation);
 		if (entity) getOrCreate(entity.path).local = entity;
 	}
 
 	for (const file of remoteFiles) {
 		const observation = observePath("remote", file.path, file, "stat", "list");
 		observations.push(observation);
-		const entity = exactEntity(observation);
+		const entity = resolvedEntity(observation);
 		if (entity) getOrCreate(entity.path).remote = entity;
 	}
 
