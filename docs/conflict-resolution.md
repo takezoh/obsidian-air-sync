@@ -2,7 +2,11 @@
 
 ## Conflict strategies
 
-`conflict-resolver.ts` exposes 3 user-facing strategies via `ConflictStrategy`:
+The settings surface exposes 3 user-facing strategies via `ConflictStrategy`.
+Observation uses the captured strategy only to decide whether bounded conflict-hash
+facts are required. Admission then compiles each conflict into a required
+`ConflictExecutionPolicy`; `conflict-resolver.ts` consumes that action-local policy
+and does not read or reinterpret the setting.
 
 | Strategy | Behavior |
 |----------|----------|
@@ -17,6 +21,11 @@ The setting is stored as `conflictStrategy` in `AirSyncSettings` (values `auto_m
 ## prefer_local proof boundary
 
 `prefer_local` is a conflict-resolution policy, not a general direction rule. Ordinary one-sided changes still push or pull normally. Admission authorizes local-wins only when current facts prove a bilateral edit of the same previously synchronized file. The proof is deliberately unavailable without a committed baseline, for edit/delete conflicts, or for compound identity/topology conflicts; those cases preserve the surviving or competing versions through the existing duplicate route.
+
+The proof/read predicate is a responsibility-local pure helper, not a generic strategy
+service: Observation may answer only whether more facts must be acquired, while the
+Admission helper owns the exhaustive mapping to `auto_merge`, `local_win`, or
+`preserve`. Every conflict action carries that closed policy together with its protocol.
 
 This boundary prevents an old device from overwriting newer remote content merely because it cold-started. A first sync, schema cold-start, cleared sync state, or any missing hash cannot establish which side is the intended local edit, so differing files are preserved as two versions. COLD, WARM, and HOT acquisition therefore produce the same decision from the same complete facts.
 
@@ -128,4 +137,4 @@ interface ConflictRecord {
 - The file is written as pretty-printed JSON (2-space indent). Parent dirs `.airsync` and `.airsync/conflicts` are each created only if missing
 - The device name is pre-sanitized (same as logging)
 
-Field contract: `action` is copied from the resolver's `ConflictResolutionResult.action`. `actionType` is the originating `SyncActionType` (`"conflict"` for the standard path). `strategy` is the configured user-facing `ConflictStrategy`. `duplicatePath`/`hasConflictMarkers` are populated only when the resolution produced them.
+Field contract: `action` is copied from the resolver's `ConflictResolutionResult.action`. `actionType` is the originating `SyncActionType` (`"conflict"` for the standard path). `strategy` is projected from the exact admitted action's `ConflictExecutionPolicy`, so a later settings change cannot alter audit provenance. `duplicatePath`/`hasConflictMarkers` are populated only when the resolution produced them.

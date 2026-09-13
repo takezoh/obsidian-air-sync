@@ -6,6 +6,7 @@ import {
 } from "./plan-admission";
 import { captureBatchObservation } from "./sync-cycle-planning";
 import { decideIdentityComponent } from "./identity-component-decision";
+import { compileSamePathConflictContract } from "./conflict-policy-admission";
 import { insertConflictSuffix } from "./conflict";
 import type { IdentityComponent } from "./plan-admission-graph";
 import type {
@@ -14,10 +15,21 @@ import type {
 	ScopeDisposition,
 	ScopeProjection,
 	SyncAction,
+	SyncActionType,
 	SyncRecord,
 	MixedEntity,
 	CandidateFact,
+	ConflictStrategy,
 } from "./types";
+
+interface FixtureAction {
+	readonly path: string;
+	readonly action: SyncActionType;
+	readonly oldPath?: string;
+	readonly local?: FileEntity;
+	readonly remote?: FileEntity;
+	readonly baseline?: SyncRecord;
+}
 
 function entity(path: string, identityKey?: string): FileEntity {
 	return { path, identityKey, pathAuthority: "actual_resolved", isDirectory: false, size: 1, mtime: 1, hash: "h" };
@@ -52,7 +64,7 @@ function vacantCandidates(base: string, hashes: readonly string[]): PathObservat
  * execution payloads are deliberately absent from the public Admission input.
  */
 function captureFixtureFacts(
-	fixtures: { actions: SyncAction[] }, evidence: readonly IdentityEvidence[],
+	fixtures: { actions: FixtureAction[] }, evidence: readonly IdentityEvidence[],
 	observations: readonly PathObservation[], scope: ScopeProjection, namespace: string,
 	baselinePaths?: readonly string[], entries: readonly MixedEntity[] = [],
 	candidateFacts: readonly CandidateFact[] = [],
@@ -64,7 +76,7 @@ function captureFixtureFacts(
 }
 
 function fixtureCandidateFacts(
-	actions: readonly SyncAction[], entries: readonly MixedEntity[], evidence: readonly IdentityEvidence[],
+	actions: readonly FixtureAction[], entries: readonly MixedEntity[], evidence: readonly IdentityEvidence[],
 	observations: readonly PathObservation[], extra: readonly PathObservation[],
 ): CandidateFact[] {
 	const allEntries = [
@@ -90,12 +102,13 @@ function fixtureCandidateFacts(
 }
 
 function admit(
-	actions: SyncAction[],
+	actions: FixtureAction[],
 	evidence: IdentityEvidence[] = [],
 	observations: PathObservation[] = [],
 	scope?: ScopeProjection,
 	entries: MixedEntity[] = [],
 	candidateObservations: PathObservation[] = [],
+	conflictStrategy: ConflictStrategy = "auto_merge",
 ) {
 	const candidateFacts = fixtureCandidateFacts(actions, entries, evidence, observations, candidateObservations);
 	return admitBatchObservation(captureFixtureFacts(
@@ -105,7 +118,7 @@ function admit(
 			...evidence.flatMap((item) => item.kind === "rename" ? [item.oldPath, item.newPath]
 				: item.kind === "alias" ? [item.requestedPath, item.resolvedPath] : item.occurrences.map(({ path }) => path)),
 		].map((path) => [path, "included"]))), "backend\0root", undefined, entries, candidateFacts,
-	));
+	), conflictStrategy);
 }
 
 function remoteRename(
@@ -163,7 +176,7 @@ function caseAliasFixture(
 	local: FileEntity = entity("case.md"),
 	remote: FileEntity = entity("Case.md", "R"),
 ) {
-	const actions: SyncAction[] = [
+	const actions: FixtureAction[] = [
 		{ path: "Case.md", action: "pull", remote },
 		{ path: "case.md", action: "push", local },
 	];
@@ -219,7 +232,48 @@ function folderFacts(suffixes: readonly string[] = ["x.md"]) {
 }
 
 describe("admitBatchObservation", () => {
-	it("partitions Prefer-local conflicts by common content proof", () => {
+	it("keeps Prefer-local local-win behind every compiler proof predicate", () => {
+		type SamePathConflictFacts = Parameters<typeof compileSamePathConflictContract>[0];
+		const baseline = recordFor(freshEntity("note.md", "base", "R"));
+		const local = freshEntity("note.md", "local");
+		const remote = freshEntity("note.md", "remote", "R");
+		const facts: SamePathConflictFacts = {
+			path: "note.md", local, remote, baseline,
+			hasMove: false, replacement: false,
+			hasAdditionalRemote: false, hasAdditionalLocal: false,
+			hasLocalPathOverride: false, hasRemotePathOverride: false,
+		};
+		expect(compileSamePathConflictContract(facts, "prefer_local", true).conflictPolicy)
+			.toEqual({ mode: "local_win", strategy: "prefer_local" });
+
+		const fallbacks: Array<[string, SamePathConflictFacts, boolean?]> = [
+			["disabled", facts, false],
+			["missing local", { ...facts, local: undefined }],
+			["missing remote", { ...facts, remote: undefined }],
+			["missing baseline", { ...facts, baseline: undefined }],
+			["missing baseline hash", { ...facts, baseline: { ...baseline, hash: "" } }],
+			["baseline path mismatch", { ...facts, baseline: { ...baseline, path: "old.md" } }],
+			["local path mismatch", { ...facts, local: { ...local, path: "local.md" } }],
+			["remote path mismatch", { ...facts, remote: { ...remote, path: "remote.md" } }],
+			["move", { ...facts, hasMove: true }],
+			["replacement", { ...facts, replacement: true }],
+			["additional remote", { ...facts, hasAdditionalRemote: true }],
+			["additional local", { ...facts, hasAdditionalLocal: true }],
+			["local path override", { ...facts, hasLocalPathOverride: true }],
+			["remote path override", { ...facts, hasRemotePathOverride: true }],
+			["missing local hash", { ...facts, local: { ...local, hash: "" } }],
+			["missing remote hash", { ...facts, remote: { ...remote, hash: "" } }],
+			["unchanged local", { ...facts, local: { ...local, hash: baseline.hash } }],
+			["unchanged remote", { ...facts, remote: { ...remote, hash: baseline.hash } }],
+			["equal sides", { ...facts, remote: { ...remote, hash: local.hash } }],
+		];
+		for (const [name, candidate, allowLocalWin = true] of fallbacks) {
+			expect(compileSamePathConflictContract(candidate, "prefer_local", allowLocalWin).conflictPolicy,
+				name).toEqual({ mode: "preserve", strategy: "prefer_local" });
+		}
+	});
+
+	it("compiles every conflict strategy into one closed action policy", () => {
 		const baseline = recordFor(freshEntity("note.md", "base", "R"));
 		const local = freshEntity("note.md", "local");
 		const remote = freshEntity("note.md", "remote", "R");
@@ -245,12 +299,24 @@ describe("admitBatchObservation", () => {
 				{ kind: "exact", side: "remote", requestedPath: "note.md", entity: remote },
 			],
 		}, projection({ "note.md": "included" }), undefined, "prefer_local");
+		const autoMerge = decideIdentityComponent(
+			component, projection({ "note.md": "included" }), undefined, "auto_merge",
+		);
+		const duplicate = decideIdentityComponent(
+			component, projection({ "note.md": "included" }), undefined, "duplicate",
+		);
 
 		expect(proven.component.actions).toMatchObject([{
-			action: "conflict", preferLocalDisposition: "local_win_allowed",
+			action: "conflict", conflictPolicy: { mode: "local_win", strategy: "prefer_local" },
 		}]);
 		expect(uncertain.component.actions).toMatchObject([{
-			action: "conflict", preferLocalDisposition: "preservation_required",
+			action: "conflict", conflictPolicy: { mode: "preserve", strategy: "prefer_local" },
+		}]);
+		expect(autoMerge.component.actions).toMatchObject([{
+			action: "conflict", conflictPolicy: { mode: "auto_merge", strategy: "auto_merge" },
+		}]);
+		expect(duplicate.component.actions).toMatchObject([{
+			action: "conflict", conflictPolicy: { mode: "preserve", strategy: "duplicate" },
 		}]);
 	});
 
@@ -273,7 +339,7 @@ describe("admitBatchObservation", () => {
 
 		expect(decision.component.actions).toMatchObject([{
 			action: "conflict", local: undefined, remote,
-			preferLocalDisposition: "preservation_required",
+			protocol: { kind: "same_path" }, conflictPolicy: { mode: "preserve", strategy: "prefer_local" },
 		}]);
 	});
 
@@ -295,7 +361,7 @@ describe("admitBatchObservation", () => {
 		);
 
 		expect(decision.component.actions).toMatchObject([{
-			action: "conflict", preferLocalDisposition: "preservation_required",
+			action: "conflict", protocol: { kind: "same_path" }, conflictPolicy: { mode: "preserve", strategy: "prefer_local" },
 		}]);
 	});
 
@@ -439,7 +505,7 @@ describe("admitBatchObservation", () => {
 	});
 
 	it("defers unobserved case-distinct deletions independently", () => {
-		const actions: SyncAction[] = [
+		const actions: FixtureAction[] = [
 			{ path: "A.md", action: "delete_local", local: entity("A.md") },
 			{ path: "a.md", action: "delete_remote", remote: entity("a.md") },
 		];
@@ -454,7 +520,7 @@ describe("admitBatchObservation", () => {
 	});
 
 	it("defers both opposing deletes joined by stable identity", () => {
-		const actions: SyncAction[] = [
+		const actions: FixtureAction[] = [
 			{ path: "A.md", action: "delete_local", local: entity("A.md") },
 			{ path: "a.md", action: "delete_remote", remote: entity("a.md", "X") },
 		];
@@ -503,7 +569,7 @@ describe("admitBatchObservation", () => {
 	});
 
 	it("defers every action touching a requested-echo observation", () => {
-		const actions: SyncAction[] = [
+		const actions: FixtureAction[] = [
 			{ path: "A.md", action: "delete_local", local: entity("A.md") },
 			{ path: "B.md", action: "match", remote: entity("B.md") },
 			{ path: "safe.md", action: "push", local: entity("safe.md") },
@@ -727,7 +793,7 @@ describe("admitBatchObservation", () => {
 	});
 
 	it("defers match and delete together when an alias links them", () => {
-		const actions: SyncAction[] = [
+		const actions: FixtureAction[] = [
 			{ path: "A.md", action: "delete_local", local: entity("A.md") },
 			{ path: "a.md", action: "match", remote: entity("a.md") },
 		];
@@ -1049,7 +1115,9 @@ describe("admitBatchObservation", () => {
 		expect(decision.component.actions[0]).toMatchObject({ action: "conflict", path: "a.md" });
 	});
 
-	it("preserves both readable versions when a case alias cannot prove one rename", () => {
+	it.each(["auto_merge", "prefer_local", "duplicate"] as const)(
+		"preserves both readable versions with %s provenance when a case alias cannot prove one rename",
+		(conflictStrategy) => {
 		const local = freshEntity("case.md", "local");
 		const remote = freshEntity("Case.md", "remote", "R");
 		const result = admit(
@@ -1073,6 +1141,8 @@ describe("admitBatchObservation", () => {
 				{ path: "Case.md", remote },
 				{ path: "case.md", local },
 			],
+			[],
+			conflictStrategy,
 		);
 
 		expect(result.failures).toEqual([]);
@@ -1080,6 +1150,7 @@ describe("admitBatchObservation", () => {
 		expect(result.executable.actions[0]).toMatchObject({
 			action: "conflict",
 			path: "Case.md",
+			conflictPolicy: { mode: "preserve", strategy: conflictStrategy },
 			protocol: {
 				kind: "preservation_cover",
 				children: [
@@ -1755,12 +1826,14 @@ describe("admitBatchObservation", () => {
 		expect(result.executable.actions).toEqual([{
 			action: "conflict", path: "B.md", local: action.local, remote: action.remote, baseline,
 			remoteIdentitySource: action.remote, additionalRemote: entity("B.md", "Y"),
+			additionalLocal: undefined, protocol: { kind: "same_path" },
+			conflictPolicy: { mode: "auto_merge", strategy: "auto_merge" },
 			publication: { source: baseline, destination: undefined },
 		}]);
 	});
 
 	it("rejects missing endpoint observations regardless of fixture action labels", () => {
-		const actions: SyncAction[] = [
+		const actions: FixtureAction[] = [
 			{ path: "A.md", action: "delete_local", local: entity("A.md") },
 			{ path: "B.md", action: "delete_remote", remote: entity("B.md", "X") },
 		];
@@ -1783,7 +1856,7 @@ describe("admitBatchObservation", () => {
 	});
 
 	it("admits source recreation when unequal remote identities prove both resources", () => {
-		const actions: SyncAction[] = [
+		const actions: FixtureAction[] = [
 			{ path: "A.md", action: "pull", remote: entity("A.md", "Y") },
 			{ path: "B.md", action: "pull", remote: entity("B.md", "X") },
 		];
@@ -1804,7 +1877,7 @@ describe("admitBatchObservation", () => {
 	});
 
 	it("does not import an extra proposed rename into a current-fact source-recreation decision", () => {
-		const actions: SyncAction[] = [
+		const actions: FixtureAction[] = [
 			{ path: "B.md", action: "pull", remote: entity("B.md", "X") },
 			{ path: "B.md", oldPath: "A.md", action: "rename_remote" },
 		];
@@ -1826,7 +1899,7 @@ describe("admitBatchObservation", () => {
 	});
 
 	it("does not join a disjoint resource through an obsolete action oldPath", () => {
-		const actions: SyncAction[] = [
+		const actions: FixtureAction[] = [
 			{ path: "B.md", action: "pull", remote: entity("B.md", "X") },
 			{ path: "C.md", oldPath: "A.md", action: "rename_remote", remote: entity("C.md", "Z") },
 		];
@@ -1850,7 +1923,7 @@ describe("admitBatchObservation", () => {
 	});
 
 	it("replaces a proposed conflict with match when current destination bytes agree", () => {
-		const actions: SyncAction[] = [
+		const actions: FixtureAction[] = [
 			{ path: "A.md", action: "pull", remote: entity("A.md", "Y") },
 			{ path: "B.md", action: "conflict", local: entity("B.md"), remote: entity("B.md", "X") },
 		];
@@ -1876,7 +1949,7 @@ describe("admitBatchObservation", () => {
 		const baselineEntity = freshEntity("B.md", "base", "X");
 		const baseline = recordFor(baselineEntity);
 		const local = freshEntity("B.md", "local");
-		const actions: SyncAction[] = [
+		const actions: FixtureAction[] = [
 			{ path: "A.md", action: "pull", remote: entity("A.md", "Y") },
 			{ path: "B.md", action: "conflict", local, remote: baselineEntity, baseline },
 		];
@@ -2037,7 +2110,7 @@ describe("admitBatchObservation", () => {
 
 		expect(decision.reasons).toEqual([]);
 		expect(decision.component.actions).toMatchObject([{
-			action: "conflict", preferLocalDisposition: "preservation_required",
+			action: "conflict", protocol: { kind: "same_path" }, conflictPolicy: { mode: "preserve", strategy: "prefer_local" },
 		}]);
 	});
 
@@ -2078,7 +2151,7 @@ describe("admitBatchObservation", () => {
 	});
 
 	it("classifies conflicting reports with missing counterpart facts as observation failure", () => {
-		const actions: SyncAction[] = [
+		const actions: FixtureAction[] = [
 			{ path: "A.md", action: "delete_local", local: entity("A.md") },
 			{ path: "B.md", action: "pull", remote: entity("B.md", "X") },
 			{ path: "C.md", action: "pull", remote: entity("C.md", "Y") },
@@ -2185,7 +2258,7 @@ describe("admitBatchObservation", () => {
 			path, hash: "h", localMtime: 1, remoteMtime: 1,
 			localSize: 1, remoteSize: 1, remoteIdentityKey, syncedAt: 1,
 		});
-		const actions: SyncAction[] = [
+		const actions: FixtureAction[] = [
 			{
 				path: "A.md", action: "delete_remote", remote: entity("A.md", "L"),
 				baseline: baseline("A.md", "L"),
@@ -2326,7 +2399,7 @@ describe("admitBatchObservation", () => {
 
 	it("materializes full-scan nested folder reports as one governing root action", () => {
 		const fixture = folderFacts(["sub/x.md"]);
-		const actions: SyncAction[] = [
+		const actions: FixtureAction[] = [
 			{ path: "A/sub/x.md", action: "delete_local", local: entity("A/sub/x.md") },
 			{ path: "B/sub/x.md", action: "pull", remote: entity("B/sub/x.md", "file:sub/x.md") },
 		];
@@ -2512,7 +2585,7 @@ describe("admitBatchObservation", () => {
 			path, hash: "h", localMtime: 1, remoteMtime: 1,
 			localSize: 1, remoteSize: 1, syncedAt: 1,
 		});
-		const actions: SyncAction[] = [
+		const actions: FixtureAction[] = [
 			{
 				path: "Templates/a.md", action: "delete_remote",
 				remote: entity("Templates/a.md"), baseline: previous("Templates/a.md"),
@@ -2552,7 +2625,7 @@ describe("admitBatchObservation", () => {
 	});
 
 	it("admits a remote folder rename from its managed descendants", () => {
-		const actions: SyncAction[] = [
+		const actions: FixtureAction[] = [
 			{ path: "Templates/a.md", action: "delete_local", local: entity("Templates/a.md") },
 			{ path: "TemplateS/a.md", action: "pull", remote: entity("TemplateS/a.md", "child-X") },
 		];
@@ -2585,7 +2658,7 @@ describe("admitBatchObservation", () => {
 			path: "Templates/a.md", hash: "h", localMtime: 1, remoteMtime: 1,
 			localSize: 1, remoteSize: 1, syncedAt: 1,
 		};
-		const actions: SyncAction[] = [
+		const actions: FixtureAction[] = [
 			{
 				path: "Templates/a.md", action: "delete_remote",
 				remote: entity("Templates/a.md"), baseline: previous,
@@ -2987,10 +3060,10 @@ describe("admitBatchObservation", () => {
 			localSize: 1, remoteSize: 1, remoteIdentityKey: "R", syncedAt: 1,
 		};
 		const local = freshEntity("B.md", "H1");
-		const oldAction: SyncAction = remoteOld && remoteOld !== "unknown"
+		const oldAction: FixtureAction = remoteOld && remoteOld !== "unknown"
 			? { path: "A.md", action: remoteOld.hash === "H0" ? "delete_remote" : "conflict", remote: remoteOld, baseline }
 			: { path: "A.md", action: "cleanup", baseline };
-		const newAction: SyncAction = remoteNew
+		const newAction: FixtureAction = remoteNew
 			? { path: "B.md", action: remoteNew.hash === local.hash ? "match" : "conflict", local, remote: remoteNew }
 			: { path: "B.md", action: "push", local };
 		const observedRemoteNew = expectedState === "converged" && remoteNew
@@ -3264,7 +3337,10 @@ describe("admitBatchObservation", () => {
 
 		expect(result.failures).toEqual([]);
 		expect(result.executable.actions).toEqual([{
-			action: "conflict", path: "B.md", local, baseline,
+			action: "conflict", path: "B.md", local, remote: undefined, baseline,
+			remoteIdentitySource: undefined, additionalRemote: undefined, additionalLocal: undefined,
+			protocol: { kind: "same_path" },
+			conflictPolicy: { mode: "auto_merge", strategy: "auto_merge" },
 			publication: { source: baseline, destination: undefined },
 		}]);
 	});

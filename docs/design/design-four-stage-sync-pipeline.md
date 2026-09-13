@@ -107,6 +107,13 @@ invariants:
     bytes join and union endpoint facts; foreign bytes remain ordinary and cause preservation_destination_unavailable.
     No alternate, ordinal, family, or frontier exists.
   enforcement: test
+- id: INV-015
+  statement: Observation may inspect the captured conflict strategy only to decide
+    bounded fact acquisition. Admission compiles every conflict into a required closed
+    action-local ConflictExecutionPolicy and protocol. Execution, resolver, audit, and
+    finalization do not receive or reinterpret the raw strategy; malformed or
+    protocol-incompatible policy fails before conflict I/O.
+  enforcement: contract
 boundaries:
   provides:
   - id: BOUNDARY-001
@@ -231,8 +238,8 @@ Keep the sync engine structurally convergent by assigning every normal-cycle dec
 The pipeline is `Observation -> Admission -> Execution -> Commit/finalization`.
 
 - Observation owns acquisition, configured-scope projection and a cut-consistent immutable carrier.
-- Admission binds current identity and topology before subordinate pure content comparison, and owns conflict policy and exact authorization.
-- Execution owns ordering and I/O for the authorized actions only.
+- Admission binds current identity and topology before subordinate pure content comparison, compiles the required action-local conflict policy, and owns exact authorization.
+- Execution owns ordering and I/O for the authorized actions only; it validates and consumes the admitted policy without consulting raw settings.
 - Commit/finalization owns per-action state publication, completion proof, and checkpoint commit-last.
 
 ## Boundaries

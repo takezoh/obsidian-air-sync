@@ -99,8 +99,11 @@ export type IdentityEvidence =
 /** User-facing strategy for resolving conflicts */
 export type ConflictStrategy = "auto_merge" | "prefer_local" | "duplicate";
 
-/** Admission-owned authorization consumed only by the Prefer-local conflict route. */
-export type PreferLocalDisposition = "local_win_allowed" | "preservation_required";
+/** Admission-owned conflict behavior and audit provenance carried by the exact action. */
+export type ConflictExecutionPolicy =
+	| { readonly mode: "auto_merge"; readonly strategy: "auto_merge" }
+	| { readonly mode: "local_win"; readonly strategy: "prefer_local" }
+	| { readonly mode: "preserve"; readonly strategy: ConflictStrategy };
 
 /** A record of a conflict resolution for audit/history purposes */
 export interface ConflictRecord {
@@ -202,16 +205,24 @@ interface SyncActionBase {
 	additionalRemote?: FileEntity;
 	/** A distinct local destination version that must survive replacement. */
 	additionalLocal?: FileEntity;
-	/** Closed conflict execution contract. Omitted only on legacy same-path actions. */
+	/** Conflict-only mechanism contract; required by ConflictAction. */
 	protocol?: ConflictProtocol;
-	/** Attempt-local policy authority; present on every conflict admitted for Prefer local. */
-	preferLocalDisposition?: PreferLocalDisposition;
 }
 
-/** Standard sync action (all types except rename actions) */
-export interface StandardSyncAction extends SyncActionBase {
-	action: Exclude<SyncActionType, "rename_remote" | "rename_local">;
+export interface ConflictAction extends SyncActionBase {
+	readonly action: "conflict";
+	/** Closed mechanism contract; same-path is explicit rather than an omitted default. */
+	readonly protocol: ConflictProtocol;
+	/** Required attempt-local behavior authority compiled only by Admission. */
+	readonly conflictPolicy: ConflictExecutionPolicy;
 }
+
+/** Standard sync action (all types except conflict and rename actions). */
+export interface NonConflictAction extends SyncActionBase {
+	action: Exclude<SyncActionType, "conflict" | "rename_remote" | "rename_local">;
+}
+
+export type StandardSyncAction = NonConflictAction | ConflictAction;
 
 /** Rename action (local or remote) — oldPath is required */
 export interface RenameAction extends SyncActionBase {

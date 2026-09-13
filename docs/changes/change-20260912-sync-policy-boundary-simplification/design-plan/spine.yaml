@@ -1,0 +1,426 @@
+artifact: design-plan-spine
+version: 2
+granularity_profile: boundary-complete
+
+scope_expansion_signals:
+  - id: scope-signal-action-policy-boundary
+    kind: shared_boundary
+    target_ref: contract-admission-policy-compiler
+    witness: Conflict actions, ExecutionContext, resolver input, and audit projection change together so Admission's one typed policy is the only downstream behavior authority.
+    requirement_refs: [FR-SP-001, FR-SP-004, FR-SP-005, FR-SP-007]
+    authority_refs: [critique-compare.json#scope-signal-action-policy-boundary, planning-source.txt]
+  - id: scope-signal-commit-owner-grounding
+    kind: critic_induced_contract
+    target_ref: contract-publication-lifecycle
+    witness: The accepted fourth forward owner must remain independently attributable; otherwise commitAction and attempt closeout can be reassigned to Execution while the policy-consumption contract still appears satisfied.
+    requirement_refs: [FR-SP-001, FR-SP-005, FR-SP-006]
+    authority_refs: [critique-pass2.json#issue-commit-owner-grounding, adr-20260903-four-stage-sync-pipeline]
+
+requirements:
+  - id: FR-SP-001
+    type: invariant
+    priority: must
+    statement: The sync pipeline retains exactly four forward responsibility owners, with Admission alone authorizing actions and conflict policy.
+  - id: FR-SP-002
+    type: event-driven
+    priority: must
+    statement: A normalized conflict strategy is captured once per cycle burst and remains consistent across acquisition, every retry attempt, Admission, execution provenance, and audit.
+  - id: FR-SP-003
+    type: conditional
+    priority: must
+    statement: Only Prefer-local performs the existing bounded post-scope proof enrichment, with no added reads for other strategies, excluded paths, or topology-connected candidates.
+  - id: FR-SP-004
+    type: invariant
+    priority: must
+    statement: Admission attaches exactly one valid closed ConflictExecutionPolicy to every admitted conflict action and no downstream stage compiles raw strategy into behavior.
+  - id: FR-SP-005
+    type: event-driven
+    priority: must
+    statement: Execution consumes only the typed action policy and fixed protocol, and rejects missing, malformed, or incompatible policy before conflict I/O or publication.
+  - id: FR-SP-006
+    type: invariant
+    priority: must
+    statement: Equal complete facts and captured strategy preserve admitted actions, conflict outcomes, exact effects, ordering, publications, completion, and retry convergence.
+  - id: FR-SP-007
+    type: event-driven
+    priority: must
+    statement: Conflict audit records project strategy provenance from each exact admitted action and remain best-effort and non-authoritative.
+  - id: NFR-SP-001
+    type: non_functional
+    priority: must
+    statement: Structural guards reject downstream raw-policy interpretation, optional/default conflict policy, foreign Admission-helper imports, retained proof state, and new durable writers.
+  - id: NFR-SP-002
+    type: non_functional
+    priority: must
+    statement: The refactor adds no provider calls, persistent state, retry, scheduling change, or extra non-Prefer-local proof read.
+
+components:
+  - id: component-cycle-coordination
+    kind: existing
+    contract_refs: [contract-cycle-audit-provenance]
+    paths:
+      - src/sync/orchestrator.ts
+      - src/sync/execution-result.ts
+      - src/sync/conflict-history.ts
+  - id: component-observation
+    kind: existing
+    contract_refs: [contract-observation-policy-gate]
+    paths:
+      - src/sync/sync-cycle-planning.ts
+      - src/sync/change-hash-enrichment.ts
+  - id: component-admission
+    kind: existing
+    contract_refs: [contract-admission-policy-compiler]
+    paths:
+      - src/sync/plan-admission.ts
+      - src/sync/identity-component-decision.ts
+      - src/sync/types.ts
+  - id: component-execution
+    kind: existing
+    contract_refs: [contract-execution-policy-consumption]
+    paths:
+      - src/sync/plan-executor.ts
+      - src/sync/conflict-resolver.ts
+      - src/sync/execution-result.ts
+  - id: component-terminal-publication
+    kind: existing
+    contract_refs: [contract-publication-lifecycle]
+    paths:
+      - src/sync/state-committer.ts
+      - src/sync/sync-cycle-finalization.ts
+
+contracts:
+  - id: contract-observation-policy-gate
+    dimension: control_flow
+    owner: component-observation
+    requirement_refs: [FR-SP-002, FR-SP-003, NFR-SP-002]
+    unit_refs: [unit-policy-contract-red, unit-cycle-audit-docs]
+    adr_refs:
+      - adr-20260903-four-stage-sync-pipeline
+      - adr-20260905-fact-first-component-admission
+    verification:
+      - id: verify-observation-read-gate
+        tier: T0
+        command: npm test -- src/sync/sync-cycle-planning.test.ts
+      - id: verify-admission-owner-guard
+        tier: T0
+        command: node --test sync-admission-authority-guard.test.mjs
+    discretion:
+      - id: discretion-observation-predicate-shape
+        unit_ref: unit-cycle-audit-docs
+        question: How should the Observation-local pure predicate express the existing Prefer-local enrichment gate?
+        scope:
+          files: [src/sync/sync-cycle-planning.ts]
+          component: component-observation
+          visibility: private
+        escalate_when:
+          - The helper becomes importable outside Observation or changes the existing candidate/read filter.
+        constraints:
+          - It may select acquisition only and may not emit action or policy disposition.
+        preserves:
+          contract_refs: [contract-observation-policy-gate]
+          invariant_refs: [FR-SP-003]
+        verification_refs: [verify-observation-read-gate, verify-admission-owner-guard]
+        difficulty_inputs:
+          decision_reasoning: mechanical
+          boundary_reach: private
+          context_scope: files
+          reversibility: trivial
+          verification_strength: discriminating
+          runtime_risk: normal
+          coupling: independent
+          grounding: evidenced
+  - id: contract-admission-policy-compiler
+    dimension: integration_contract
+    owner: component-admission
+    requirement_refs: [FR-SP-001, FR-SP-004, FR-SP-006, NFR-SP-001]
+    unit_refs: [unit-policy-contract-red, unit-admission-policy]
+    adr_refs:
+      - adr-20260831-admission-owns-identity-component-decisi
+      - adr-20260903-four-stage-sync-pipeline
+      - adr-20260905-fact-first-component-admission
+    verification:
+      - id: verify-policy-mapping-matrix
+        tier: T0
+        command: npm test -- src/sync/plan-admission.test.ts
+      - id: verify-admission-owner-guard
+        tier: T0
+        command: node --test sync-admission-authority-guard.test.mjs
+      - id: verify-convergence-matrix
+        tier: T1
+        command: npm test -- src/sync/convergence.test.ts
+    discretion:
+      - id: discretion-policy-helper-placement
+        unit_ref: unit-admission-policy
+        question: Should the private pure policy compiler remain in identity-component-decision.ts or move to one Admission-only helper file?
+        scope:
+          files:
+            - src/sync/identity-component-decision.ts
+            - src/sync/conflict-policy-admission.ts
+          component: component-admission
+          visibility: private
+        escalate_when:
+          - Another production stage imports the compiler.
+          - The helper accepts filesystem/state capabilities, retains module state, or decides identity eligibility.
+          - The choice requires files outside the unit boundary.
+        constraints:
+          - Preserve the exhaustive mapping table and canonical materialization path.
+          - Keep the helper pure and attempt-local.
+        preserves:
+          contract_refs: [contract-admission-policy-compiler]
+          invariant_refs: [FR-SP-001, FR-SP-004]
+        verification_refs: [verify-policy-mapping-matrix, verify-admission-owner-guard]
+        difficulty_inputs:
+          decision_reasoning: local_tradeoff
+          boundary_reach: private
+          context_scope: files
+          reversibility: trivial
+          verification_strength: discriminating
+          runtime_risk: data_loss
+          coupling: coupled_within_unit
+          grounding: evidenced
+  - id: contract-execution-policy-consumption
+    dimension: failure_recovery
+    owner: component-execution
+    requirement_refs: [FR-SP-005, FR-SP-006, NFR-SP-001, NFR-SP-002]
+    unit_refs: [unit-execution-consumption]
+    adr_refs:
+      - adr-20260903-four-stage-sync-pipeline
+      - adr-20260905-fact-first-component-admission
+      - adr-0001-commit-last-recovery
+    verification:
+      - id: verify-executor-policy-validation
+        tier: T0
+        command: npm test -- src/sync/plan-executor.test.ts
+      - id: verify-conflict-resolver-matrix
+        tier: T0
+        command: npm test -- src/sync/conflict-resolver.test.ts
+      - id: verify-interruption-convergence
+        tier: T1
+        command: npm test -- src/sync/fact-first-execution.test.ts src/sync/convergence.test.ts
+      - id: verify-state-owner-guard
+        tier: T0
+        command: node --test sync-state-ownership-guard.test.mjs
+    partition:
+      outcomes: [determinate, unknown, inconclusive]
+      default_policy: Missing or invalid policy is fatal before I/O; changed or unprovable current facts block/fail without policy conversion; only valid current inputs execute.
+    discretion:
+      - id: discretion-policy-validator-shape
+        unit_ref: unit-execution-consumption
+        question: Which private exhaustive validation form rejects malformed conflict policies before I/O?
+        scope:
+          files: [src/sync/plan-executor.ts]
+          component: component-execution
+          visibility: private
+        escalate_when:
+          - Validation defaults a missing variant, changes external error semantics, or becomes a policy compiler.
+        constraints:
+          - Unsafe-cast malformed actions fail before every filesystem and committer call.
+        preserves:
+          contract_refs: [contract-execution-policy-consumption]
+          invariant_refs: [FR-SP-005]
+        verification_refs: [verify-executor-policy-validation]
+        difficulty_inputs:
+          decision_reasoning: mechanical
+          boundary_reach: private
+          context_scope: files
+          reversibility: trivial
+          verification_strength: discriminating
+          runtime_risk: data_loss
+          coupling: coupled_within_unit
+          grounding: evidenced
+  - id: contract-publication-lifecycle
+    dimension: state_lifecycle
+    owner: component-terminal-publication
+    requirement_refs: [FR-SP-001, FR-SP-005, FR-SP-006, NFR-SP-002]
+    unit_refs: [unit-execution-consumption]
+    adr_refs:
+      - adr-20260903-four-stage-sync-pipeline
+      - adr-20260905-fact-first-component-admission
+      - adr-0001-commit-last-recovery
+    verification:
+      - id: verify-proven-publication
+        tier: T1
+        command: npm test -- src/sync/state-committer.test.ts src/sync/fact-first-execution.test.ts src/sync/convergence.test.ts
+      - id: verify-attempt-closeout
+        tier: T1
+        command: npm test -- src/sync/sync-cycle-finalization.test.ts src/sync/orchestrator.test.ts
+      - id: verify-state-owner-guard
+        tier: T0
+        command: node --test sync-state-ownership-guard.test.mjs
+    partition:
+      outcomes: [determinate, inconclusive, conflicting]
+      default_policy: Proven action success publishes through exact per-file CAS; only a wholly clean cycle commits its checkpoint, while every incomplete or exceptional attempt settles siblings and aborts its working view before classification or retry.
+  - id: contract-cycle-audit-provenance
+    dimension: user_observability
+    owner: component-cycle-coordination
+    requirement_refs: [FR-SP-002, FR-SP-006, FR-SP-007]
+    unit_refs: [unit-cycle-audit-docs]
+    adr_refs:
+      - adr-20260903-four-stage-sync-pipeline
+    verification:
+      - id: verify-cycle-strategy-consistency
+        tier: T1
+        command: npm test -- src/sync/orchestrator.test.ts
+      - id: verify-audit-projection
+        tier: T0
+        command: npm test -- src/sync/plan-executor.test.ts src/sync/conflict-history.test.ts
+
+adrs:
+  - id: adr-20260831-admission-owns-identity-component-decisi
+    status: accepted
+    decision_input_refs: [decision-input-admission-single-authority]
+  - id: adr-20260903-four-stage-sync-pipeline
+    status: accepted
+    decision_input_refs: [decision-input-four-stage-ownership, decision-input-unified-conflict-route]
+  - id: adr-20260905-fact-first-component-admission
+    status: accepted
+    decision_input_refs: [decision-input-fact-only-observation, decision-input-ordered-publication]
+  - id: adr-0001-commit-last-recovery
+    status: accepted
+    decision_input_refs: [decision-input-stateless-retry]
+
+units:
+  - title: unit-policy-contract-red
+    chunk: "0"
+    contract_refs:
+      - contract-observation-policy-gate
+      - contract-admission-policy-compiler
+    files:
+      - src/sync/plan-admission.test.ts
+      - src/sync/plan-executor.test.ts
+      - src/sync/sync-cycle-planning.test.ts
+      - sync-admission-authority-guard.test.mjs
+    depends_on: []
+    acceptance: [acceptance-policy-owner, acceptance-policy-matrix, acceptance-read-bound, acceptance-malformed-fail-closed]
+    objective: Pin the planned ownership, mapping, malformed-action, and no-extra-read boundary with discriminating RED tests and guard fixtures.
+    output_format: Focused tests and AST guard fixtures only; no production behavior change.
+    tool_guidance: Run focused Vitest files and the Node AST guard before production edits.
+    task_boundaries: Do not weaken existing expectations, add rule exceptions, or alter production files.
+    decision_closure_reason: The selected typed boundary and mapping are fixed; this unit only establishes falsifiable evidence.
+  - title: unit-admission-policy
+    chunk: "1"
+    contract_refs: [contract-admission-policy-compiler]
+    files:
+      - src/sync/types.ts
+      - src/sync/identity-component-decision.ts
+      - src/sync/conflict-policy-admission.ts
+      - src/sync/plan-admission.test.ts
+      - sync-admission-authority-guard.test.mjs
+    depends_on: [unit-policy-contract-red]
+    acceptance: [acceptance-policy-owner, acceptance-policy-matrix]
+    objective: Define the required typed conflict execution policy and compile it only in Admission's canonical action materialization path.
+    output_format: TypeScript union, pure Admission compiler, updated constructors/tests, and ownership guard.
+    tool_guidance: Prefer the same-file helper unless the Admission-only module split materially reduces signature/branch duplication; run focused Admission tests after each step.
+    task_boundaries: Do not change identity grouping, local-win eligibility, action ordering, protocol contents, or publication expectations.
+    decision_closure_reason: Helper placement is delegated by discretion-policy-helper-placement; policy meaning is closed.
+  - title: unit-execution-consumption
+    chunk: "2"
+    contract_refs: [contract-execution-policy-consumption, contract-publication-lifecycle]
+    files:
+      - src/sync/plan-executor.ts
+      - src/sync/conflict-resolver.ts
+      - src/sync/plan-executor.test.ts
+      - src/sync/conflict-resolver.test.ts
+      - src/sync/fact-first-execution.test.ts
+      - src/sync/convergence.test.ts
+      - src/sync/state-committer.test.ts
+      - src/sync/sync-cycle-finalization.test.ts
+      - sync-state-ownership-guard.test.mjs
+    depends_on: [unit-admission-policy]
+    acceptance: [acceptance-policy-matrix, acceptance-malformed-fail-closed, acceptance-state-and-retry]
+    objective: Remove downstream raw strategy authority and execute only validated action-carried policy without changing effects or publication.
+    output_format: Updated execution/resolver APIs, exhaustive validation/dispatch, and focused behavior/convergence tests.
+    tool_guidance: Compare pre/post outcome fixtures and inject unsafe-cast malformed actions plus destination/proof mutations.
+    task_boundaries: Do not alter scheduling, retries, preservation naming/order, mutation barriers, CAS, or finalization.
+    decision_closure_reason: Validator syntax is delegated by discretion-policy-validator-shape; failure timing and outcome semantics are fixed.
+  - title: unit-cycle-audit-docs
+    chunk: "3"
+    contract_refs:
+      - contract-observation-policy-gate
+      - contract-cycle-audit-provenance
+    files:
+      - src/sync/orchestrator.ts
+      - src/sync/sync-cycle-planning.ts
+      - src/sync/execution-result.ts
+      - src/sync/conflict-history.ts
+      - src/sync/orchestrator.test.ts
+      - src/sync/conflict-history.test.ts
+      - src/sync/plan-executor.test.ts
+      - docs/design/design-four-stage-sync-pipeline.md
+      - docs/sync-pipeline.md
+      - docs/conflict-resolution.md
+    depends_on: [unit-execution-consumption]
+    acceptance: [acceptance-read-bound, acceptance-cycle-audit, acceptance-repository-gate]
+    objective: Close exact cycle/audit provenance, document the typed boundary, and pass structural and repository gates.
+    output_format: Action-derived audit projection, orchestration tests, narrow documentation upsert/corrections, and green gate evidence.
+    tool_guidance: Run focused orchestration/history tests, both ownership guards, then the required lint, bot-repro, build, and coverage gate.
+    task_boundaries: Do not change settings wire, history persistence behavior, tracker acknowledgement, checkpoint lifecycle, or unrelated stale-document claims.
+    decision_closure_reason: No product or architecture choice remains; branch creation is conductor-owned execution work.
+
+acceptance:
+  - id: acceptance-policy-owner
+    criteria: Structural guard permits raw strategy interpretation only at normalized capture/acquisition and Admission compilation, and rejects downstream policy selection or a foreign helper importer.
+    requirement_refs: [FR-SP-001, FR-SP-004, FR-SP-005, NFR-SP-001]
+  - id: acceptance-policy-matrix
+    criteria: Focused tests cover every closed mapping row and preserve all Auto merge, Duplicate, Prefer-local, and preservation-cover outcomes.
+    requirement_refs: [FR-SP-004, FR-SP-006]
+  - id: acceptance-read-bound
+    criteria: Read spies prove no new proof read for Auto merge, Duplicate, excluded paths, or topology-connected candidates.
+    requirement_refs: [FR-SP-003, NFR-SP-002]
+  - id: acceptance-malformed-fail-closed
+    criteria: Missing, malformed, or protocol-incompatible policy fails before I/O, while fresh destination/proof changes block without policy conversion.
+    requirement_refs: [FR-SP-005]
+  - id: acceptance-cycle-audit
+    criteria: A settings mutation after cycle capture cannot change execution or audit provenance, ordered duplicate paths, history cap, or best-effort semantics.
+    requirement_refs: [FR-SP-002, FR-SP-007]
+  - id: acceptance-state-and-retry
+    criteria: Interruption and convergence tests prove no new state owner, exact successful publication, one attempt closeout, and stateless re-observation.
+    requirement_refs: [FR-SP-006, NFR-SP-002]
+  - id: acceptance-repository-gate
+    criteria: Lint, bot-repro, build, coverage, Admission ownership guard, and state ownership guard pass without suppression.
+    requirement_refs: [NFR-SP-001, NFR-SP-002]
+
+dispositions:
+  - decision_input_ref: decision-input-user-simplify-boundaries
+    disposition: Adopt a required Admission-produced typed action policy rather than leaving raw strategy interpretation scattered.
+    contract_refs: [contract-admission-policy-compiler, contract-execution-policy-consumption]
+  - decision_input_ref: decision-input-user-helper-option
+    disposition: Allow only responsibility-local pure helpers; reject a shared strategy service or generic rule engine.
+    contract_refs: [contract-observation-policy-gate, contract-admission-policy-compiler]
+  - decision_input_ref: decision-input-four-stage-ownership
+    disposition: Preserve unchanged.
+    adr_refs: [adr-20260903-four-stage-sync-pipeline]
+    contract_refs: [contract-admission-policy-compiler, contract-execution-policy-consumption, contract-publication-lifecycle]
+  - decision_input_ref: decision-input-admission-single-authority
+    disposition: Admission alone compiles behavior; downstream stages consume it.
+    adr_refs: [adr-20260831-admission-owns-identity-component-decisi]
+    contract_refs: [contract-admission-policy-compiler]
+  - decision_input_ref: decision-input-fact-only-observation
+    disposition: Observation uses strategy only as a bounded acquisition gate and emits no action or disposition.
+    adr_refs: [adr-20260905-fact-first-component-admission]
+    contract_refs: [contract-observation-policy-gate]
+  - decision_input_ref: decision-input-cycle-strategy-capture
+    disposition: Preserve one capture across attempts; move audit provenance onto each admitted action.
+    contract_refs: [contract-cycle-audit-provenance]
+  - decision_input_ref: decision-input-prefer-local-safety
+    disposition: Preserve exact local-win proof and fail/preserve fallback without widening.
+    contract_refs: [contract-admission-policy-compiler, contract-execution-policy-consumption]
+  - decision_input_ref: decision-input-unified-conflict-route
+    disposition: Preserve the single resolver/executor route and exact pre-effect validation.
+    adr_refs: [adr-20260903-four-stage-sync-pipeline]
+    contract_refs: [contract-execution-policy-consumption]
+  - decision_input_ref: decision-input-ordered-publication
+    disposition: Preserve ordering, serial complex interval, suffix blocking, and exact per-action publication.
+    adr_refs: [adr-20260905-fact-first-component-admission]
+    contract_refs: [contract-execution-policy-consumption, contract-publication-lifecycle]
+  - decision_input_ref: decision-input-stateless-retry
+    disposition: Preserve commit/abort closeout and re-observation without policy or recovery state.
+    adr_refs: [adr-0001-commit-last-recovery]
+    contract_refs: [contract-publication-lifecycle]
+  - decision_input_ref: decision-input-settings-wire
+    disposition: Preserve persisted strategy union/default/normalization and ConflictRecord strategy field.
+    contract_refs: [contract-cycle-audit-provenance]
+  - decision_input_ref: decision-input-structural-verification
+    disposition: Extend structural and behavior tests so relocation without responsibility closure fails.
+    contract_refs: [contract-observation-policy-gate, contract-admission-policy-compiler, contract-execution-policy-consumption, contract-publication-lifecycle]

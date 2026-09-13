@@ -329,10 +329,13 @@ guard also rejects the retired conflict execution switches and legacy resolver A
 `fact-first-execution.test.ts` pins ordinary and renamed conflict preservation,
 original-source revalidation, arriving-destination rejection, terminal-copy integrity,
 and interrupted merge convergence without compensating rollback.
-The `prefer_local` proof result is one such Admission disposition: it remains
-attempt-local, requires a common committed content baseline, and fails closed to the
-existing preservation route when proof is incomplete. It must not become a COLD/HOT
-branch, durable recovery marker, or resolver-owned policy decision.
+The `prefer_local` proof result is compiled by Admission into the required
+action-local `ConflictExecutionPolicy`: a proven ordinary same-path edit/edit conflict
+becomes `local_win`; incomplete or ineligible proof becomes `preserve`. Observation may
+use a responsibility-local pure predicate only to acquire the bounded proof facts.
+Execution, resolver, and audit may consume the admitted policy but cannot receive or
+reinterpret the raw strategy. The policy remains attempt-local and must not become a
+COLD/HOT branch, durable recovery marker, or resolver-owned decision.
 Observation evidence and Admission dispositions/failure reasons are immutable
 cycle-local values only. Do not persist them, add them to `SyncRecord`, or introduce an
 Orchestrator field to carry them across cycles. Case-alias handling must use one

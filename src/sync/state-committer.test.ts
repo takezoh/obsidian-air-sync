@@ -151,7 +151,10 @@ describe("commitAction", () => {
 	it("conflict: upserts SyncRecord", async () => {
 		const { entity: local } = makeFile("d.md", "local", 1000);
 		const { entity: remote } = makeFile("d.md", "remote", 2000);
-		const action: SyncAction = { path: "d.md", action: "conflict" };
+		const action: SyncAction = {
+			path: "d.md", action: "conflict", protocol: { kind: "same_path" },
+			conflictPolicy: { mode: "auto_merge", strategy: "auto_merge" },
+		};
 
 		await commitAction(withPublication(action), local, remote, makeCtx());
 

@@ -89,6 +89,10 @@ export function normalizeCaseAliasParentTransition(
 		}
 		if (decided.action !== "push" && decided.action !== "pull" &&
 			decided.action !== "match" && decided.action !== "conflict") return undefined;
+		if (decided.action === "conflict") {
+			actions.push({ ...decided, path: alias.requestedPath });
+			continue;
+		}
 		actions.push({
 			path: alias.requestedPath,
 			action: decided.action,

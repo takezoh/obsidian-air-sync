@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { prepareConflict, resolveConflict } from "./conflict-resolver";
-import type { SyncRecord } from "./types";
+import type { ConflictExecutionPolicy, SyncRecord } from "./types";
 import { AuthError } from "../fs/errors";
 import {
 	createMockLocalFs, createMockRemoteFs, type MockFileSystem,
@@ -8,6 +8,11 @@ import {
 	addFile,
 	readText,
 } from "../__mocks__/sync-test-helpers";
+
+const AUTO_MERGE_POLICY: ConflictExecutionPolicy = { mode: "auto_merge", strategy: "auto_merge" };
+const DUPLICATE_POLICY: ConflictExecutionPolicy = { mode: "preserve", strategy: "duplicate" };
+const LOCAL_WIN_POLICY: ConflictExecutionPolicy = { mode: "local_win", strategy: "prefer_local" };
+const PREFER_LOCAL_PRESERVE_POLICY: ConflictExecutionPolicy = { mode: "preserve", strategy: "prefer_local" };
 
 describe("resolveConflict", () => {
 	let localFs: MockFileSystem;
@@ -99,7 +104,7 @@ describe("resolveConflict", () => {
 			const result = await resolveConflict({
 				path: "new.md", localPath: "new.md", remotePath: "old.md", baselinePath: "old.md",
 				localFs, remoteFs, local, remote,
-			}, "duplicate");
+			}, DUPLICATE_POLICY);
 
 			expect(result).toMatchObject({ action: "duplicated", duplicatePath: "new.conflict.md" });
 			expect(readText(localFs, "new.conflict.md")).toBe("remote changed");
@@ -120,7 +125,7 @@ describe("resolveConflict", () => {
 				path: "new.md", localPath: "new.md", remotePath: "old.md",
 				remoteIdentitySource: source, additionalRemote: remote, baselinePath: "old.md",
 				localFs, remoteFs, local, remote: source,
-			}, "duplicate");
+			}, DUPLICATE_POLICY);
 
 			expect(result).toMatchObject({ action: "duplicated", duplicatePath: "new.conflict.md" });
 			expect(result.verifiedOutputs).toMatchObject([
@@ -145,8 +150,8 @@ describe("resolveConflict", () => {
 				localFs, remoteFs, local, remote: source,
 			} as const;
 
-			await resolveConflict(context, "duplicate");
-			const retried = await resolveConflict(context, "duplicate");
+			await resolveConflict(context, DUPLICATE_POLICY);
+			const retried = await resolveConflict(context, DUPLICATE_POLICY);
 
 			expect(retried.verifiedOutputs?.map(({ path }) => path)).toEqual([
 				"new.conflict-3.md", "new.conflict-4.md",
@@ -174,7 +179,7 @@ describe("resolveConflict", () => {
 				path: "new.md", localPath: "new.md", remotePath: "old.md",
 				remoteIdentitySource: source, localFs, remoteFs, local,
 				remote: source,
-			}, "duplicate")).rejects.toMatchObject({ kind: "proof_mismatch" });
+			}, DUPLICATE_POLICY)).rejects.toMatchObject({ kind: "proof_mismatch" });
 			expect(readText(remoteFs, "new.conflict.md")).toBe("R");
 		});
 
@@ -273,7 +278,7 @@ describe("resolveConflict", () => {
 				path: "new.md", localPath: "new.md", remotePath: "old.md",
 				remoteIdentitySource: source, additionalRemote: occupant,
 				localFs, remoteFs, local, remote: source,
-			}, "duplicate");
+			}, DUPLICATE_POLICY);
 
 			expect(reads.get("old.md")).toBe(2);
 			expect(reads.get("new.md")).toBe(2);
@@ -288,7 +293,7 @@ describe("resolveConflict", () => {
 
 			const result = await resolveConflict(
 				{ path: "file.md", localFs, remoteFs, local, remote },
-				"duplicate",
+				DUPLICATE_POLICY,
 			);
 
 			expect(result.action).toBe("duplicated");
@@ -305,7 +310,7 @@ describe("resolveConflict", () => {
 
 			const result = await resolveConflict(
 				{ path: "file.md", localFs, remoteFs, remote },
-				"duplicate",
+				DUPLICATE_POLICY,
 			);
 
 			expect(result.action).toBe("duplicated");
@@ -318,7 +323,7 @@ describe("resolveConflict", () => {
 
 			const result = await resolveConflict(
 				{ path: "file.md", localFs, remoteFs, local },
-				"duplicate",
+				DUPLICATE_POLICY,
 			);
 
 			expect(result.action).toBe("duplicated");
@@ -334,8 +339,7 @@ describe("resolveConflict", () => {
 
 			const result = await resolveConflict(
 				{ path: "file.md", localFs, remoteFs, local, remote },
-				"prefer_local",
-				"local_win_allowed",
+				LOCAL_WIN_POLICY,
 			);
 
 			expect(result.action).toBe("kept_local");
@@ -351,8 +355,7 @@ describe("resolveConflict", () => {
 
 			const result = await resolveConflict(
 				{ path: "file.md", localFs, remoteFs, local, remote },
-				"prefer_local",
-				"preservation_required",
+				PREFER_LOCAL_PRESERVE_POLICY,
 			);
 
 			expect(result.action).toBe("duplicated");
@@ -384,7 +387,7 @@ describe("resolveConflict", () => {
 				path: "new.md", localPath: "new.md", remotePath: "old.md", baselinePath: "old.md",
 				remoteIdentitySource: source, additionalRemote: occupant,
 				localFs, remoteFs, local, remote: source, baseline, stateStore,
-			}, "auto_merge");
+			}, AUTO_MERGE_POLICY);
 
 			expect(result.action).toBe("merged");
 			expect(result.verifiedOutputs).toMatchObject([
@@ -414,7 +417,7 @@ describe("resolveConflict", () => {
 			const result = await resolveConflict({
 				path: "new.md", localPath: "new.md", remotePath: "old.md", baselinePath: "old.md",
 				localFs, remoteFs, local, remote, baseline, stateStore,
-			}, "auto_merge");
+			}, AUTO_MERGE_POLICY);
 
 			expect(result.action).toBe("merged");
 			expect(readText(localFs, "new.md")).toContain("local");
@@ -457,7 +460,7 @@ describe("resolveConflict", () => {
 					baseline,
 					stateStore,
 				},
-				"auto_merge",
+				AUTO_MERGE_POLICY,
 			);
 
 			expect(result.action).toBe("merged");
@@ -498,7 +501,7 @@ describe("resolveConflict", () => {
 					baseline,
 					stateStore,
 				},
-				"auto_merge",
+				AUTO_MERGE_POLICY,
 			);
 
 			expect(result.action).toBe("merged");
@@ -511,7 +514,7 @@ describe("resolveConflict", () => {
 
 			const result = await resolveConflict(
 				{ path: "file.md", localFs, remoteFs, local, remote },
-				"auto_merge",
+				AUTO_MERGE_POLICY,
 			);
 
 			// newer wins → local is newer
@@ -537,7 +540,7 @@ describe("resolveConflict", () => {
 
 			const result = await resolveConflict(
 				{ path: "file.md", localFs, remoteFs, local, remote, baseline },
-				"auto_merge",
+				AUTO_MERGE_POLICY,
 			);
 
 			// Missing stateStore → fallback to newer-wins via auto_merge
@@ -579,7 +582,7 @@ describe("resolveConflict", () => {
 					baseline,
 					stateStore,
 				},
-				"auto_merge",
+				AUTO_MERGE_POLICY,
 			);
 
 			// .png not eligible → newer wins → local is newer
@@ -593,7 +596,7 @@ describe("resolveConflict", () => {
 			// No stateStore → skips 3-way merge path → newer-wins
 			const result = await resolveConflict(
 				{ path: "file.md", localFs, remoteFs, local, remote },
-				"auto_merge",
+				AUTO_MERGE_POLICY,
 			);
 
 			expect(result.action).toBe("duplicated");
@@ -626,7 +629,7 @@ describe("resolveConflict", () => {
 					baseline,
 					stateStore,
 				},
-				"auto_merge",
+				AUTO_MERGE_POLICY,
 			);
 
 			// stateStore has no content → falls back to newer-wins → local is newer

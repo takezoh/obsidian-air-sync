@@ -177,7 +177,7 @@ describe("syncOpenedFilePriority", () => {
 		})).toBe("deferred_to_batch");
 		const execution = await executePlan(admission.executable, {
 			localFs: ctx.localFs, remoteFs: ctx.remoteFs,
-			committer: { stateStore: ctx.stateStore }, conflictStrategy: "duplicate",
+			committer: { stateStore: ctx.stateStore },
 			beginAction: (candidate) => batch.beginAction(candidate),
 		});
 

@@ -7,7 +7,9 @@ import {
 	addFile,
 	readText,
 } from "../__mocks__/sync-test-helpers";
-import type { SyncRecord } from "./types";
+import type { ConflictExecutionPolicy, SyncRecord } from "./types";
+
+const AUTO_MERGE_POLICY: ConflictExecutionPolicy = { mode: "auto_merge", strategy: "auto_merge" };
 
 function encode(s: string): ArrayBuffer {
 	return new TextEncoder().encode(s).buffer.slice(0);
@@ -29,7 +31,7 @@ describe("resolveConflict", () => {
 
 			const r = await resolveConflict(
 				{ path: "f.md", localFs, remoteFs, local, remote },
-				"auto_merge",
+				AUTO_MERGE_POLICY,
 			);
 
 			expect(r.action).toBe("kept_remote");
@@ -43,7 +45,7 @@ describe("resolveConflict", () => {
 
 			const r = await resolveConflict(
 				{ path: "f.md", localFs, remoteFs, local, remote },
-				"auto_merge",
+				AUTO_MERGE_POLICY,
 			);
 
 			expect(r.action).toBe("kept_local");
@@ -55,7 +57,7 @@ describe("resolveConflict", () => {
 
 			const r = await resolveConflict(
 				{ path: "f.md", localFs, remoteFs, local, remote },
-				"auto_merge",
+				AUTO_MERGE_POLICY,
 			);
 
 			expect(r.action).toBe("duplicated");
@@ -64,7 +66,7 @@ describe("resolveConflict", () => {
 		it("treats both-sides-deleted as a no-op", async () => {
 			const r = await resolveConflict(
 				{ path: "f.md", localFs, remoteFs },
-				"auto_merge",
+				AUTO_MERGE_POLICY,
 			);
 
 			expect(r.action).toBe("kept_local");
@@ -101,7 +103,7 @@ describe("resolveConflict", () => {
 					baseline: baseline(base),
 					stateStore,
 				},
-				"auto_merge",
+				AUTO_MERGE_POLICY,
 			);
 		}
 
