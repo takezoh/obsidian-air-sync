@@ -183,7 +183,7 @@ Both extend `GoogleDriveProviderBase` which handles `createFs()`, `readBackendSt
 
 Layout: `<Google Drive root>/obsidian-air-sync/<Vault Name>` — the folder **name is the vault name**; there is no `.airsync/metadata.json`. Binding is always explicit (the user picks a folder in the Google Picker, or presses the default-folder button); nothing is auto-bound on connect. The default-folder button calls `resolveRemoteVault()`, which builds a `GoogleDriveClient` and calls `resolveGoogleDriveRemoteVault()` (returns `{ remoteVaultFolderId }`):
 
-- If `remoteVaultFolderId` is cached, `resolveLinked()` just confirms the folder is accessible via `getFile()`.
+- If `remoteVaultFolderId` is cached, `resolveLinked()` confirms the folder is accessible via `getFile()` and not trashed. Drive's normal single-click delete moves a folder to Trash rather than erasing it, so `getFile()` alone would keep succeeding (200, not 404) against a folder the user can no longer see or add content to — the trashed check fails closed instead of silently binding to it forever.
 - Otherwise it find-or-creates the root `obsidian-air-sync` folder, then find-or-creates `obsidian-air-sync/<Vault Name>` (`findChildByName` / `createFolder`) and binds it.
 
 Bound folders picked via either Google Picker flow are addressed purely by id (`completeWebFolderPick`), independent of this layout. The built-in top-level flow completes authorization and binding under one `BackendManager` connecting gate so no filesystem is exposed between those two steps.
