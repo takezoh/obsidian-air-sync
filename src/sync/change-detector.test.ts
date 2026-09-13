@@ -7,7 +7,7 @@ import { captureAliasCollisionContents } from "./collision-content-observation";
 import { compareContent } from "./decision-engine";
 import type { ChangeDetectorDeps } from "./change-detector";
 import { LocalChangeTracker } from "./local-tracker";
-import { createMockLocalFs, createMockRemoteFs, type MockFileSystem, createMockStateStore, addFile } from "../__mocks__/sync-test-helpers";
+import { createMockLocalFs, createMockRemoteFs, type MockFileSystem, createMockStateStore, addFile, confirmMockPath } from "../__mocks__/sync-test-helpers";
 import type { FileEntity, RemoteChecksum } from "../fs/types";
 import type { IdentityEvidence, MixedEntity, PathObservation, SyncRecord } from "./types";
 import { md5 } from "../utils/md5";
@@ -1293,6 +1293,32 @@ describe("collectChanges — temperature selection", () => {
 			expect(result.observations).toContainEqual(expect.objectContaining({
 				kind: "exact", side: "local", requestedPath: "new",
 			}));
+		});
+
+		it("WARM keeps a settled folder's existing baseline in facts when its rename evidence resurfaces", async () => {
+			// The vault's own "rename" event fires for ANY rename, including one the
+			// sync engine just performed itself (e.g. a prior rename_local/rename_remote
+			// for this exact folder) — Obsidian cannot tell that apart from a
+			// user-initiated rename. So `markFolderRenamed` can resurface a relation
+			// that has already fully executed and settled: both sides already agree on
+			// "Folder 2", a baseline already exists there, and "Folder" is gone
+			// everywhere. Without folder rename pairs also feeding `changedPaths`,
+			// WARM would never attach that existing baseline to the entry, making
+			// Admission treat an already-synced folder as brand new (see ADR 0009).
+			await localFs.mkdir("Folder 2");
+			await remoteFs.mkdir("Folder 2");
+			confirmMockPath(remoteFs, "Folder 2");
+			await stateStore.put(makeRecord("Folder 2", { isDirectory: true }));
+			localTracker.acknowledge(localTracker.snapshot());
+			localTracker.markFolderRenamed("Folder 2", "Folder");
+
+			const result = await collectChanges(makeDeps());
+
+			expect(result.temperature).toBe("warm");
+			const entry = result.entries.find((e) => e.path === "Folder 2");
+			expect(entry?.local).toBeDefined();
+			expect(entry?.remote).toBeDefined();
+			expect(entry?.prevSync).toMatchObject({ path: "Folder 2", isDirectory: true });
 		});
 
 		it.each([false, true])("observes the absent counterpart of a new folder descendant with cold=%s", async (cold) => {

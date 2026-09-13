@@ -1,4 +1,4 @@
-/* eslint max-lines: ["error", 373] -- the COLD/WARM/HOT acquisition strategies, their directory-fact handling, and the WARM-to-COLD folder-delete escalation are one acquisition owner. */
+/* eslint max-lines: ["error", 379] -- the COLD/WARM/HOT acquisition strategies, their directory-fact handling, and the WARM-to-COLD folder-delete escalation are one acquisition owner. */
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
 import type { CandidateFact, IdentityEvidence, MixedEntity, PathObservation, SyncRecord } from "./types";
@@ -277,9 +277,15 @@ async function collectWarm(
 		changedPaths.add(p);
 	}
 
-	// Include rename pair paths so warm mode can optimize renames
-	const renamePairs = deps.changes.renamePairs;
-	for (const [newPath, oldPath] of renamePairs) {
+	// Include rename pair paths so warm mode can optimize renames. A folder rename
+	// pair must be included too — otherwise a folder rename report that resurfaces
+	// after its relation already settled (e.g. the vault's own "rename" event
+	// echoing back the sync engine's prior programmatic rename_local/rename_remote,
+	// which Obsidian cannot distinguish from a user-initiated rename) never becomes
+	// an entry, so its existing SyncRecord baseline never reaches Admission's
+	// current facts — producing a spurious unbaselined "match" that fails
+	// publication because a real record already exists (see ADR 0009).
+	for (const [newPath, oldPath] of [...deps.changes.renamePairs, ...deps.changes.folderRenamePairs]) {
 		changedPaths.add(newPath);
 		changedPaths.add(oldPath);
 	}
