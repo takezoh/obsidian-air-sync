@@ -48,11 +48,13 @@ export class AirSyncSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Conflict strategy")
 			.setDesc(
-				"How to resolve conflicts when both local and remote files have changed."
+				"Prefer local applies only to conflicts: it uses the local version for proven two-sided edits, " +
+				"and automatically preserves both versions when that cannot be proven."
 			)
 			.addDropdown((dropdown) =>
 				dropdown
 					.addOption("auto_merge", "Auto merge (recommended)")
+					.addOption("prefer_local", "Prefer local")
 					.addOption("duplicate", "Always create duplicate")
 					.setValue(this.plugin.settings.conflictStrategy)
 					.onChange(async (value) => {

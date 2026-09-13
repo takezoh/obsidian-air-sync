@@ -58,9 +58,10 @@ That's it.
 | Strategy | Behavior |
 |----------|----------|
 | Auto merge (recommended) | Attempts 3-way merge for text files using the last-synced content as the base. If merge is not possible (binary file, no base content, or merge failure), falls back to keeping the newer version by mtime — which replaces the older one. Only when the two can't be ordered (equal or unknown mtime, differing content) does it keep both as a duplicate. |
+| Prefer local | When Air Sync can prove that the same previously synced file was edited independently on both sides, keeps the local version at the original path. If that proof is unavailable—including on a first sync or after sync state was cleared—it preserves both like Duplicate. An edit that clashes with a deletion is also preserved. |
 | Duplicate | When both sides exist, keeps the local version at its original path and saves the remote version alongside it as a `.conflict` file. When an edit clashes with a deletion, the surviving version is restored — the deletion never wins. |
 
-An edit that clashes with a deletion never loses the edit under either strategy. The difference is edit-vs-edit: Auto merge may keep only the newer version, while Duplicate always preserves both. For the complete decision logic — merge eligibility, mtime tie-breaks, and conflict-file naming — see [docs/conflict-resolution.md](docs/conflict-resolution.md).
+An edit that clashes with a deletion never loses the edit under any strategy. The difference is edit-vs-edit: Auto merge may keep only the newer version, Duplicate always preserves both, and Prefer local selects local only for a proven conflict with a common sync baseline. For the complete decision logic — merge eligibility, mtime tie-breaks, and conflict-file naming — see [docs/conflict-resolution.md](docs/conflict-resolution.md).
 
 ## Commands
 

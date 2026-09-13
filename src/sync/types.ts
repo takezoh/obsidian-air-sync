@@ -97,7 +97,10 @@ export type IdentityEvidence =
 	| { kind: "stable_identity"; side: "remote"; identityKey: string; occurrences: readonly EntityOccurrence[] };
 
 /** User-facing strategy for resolving conflicts */
-export type ConflictStrategy = "auto_merge" | "duplicate";
+export type ConflictStrategy = "auto_merge" | "prefer_local" | "duplicate";
+
+/** Admission-owned authorization consumed only by the Prefer-local conflict route. */
+export type PreferLocalDisposition = "local_win_allowed" | "preservation_required";
 
 /** A record of a conflict resolution for audit/history purposes */
 export interface ConflictRecord {
@@ -201,6 +204,8 @@ interface SyncActionBase {
 	additionalLocal?: FileEntity;
 	/** Closed conflict execution contract. Omitted only on legacy same-path actions. */
 	protocol?: ConflictProtocol;
+	/** Attempt-local policy authority; present on every conflict admitted for Prefer local. */
+	preferLocalDisposition?: PreferLocalDisposition;
 }
 
 /** Standard sync action (all types except rename actions) */

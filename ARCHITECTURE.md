@@ -214,7 +214,7 @@ interface SyncPlan {
 type SyncStatus = "idle" | "syncing" | "error" | "partial_error" | "not_connected";
 
 // User-facing conflict resolution strategy (settings.conflictStrategy)
-type ConflictStrategy = "auto_merge" | "duplicate";
+type ConflictStrategy = "auto_merge" | "prefer_local" | "duplicate";
 
 // Source/destination path pair for rename detection (also used by IFileSystem.getChangedPaths)
 interface RenamePair {

@@ -9,6 +9,7 @@ import {
 } from "./identity-component-decision";
 import type {
 	IdentityEvidence,
+	ConflictStrategy,
 	SyncAction,
 } from "./types";
 
@@ -57,15 +58,22 @@ export interface AdmissionResult {
 }
 
 /** Sole production entry: construct, validate, and authorize actions from observed facts. */
-export function admitBatchObservation(observation: BatchObservation): AdmissionResult {
-	return authorizeComponents(observation, buildFactComponents(observation));
+export function admitBatchObservation(
+	observation: BatchObservation,
+	conflictStrategy: ConflictStrategy = "auto_merge",
+): AdmissionResult {
+	return authorizeComponents(observation, buildFactComponents(observation), conflictStrategy);
 }
 
-function authorizeComponents(snapshot: BatchObservation, components: readonly IdentityComponent[]): AdmissionResult {
+function authorizeComponents(
+	snapshot: BatchObservation,
+	components: readonly IdentityComponent[],
+	conflictStrategy: ConflictStrategy,
+): AdmissionResult {
 	const dispositions: AdmissionDisposition[] = [];
 	for (const observedComponent of components) {
 		const decision = decideIdentityComponent(
-			observedComponent, snapshot.scope, snapshot.baselinePaths,
+			observedComponent, snapshot.scope, snapshot.baselinePaths, conflictStrategy,
 		);
 		const decidedComponent = decision.component;
 		const shared = {

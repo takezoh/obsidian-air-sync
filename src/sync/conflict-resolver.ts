@@ -10,7 +10,7 @@ import {
 import { bytesMatch, captureContentSnapshot, ContentProofError, type ExactSnapshot, type StableVersionWitness } from "./content-snapshot";
 import { isMergeEligible, threeWayMerge } from "./merge";
 import type { SyncStateStore } from "./state";
-import type { ConflictStrategy, SyncRecord } from "./types";
+import type { ConflictStrategy, PreferLocalDisposition, SyncRecord } from "./types";
 
 export interface ConflictResolverContext {
 	path: string;
@@ -57,6 +57,10 @@ export type PreparedConflict =
 
 export type { ConflictResolutionResult };
 
+export function isPreferLocalDisposition(value: unknown): value is PreferLocalDisposition {
+	return value === "local_win_allowed" || value === "preservation_required";
+}
+
 /** Bounded read-only capture; no path allocation, resolver call, or mutation. */
 export async function prepareConflict(ctx: ConflictResolverContext): Promise<PreparedConflict> {
 	if (!ctx.remote) throw new ContentProofError("proof_mismatch", "Conflict primary is absent");
@@ -88,6 +92,7 @@ export async function prepareConflict(ctx: ConflictResolverContext): Promise<Pre
 export async function resolveConflict(
 	ctx: ConflictResolverContext,
 	strategy: ConflictStrategy,
+	preferLocalDisposition?: PreferLocalDisposition,
 ): Promise<ConflictResolutionResult> {
 	const local = ctx.local ? await captureContentSnapshot(ctx.localFs, ctx.localPath ?? ctx.local.path, ctx.local) : undefined;
 	if (!ctx.remote) {
@@ -96,7 +101,7 @@ export async function resolveConflict(
 	}
 	const prepared = await prepareConflict(ctx);
 	const resolution = await resolvePreparedWithStrategy(
-		ctx, strategy, prepared.primary, local,
+		ctx, strategy, prepared.primary, local, preferLocalDisposition,
 	);
 	const compound = !!ctx.remoteIdentitySource && ctx.remoteIdentitySource.path !== ctx.path || !!ctx.additionalRemote || !!ctx.additionalLocal ||
 		ctx.local?.path !== undefined && ctx.local.path !== ctx.path || ctx.remote.path !== ctx.path;
@@ -112,14 +117,24 @@ async function resolvePreparedWithStrategy(
 	strategy: ConflictStrategy,
 	primary: ExactSnapshot,
 	localSnapshot?: ExactSnapshot,
+	preferLocalDisposition?: PreferLocalDisposition,
 ): Promise<ConflictResolutionResult> {
 	const localContent = localSnapshot?.content.slice(0);
-	if (strategy === "duplicate") {
+	if (strategy === "prefer_local" && !isPreferLocalDisposition(preferLocalDisposition)) {
+		throw new Error(preferLocalDisposition === undefined
+			? "Prefer-local conflict disposition missing"
+			: "Prefer-local conflict disposition invalid");
+	}
+	if (strategy === "duplicate" || preferLocalDisposition === "preservation_required") {
 		return {
 			action: "duplicated",
 			targetContent: localContent ?? primary.content.slice(0),
 			targetMtime: ctx.local?.mtime ?? primary.entity.mtime,
 		};
+	}
+	if (strategy === "prefer_local") {
+		if (!localContent || !ctx.local) throw new Error("Prefer-local local-win input is missing");
+		return { action: "kept_local", targetContent: localContent, targetMtime: ctx.local.mtime };
 	}
 	if (!localContent || !ctx.local) {
 		return {

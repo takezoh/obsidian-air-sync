@@ -116,6 +116,99 @@ async function arrangeFreshConflict(ctx: ExecutionContext, withOccupant = false)
 afterEach(() => vi.restoreAllMocks());
 
 describe("executePlan", () => {
+	it("publishes an admitted Prefer-local win through the existing conflict route", async () => {
+		const ctx = makeCtx({ conflictStrategy: "prefer_local" });
+		const localFs = ctx.localFs as MockFileSystem;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
+		const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
+		addFile(localFs, "note.md", "local", 2000);
+		addFile(remoteFs, "note.md", "remote", 3000);
+		const local = (await localFs.stat("note.md"))!;
+		const remote = (await remoteFs.stat("note.md"))!;
+		const baseline: SyncRecord = {
+			path: "note.md", hash: "base", localMtime: 1000, remoteMtime: 1000,
+			localSize: 4, remoteSize: 4, remoteIdentityKey: remote.identityKey, syncedAt: 1000,
+		};
+		stateStore.records.set("note.md", baseline);
+		const action: SyncAction = {
+			action: "conflict", path: "note.md", local, remote, baseline,
+			publication: { source: baseline, destination: baseline },
+			preferLocalDisposition: "local_win_allowed",
+		};
+
+		const result = await executePlan(makePlan([action]), ctx);
+
+		expect(result.failed).toEqual([]);
+		expect(result.blocked).toEqual([]);
+		expect(readText(localFs, "note.md")).toBe("local");
+		expect(readText(remoteFs, "note.md")).toBe("local");
+		expect(await localFs.stat("note.conflict.md")).toBeNull();
+		expect(await remoteFs.stat("note.conflict.md")).toBeNull();
+		expect(stateStore.records.get("note.md")?.hash).toBe((await localFs.stat("note.md"))?.hash);
+	});
+
+	it("preserves the remote bytes when Admission rejects Prefer-local win for a compound component", async () => {
+		const ctx = makeCtx({ conflictStrategy: "prefer_local" });
+		const localFs = ctx.localFs as MockFileSystem;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
+		const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
+		addFile(localFs, "note.md", "local", 2000);
+		addFile(remoteFs, "note.md", "remote", 3000);
+		const local = (await localFs.stat("note.md"))!;
+		const remote = (await remoteFs.stat("note.md"))!;
+		const baseline: SyncRecord = {
+			path: "note.md", hash: "base", localMtime: 1000, remoteMtime: 1000,
+			localSize: 4, remoteSize: 4, syncedAt: 1000,
+		};
+		stateStore.records.set("note.md", baseline);
+		const action: SyncAction = {
+			action: "conflict", path: "note.md", local, remote, baseline,
+			publication: { source: baseline, destination: baseline },
+			preferLocalDisposition: "preservation_required",
+		};
+
+		const result = await executePlan(makePlan([action]), ctx);
+
+		expect(result.failed).toEqual([]);
+		expect(readText(localFs, "note.md")).toBe("local");
+		expect(readText(remoteFs, "note.md")).toBe("local");
+		expect(readText(localFs, "note.conflict.md")).toBe("remote");
+		expect(readText(remoteFs, "note.conflict.md")).toBe("remote");
+		expect(stateStore.records.get("note.md")?.hash).toBe((await localFs.stat("note.md"))?.hash);
+	});
+
+	it("treats a missing Prefer-local disposition as a fatal plan invariant", async () => {
+		const fatal = vi.fn();
+		const ctx = makeCtx({ conflictStrategy: "prefer_local", onActionFatal: fatal });
+		const localFs = ctx.localFs as MockFileSystem;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
+		const local = addFile(localFs, "note.md", "local", 2000);
+		const remote = addFile(remoteFs, "note.md", "remote", 3000);
+
+		await expect(executePlan(makePlan([{
+			action: "conflict", path: "note.md", local, remote,
+		}]), ctx)).rejects.toThrow("Prefer-local conflict disposition missing");
+		expect(fatal).toHaveBeenCalledOnce();
+	});
+
+	it("treats an invalid Prefer-local disposition as a fatal plan invariant", async () => {
+		const fatal = vi.fn();
+		const ctx = makeCtx({ conflictStrategy: "prefer_local", onActionFatal: fatal });
+		const localFs = ctx.localFs as MockFileSystem;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
+		const local = addFile(localFs, "note.md", "local", 2000);
+		const remote = addFile(remoteFs, "note.md", "remote", 3000);
+		const action = {
+			action: "conflict", path: "note.md", local, remote,
+			preferLocalDisposition: "invalid",
+		} as unknown as SyncAction;
+
+		await expect(executePlan(makePlan([action]), ctx))
+			.rejects.toThrow("Prefer-local conflict disposition invalid");
+		expect(fatal).toHaveBeenCalledOnce();
+		expect(await remoteFs.stat("note.conflict.md")).toBeNull();
+	});
+
 	it("publishes a completed push from its captured bytes when the local source disappears during the write", async () => {
 		const ctx = makeCtx();
 		const source = ctx.localFs as MockFileSystem;

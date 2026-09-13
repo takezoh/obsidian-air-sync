@@ -1,4 +1,4 @@
-/* eslint max-lines: ["error", 750] -- relation abandonment, exact-path binding, and preservation-cover authorization must stay under the sole identity-policy owner. */
+/* eslint max-lines: ["error", 785] -- relation abandonment, exact-path binding, preservation-cover authorization, and Prefer-local eligibility must stay under the sole identity-policy owner. */
 import type { FileEntity } from "../fs/types";
 import type { IdentityComponent } from "./plan-admission-graph";
 import { selectReportFamily } from "./identity-component-report-family";
@@ -10,6 +10,7 @@ import type {
 	CandidateFact, PathObservation, RenameEvidence, ScopeProjection, SyncAction, SyncRecord,
 	RecordPublication, RenameContent, SyncSide,
 	PreservationCoverChild,
+	ConflictStrategy,
 } from "./types";
 
 export type AdmissionFailureReason =
@@ -77,6 +78,7 @@ export function decideIdentityComponent(
 	component: IdentityComponent,
 	scope: ScopeProjection,
 	baselinePaths?: ReadonlySet<string>,
+	conflictStrategy: ConflictStrategy = "auto_merge",
 ): IdentityComponentDecision {
 	const fail = (reason: AdmissionFailureReason): IdentityComponentDecision => ({
 		component: { ...component, actions: [] }, reasons: [reason],
@@ -89,6 +91,9 @@ export function decideIdentityComponent(
 	const renameReports = component.evidence.filter(
 		(item): item is RenameEvidence => item.kind === "rename",
 	);
+	const allowPreferLocalWin = component.paths.size === 1 && renameReports.length === 0 &&
+		!component.evidence.some((item) => item.kind === "alias") &&
+		!component.observations.some((item) => item.kind === "alias");
 	const reports = selectReportFamily(renameReports);
 	for (const entry of component.entries) {
 		for (const entity of [entry.local, entry.remote]) {
@@ -114,7 +119,7 @@ export function decideIdentityComponent(
 	if (reports.kind === "conflicting" && renameReports.some((report) =>
 		[report.oldPath, report.newPath].some((path) => (["local", "remote"] as const).some((side) =>
 			observationsAt(current, side, path).length === 0)))) return fail("unknown_observation");
-	const cover = preservationCover(current, reports.kind === "conflicting");
+	const cover = preservationCover(current, reports.kind === "conflicting", conflictStrategy);
 	if (typeof cover === "string") return fail(cover);
 	if (cover) return { component: { ...component,
 		actions: cover.protocol?.kind === "preservation_cover" &&
@@ -122,7 +127,7 @@ export function decideIdentityComponent(
 	}, reasons: [] };
 	if (reports.kind === "conflicting") {
 		if (current.local.size === 0 && current.remote.size === 0) return fail("unknown_observation");
-		const actions = ordinaryActionsAfterRelationAbandonment(current);
+		const actions = ordinaryActionsAfterRelationAbandonment(current, conflictStrategy);
 		return typeof actions === "string" ? fail(actions) : {
 			component: { ...component, actions }, reasons: [],
 		};
@@ -132,9 +137,9 @@ export function decideIdentityComponent(
 	const folder = folders.find((report) => !settledRelation(current, report)) ??
 		aliasFolder(current);
 	if (folder) {
-		const actions = decideFolder(current, folder);
+		const actions = decideFolder(current, folder, conflictStrategy);
 		if (actions === "incomplete_folder_mapping" && relationRootsObserved(current, folder)) {
-			const fallback = ordinaryActionsAfterRelationAbandonment(current);
+			const fallback = ordinaryActionsAfterRelationAbandonment(current, conflictStrategy);
 			return typeof fallback === "string" ? fail(fallback) : {
 				component: { ...component, actions: fallback }, reasons: [],
 			};
@@ -146,8 +151,8 @@ export function decideIdentityComponent(
 	const actions: SyncAction[] = [];
 	for (const file of bound) {
 		const action = file.kind === "structural"
-			? materializeStandaloneFile(file.binding, current)
-			: materializeExactPath(current, file.path, file.capability);
+			? materializeStandaloneFile(file.binding, current, conflictStrategy, allowPreferLocalWin)
+			: materializeExactPath(current, file.path, file.capability, conflictStrategy, allowPreferLocalWin);
 		if (typeof action === "string") return fail(action);
 		if (action) actions.push(action);
 	}
@@ -172,7 +177,7 @@ export function decideIdentityComponent(
 						current.remote.get(report.newPath)?.identityKey !== current.remote.get(report.oldPath)?.identityKey)));
 		const accounted = structuralAccounted || exactAccounted;
 		if (!accounted) {
-			const fallback = ordinaryActionsAfterRelationAbandonment(current);
+			const fallback = ordinaryActionsAfterRelationAbandonment(current, conflictStrategy);
 			return typeof fallback === "string" ? fail(fallback) : {
 				component: { ...component, actions: fallback }, reasons: [],
 			};
@@ -193,10 +198,11 @@ function relationRootsObserved(facts: CurrentFacts, relation: FolderRelation): b
  */
 function ordinaryActionsAfterRelationAbandonment(
 	facts: CurrentFacts,
+	conflictStrategy: ConflictStrategy,
 ): SyncAction[] | AdmissionFailureReason {
 	const actions: SyncAction[] = [];
 	for (const path of [...new Set([...facts.local.keys(), ...facts.remote.keys()])].sort()) {
-		const action = materializeExactPath(facts, path, { kind: "preserve_present_side" });
+		const action = materializeExactPath(facts, path, { kind: "preserve_present_side" }, conflictStrategy, false);
 		if (typeof action === "string") return action;
 		if (action) actions.push(action);
 	}
@@ -211,6 +217,7 @@ function ordinaryActionsAfterRelationAbandonment(
 function preservationCover(
 	facts: CurrentFacts,
 	abandonedReportedRelation: boolean,
+	conflictStrategy: ConflictStrategy,
 ): SyncAction | AdmissionFailureReason | null {
 	const candidateAddresses = new Set(facts.candidateFacts.flatMap((fact) => [
 		fact.requestedPath,
@@ -280,6 +287,7 @@ function preservationCover(
 		action: "conflict", path: anchor, protocol: {
 			kind: "preservation_cover", collisionWitnesses, candidatePaths, preservedPaths, children, cleanup,
 		},
+		...(conflictStrategy === "prefer_local" ? { preferLocalDisposition: "preservation_required" as const } : {}),
 	};
 }
 
@@ -505,8 +513,13 @@ function bindFiles(facts: CurrentFacts, reports: readonly RenameEvidence[]): Fil
 	return bound;
 }
 
-function materializeStandaloneFile(file: BoundFile, facts: CurrentFacts): SyncAction | AdmissionFailureReason | null {
-	const action = materializeFile(file, facts);
+function materializeStandaloneFile(
+	file: BoundFile,
+	facts: CurrentFacts,
+	conflictStrategy: ConflictStrategy,
+	allowPreferLocalWin: boolean,
+): SyncAction | AdmissionFailureReason | null {
+	const action = materializeFile(file, facts, conflictStrategy, allowPreferLocalWin);
 	if (!action && file.baseline?.path !== file.path && file.local && file.remote) {
 		if (!sameSynchronizedContent(file.local, file.remote, file.baseline)) return "identity_postcondition_unproven";
 		return { action: "match", path: file.path, local: file.local, remote: file.remote,
@@ -520,6 +533,8 @@ function materializeExactPath(
 	facts: CurrentFacts,
 	path: string,
 	capability: ExactPathCapability,
+	conflictStrategy: ConflictStrategy,
+	allowPreferLocalWin: boolean,
 ): SyncAction | AdmissionFailureReason | null {
 	const local = facts.local.get(path);
 	const remote = facts.remote.get(path);
@@ -535,10 +550,15 @@ function materializeExactPath(
 		replacement: !!expected?.remoteIdentityKey && !!remote?.identityKey &&
 			expected.remoteIdentityKey !== remote.identityKey,
 	};
-	return materializeFile(binding, facts);
+	return materializeFile(binding, facts, conflictStrategy, allowPreferLocalWin);
 }
 
-function materializeFile(file: BoundFile, facts: CurrentFacts): SyncAction | AdmissionFailureReason | null {
+function materializeFile(
+	file: BoundFile,
+	facts: CurrentFacts,
+	conflictStrategy: ConflictStrategy,
+	allowPreferLocalWin: boolean,
+): SyncAction | AdmissionFailureReason | null {
 	const { path, local, remote, baseline, publication, move } = file;
 	if (!local && !absent(facts, "local", file.localPath ?? path)) return "unknown_observation";
 	if (!remote && !file.releasedRemote && !absent(facts, "remote", file.remotePath ?? path)) return "unknown_observation";
@@ -559,6 +579,7 @@ function materializeFile(file: BoundFile, facts: CurrentFacts): SyncAction | Adm
 		if (!local || !remote || (!remote.identityKey && !equal(local, remote))) return "remote_identity_missing";
 		if (kind === "conflict") return {
 			action: "conflict", path, local, remote, baseline, publication,
+			...preferLocalDisposition(file, conflictStrategy, allowPreferLocalWin),
 			remoteIdentitySource: file.remoteIdentitySource, additionalRemote: file.additionalRemote, additionalLocal: file.additionalLocal,
 		};
 		let content: RenameContent;
@@ -572,12 +593,28 @@ function materializeFile(file: BoundFile, facts: CurrentFacts): SyncAction | Adm
 			oldPath: move.from, path, local, remote, baseline, publication, content };
 	}
 	if (kind) return { action: kind, path, local, remote, baseline, publication,
+		...(kind === "conflict" ? preferLocalDisposition(file, conflictStrategy, allowPreferLocalWin) : {}),
 		...(kind === "conflict" ? { remoteIdentitySource: file.remoteIdentitySource,
 			additionalRemote: file.additionalRemote, additionalLocal: file.additionalLocal } : {}),
 		...(file.localPath ? { localPath: file.localPath } : {}),
 		...(file.remotePath ? { remotePath: file.remotePath } : {}),
 	};
 	return null;
+}
+
+function preferLocalDisposition(
+	file: BoundFile,
+	strategy: ConflictStrategy,
+	allowLocalWin: boolean,
+): { readonly preferLocalDisposition?: "local_win_allowed" | "preservation_required" } {
+	if (strategy !== "prefer_local") return {};
+	const { path, local, remote, baseline } = file;
+	const simple = allowLocalWin && !!local && !!remote && !!baseline?.hash && baseline.path === path &&
+		local.path === path && remote.path === path && !file.move && !file.replacement &&
+		!file.additionalRemote && !file.additionalLocal && !file.localPath && !file.remotePath;
+	const proven = simple && !!local.hash && !!remote.hash &&
+		local.hash !== baseline.hash && remote.hash !== baseline.hash && local.hash !== remote.hash;
+	return { preferLocalDisposition: proven ? "local_win_allowed" : "preservation_required" };
 }
 
 function equal(local: FileEntity, remote: FileEntity): boolean {
@@ -598,7 +635,11 @@ function aliasFolder(facts: CurrentFacts): FolderRelation | undefined {
 }
 
 /** Bind the complete managed suffix mapping before creating child or root actions. */
-function decideFolder(facts: CurrentFacts, folder: FolderRelation): SyncAction[] | AdmissionFailureReason {
+function decideFolder(
+	facts: CurrentFacts,
+	folder: FolderRelation,
+	conflictStrategy: ConflictStrategy,
+): SyncAction[] | AdmissionFailureReason {
 	const { oldPath, newPath } = folder;
 	if (!compatible(facts, oldPath, newPath)) return "unknown_scope";
 	const moveSide = folder.side === "local" ? "remote" : "local";
@@ -657,9 +698,9 @@ function decideFolder(facts: CurrentFacts, folder: FolderRelation): SyncAction[]
 	const actions: SyncAction[] = [];
 	const descendantRecords: NonNullable<Extract<SyncAction, { action: "rename_remote" | "rename_local" }>["descendantRecords"]>[number][] = [];
 	for (const file of bindings) {
-		const child = moveRoot ? materializeFile(file, facts) : materializeStandaloneFile(
+		const child = moveRoot ? materializeFile(file, facts, conflictStrategy, false) : materializeStandaloneFile(
 			file.local && file.remote && file.local.path !== file.path
-				? { ...file, move: { side: "local", from: file.local.path } } : file, facts);
+				? { ...file, move: { side: "local", from: file.local.path } } : file, facts, conflictStrategy, false);
 		if (typeof child === "string") return child;
 		if (!child && (!file.local || !file.remote || !sameSynchronizedContent(file.local, file.remote, file.baseline))) {
 			return "identity_postcondition_unproven";

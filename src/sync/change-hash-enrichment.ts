@@ -5,10 +5,94 @@ import { digest, isLocallyComputable, sha256 } from "../utils/hash";
 import { exactEntity, observePath, replaceObservation } from "./path-observation";
 import type { CandidateFact, IdentityEvidence, MixedEntity, PathObservation } from "./types";
 import { directConflictCandidateHint, insertConflictSuffix } from "./conflict";
+import { hasChanged, hasRemoteChanged } from "./change-compare";
+import { captureContentSnapshot } from "./content-snapshot";
 
 export interface HashEnrichmentResult {
 	candidates: number;
 	matches: number;
+}
+
+export interface PreferLocalHashEnrichmentResult {
+	candidates: number;
+	completed: number;
+}
+
+/** Complete current SHA-256 facts only for baseline-backed Prefer-local edit/edit candidates. */
+export async function enrichHashesForPreferLocal(
+	entries: MixedEntity[],
+	observations: PathObservation[],
+	identityEvidence: readonly IdentityEvidence[],
+	localFs: IFileSystem,
+	remoteFs: IFileSystem,
+): Promise<PreferLocalHashEnrichmentResult> {
+	const repeatedRemoteIdentities = repeatedIdentityKeys(entries);
+	const candidates = entries.filter((entry) => entry.prevSync?.hash && entry.local && entry.remote &&
+		!entry.local.isDirectory && !entry.remote.isDirectory &&
+		entry.prevSync.path === entry.path && entry.local.path === entry.path && entry.remote.path === entry.path &&
+		(!entry.prevSync.remoteIdentityKey || !entry.remote.identityKey ||
+			entry.prevSync.remoteIdentityKey === entry.remote.identityKey) &&
+		!touchesTopology(entry.path, entry.remote.identityKey, identityEvidence, observations, repeatedRemoteIdentities) &&
+		hasChanged(entry.local, entry.prevSync) && hasRemoteChanged(entry.remote, entry.prevSync));
+	const pool = new AsyncPool(10);
+	const settled = await Promise.allSettled(candidates.map((entry) => pool.run(async () => {
+		entry.local = await completeSha256Fact("local", entry.path, entry.local!, localFs, observations);
+		entry.remote = await completeSha256Fact("remote", entry.path, entry.remote!, remoteFs, observations);
+	})));
+	const failure = settled.find((result): result is PromiseRejectedResult => result.status === "rejected");
+	if (failure) throw failure.reason;
+	return { candidates: candidates.length, completed: candidates.length };
+}
+
+function repeatedIdentityKeys(entries: readonly MixedEntity[]): ReadonlySet<string> {
+	const paths = new Map<string, Set<string>>();
+	for (const entry of entries) {
+		if (!entry.remote?.identityKey) continue;
+		const current = paths.get(entry.remote.identityKey) ?? new Set<string>();
+		current.add(entry.remote.path);
+		paths.set(entry.remote.identityKey, current);
+	}
+	return new Set([...paths].filter(([, current]) => current.size > 1).map(([identity]) => identity));
+}
+
+/** Conservative read gate only; Admission remains the owner of local-win eligibility. */
+function touchesTopology(
+	path: string,
+	remoteIdentityKey: string | undefined,
+	evidence: readonly IdentityEvidence[],
+	observations: readonly PathObservation[],
+	repeatedRemoteIdentities: ReadonlySet<string>,
+): boolean {
+	if (remoteIdentityKey && repeatedRemoteIdentities.has(remoteIdentityKey)) return true;
+	const touches = (candidate: string): boolean =>
+		path === candidate || path.startsWith(candidate + "/") || candidate.startsWith(path + "/");
+	for (const item of evidence) {
+		if (item.kind === "rename" && (touches(item.oldPath) || touches(item.newPath))) return true;
+		if (item.kind === "alias" && (touches(item.requestedPath) || touches(item.resolvedPath))) return true;
+		if (item.kind === "stable_identity" && remoteIdentityKey === item.identityKey &&
+			new Set(item.occurrences.map((occurrence) => occurrence.path)).size > 1) return true;
+	}
+	return observations.some((item) => item.kind === "alias" &&
+		(touches(item.requestedPath) || touches(item.resolvedPath)));
+}
+
+async function completeSha256Fact(
+	side: "local" | "remote",
+	path: string,
+	entity: FileEntity,
+	fs: IFileSystem,
+	observations: PathObservation[],
+): Promise<FileEntity> {
+	if (entity.hash) return entity;
+	if (entity.remoteChecksum?.algo === "sha256") {
+		const enriched = { ...entity, hash: entity.remoteChecksum.value };
+		replaceObservation(observations, observePath(side, path, enriched));
+		return enriched;
+	}
+	const snapshot = await captureContentSnapshot(fs, path, entity);
+	const enriched = { ...snapshot.entity, hash: await sha256(snapshot.content) };
+	replaceObservation(observations, observePath(side, path, enriched));
+	return enriched;
 }
 
 /** Enrich initial same-size pairs from a remote SHA-256 or reproducible checksum. */

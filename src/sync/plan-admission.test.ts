@@ -219,6 +219,86 @@ function folderFacts(suffixes: readonly string[] = ["x.md"]) {
 }
 
 describe("admitBatchObservation", () => {
+	it("partitions Prefer-local conflicts by common content proof", () => {
+		const baseline = recordFor(freshEntity("note.md", "base", "R"));
+		const local = freshEntity("note.md", "local");
+		const remote = freshEntity("note.md", "remote", "R");
+		const observations: PathObservation[] = [
+			{ kind: "exact", side: "local", requestedPath: "note.md", entity: local },
+			{ kind: "exact", side: "remote", requestedPath: "note.md", entity: remote },
+		];
+		const component: IdentityComponent = {
+			paths: new Set(["note.md"]),
+			entries: [{ path: "note.md", local, remote, prevSync: baseline }],
+			evidence: [], observations,
+		};
+
+		const proven = decideIdentityComponent(
+			component, projection({ "note.md": "included" }), undefined, "prefer_local",
+		);
+		const unprovenLocal = { ...local, hash: "", mtime: 2 };
+		const uncertain = decideIdentityComponent({
+			...component,
+			entries: [{ path: "note.md", local: unprovenLocal, remote, prevSync: baseline }],
+			observations: [
+				{ kind: "exact", side: "local", requestedPath: "note.md", entity: unprovenLocal },
+				{ kind: "exact", side: "remote", requestedPath: "note.md", entity: remote },
+			],
+		}, projection({ "note.md": "included" }), undefined, "prefer_local");
+
+		expect(proven.component.actions).toMatchObject([{
+			action: "conflict", preferLocalDisposition: "local_win_allowed",
+		}]);
+		expect(uncertain.component.actions).toMatchObject([{
+			action: "conflict", preferLocalDisposition: "preservation_required",
+		}]);
+	});
+
+	it("keeps edit-delete on the existing survivor route under Prefer local", () => {
+		const baseline = recordFor(freshEntity("note.md", "base", "R"));
+		const remote = freshEntity("note.md", "remote", "R");
+		const component: IdentityComponent = {
+			paths: new Set(["note.md"]),
+			entries: [{ path: "note.md", remote, prevSync: baseline }],
+			evidence: [],
+			observations: [
+				{ kind: "absent", side: "local", requestedPath: "note.md", authority: "stat" },
+				{ kind: "exact", side: "remote", requestedPath: "note.md", entity: remote },
+			],
+		};
+
+		const decision = decideIdentityComponent(
+			component, projection({ "note.md": "included" }), undefined, "prefer_local",
+		);
+
+		expect(decision.component.actions).toMatchObject([{
+			action: "conflict", local: undefined, remote,
+			preferLocalDisposition: "preservation_required",
+		}]);
+	});
+
+	it("preserves both sides on a Prefer-local cold start without a common baseline", () => {
+		const local = freshEntity("note.md", "local");
+		const remote = freshEntity("note.md", "remote", "R");
+		const component: IdentityComponent = {
+			paths: new Set(["note.md"]),
+			entries: [{ path: "note.md", local, remote }],
+			evidence: [],
+			observations: [
+				{ kind: "exact", side: "local", requestedPath: "note.md", entity: local },
+				{ kind: "exact", side: "remote", requestedPath: "note.md", entity: remote },
+			],
+		};
+
+		const decision = decideIdentityComponent(
+			component, projection({ "note.md": "included" }), undefined, "prefer_local",
+		);
+
+		expect(decision.component.actions).toMatchObject([{
+			action: "conflict", preferLocalDisposition: "preservation_required",
+		}]);
+	});
+
 	it.each(["local", "remote"] as const)("rejects a %s directory colliding with a file at the same current address", (directorySide) => {
 		const local = { ...entity("same"), isDirectory: directorySide === "local" };
 		const remote = { ...entity("same", "R"), isDirectory: directorySide === "remote" };
@@ -1934,6 +2014,31 @@ describe("admitBatchObservation", () => {
 		for (const item of directDecision.component.actions) {
 			expect(item.publication).toEqual({ source: baseline, destination: baseline });
 		}
+	});
+
+	it("requires preservation for a Prefer-local conflict after abandoning a rename relation", () => {
+		const baseline = recordFor(freshEntity("B.md", "base", "X"));
+		const local = freshEntity("B.md", "local");
+		const remote = freshEntity("B.md", "remote", "X");
+		const observations: PathObservation[] = [
+			{ kind: "exact", side: "local", requestedPath: "B.md", entity: local },
+			{ kind: "exact", side: "remote", requestedPath: "B.md", entity: remote },
+			...(["A.md", "C.md"] as const).flatMap((path) => ([
+				{ kind: "absent" as const, side: "local" as const, requestedPath: path, authority: "stat" as const },
+				{ kind: "absent" as const, side: "remote" as const, requestedPath: path, authority: "stat" as const },
+			])),
+		];
+		const decision = decideIdentityComponent({
+			paths: new Set(["A.md", "B.md", "C.md"]),
+			entries: [{ path: "B.md", local, remote, prevSync: baseline }],
+			evidence: [remoteRename(), remoteRename({ newPath: "C.md" })],
+			observations,
+		}, projection({ "A.md": "included", "B.md": "included", "C.md": "included" }), undefined, "prefer_local");
+
+		expect(decision.reasons).toEqual([]);
+		expect(decision.component.actions).toMatchObject([{
+			action: "conflict", preferLocalDisposition: "preservation_required",
+		}]);
 	});
 
 	it("defers a folder rename when a projected descendant is not mapped", () => {

@@ -1,20 +1,27 @@
 import { describe, it, expect, vi } from "vitest";
-import { collectChanges } from "./change-detector";
+import { collectChanges, type ChangeSet } from "./change-detector";
 import { executePlan } from "./plan-executor";
 import { LocalChangeTracker } from "./local-tracker";
 import {
 	confirmMockPath, createMockLocalFs, createMockRemoteFs, type MockFileSystem,
 	createMockStateStore,
 	addFile,
+	deferred,
+	flush,
 	readText,
 } from "../__mocks__/sync-test-helpers";
 import type { RenamePair, SyncPlan } from "./types";
 import { admitBatchObservation } from "./plan-admission";
 import { projectScope } from "./scope-projection";
-import { captureBatchObservation, prepareSyncCycleSnapshot } from "./sync-cycle-planning";
-import { finalizeSyncCycle } from "./sync-cycle-finalization";
+import {
+	captureBatchObservation,
+	prepareSyncCycleSnapshot,
+	prepareSyncCycleSnapshotForExecution,
+} from "./sync-cycle-planning";
+import { finalizeSyncCycle, runSyncCycleAttempt } from "./sync-cycle-finalization";
 import { insertConflictSuffix } from "./conflict";
 import type { Logger } from "../logging/logger";
+import { sha256 } from "../utils/hash";
 
 /**
  * Convergence (fixed-point) contract — the emergent property the whole engine
@@ -94,7 +101,214 @@ function actionTypes(plan: SyncPlan): string[] {
 	return plan.actions.map((a) => a.action).sort();
 }
 
+async function arrangeBilateralConflict(temperature: "cold" | "warm" | "hot") {
+	const env = makeEnv();
+	addFile(env.localFs, "note.md", "local", 2000);
+	const remote = addFile(env.remoteFs, "note.md", "remote", 3000);
+	remote.identityKey = "R";
+	env.stateStore.records.set("note.md", {
+		path: "note.md",
+		hash: await sha256(new TextEncoder().encode("base").buffer),
+		localMtime: 1000,
+		remoteMtime: 1000,
+		localSize: 4,
+		remoteSize: 4,
+		remoteIdentityKey: "R",
+		syncedAt: 1,
+	});
+	if (temperature !== "cold") env.localTracker.acknowledge(env.localTracker.snapshot());
+	if (temperature === "hot") env.localTracker.markDirty("note.md");
+	const changes = env.localTracker.snapshot();
+	const changeSet = await collectChanges({
+		localFs: env.localFs,
+		remoteFs: env.remoteFs,
+		stateStore: env.stateStore,
+		changes,
+	}, { forceFullScan: temperature === "cold" });
+	expect(changeSet.temperature).toBe(temperature);
+	return { env, changeSet };
+}
+
 describe("sync converges to a fixed point", () => {
+	it.each(["cold", "warm", "hot"] as const)(
+		"produces and publishes the same proven Prefer-local result through real %s acquisition",
+		async (temperature) => {
+			const { env, changeSet } = await arrangeBilateralConflict(temperature);
+			const { snapshot } = await prepareSyncCycleSnapshotForExecution(
+				changeSet, `prefer-local-${temperature}`, { ignorePatterns: [] },
+				"prefer_local", env.localFs, env.remoteFs,
+			);
+			const admission = admitBatchObservation(snapshot, "prefer_local");
+			expect(admission.failures).toEqual([]);
+			expect(admission.executable.actions).toMatchObject([{
+				action: "conflict", preferLocalDisposition: "local_win_allowed",
+			}]);
+			const result = await executePlan(admission.executable, {
+				localFs: env.localFs,
+				remoteFs: env.remoteFs,
+				committer: { stateStore: env.stateStore },
+				conflictStrategy: "prefer_local",
+			});
+			expect(result.failed).toEqual([]);
+			expect(result.blocked).toEqual([]);
+			expect(readText(env.localFs, "note.md")).toBe("local");
+			expect(readText(env.remoteFs, "note.md")).toBe("local");
+			expect([...env.localFs.files.keys()].some((path) => path.includes(".conflict"))).toBe(false);
+			expect([...env.remoteFs.files.keys()].some((path) => path.includes(".conflict"))).toBe(false);
+			expect((await env.stateStore.get("note.md"))?.hash).toBe(
+				await sha256(new TextEncoder().encode("local").buffer),
+			);
+			expect((await finalizeSyncCycle({
+				admission, result, checkpoint: env.remoteFs.checkpoint,
+				scopeFingerprint: `prefer-local-${temperature}`,
+			})).kind).toBe("clean");
+		},
+	);
+
+	it.each([
+		{ strategy: "auto_merge" as const, expected: "remote" },
+		{ strategy: "duplicate" as const, expected: "local" },
+	])("preserves the existing $strategy conflict outcome through production planning", async ({ strategy, expected }) => {
+		const { env, changeSet } = await arrangeBilateralConflict("cold");
+		const { snapshot } = await prepareSyncCycleSnapshotForExecution(
+			changeSet, `existing-${strategy}`, { ignorePatterns: [] },
+			strategy, env.localFs, env.remoteFs,
+		);
+		const admission = admitBatchObservation(snapshot, strategy);
+		const result = await executePlan(admission.executable, {
+			localFs: env.localFs,
+			remoteFs: env.remoteFs,
+			committer: { stateStore: env.stateStore },
+			conflictStrategy: strategy,
+		});
+
+		expect(result.failed).toEqual([]);
+		expect(readText(env.localFs, "note.md")).toBe(expected);
+		expect(readText(env.remoteFs, "note.md")).toBe(expected);
+		if (strategy === "duplicate") {
+			expect(readText(env.localFs, "note.conflict.md")).toBe("remote");
+			expect(readText(env.remoteFs, "note.conflict.md")).toBe("remote");
+		}
+	});
+
+	it.each([
+		{ side: "local" as const, failure: "read_failure" as const },
+		{ side: "local" as const, failure: "endpoint_mutation" as const },
+		{ side: "remote" as const, failure: "read_failure" as const },
+		{ side: "remote" as const, failure: "endpoint_mutation" as const },
+	])(
+		"aborts the working view and publishes nothing when $side Prefer-local proof has $failure",
+		async ({ side, failure }) => {
+			const { env } = await arrangeBilateralConflict("warm");
+			const baseline = await env.stateStore.get("note.md");
+			const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+			const abortWorkingView = vi.fn().mockResolvedValue(undefined);
+			env.remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
+			env.remoteFs.checkpoint!.abortWorkingView = abortWorkingView;
+			const proofFs = side === "local" ? env.localFs : env.remoteFs;
+			const originalRead = proofFs.read.bind(proofFs);
+			vi.spyOn(proofFs, "read").mockImplementation(async (path) => {
+				if (failure === "read_failure") throw new Error("proof read failed");
+				const content = await originalRead(path);
+				addFile(proofFs, path, "changed during proof", 4000);
+				return content;
+			});
+
+			const attempt = runSyncCycleAttempt(
+				env.remoteFs.checkpoint,
+				async () => {
+					const changes = env.localTracker.snapshot();
+					const changeSet = await collectChanges({
+						localFs: env.localFs, remoteFs: env.remoteFs,
+						stateStore: env.stateStore, changes,
+					});
+					const planning = await prepareSyncCycleSnapshotForExecution(
+						changeSet, "proof-failure", { ignorePatterns: [] },
+						"prefer_local", env.localFs, env.remoteFs,
+					);
+					const admission = admitBatchObservation(planning.snapshot, "prefer_local");
+					const result = await executePlan(admission.executable, {
+						localFs: env.localFs, remoteFs: env.remoteFs,
+						committer: { stateStore: env.stateStore }, conflictStrategy: "prefer_local",
+					});
+					return { admission, result };
+				},
+				(close) => close(),
+				({ admission, result }) => ({
+					admission, result, scopeFingerprint: "proof-failure",
+				}),
+			);
+			if (side === "local") await expect(attempt).rejects.toThrow();
+			else expect((await attempt).completion.kind).toBe("incomplete");
+
+			expect(await env.stateStore.get("note.md")).toEqual(baseline);
+			expect(commitCheckpoint).not.toHaveBeenCalled();
+			expect(abortWorkingView).toHaveBeenCalledOnce();
+		},
+	);
+
+	it("settles Prefer-local proof siblings before aborting the working view", async () => {
+		const env = makeEnv();
+		const entries = ["a.md", "b.md"].map((path, index) => {
+			const local = addFile(env.localFs, path, `local-${path}`, 2000 + index);
+			const remote = addFile(env.remoteFs, path, `remote-${path}`, 3000 + index);
+			local.hash = "";
+			remote.hash = "";
+			remote.remoteChecksum = undefined;
+			return {
+				path, local, remote,
+				prevSync: {
+					path, hash: "base", localMtime: 1000, remoteMtime: 1000,
+					localSize: 4, remoteSize: 4, syncedAt: 1,
+				},
+			};
+		});
+		const changeSet: ChangeSet = {
+			entries, observations: [], identityEvidence: [], temperature: "warm", candidateFacts: [],
+		};
+		const sibling = deferred();
+		const events: string[] = [];
+		const originalRead = env.localFs.read.bind(env.localFs);
+		vi.spyOn(env.localFs, "read").mockImplementation(async (path) => {
+			if (path === "a.md") throw new Error("first proof failed");
+			await sibling.promise;
+			const content = await originalRead(path);
+			events.push("sibling settled");
+			return content;
+		});
+		const abortWorkingView = vi.fn().mockImplementation(() => {
+			events.push("abort");
+			return Promise.resolve();
+		});
+		env.remoteFs.checkpoint!.abortWorkingView = abortWorkingView;
+		const attempt = runSyncCycleAttempt(
+			env.remoteFs.checkpoint,
+			async () => {
+				const planning = await prepareSyncCycleSnapshotForExecution(
+					changeSet, "proof-sibling-drain", { ignorePatterns: [] },
+					"prefer_local", env.localFs, env.remoteFs,
+				);
+				const admission = admitBatchObservation(planning.snapshot, "prefer_local");
+				const result = await executePlan(admission.executable, {
+					localFs: env.localFs, remoteFs: env.remoteFs,
+					committer: { stateStore: env.stateStore }, conflictStrategy: "prefer_local",
+				});
+				return { admission, result };
+			},
+			(close) => close(),
+			({ admission, result }) => ({
+				admission, result, scopeFingerprint: "proof-sibling-drain",
+			}),
+		);
+
+		await flush();
+		expect(abortWorkingView).not.toHaveBeenCalled();
+		sibling.resolve();
+		await expect(attempt).rejects.toThrow("Content source unreadable: a.md");
+		expect(events).toEqual(["sibling settled", "abort"]);
+		expect(abortWorkingView).toHaveBeenCalledOnce();
+	});
+
 	it("publishes a completed first push when its local source is renamed in flight, then converges the edit", async () => {
 		const env = makeEnv();
 		addFile(env.localFs, "Untitled 3.md", "", 1000);

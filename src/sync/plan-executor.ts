@@ -12,7 +12,7 @@ import type {
 import type { VerifiedConflictOutput } from "./conflict";
 import type { Logger } from "../logging/logger";
 import { commitAction, commitExactCleanup } from "./state-committer";
-import { resolveConflict } from "./conflict-resolver";
+import { isPreferLocalDisposition, resolveConflict } from "./conflict-resolver";
 import { AuthError, classifyHttpError } from "../fs/errors";
 import type { ErrorClassification } from "../fs/errors";
 import { AsyncPool, AdaptivePool } from "../queue/async-queue";
@@ -758,6 +758,11 @@ async function executeConflictAction(
 			result.blocked.push({ action, reason: "priority observation invalidated pending action" });
 			return;
 		}
+		if (ctx.conflictStrategy === "prefer_local" &&
+			!isPreferLocalDisposition(action.preferLocalDisposition)) {
+			const kind = action.preferLocalDisposition === undefined ? "missing" : "invalid";
+			throw new TerminalInvariantError("Prefer-local conflict disposition " + kind + ": " + action.path);
+		}
 		if (action.protocol?.kind === "preservation_cover") {
 			const execute = () => executePreservationCover(action, ctx, (duplicatePaths) => {
 				preservationProgress = preservationResolution(duplicatePaths);
@@ -796,7 +801,7 @@ async function executeConflictAction(
 		const execute = async () => {
 			await checkPublicationInputs(action, ctx, result.succeeded);
 			const resolution = await (ctx.conflictResolver ?? resolveConflict)(
-				conflictCtx, ctx.conflictStrategy,
+				conflictCtx, ctx.conflictStrategy, action.preferLocalDisposition,
 			);
 			const { localEntity, remoteEntity, terminalProof } = await executePreparedConflictEffects(action, ctx, resolution);
 			const terminalRecord = await commitAction(action, localEntity, remoteEntity, ctx.committer,

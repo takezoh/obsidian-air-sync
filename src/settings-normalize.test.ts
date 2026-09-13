@@ -6,7 +6,7 @@ const KNOWN = ["googledrive", "googledrive-custom"];
 
 describe("normalizeConflictStrategy", () => {
 	it("leaves a valid strategy untouched", () => {
-		for (const strategy of ["auto_merge", "duplicate"] as const) {
+		for (const strategy of ["auto_merge", "prefer_local", "duplicate"] as const) {
 			const settings = mockSettings({ conflictStrategy: strategy });
 			expect(normalizeConflictStrategy(settings)).toBe(false);
 			expect(settings.conflictStrategy).toBe(strategy);
