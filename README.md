@@ -38,10 +38,11 @@ If Obsidian closes, your phone locks, or the connection drops during sync, compl
 
 ## Getting started
 
-1. Open **Settings → Air Sync**.
-2. Choose Google Drive, OneDrive, or Dropbox.
-3. Click **Connect**.
-4. Choose the cloud folder used for your vault.
+1. Create an Obsidian vault in local storage.
+2. Open **Settings → Air Sync**.
+3. Choose Google Drive, OneDrive, or Dropbox.
+4. Click **Connect**.
+5. Choose the cloud folder used for your vault.
 
 That's it.
 
