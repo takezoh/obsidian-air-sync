@@ -41,6 +41,20 @@ export class BackendManager {
 		return this.connecting;
 	}
 
+	/**
+	 * Log a failure that happens OUTSIDE the sync cycle (init/connect/folder-pick)
+	 * and flush immediately. `Logger.flush()` otherwise only runs at sync-cycle end
+	 * or plugin unload (`main.ts`'s `onunload` calls it un-awaited, since Obsidian's
+	 * `onunload(): void` isn't a signal it waits on) — a connect/auth failure that
+	 * never reaches a sync cycle could otherwise sit in memory and never reach
+	 * `.airsync/logs/` at all, even with logging enabled and even across a restart.
+	 */
+	private async logError(message: string, context: Record<string, unknown>): Promise<void> {
+		const logger = this.deps.getLogger();
+		logger.error(message, context);
+		await logger.flush();
+	}
+
 	getRemoteFs(): IFileSystem | null {
 		return this.remoteFs;
 	}
@@ -113,7 +127,7 @@ export class BackendManager {
 			}
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
-			this.deps.getLogger().error("Failed to initialize backend", { message: msg });
+			await this.logError("Failed to initialize backend", { message: msg });
 			if (e instanceof AuthError) {
 				this.deps.notify("Authentication expired. Please reconnect in settings.");
 			}
@@ -166,7 +180,7 @@ export class BackendManager {
 			this.deps.notify("Remote folder updated");
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			this.deps.getLogger().error("Failed to bind default folder", { message: msg });
+			await this.logError("Failed to bind default folder", { message: msg });
 			this.deps.notify(`Folder selection failed: ${msg}`);
 			return;
 		} finally {
@@ -198,7 +212,7 @@ export class BackendManager {
 			await this.deps.saveSettings();
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			this.deps.getLogger().error("Failed to start folder pick", { message: msg });
+			await this.logError("Failed to start folder pick", { message: msg });
 			this.deps.notify(`Folder picker failed: ${msg}`);
 		}
 	}
@@ -235,7 +249,7 @@ export class BackendManager {
 			this.deps.notify("Remote folder updated");
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			this.deps.getLogger().error("Failed to bind picked folder", { message: msg });
+			await this.logError("Failed to bind picked folder", { message: msg });
 			this.deps.notify(`Folder selection failed: ${msg}`);
 			return;
 		} finally {
@@ -311,7 +325,7 @@ export class BackendManager {
 			await this.deps.saveSettings();
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			this.deps.getLogger().error("Failed to start backend connection", { message: msg });
+			await this.logError("Failed to start backend connection", { message: msg });
 			this.deps.notify(`Connection failed: ${msg}`);
 		}
 	}
@@ -370,7 +384,7 @@ export class BackendManager {
 				: `Connected to ${this.backendProvider.displayName} — choose a remote folder to start syncing`);
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			this.deps.getLogger().error("Authorization failed", { message: msg });
+			await this.logError("Authorization failed", { message: msg });
 			this.deps.notify(`Authorization failed: ${msg}`);
 		} finally {
 			this.connecting = false;
