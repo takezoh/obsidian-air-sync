@@ -140,6 +140,115 @@ describe("SyncOrchestrator", () => {
 		},
 	);
 
+	it("retains an edit made during push and converges it through the next HOT push", async () => {
+		const localFs = createMockLocalFs();
+		const remoteFs = createMockRemoteFs("actual_resolved");
+		addFile(localFs, "note.md", "original", 1000);
+		addFile(remoteFs, "note.md", "original", 1000).identityKey = "R";
+		const settings = baseMockSettings({
+			backendType: "test", vaultId: `test-${Math.random()}`, enableThreeWayMerge: true,
+		});
+		const recordConflicts = vi.fn().mockResolvedValue(undefined);
+		const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+		const detectedTemperatures: unknown[] = [];
+		const dirtyAtDetection: boolean[] = [];
+		const info = vi.fn((message: string, context?: Record<string, unknown>) => {
+			if (message !== "Change detection completed") return;
+			detectedTemperatures.push(context?.temperature);
+			dirtyAtDetection.push(deps.localTracker.getDirtyPaths().has("note.md"));
+		});
+		remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
+		const deps = createDeps({
+			getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+			recordConflicts,
+			logger: { debug: vi.fn(), info, warn: vi.fn(), error: vi.fn(), flush: vi.fn() } as unknown as Logger,
+		});
+		const orchestrator = new SyncOrchestrator(deps);
+		try {
+			await orchestrator.runSync();
+			commitCheckpoint.mockClear();
+			recordConflicts.mockClear();
+			detectedTemperatures.length = 0;
+			dirtyAtDetection.length = 0;
+			await localFs.write("note.md", new TextEncoder().encode("first local").buffer, 2000);
+			deps.localTracker.markDirty("note.md");
+
+			const write = remoteFs.write.bind(remoteFs);
+			let injected = false;
+			const remoteWrite = vi.spyOn(remoteFs, "write").mockImplementation(async (path, bytes, mtime) => {
+				const result = await write(path, bytes, mtime);
+				if (!injected) {
+					injected = true;
+					await localFs.write(path, new TextEncoder().encode("latest local").buffer, 3000);
+					deps.localTracker.markDirty(path);
+					void orchestrator.runSync();
+				}
+				return result;
+			});
+
+			await orchestrator.runSync();
+
+			expect(remoteWrite).toHaveBeenCalledTimes(2);
+			expect(detectedTemperatures).toEqual(["hot", "hot"]);
+			expect(dirtyAtDetection).toEqual([true, true]);
+			expect(readText(localFs, "note.md")).toBe("latest local");
+			expect(readText(remoteFs, "note.md")).toBe("latest local");
+			expect(recordConflicts).not.toHaveBeenCalled();
+			expect(commitCheckpoint).toHaveBeenCalledTimes(2);
+			expect(deps.localTracker.getDirtyPaths().size).toBe(0);
+			expect(deps.onStatusChange).not.toHaveBeenCalledWith("partial_error");
+			expect(deps.onStatusChange).toHaveBeenLastCalledWith("idle");
+
+			await orchestrator.runSync();
+			expect(remoteWrite).toHaveBeenCalledTimes(2);
+			expect(recordConflicts).not.toHaveBeenCalled();
+		} finally {
+			await orchestrator.close();
+		}
+	});
+
+	it("aborts the checkpoint when a remote identity is replaced after push bytes arrive", async () => {
+		const localFs = createMockLocalFs();
+		const remoteFs = createMockRemoteFs("actual_resolved");
+		addFile(localFs, "note.md", "original", 1000);
+		addFile(remoteFs, "note.md", "original", 1000).identityKey = "R";
+		const settings = baseMockSettings({
+			backendType: "test", vaultId: `test-${Math.random()}`, enableThreeWayMerge: true,
+		});
+		const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+		const abortWorkingView = vi.fn().mockResolvedValue(undefined);
+		remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
+		remoteFs.checkpoint!.abortWorkingView = abortWorkingView;
+		const deps = createDeps({
+			getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+		});
+		const orchestrator = new SyncOrchestrator(deps);
+		try {
+			await orchestrator.runSync();
+			const baseline = await orchestrator.state.get("note.md");
+			commitCheckpoint.mockClear();
+			abortWorkingView.mockClear();
+			await localFs.write("note.md", new TextEncoder().encode("changed!").buffer, 2000);
+			deps.localTracker.markDirty("note.md");
+			const write = remoteFs.write.bind(remoteFs);
+			vi.spyOn(remoteFs, "write").mockImplementation(async (path, bytes, mtime) => {
+				const result = await write(path, bytes, mtime);
+				remoteFs.files.get(path)!.entity.identityKey = "replacement";
+				return result;
+			});
+
+			await orchestrator.runSync();
+
+			expect(await orchestrator.state.get("note.md")).toEqual(baseline);
+			expect(commitCheckpoint).not.toHaveBeenCalled();
+			expect(abortWorkingView).toHaveBeenCalledOnce();
+			expect(deps.localTracker.getDirtyPaths()).toContain("note.md");
+			expect(deps.onStatusChange).toHaveBeenLastCalledWith("partial_error");
+		} finally {
+			await orchestrator.close();
+		}
+	});
+
 	describe("cold hash-match diagnostics", () => {
 		it("reports checksum enrichment candidates and successful fast matches", async () => {
 			const localFs = createMockLocalFs();
