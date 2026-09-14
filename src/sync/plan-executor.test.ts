@@ -589,6 +589,84 @@ describe("executePlan", () => {
 		});
 	});
 
+	it("does not reread a hashless local source after its captured push is written", async () => {
+		const ctx = makeCtx();
+		const source = ctx.localFs as MockFileSystem;
+		const target = ctx.remoteFs as MockFileSystem;
+		addFile(source, "race.md", "original");
+		const stat = source.stat.bind(source);
+		vi.spyOn(source, "stat").mockImplementation(async (path) => {
+			const entity = await stat(path);
+			return entity ? { ...entity, hash: "", remoteChecksum: undefined } : null;
+		});
+		const snapshot = (await source.stat("race.md"))!;
+		const read = vi.spyOn(source, "read");
+		const write = target.write.bind(target);
+		vi.spyOn(target, "write").mockImplementation(async (path, bytes, mtime) => {
+			const result = await write(path, bytes, mtime);
+			await source.write(path, new TextEncoder().encode("new local").buffer, mtime + 1);
+			return result;
+		});
+
+		const result = await executePlan(makePlan([{
+			action: "push", path: "race.md", local: snapshot,
+		}]), ctx);
+
+		expect(result.blocked).toEqual([]);
+		expect(result.succeeded).toHaveLength(1);
+		expect(read).toHaveBeenCalledOnce();
+		expect(await ctx.committer.stateStore.get("race.md")).toMatchObject({
+			localSize: snapshot.size, remoteSize: snapshot.size,
+		});
+	});
+
+	it("does not publish a push when the remote terminal corrupts the captured bytes", async () => {
+		const ctx = makeCtx();
+		const source = ctx.localFs as MockFileSystem;
+		const target = ctx.remoteFs as MockFileSystem;
+		addFile(source, "race.md", "original");
+		const snapshot = (await source.stat("race.md"))!;
+		const write = target.write.bind(target);
+		vi.spyOn(target, "write").mockImplementation(async (path, bytes, mtime) => {
+			const result = await write(path, bytes, mtime);
+			addFile(target, path, "corrupt!", mtime + 1);
+			return result;
+		});
+
+		const result = await executePlan(makePlan([{
+			action: "push", path: "race.md", local: snapshot,
+		}]), ctx);
+
+		expect(result.succeeded).toEqual([]);
+		expect(result.blocked).toHaveLength(1);
+		expect(await ctx.committer.stateStore.get("race.md")).toBeUndefined();
+	});
+
+	it("does not publish a push when its remote identity is replaced with the same captured bytes", async () => {
+		const ctx = makeCtx();
+		const source = ctx.localFs as MockFileSystem;
+		const target = ctx.remoteFs as MockFileSystem;
+		addFile(source, "race.md", "changed!");
+		addFile(target, "race.md", "original").identityKey = "R";
+		const local = (await source.stat("race.md"))!;
+		const remote = (await target.stat("race.md"))!;
+		const write = target.write.bind(target);
+		vi.spyOn(target, "write").mockImplementation(async (path, bytes, mtime) => {
+			const result = await write(path, bytes, mtime);
+			target.files.get(path)!.entity.identityKey = "replacement";
+			return result;
+		});
+
+		const result = await executePlan(makePlan([{
+			action: "push", path: "race.md", local, remote,
+		}]), ctx);
+
+		expect(result.succeeded).toEqual([]);
+		expect(result.blocked).toHaveLength(1);
+		expect(result.blocked[0]?.reason).toContain("Terminal remote identity changed");
+		expect(await ctx.committer.stateStore.get("race.md")).toBeUndefined();
+	});
+
 	it("does not publish a pull when its remote source disappears during the write", async () => {
 		const ctx = makeCtx();
 		const source = ctx.remoteFs as MockFileSystem;
@@ -606,6 +684,31 @@ describe("executePlan", () => {
 		}]), ctx);
 		expect(result.succeeded).toEqual([]);
 		expect(result.blocked).toHaveLength(1);
+		expect(await ctx.committer.stateStore.get("race.md")).toBeUndefined();
+	});
+
+	it("does not publish a pull when its remote source changes to same-size bytes during the write", async () => {
+		const ctx = makeCtx();
+		const source = ctx.remoteFs as MockFileSystem;
+		const target = ctx.localFs as MockFileSystem;
+		addFile(source, "race.md", "original");
+		const snapshot = (await source.stat("race.md"))!;
+		const write = target.write.bind(target);
+		vi.spyOn(target, "write").mockImplementation(async (path, bytes, mtime) => {
+			const result = await write(path, bytes, mtime);
+			await source.write(path, new TextEncoder().encode("modified").buffer, mtime + 1);
+			return result;
+		});
+
+		const result = await executePlan(makePlan([{
+			action: "pull", path: "race.md", remote: snapshot,
+		}]), ctx);
+
+		expect(result.succeeded).toEqual([]);
+		expect(result.blocked).toHaveLength(1);
+		expect(result.blocked[0]?.reason).toContain("Rename terminal bytes changed");
+		expect(readText(target, "race.md")).toBe("original");
+		expect(readText(source, "race.md")).toBe("modified");
 		expect(await ctx.committer.stateStore.get("race.md")).toBeUndefined();
 	});
 

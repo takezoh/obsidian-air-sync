@@ -299,13 +299,14 @@ The phases run behind **sequential barriers** (Phase 1 fully drains before Phase
 
 Phases 1 and 3 use `executeAction()`, which runs `runActionIO()` followed by `commitAction()` and records success in `result.succeeded`. Phase 2 (conflict) uses `executeConflictAction()` instead: before I/O it validates the action's required protocol and `ConflictExecutionPolicy`, then `resolveConflict()` dispatches on the admitted policy mode (`auto_merge` / `local_win` / `preserve`), re-stats both local and remote sides, commits, and records the action in both `result.conflicts` and `result.succeeded`. Missing, malformed, or protocol-incompatible policy fails closed before conflict I/O; there is no downstream default or raw-settings lookup. In both paths, `AuthError` is re-thrown to abort the entire cycle (it rejects the phase's pool/lane and propagates); all other errors are caught per-action and recorded in `result.failed`.
 
-A push captures and validates its exact local bytes before writing. If a vault rename
-removes that old local address after the write, but the remote terminal proves the
-captured bytes, the transfer publishes those captured local facts as its historical
-`SyncRecord` half. The post-snapshot rename/edit remains pending in `LocalChangeTracker`
-and converges in the next cycle. An existing local source whose bytes changed is still
-rejected, as are an unproved remote terminal and a pull whose remote source disappeared;
-the latter has no local tracker evidence that can explain the remote transition.
+A push captures and validates its exact local bytes before writing. Once the remote
+terminal proves those bytes, the transfer publishes the captured local facts as its
+historical `SyncRecord` half even if the local address was subsequently changed, replaced,
+or removed. The later local revision remains pending in `LocalChangeTracker` and converges
+in the next cycle. Stale pre-write inputs and an unproved or corrupt remote terminal remain
+non-clean, as does a pull whose remote source changed or disappeared; the latter has no
+local tracker evidence that can explain the remote transition. See
+[ADR 20260914](adr/adr-20260914-publish-captured-push-revision.md).
 When three-way merge is enabled, the optional merge-base projection reuses these proved
 transfer bytes and validates them against the committed record instead of rereading the
 now-obsolete local path.

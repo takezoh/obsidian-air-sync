@@ -1,4 +1,4 @@
-/* eslint max-lines: ["error", 972] -- the executor owns all fixed protocols, immediate pre-effect observation, terminal proof, proof-gated commit routing, and the directory mkdir branch shared by push/pull. */
+/* eslint max-lines: ["error", 980] -- the executor owns all fixed protocols, direction-specific transfer proof, immediate pre-effect observation, terminal proof, proof-gated commit routing, and the directory mkdir branch shared by push/pull. */
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
 import type {
@@ -375,15 +375,15 @@ async function runActionIO(
 			// captured destination and record expectations before destructive use.
 			await checkPublicationInputs(action, ctx, []);
 			await target.write(targetPath, content.slice(0), expected.mtime);
-			let [localEntity, remoteEntity] = await Promise.all([
-				localFs.stat(action.localPath ?? action.local?.path ?? path),
+			const [localEntity, remoteEntity] = await Promise.all([
+				pushing
+					? Promise.resolve(captured.entity)
+					: localFs.stat(action.localPath ?? action.local?.path ?? path),
 				remoteFs.stat(action.remotePath ?? action.remote?.path ?? path),
 			]);
-			// A vault rename can remove a push source after its bytes were captured
-			// and written. Publish that completed transfer as historical baseline;
-			// the tracker retains the later rename/edit for the next cycle. A source
-			// that still exists must remain current and is verified below as before.
-			if (pushing && !localEntity) localEntity = captured.entity;
+			// A push publishes the exact revision supplied to the remote write. Any
+			// local change after the final pre-write check is a later tracker input,
+			// not terminal evidence for (or against) this completed transfer.
 			if (!localEntity || !remoteEntity) throw new ContentProofError("proof_mismatch", "Transfer terminal endpoint disappeared");
 			return { localEntity, remoteEntity, intendedContent: content };
 		}
@@ -534,7 +534,10 @@ async function proveAdmittedTerminal(
 	if (!localEntity.isDirectory || !remoteEntity.isDirectory) {
 		if (localEntity.size !== remoteEntity.size) throw new ContentProofError("proof_mismatch", "Terminal sizes differ");
 		if (entities.intendedContent) {
-			for (const [fs, entity] of [[ctx.localFs, localEntity], [ctx.remoteFs, remoteEntity]] as const) {
+			const terminals = action.action === "push"
+				? [[ctx.remoteFs, remoteEntity]] as const
+				: [[ctx.localFs, localEntity], [ctx.remoteFs, remoteEntity]] as const;
+			for (const [fs, entity] of terminals) {
 				if (!await bytesMatch(entities.intendedContent, entity) &&
 					!buffersEqual(entities.intendedContent, await fs.read(entity.path))) {
 					throw new ContentProofError("proof_mismatch", "Rename terminal bytes changed");

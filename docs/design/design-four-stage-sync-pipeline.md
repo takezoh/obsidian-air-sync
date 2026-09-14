@@ -110,10 +110,17 @@ invariants:
 - id: INV-015
   statement: Observation may inspect the captured conflict strategy only to decide
     bounded fact acquisition. Admission compiles every conflict into a required closed
-    action-local ConflictExecutionPolicy and protocol. Execution, resolver, audit, and
-    finalization do not receive or reinterpret the raw strategy; malformed or
+    action-local ConflictExecutionPolicy and protocol. Execution, resolver, audit,
+    and finalization do not receive or reinterpret the raw strategy; malformed or
     protocol-incompatible policy fails before conflict I/O.
   enforcement: contract
+- id: INV-016
+  statement: An ordinary push transfers one immutable exact local snapshot. After
+    final pre-write validation, exact remote terminal proof publishes that captured
+    entity and bytes as the SyncRecord baseline even if the current local endpoint
+    changed or disappeared; the later tracker generation remains next-cycle input.
+    This direction-specific rule never weakens remote proof or non-push protocols.
+  enforcement: test
 boundaries:
   provides:
   - id: BOUNDARY-001
