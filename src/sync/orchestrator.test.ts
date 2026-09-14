@@ -1376,8 +1376,15 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.close();
 		});
 
-		it("sets status to error and notifies on AuthError", async () => {
-			const deps = createDeps();
+		it("sets status to error and notifies on AuthError, flushing the logger immediately", async () => {
+			// This "abort" decision returns before the retry loop's own
+			// guaranteed flush at the bottom of the function -- without its own
+			// flush, an auth failure here would sit only in the in-memory buffer,
+			// invisible in .airsync/logs/ until some unrelated later flush.
+			const flush = vi.fn();
+			const deps = createDeps({
+				logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), flush } as unknown as Logger,
+			});
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();
 			deps.localFs = () => localFs;
@@ -1393,6 +1400,7 @@ describe("SyncOrchestrator", () => {
 			expect(deps.notify).toHaveBeenCalledWith(
 				"Authentication error. Please reconnect in settings.",
 			);
+			expect(flush).toHaveBeenCalled();
 			await orchestrator.close();
 		});
 
