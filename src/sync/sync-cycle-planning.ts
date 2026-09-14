@@ -230,6 +230,25 @@ function scopeSyncCycle(
 			afterFilter: admittedEntries.length,
 			excluded: changeSet.entries.length - admittedEntries.length,
 		});
+		// Two independent gates can drop a raw entry: applyScope's own
+		// ignore-pattern/dot-path/wholly-ignored-directory check (the entry never
+		// makes it into scopedChangeSet.entries at all), and the byEndpoint
+		// disposition check just above (the entry survives applyScope but its
+		// scope disposition resolves to "unknown" or "mobile_deferred" rather than
+		// "included"). Logging each dropped path with which of the two happened --
+		// and, for the second case, the actual disposition -- turns "why isn't
+		// this syncing" from count arithmetic into a direct answer.
+		const admittedPaths = new Set(admittedEntries.map((entry) => entry.path));
+		const scopedPaths = new Set(scopedChangeSet.entries.map((entry) => entry.path));
+		const droppedPaths = changeSet.entries
+			.filter((entry) => !admittedPaths.has(entry.path))
+			.map((entry) => ({
+				path: entry.path,
+				reason: scopedPaths.has(entry.path)
+					? `disposition:${projection.byEndpoint.get(entry.path) ?? "unknown"}`
+					: "excluded_from_scope",
+			}));
+		logger?.debug("Excluded paths", { paths: droppedPaths.slice(0, 25) });
 	}
 	scopedChangeSet.entries = admittedEntries;
 	return { scopedChangeSet, projection, baselinePaths };

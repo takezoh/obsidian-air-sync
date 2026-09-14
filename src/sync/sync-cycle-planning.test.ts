@@ -501,6 +501,38 @@ describe("batch observation boundary", () => {
 		expect([...snapshot.baselinePaths]).toEqual(["small.md", "large.md"]);
 	});
 
+	it("logs each excluded path with why it was dropped, distinguishing applyScope's own exclusion from an unresolved scope disposition", () => {
+		const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), flush: vi.fn() };
+		const largeRecord = baseline("large.md");
+		const changeSet: ChangeSet = {
+			entries: [
+				{
+					path: "large.md", prevSync: largeRecord,
+					local: { path: "large.md", size: 20, mtime: 2, hash: "large", isDirectory: false },
+				},
+				{
+					path: "ignored.md",
+					local: { path: "ignored.md", size: 4, mtime: 2, hash: "ignored", isDirectory: false },
+				},
+			],
+			observations: [], identityEvidence: [], temperature: "warm", candidateFacts: [],
+		};
+
+		prepareSyncCycleSnapshot(
+			changeSet, "backend\0root",
+			{ ignorePatterns: ["ignored.md"], mobileMaxBytes: 10 },
+			logger as never,
+		);
+
+		const call = logger.debug.mock.calls.find((call) => call[0] === "Excluded paths");
+		expect(call?.[1]).toEqual({
+			paths: [
+				{ path: "large.md", reason: "disposition:mobile_deferred" },
+				{ path: "ignored.md", reason: "excluded_from_scope" },
+			],
+		});
+	});
+
 	it.each([
 		{
 			name: "included to excluded as a deletion",
