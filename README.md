@@ -51,6 +51,7 @@ That's it.
 - **Keep your vault in local storage.** Create your Obsidian vault on your device — **not** inside a folder that another cloud drive already syncs (iCloud Drive, or the Dropbox / OneDrive / Google Drive desktop apps). Air Sync copies your notes to the cloud for you.
 - **Don't open the cloud folder as a vault.** The folder Air Sync creates in your cloud storage is a managed mirror — opening it directly in Obsidian as a vault is not supported. Keep working in your local vault; Air Sync keeps the cloud copy in step.
 - **Let Air Sync be the only sync tool for a vault.** Two sync mechanisms managing the same files at once is a common cause of conflicts.
+- **On Google Drive, add and move files from your local vault, not from drive.google.com.** Air Sync's Google Drive connection can only see files and folders it created itself (or ones you explicitly picked) — a Google-imposed access boundary, not a bug. A file or folder added directly on Google Drive's website stays invisible to Air Sync and won't sync down. Moving an already-synced file into such a folder can make Air Sync think it was deleted remotely and remove your local copy. See [Troubleshooting](#troubleshooting).
 - **Use the same folder on every device.** During setup you choose which cloud folder to sync into — pick the **same folder** on each device so they share one set of notes.
 - **Existing files are handled conservatively.** A first sync *merges* both sides — a file on only one side is copied to the other, never deleted — so a new device or an already-populated folder just brings both sets together. A file is removed only when one that was already in sync gets deleted, and even then it goes to the trash on both sides (recoverable). Clashing edits keep both. Details: [deletion safety](docs/sync-pipeline.md#deletion-safety), [conflict strategies](#conflict-resolution-strategies).
 
@@ -89,6 +90,7 @@ See the **[custom app setup guide](docs/custom-apps.md)** for what each backend 
 - **"Authorization failed" right after approving access**: The token exchange needs a working connection immediately after you approve access. Check that the device is online, then click **Connect** and approve access again.
 - **The browser didn't return to Obsidian after approving access**: You aren't connected yet, so there's nothing to disconnect — just click **Connect** in the plugin settings to start the flow again.
 - **"Authentication expired. Please reconnect in settings."**: Your saved authorization is no longer valid (for example access was revoked, or a refresh token expired). Open **Settings → Air Sync** and reconnect.
+- **A file or folder added directly on Google Drive's website doesn't appear locally, or a synced file vanishes locally after being moved on Google Drive**: Air Sync's Google Drive connection can only see files and folders it created itself (or ones you explicitly picked) — a Google-imposed access boundary, not a bug. Content added or moved on drive.google.com outside of Air Sync stays invisible to it, and moving an already-synced file into such a location can make Air Sync think it was deleted remotely, removing the local copy. Always add, move, and edit files from your local vault, and let Air Sync mirror the results to Drive.
 
 ## Privacy & network use
 
@@ -100,7 +102,7 @@ Air Sync connects only to the cloud storage you choose, to sync your files:
 
 Your vault data is sent only to your chosen storage provider — never to the auth, redirect, or picker pages.
 
-Air Sync only ever sees the folders it created — never the rest of your Google Drive, OneDrive, or Dropbox. (On OneDrive it uses the App Folder, so it can only access its own folder.)
+Air Sync only ever sees the folders it created — never the rest of your Google Drive, OneDrive, or Dropbox. (On OneDrive it uses the App Folder, so it can only access its own folder.) On Google Drive specifically, this means files or folders added directly through Drive's own website — rather than through Air Sync — are invisible to it and won't sync; see [Troubleshooting](#troubleshooting).
 
 ## Disclaimer
 

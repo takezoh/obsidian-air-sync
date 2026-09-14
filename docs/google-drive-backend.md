@@ -122,6 +122,8 @@ Key methods:
 
 Two OAuth implementations share a common base class (`GoogleAuthBase`). The server side of the built-in flow — the `auth-airsync.takezo.dev` endpoints — lives in the dedicated [obsidian-air-sync-auth](https://github.com/takezoh/obsidian-air-sync-auth) repo.
 
+Both use Google's `drive.file` scope: per-object access to files/folders the app itself creates, or that the user explicitly grants via a Picker selection — never blanket access to the rest of the user's Drive. Critically, that access is not extended automatically to content someone adds directly on drive.google.com inside a folder Air Sync created — see the README's [Google Drive troubleshooting entry](../README.md#troubleshooting) for the user-facing consequence.
+
 ### GoogleAuth (server-side, built-in)
 
 - Redirects to Google OAuth with `redirect_uri = https://auth-airsync.takezo.dev/google/callback`, `client_id` = the built-in public client ID, `access_type=offline`, and `prompt=consent`
