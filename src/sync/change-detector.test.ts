@@ -36,8 +36,8 @@ describe("collectChanges — temperature selection", () => {
 	let stateStore: ReturnType<typeof createMockStateStore>;
 	let localTracker: LocalChangeTracker;
 
-	function makeDeps(): ChangeDetectorDeps {
-		return { localFs, remoteFs, stateStore, changes: localTracker.snapshot() };
+	function makeDeps(logger?: ChangeDetectorDeps["logger"]): ChangeDetectorDeps {
+		return { localFs, remoteFs, stateStore, changes: localTracker.snapshot(), logger };
 	}
 
 	beforeEach(() => {
@@ -277,13 +277,34 @@ describe("collectChanges — temperature selection", () => {
 			await stateStore.put(makeRecord("notes", { isDirectory: true, localSize: 0, remoteSize: 0 }));
 			// "notes" is not recreated locally — it was deleted.
 			addFile(remoteFs, "notes/child.md", "still there", 1000);
+			const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), flush: vi.fn() };
 
-			const result = await collectChanges(makeDeps());
+			const result = await collectChanges(makeDeps(logger as never));
 
 			// WARM cannot safely tell whether "notes" still has live remote
 			// descendants from its own targeted stats alone, so it escalates to a
 			// full COLD collection instead of admitting a possibly-unsafe delete.
 			expect(result.temperature).toBe("cold");
+			expect(logger.debug).toHaveBeenCalledWith("WARM escalated to COLD", {
+				reason: "tracked_folder_missing_locally", paths: ["notes"],
+			});
+		});
+
+		it("logs why WARM escalated to COLD on a reported remote folder rename", async () => {
+			await stateStore.put(makeRecord("old-name", { isDirectory: true, localSize: 0, remoteSize: 0 }));
+			addFile(localFs, "old-name/child.md", "content", 1000);
+			const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), flush: vi.fn() };
+			remoteFs.checkpoint!.getChangedPaths = () => Promise.resolve({
+				modified: [], deleted: [],
+				renamed: [{ oldPath: "old-name", newPath: "new-name", isFolder: true }],
+			});
+
+			const result = await collectChanges(makeDeps(logger as never));
+
+			expect(result.temperature).toBe("cold");
+			expect(logger.debug).toHaveBeenCalledWith("WARM escalated to COLD", {
+				reason: "remote_folder_rename", renamePairs: ["old-name -> new-name"],
+			});
 		});
 
 		it("includes remote changed paths from getChangedPaths", async () => {

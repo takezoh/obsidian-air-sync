@@ -1,9 +1,10 @@
-/* eslint max-lines: ["error", 379] -- the COLD/WARM/HOT acquisition strategies, their directory-fact handling, and the WARM-to-COLD folder-delete escalation are one acquisition owner. */
+/* eslint max-lines: ["error", 393] -- the COLD/WARM/HOT acquisition strategies, their directory-fact handling, and the WARM-to-COLD folder-delete escalation are one acquisition owner. */
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
 import type { CandidateFact, IdentityEvidence, MixedEntity, PathObservation, SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
 import type { TrackerSnapshot } from "./local-tracker";
+import type { Logger } from "../logging/logger";
 import { hasChanged } from "./change-compare";
 import {
 	enrichHashesForInitialMatch,
@@ -48,6 +49,7 @@ export interface ChangeDetectorDeps {
 	stateStore: SyncStateStore;
 	changes: TrackerSnapshot;
 	onRemoteIdentityEvidence?: (evidence: readonly IdentityEvidence[]) => void;
+	logger?: Logger;
 }
 
 export interface CollectChangesOptions {
@@ -220,6 +222,12 @@ async function collectWarm(
 		prefetchedRemoteChanges ?? getRemoteChanges(remoteFs, deps.onRemoteIdentityEvidence),
 	]);
 	if (hasFolderRename(remoteChanges)) {
+		deps.logger?.debug("WARM escalated to COLD", {
+			reason: "remote_folder_rename",
+			renamePairs: remoteChanges.renameEvidence
+				.filter((item) => item.isFolder)
+				.map((item) => `${item.oldPath} -> ${item.newPath}`),
+		});
 		return collectCold(
 			deps,
 			allRecords,
@@ -228,10 +236,16 @@ async function collectWarm(
 			await remoteSnapshotAfterDelta(remoteFs),
 		);
 	}
-	if (allRecords.some((record) => record.isDirectory && !localFiles.some((file) => file.path === record.path))) {
+	const missingLocalFolders = allRecords
+		.filter((record) => record.isDirectory && !localFiles.some((file) => file.path === record.path))
+		.map((record) => record.path);
+	if (missingLocalFolders.length > 0) {
 		// A previously-tracked folder is gone locally. Propagating that to remote
 		// (delete_remote) needs remote-descendant completeness that WARM's targeted
 		// stats can't prove — escalate, mirroring the folder-rename case above.
+		deps.logger?.debug("WARM escalated to COLD", {
+			reason: "tracked_folder_missing_locally", paths: missingLocalFolders,
+		});
 		return collectCold(
 			deps,
 			allRecords,

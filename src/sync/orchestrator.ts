@@ -370,6 +370,7 @@ export class SyncOrchestrator {
 				remoteFs,
 				stateStore: this.stateStore,
 				changes: snapshot,
+				logger: this.deps.logger,
 			}, {
 				forceFullScan,
 			});
