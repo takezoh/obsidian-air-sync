@@ -129,6 +129,19 @@ backend.
   both stayed green with no fixture changes.
 - Alias-collision preservation and hash enrichment remain file-only by design —
   `exactEntity()` is untouched, and neither has a defined behavior for a directory.
+- **A dot-path root's own local absence is observable, so it must be listed
+  correctly.** `LocalFs.list()` merges in `DotPathAdapter.listAll()` for hidden
+  roots (e.g. the vault's configDir under Config Sync) — and that adapter only
+  ever pushed an entity for something it found as *someone else's* child while
+  recursing, never for a configured root itself. Once such a root could carry a
+  directory `SyncRecord` (this ADR), that gap meant `collectWarm`'s own
+  missing-folder escalation (above) always saw it as absent, live-testing showed
+  — forcing a full COLD collection on essentially every cycle for any vault with
+  Config Sync enabled. Fixed by pushing an entity for each existing root itself,
+  matching how its children are already handled; a `"WARM escalated to COLD"`
+  debug diagnostic (logging which of the two escalation reasons fired, and for
+  which paths) is what made this directly diagnosable from a live log instead of
+  another round of count arithmetic.
 
 ## Rejected alternatives
 
