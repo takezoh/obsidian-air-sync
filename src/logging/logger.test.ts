@@ -116,6 +116,20 @@ describe("Logger", () => {
 		expect(adapter.written.size).toBe(0);
 	});
 
+	it("mirrors a flush failure to console instead of swallowing it silently", async () => {
+		const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		adapter.write = vi.fn(() => Promise.reject(new Error("disk full")));
+
+		logger.info("test");
+		await logger.flush();
+
+		expect(consoleSpy).toHaveBeenCalledWith(
+			"Air Sync: failed to flush logs to .airsync/logs/",
+			expect.any(Error),
+		);
+		consoleSpy.mockRestore();
+	});
+
 	it("serializes concurrent flush() calls instead of racing on the log file", async () => {
 		// Without serialization, two overlapping flush() calls each read the same
 		// on-disk content before either writes back, and whichever writes last

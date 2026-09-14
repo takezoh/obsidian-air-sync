@@ -126,8 +126,14 @@ export class Logger {
 
 				const content = existing + lines.join("\n") + "\n";
 				await this._adapter.write(filePath, content);
-			} catch {
-				// Logging should never break the app — silently drop on failure
+			} catch (err) {
+				// Logging should never break the app — but a completely silent
+				// failure here means .airsync/logs/ can go missing (e.g. deleted
+				// out-of-band, leaving the adapter's exists() cache stale) with
+				// zero trace anywhere, defeating the one tool this project's own
+				// troubleshooting flow depends on. Mirror to console like every
+				// other log line already does, instead of swallowing outright.
+				console.error("Air Sync: failed to flush logs to .airsync/logs/", err);
 			}
 		});
 	}

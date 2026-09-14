@@ -16,14 +16,25 @@ export interface RawFsAdapter {
  * Recursively ensure a directory (and all its ancestors) exist, creating each level
  * that is missing. The shared bootstrap for `.airsync/...` subtrees — replaces the
  * per-level exists/mkdir ladders the Logger and ConflictHistory each open-coded.
+ *
+ * Calls `mkdir()` unconditionally for every level rather than gating on `exists()`
+ * first: an out-of-band deletion (e.g. the user removing `.airsync` directly on
+ * disk, outside Obsidian) can leave the adapter's own `exists()` view stale, so a
+ * gated check can wrongly skip recreating a directory that's actually gone. A
+ * missing-directory error can't be told apart from "already exists" without a
+ * adapter-specific error code, so tolerate any `mkdir()` failure here as long as
+ * the directory verifiably exists afterward; a genuine failure (e.g. permissions)
+ * still surfaces there.
  */
 export async function ensureDir(adapter: RawFsAdapter, path: string): Promise<void> {
 	const parts = path.split("/").filter((p) => p.length > 0);
 	let current = "";
 	for (const part of parts) {
 		current = current ? `${current}/${part}` : part;
-		if (!(await adapter.exists(current))) {
+		try {
 			await adapter.mkdir(current);
+		} catch {
+			if (!(await adapter.exists(current))) throw new Error(`Failed to create directory: ${current}`);
 		}
 	}
 }
