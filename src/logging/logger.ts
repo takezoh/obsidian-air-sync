@@ -1,6 +1,7 @@
 import type { AirSyncSettings } from "../settings";
 import type { RawFsAdapter } from "../fs/raw-fs";
 import { ensureDir } from "../fs/raw-fs";
+import { AsyncMutex } from "../queue/async-queue";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -40,6 +41,15 @@ export class Logger {
 	private _deviceName: string;
 	private _adapter: RawFsAdapter;
 	private getSettings: () => AirSyncSettings;
+	/**
+	 * Serializes flush()'s read-modify-write against the log file. Without this,
+	 * two overlapping flush() calls (routine, now that pre-sync-cycle failures
+	 * flush eagerly alongside the existing sync-cycle-end/unload flushes) each
+	 * read the same on-disk content before either writes back, so the one that
+	 * writes last silently clobbers the other's lines -- losing log entries with
+	 * no error, no trace, and no indication anything went wrong.
+	 */
+	private flushMutex = new AsyncMutex();
 
 	constructor(
 		adapter: RawFsAdapter,
@@ -95,28 +105,30 @@ export class Logger {
 	}
 
 	async flush(): Promise<void> {
-		if (this.buffer.length === 0) return;
+		await this.flushMutex.run(async () => {
+			if (this.buffer.length === 0) return;
 
-		const lines = this.buffer;
-		this.buffer = [];
+			const lines = this.buffer;
+			this.buffer = [];
 
-		const date = new Date().toISOString().slice(0, 10);
-		const logsDir = ".airsync/logs";
-		const dir = `${logsDir}/${this._deviceName}`;
-		const filePath = `${dir}/${date}.log`;
+			const date = new Date().toISOString().slice(0, 10);
+			const logsDir = ".airsync/logs";
+			const dir = `${logsDir}/${this._deviceName}`;
+			const filePath = `${dir}/${date}.log`;
 
-		try {
-			await ensureDir(this._adapter, dir);
+			try {
+				await ensureDir(this._adapter, dir);
 
-			let existing = "";
-			if (await this._adapter.exists(filePath)) {
-				existing = await this._adapter.read(filePath);
+				let existing = "";
+				if (await this._adapter.exists(filePath)) {
+					existing = await this._adapter.read(filePath);
+				}
+
+				const content = existing + lines.join("\n") + "\n";
+				await this._adapter.write(filePath, content);
+			} catch {
+				// Logging should never break the app — silently drop on failure
 			}
-
-			const content = existing + lines.join("\n") + "\n";
-			await this._adapter.write(filePath, content);
-		} catch {
-			// Logging should never break the app — silently drop on failure
-		}
+		});
 	}
 }
