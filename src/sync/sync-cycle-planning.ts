@@ -164,6 +164,28 @@ export function logChangeDetection(
 		renamePairs: renamePairs.size,
 	});
 	if (remoteOnlyPaths.length > 0) logger?.debug("Remote-only paths", { paths: remoteOnlyPaths });
+	// resolvedEntity() (path-observation.ts) only turns an observation into a
+	// MixedEntity.local/.remote fact for kind "exact" -- an "alias" or
+	// "present_unresolved" observation means the object is genuinely present
+	// (the provider returned it) but silently produces no fact at all: no
+	// entry, so nothing for applyScope or "Excluded paths" to even see. "absent"
+	// and "unknown" are ordinary, expected every cycle and excluded here to
+	// keep this signal-only. Surfacing every alias/present_unresolved directly
+	// answers "why doesn't this specific object ever become a sync fact"
+	// instead of inferring it from a raw-count/entries-count gap.
+	const unresolvedObservations = changeSet.observations.filter((item) =>
+		item.kind === "alias" || item.kind === "present_unresolved");
+	if (unresolvedObservations.length > 0) {
+		logger?.debug("Unresolved observations", {
+			items: unresolvedObservations.map((item) => ({
+				side: item.side, kind: item.kind, requestedPath: item.requestedPath,
+				...(item.kind === "alias" ? { resolvedPath: item.resolvedPath } : {}),
+				...(item.kind === "present_unresolved"
+					? { returnedPath: item.returnedPath, source: item.source, pathAuthority: item.entity.pathAuthority }
+					: {}),
+			})),
+		});
+	}
 	if (renamePairs.size === 0) return;
 
 	const paths = new Set([...renamePairs.keys(), ...renamePairs.values()]);
