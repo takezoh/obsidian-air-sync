@@ -21,7 +21,7 @@ compatibility_policies: []
 tags: []
 owners: []
 relations:
-- {type: references, target: note-20260915-pcloud-backend-investigation}
+- {type: references, target: note-20260915-cloud-backend-qualification}
 source_paths:
 - src/fs/interface.ts
 - src/fs/backend.ts
@@ -57,10 +57,43 @@ other operation whose purpose is to consume the remote bytes may still download 
 behaviour, not by using the same provider API or internal class layout as an existing
 backend.
 
-The current production reference families are Google Drive, Dropbox, and OneDrive. The
-[archived pCloud investigation](../note/note-20260915-pcloud-backend-investigation.md)
-records a rejected candidate and is evidence for this qualification boundary, not an
-additional source of authority over the current interfaces and shared contracts.
+The current production reference families are Google Drive, Dropbox, and OneDrive.
+Provider-specific findings and support decisions are recorded in the
+[consolidated provider investigation](../note/note-20260915-cloud-backend-qualification.md).
+That research supplies evidence for qualification; it does not override the current
+interfaces, shared contracts, or support policy below.
+
+## Support policy
+
+Air Sync is a non-commercial OSS project with finite maintenance capacity. Supported
+backends MUST be limited to major cloud storage services with broad personal adoption
+that also satisfy this implementation contract. Current support is limited to **Google
+Drive, OneDrive, and Dropbox**. iCloud Drive belongs to the major personal-service group,
+but is not supported because it does not meet the current integration requirements.
+
+Product selection and technical qualification are separate gates. Technical feasibility,
+an available SDK, a contribution, or a large registered-account count does not alone
+justify adding a maintained backend. Personal adoption is a qualitative product selection
+criterion, not a claimed numerical market-share ranking; registration counts, paid seats,
+active users, and ecosystem-wide accounts are not interchangeable measurements.
+
+The [consolidated investigation](../note/note-20260915-cloud-backend-qualification.md)
+records supported services, known technical failures, unresolved qualification evidence,
+and exclusions based on maintenance scope. An unverified candidate MUST NOT be described
+as technically impossible, and a policy exclusion MUST NOT be described as a failed
+contract test. Investigated candidates are not a roadmap commitment.
+
+Built-in integration evaluation assumes a web-based authorization experience. Hosted
+exchange is allowed, but does not establish that a provider offers a suitable grant,
+acceptable scope, or safe key handoff. This policy does not change the existing providers'
+auth routes or permit proxying vault data through an auth service. Plugin-side operations
+remain subject to RB-SVC-007/008 and RB-PROV-003/006.
+
+Adding support requires an explicit maintenance-scope decision, concrete evidence for
+every service prerequisite, and the full Conformance evidence below. Reconsider a
+candidate when its relevant API/access model changes and the maintenance/adoption case
+justifies it; do not weaken checksum, delta, permission, or mobile requirements to expand
+the provider list.
 
 ## Responsibilities
 
@@ -427,34 +460,6 @@ Before implementation, record concrete provider evidence for:
 
 An unanswered item is an implementation risk, not evidence that the service satisfies
 the requirement.
-
-### pCloud rejection evidence
-
-The [archived pCloud investigation](../note/note-20260915-pcloud-backend-investigation.md)
-is the source study from which this requirement was clarified. pCloud was not adopted as
-a supported backend. Its intended Specific-folder-only application mode cannot call the
-account-wide `diff` feed and receives result `2096`. Full access would expose the feed but
-would broaden authorization beyond the accepted vault-scoped product boundary. A full
-recursive `listfolder` on every cycle was considered as a correctness fallback, but it
-does not satisfy RB-SVC-009 or Air Sync's delta-first requirement.
-
-The rejected investigation still demonstrates that several provider differences are
-technically adaptable without changing sync policy:
-
-- numeric item/parent ids fit the shared metadata-cache model;
-- the opaque 64-bit hash is usable only as supplemental temporal evidence, while the
-  separate `checksumfile` operation is the candidate route for satisfying RB-SVC-006
-  without downloading the file body;
-- an account-wide path-less feed can be filtered and delete paths reverse-resolved when
-  its authorization scope is acceptable;
-- HTTP-200 logical errors, long-lived access-only auth, US/EU host pinning, recursive
-  listing, and hand-built multipart are isolated in provider/client seams;
-- the investigation confirmed root liveness because `listfolder` errors for a missing
-  root rather than returning a false empty list.
-
-Those adaptation findings do not override the rejection. The investigation branch also
-predates the current central four-contract matrix and detached priority requirements;
-its prototype is neither a current implementation nor conformance evidence.
 
 ## Related Decisions
 
