@@ -231,6 +231,63 @@ describe("bulkLoad", () => {
 	});
 });
 
+// ── name-colliding siblings (Google Drive does not enforce unique names) ──
+
+describe("bulkLoad — name-colliding siblings", () => {
+	it("keeps both files instead of one silently evicting the other", () => {
+		const cache = makeCache();
+		const a = makeGoogleDriveFile({ id: "id1", name: "Test.md", parents: [ROOT] });
+		const b = makeGoogleDriveFile({ id: "id2", name: "Test.md", parents: [ROOT] });
+
+		cache.buildFromFiles([a, b]);
+
+		expect(cache.size).toBe(2);
+		expect(cache.getPathById("id1")).toBe("Test.md");
+		expect(cache.getPathById("id2")).toMatch(/^Test \(.+\)\.md$/);
+	});
+
+	it("keeps a folder and a file that share an identical name", () => {
+		const cache = makeCache();
+		const folder = makeFolder({ id: "id1", name: "Test.md", parents: [ROOT] });
+		const file = makeGoogleDriveFile({ id: "id2", name: "Test.md", parents: [ROOT] });
+
+		cache.buildFromFiles([folder, file]);
+
+		expect(cache.size).toBe(2);
+		expect(cache.isFolder(cache.getPathById("id1")!)).toBe(true);
+		expect(cache.getPathById("id2")).toMatch(/^Test \(.+\)\.md$/);
+	});
+
+	it("cascades disambiguation to a colliding folder's own children", () => {
+		const cache = makeCache();
+		const a = makeFolder({ id: "id1", name: "Notes", parents: [ROOT] });
+		const b = makeFolder({ id: "id2", name: "Notes", parents: [ROOT] });
+		const childOfA = makeGoogleDriveFile({ id: "id3", name: "a.md", parents: ["id1"] });
+		const childOfB = makeGoogleDriveFile({ id: "id4", name: "b.md", parents: ["id2"] });
+
+		cache.buildFromFiles([a, b, childOfA, childOfB]);
+
+		expect(cache.getPathById("id1")).toBe("Notes");
+		const loserFolder = cache.getPathById("id2")!;
+		expect(loserFolder).toMatch(/^Notes \(.+\)$/);
+		expect(cache.getPathById("id3")).toBe("Notes/a.md");
+		expect(cache.getPathById("id4")).toBe(`${loserFolder}/b.md`);
+	});
+
+	it("picks the same pair of paths regardless of listing order", () => {
+		const a = makeFolder({ id: "id1", name: "Dup", parents: [ROOT] });
+		const b = makeFolder({ id: "id2", name: "Dup", parents: [ROOT] });
+
+		const forward = makeCache();
+		forward.buildFromFiles([a, b]);
+		const backward = makeCache();
+		backward.buildFromFiles([b, a]);
+
+		expect(backward.getPathById("id1")).toBe(forward.getPathById("id1"));
+		expect(backward.getPathById("id2")).toBe(forward.getPathById("id2"));
+	});
+});
+
 // ── clear ──
 
 describe("clear", () => {

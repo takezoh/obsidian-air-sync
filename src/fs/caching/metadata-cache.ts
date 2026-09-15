@@ -57,6 +57,16 @@ export abstract class AbstractMetadataCache<TFile> {
 	protected abstract isFolderEntry(file: TFile): boolean;
 	/** Project cached metadata into a `FileEntity` (no download; `hash` stays ""). */
 	abstract toEntity(path: string, file: TFile): FileEntity;
+	/**
+	 * Whether this backend can have two distinct objects share one name under one
+	 * parent (Google Drive: yes, names aren't unique there). Default false: for
+	 * every other backend, a name collision always means the same address was
+	 * re-keyed to a different id without a preceding tombstone, not a genuine
+	 * second object.
+	 */
+	protected allowsSiblingNameCollisions(): boolean {
+		return false;
+	}
 
 	// ── Query methods ──
 
@@ -109,8 +119,12 @@ export abstract class AbstractMetadataCache<TFile> {
 		}
 		const occupant = this.pathToFile.get(path);
 
-		// Provider upserts may re-key a stable id without a preceding tombstone.
-		// Keep the path and identity indexes bijective at their single mutation seam.
+		// A single incremental upsert can't prove "a genuine second sibling shares
+		// this name" apart from "the provider re-keyed this address to a new id
+		// without a preceding tombstone" — only a full-scan snapshot (bulkLoad, see
+		// disambiguateSiblingPaths) can, since it sees every currently-alive object
+		// at once. Treat a lone mismatch as a re-key here, same as ever: keep the
+		// path and identity indexes bijective at their single mutation seam.
 		if (occupant && this.extractId(occupant) !== id) {
 			this.removeTree(path);
 		}
@@ -142,6 +156,22 @@ export abstract class AbstractMetadataCache<TFile> {
 		this.addToIndex(path);
 	}
 
+	/**
+	 * A name-colliding sibling's disambiguated address, derived only from its own
+	 * id — so the same object always lands at the same path on every scan/delta,
+	 * regardless of which sibling is processed first.
+	 */
+	private siblingCollisionPath(path: string, id: string): string {
+		const slash = path.lastIndexOf("/");
+		const dir = slash === -1 ? "" : path.slice(0, slash + 1);
+		const base = slash === -1 ? path : path.slice(slash + 1);
+		const dot = base.lastIndexOf(".");
+		const stem = dot > 0 ? base.slice(0, dot) : base;
+		const ext = dot > 0 ? base.slice(dot) : "";
+		const tag = id.length > 8 ? id.slice(-8) : id;
+		return `${dir}${stem} (${tag})${ext}`;
+	}
+
 	/** Remove a single entry from pathToFile/idToPath/folders and the children index */
 	removeEntry(path: string): void {
 		const file = this.pathToFile.get(path);
@@ -167,9 +197,66 @@ export abstract class AbstractMetadataCache<TFile> {
 			}
 			seenIds.set(id, path);
 		}
-		for (const [path, file, pathAuthority = "requested_echo"] of records) {
+		const resolved = this.allowsSiblingNameCollisions()
+			? this.disambiguateSiblingPaths(records)
+			: records;
+		for (const [path, file, pathAuthority = "requested_echo"] of resolved) {
 			this.setFile(path, file, pathAuthority);
 		}
+	}
+
+	/**
+	 * Google Drive doesn't enforce unique names within a folder, so a full-scan
+	 * snapshot can legitimately contain two distinct, simultaneously-alive objects
+	 * at the same computed path — provable only here, from the complete snapshot
+	 * (a single incremental upsert can't tell that apart from an ordinary re-key,
+	 * so `setFile` keeps assuming a re-key for that ambiguous case; see its own
+	 * comment). Reassign every id but the lexicographically-lowest at each
+	 * colliding address to a deterministic, id-derived path, cascading the same
+	 * rewrite to every record nested under a colliding folder so a child's path
+	 * still agrees with its (possibly renamed) parent's.
+	 */
+	private disambiguateSiblingPaths(
+		records: readonly (readonly [string, TFile, PathAuthority?])[],
+	): readonly (readonly [string, TFile, PathAuthority?])[] {
+		const byId = new Map<string, string>();
+		const childrenOf = new Map<string, string[]>();
+		const byPath = new Map<string, string[]>();
+		for (const [path, file] of records) {
+			const id = this.extractId(file);
+			byId.set(id, path);
+			const paths = byPath.get(path) ?? [];
+			paths.push(id);
+			byPath.set(path, paths);
+			for (const parentId of this.extractParentIds(file)) {
+				const kids = childrenOf.get(parentId) ?? [];
+				kids.push(id);
+				childrenOf.set(parentId, kids);
+			}
+		}
+
+		const overrides = new Map<string, string>();
+		const rewriteSubtree = (id: string, oldBase: string, newBase: string, visited: Set<string>) => {
+			if (visited.has(id)) return;
+			visited.add(id);
+			const path = byId.get(id);
+			if (path === undefined) return;
+			const suffix = path === oldBase ? "" : path.slice(oldBase.length);
+			overrides.set(id, newBase + suffix);
+			for (const childId of childrenOf.get(id) ?? []) rewriteSubtree(childId, oldBase, newBase, visited);
+		};
+
+		for (const [path, ids] of byPath) {
+			if (ids.length < 2) continue;
+			const [, ...losers] = [...ids].sort();
+			for (const id of losers) rewriteSubtree(id, path, this.siblingCollisionPath(path, id), new Set());
+		}
+		if (overrides.size === 0) return records;
+		this.logger?.warn("Disambiguated name-colliding siblings", {
+			count: overrides.size, paths: [...overrides.values()],
+		});
+		return records.map(([path, file, pathAuthority]) =>
+			[overrides.get(this.extractId(file)) ?? path, file, pathAuthority] as const);
 	}
 
 	/** Return a snapshot of all records for persistence */

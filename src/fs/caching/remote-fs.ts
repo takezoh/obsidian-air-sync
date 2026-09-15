@@ -199,6 +199,16 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 
 		this.initialized = true;
 		this.logger?.info("Full scan completed", { fileCount: this.cache.size });
+		// "Full scan completed" only ever logged the count. Every downstream
+		// diagnostic (Excluded paths, Unresolved observations) has since come back
+		// empty while this count still exceeds what change detection ever sees,
+		// meaning whatever the gap is happens between this cache and there. Log the
+		// exact cached paths (not just how many) so that gap is a direct answer
+		// instead of another layer to add a diagnostic for. Capped, like the other
+		// path-listing diagnostics, so a large vault can't turn a routine full scan
+		// into an unbounded debug-log write on every cycle.
+		const allPaths = [...this.cache.entries()].map(([path]) => path);
+		this.logger?.debug("Full scan paths", { paths: allPaths.slice(0, 200), total: allPaths.length });
 	}
 
 	/**
