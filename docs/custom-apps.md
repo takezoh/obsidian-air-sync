@@ -6,7 +6,7 @@ This page lists **what each provider app must be configured with, and what you c
 
 **Common to every backend**
 
-- Access stays scoped to Air Sync's own folder (Google Drive `drive.file`, OneDrive / Dropbox App Folder) — the app can't see the rest of your storage.
+- OneDrive and Dropbox stay scoped to Air Sync's own App Folder — the app can't see the rest of your storage. Google Drive's `drive.file` scope is narrower: it grants access only to files and folders the app itself creates (or that you explicitly pick), not everything inside its folder — content added directly on Drive's website, or moved there from elsewhere in Drive, stays invisible to Air Sync even though it's in the right folder. This applies to the custom Google Drive backend too, since it has no in-app picker and always points at a folder ID you provide directly.
 - Configure the redirect URI and permissions **before** you connect. Changing scopes/permissions afterward means disconnecting and reconnecting so a new token picks them up.
 - **Connecting is not syncing.** After you authorize, Air Sync needs a remote folder before anything transfers (OneDrive/Dropbox: pick one in-app after connecting; Google Drive custom: you provide the folder ID up front — see below). On mobile, keep Obsidian in the foreground until the first sync finishes; for a large first sync, enable **Keep screen awake during sync**.
 

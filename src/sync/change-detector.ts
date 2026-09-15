@@ -1,8 +1,10 @@
+/* eslint max-lines: ["error", 393] -- the COLD/WARM/HOT acquisition strategies, their directory-fact handling, and the WARM-to-COLD folder-delete escalation are one acquisition owner. */
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
 import type { CandidateFact, IdentityEvidence, MixedEntity, PathObservation, SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
 import type { TrackerSnapshot } from "./local-tracker";
+import type { Logger } from "../logging/logger";
 import { hasChanged } from "./change-compare";
 import {
 	enrichHashesForInitialMatch,
@@ -27,7 +29,7 @@ import {
 	confirmRenameOppositeEndpoints,
 	confirmUnknownRenameEndpoints,
 	ensureRenameEndpointObservations,
-	exactEntity,
+	resolvedEntity,
 	observePath,
 } from "./path-observation";
 
@@ -47,6 +49,7 @@ export interface ChangeDetectorDeps {
 	stateStore: SyncStateStore;
 	changes: TrackerSnapshot;
 	onRemoteIdentityEvidence?: (evidence: readonly IdentityEvidence[]) => void;
+	logger?: Logger;
 }
 
 export interface CollectChangesOptions {
@@ -193,8 +196,8 @@ async function collectHot(
 		const prevSync = syncRecords.get(path);
 		return {
 			path,
-			local: exactEntity(localObservation),
-			remote: exactEntity(remoteObservation),
+			local: resolvedEntity(localObservation),
+			remote: resolvedEntity(remoteObservation),
 			prevSync,
 		};
 	});
@@ -219,6 +222,30 @@ async function collectWarm(
 		prefetchedRemoteChanges ?? getRemoteChanges(remoteFs, deps.onRemoteIdentityEvidence),
 	]);
 	if (hasFolderRename(remoteChanges)) {
+		deps.logger?.debug("WARM escalated to COLD", {
+			reason: "remote_folder_rename",
+			renamePairs: remoteChanges.renameEvidence
+				.filter((item) => item.isFolder)
+				.map((item) => `${item.oldPath} -> ${item.newPath}`),
+		});
+		return collectCold(
+			deps,
+			allRecords,
+			remoteChanges,
+			localFiles,
+			await remoteSnapshotAfterDelta(remoteFs),
+		);
+	}
+	const missingLocalFolders = allRecords
+		.filter((record) => record.isDirectory && !localFiles.some((file) => file.path === record.path))
+		.map((record) => record.path);
+	if (missingLocalFolders.length > 0) {
+		// A previously-tracked folder is gone locally. Propagating that to remote
+		// (delete_remote) needs remote-descendant completeness that WARM's targeted
+		// stats can't prove — escalate, mirroring the folder-rename case above.
+		deps.logger?.debug("WARM escalated to COLD", {
+			reason: "tracked_folder_missing_locally", paths: missingLocalFolders,
+		});
 		return collectCold(
 			deps,
 			allRecords,
@@ -245,7 +272,6 @@ async function collectWarm(
 
 	// Compare local listing against sync records
 	for (const file of localFiles) {
-		if (file.isDirectory) continue;
 		const record = recordMap.get(file.path);
 		if (!record || hasChanged(file, record)) {
 			changedPaths.add(file.path);
@@ -253,7 +279,7 @@ async function collectWarm(
 	}
 
 	// Include paths that existed in records but are no longer in local listing (local deletions)
-	const localPathSet = new Set(localFiles.filter((f) => !f.isDirectory).map((f) => f.path));
+	const localPathSet = new Set(localFiles.map((f) => f.path));
 	for (const record of allRecords) {
 		if (!localPathSet.has(record.path)) {
 			changedPaths.add(record.path);
@@ -265,9 +291,15 @@ async function collectWarm(
 		changedPaths.add(p);
 	}
 
-	// Include rename pair paths so warm mode can optimize renames
-	const renamePairs = deps.changes.renamePairs;
-	for (const [newPath, oldPath] of renamePairs) {
+	// Include rename pair paths so warm mode can optimize renames. A folder rename
+	// pair must be included too — otherwise a folder rename report that resurfaces
+	// after its relation already settled (e.g. the vault's own "rename" event
+	// echoing back the sync engine's prior programmatic rename_local/rename_remote,
+	// which Obsidian cannot distinguish from a user-initiated rename) never becomes
+	// an entry, so its existing SyncRecord baseline never reaches Admission's
+	// current facts — producing a spurious unbaselined "match" that fails
+	// publication because a real record already exists (see ADR 0009).
+	for (const [newPath, oldPath] of [...deps.changes.renamePairs, ...deps.changes.folderRenamePairs]) {
 		changedPaths.add(newPath);
 		changedPaths.add(oldPath);
 	}
@@ -278,7 +310,7 @@ async function collectWarm(
 	const observations: PathObservation[] = localFiles.map((file) =>
 		observePath("local", file.path, file, "stat", "list"));
 	const localFileMap = new Map(observations.flatMap((observation) => {
-		const entity = exactEntity(observation);
+		const entity = resolvedEntity(observation);
 		return entity ? [[entity.path, entity] as const] : [];
 	}));
 
@@ -295,7 +327,7 @@ async function collectWarm(
 		return {
 			path,
 			local: localFileMap.get(path),
-			remote: exactEntity(remoteObservation),
+			remote: resolvedEntity(remoteObservation),
 			prevSync: recordMap.get(path),
 		};
 	});
@@ -336,14 +368,14 @@ async function collectCold(
 	for (const file of localFiles) {
 		const observation = observePath("local", file.path, file, "stat", "list");
 		observations.push(observation);
-		const entity = exactEntity(observation);
+		const entity = resolvedEntity(observation);
 		if (entity) getOrCreate(entity.path).local = entity;
 	}
 
 	for (const file of remoteFiles) {
 		const observation = observePath("remote", file.path, file, "stat", "list");
 		observations.push(observation);
-		const entity = exactEntity(observation);
+		const entity = resolvedEntity(observation);
 		if (entity) getOrCreate(entity.path).remote = entity;
 	}
 

@@ -81,6 +81,26 @@ describe("DotPathAdapter", () => {
 			await adapter.listAll(entities as never);
 			expect(entities).toHaveLength(0);
 		});
+
+		it("includes each existing root's own entity, not just its children", async () => {
+			// A directory-tracking SyncRecord for a root (e.g. the vault's configDir
+			// under Config Sync) needs list() to report the root itself as present —
+			// otherwise it always looks deleted, since the recursive walk below only
+			// ever pushes an entity for something it finds as someone else's child.
+			const { vault, adapter } = createAdapter([".airsync"]);
+			const vaultInternal = vault as unknown as { files: Map<string, unknown> };
+			vaultInternal.files.set(".airsync", { type: "folder" });
+			vaultInternal.files.set(".airsync/state.json", {
+				type: "file", content: new ArrayBuffer(2), mtime: 100,
+			});
+
+			const entities: { path: string; isDirectory: boolean }[] = [];
+			await adapter.listAll(entities as never);
+
+			expect(entities).toContainEqual(expect.objectContaining({
+				path: ".airsync", isDirectory: true,
+			}));
+		});
 	});
 
 	describe("listDir", () => {

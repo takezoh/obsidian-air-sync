@@ -1,4 +1,4 @@
-/* eslint max-lines: ["error", 785] -- relation abandonment, exact-path binding, preservation-cover authorization, and Prefer-local eligibility must stay under the sole identity-policy owner. */
+/* eslint max-lines: ["error", 816] -- relation abandonment, exact-path binding, preservation-cover authorization, Prefer-local eligibility, and the directory-delete descendant guard must stay under the sole identity-policy owner. */
 import type { FileEntity } from "../fs/types";
 import type { IdentityComponent } from "./plan-admission-graph";
 import { selectReportFamily } from "./identity-component-report-family";
@@ -496,7 +496,7 @@ function bindFiles(facts: CurrentFacts, reports: readonly RenameEvidence[]): Fil
 	for (const path of new Set([...facts.local.keys(), ...facts.remote.keys()])) {
 		const local = claimedLocal.has(path) ? undefined : facts.local.get(path);
 		const remote = claimedRemote.has(path) ? undefined : facts.remote.get(path);
-		if ((!local && !remote) || local?.isDirectory || remote?.isDirectory) continue;
+		if (!local && !remote) continue;
 		if (!claimedLocal.has(path) && !claimedRemote.has(path) && !relocated.has(path)) {
 			bound.push({ kind: "exact", path, capability: { kind: "propagate_confirmed_deletion" } });
 			continue;
@@ -538,7 +538,6 @@ function materializeExactPath(
 ): SyncAction | AdmissionFailureReason | null {
 	const local = facts.local.get(path);
 	const remote = facts.remote.get(path);
-	if (local?.isDirectory || remote?.isDirectory) return null;
 	if (!local && !absent(facts, "local", path)) return "unknown_observation";
 	if (!remote && !absent(facts, "remote", path)) return "unknown_observation";
 	const expected = facts.records.get(path);
@@ -567,6 +566,14 @@ function materializeFile(
 		? !file.additionalRemote && equal(local, remote) ? "match" : "conflict" : compared;
 	if (!move && kind === "delete_local" && !observationsAt(facts, "remote", file.remotePath ?? path).some((item) =>
 		item.kind === "absent" && item.authority === "checkpoint_deleted")) return "unknown_observation";
+	if ((kind === "delete_local" && local?.isDirectory && hasDescendant(facts, "local", path)) ||
+		(kind === "delete_remote" && remote?.isDirectory && hasDescendant(facts, "remote", path))) {
+		// A descendant is still visible in this cycle's facts — defer. The folder
+		// becomes deletable once its children are individually resolved. See ADR
+		// 0009 for why this (plus the WARM escalation in change-detector.ts) is
+		// safe without a new IFileSystem "list children" primitive.
+		return null;
+	}
 	if (kind === "delete_local" || kind === "delete_remote") {
 		// Delete the captured record at its committed key, and perform I/O at the
 		// current endpoint. A parent's spelling must not redirect a child delete.
@@ -676,6 +683,10 @@ function decideFolder(
 		else return "incomplete_folder_mapping";
 	}
 	for (const record of facts.records.values()) {
+		// The root folder's own record (if one exists — folders are synced and
+		// baselined like any other fact now) is relocated separately below, not
+		// as a descendant suffix.
+		if (record.path === oldPath || record.path === newPath) continue;
 		if (record.path.startsWith(oldPath + "/")) suffixes.add(record.path.slice(oldPath.length + 1));
 		else if (record.path.startsWith(newPath + "/")) suffixes.add(record.path.slice(newPath.length + 1));
 		else return "incomplete_folder_mapping";
@@ -721,6 +732,16 @@ function decideFolder(
 		});
 	}
 	if (!moveRoot) return actions;
+	// The folder's own baseline record (from an earlier cycle establishing it, or
+	// a previous rename) is relocated alongside its descendants — otherwise it
+	// would go stale at oldPath forever (and, since it's a directory record,
+	// permanently force WARM to escalate to COLD every cycle; see ADR 0009).
+	const rootRecord = facts.records.get(oldPath);
+	if (rootRecord) {
+		descendantRecords.push({ oldPath, newPath,
+			source: rootRecord,
+			destination: rootRecord.path === newPath ? rootRecord : facts.records.get(newPath) });
+	}
 	actions.push({ action: moveSide === "remote" ? "rename_remote" : "rename_local",
 		oldPath, path: newPath, isFolder: true,
 		local: moveSide === "remote" ? destination : source,
@@ -738,6 +759,16 @@ function compatible(facts: CurrentFacts, from: string, to: string): boolean {
 
 function absent(facts: CurrentFacts, side: SyncSide, path: string): boolean {
 	return observationsAt(facts, side, path).some((item) => item.kind === "absent");
+}
+
+/** Any currently-known fact under `path/` on `side`, from this cycle's (possibly
+ * graph-unioned) component facts — used only to defer a folder delete, never to
+ * prove one is safe by its absence (see ADR 0009). */
+function hasDescendant(facts: CurrentFacts, side: SyncSide, path: string): boolean {
+	const map = side === "local" ? facts.local : facts.remote;
+	const prefix = `${path}/`;
+	for (const key of map.keys()) if (key.startsWith(prefix)) return true;
+	return false;
 }
 
 function vacant(facts: CurrentFacts, side: SyncSide, path: string, source: string): boolean {

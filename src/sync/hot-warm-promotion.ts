@@ -1,5 +1,5 @@
 import type { FileEntity } from "../fs/types";
-import { exactEntity, replaceObservation } from "./path-observation";
+import { resolvedEntity, replaceObservation } from "./path-observation";
 import type { IdentityEvidence, MixedEntity, PathObservation, SyncSide } from "./types";
 
 interface AcquisitionFacts {
@@ -91,7 +91,7 @@ export function promoteHotProbeIntoWarm(warm: AcquisitionFacts, hot: Acquisition
 				observation.side === side && observation.requestedPath === hotEntry.path);
 			const merged = reconcileObservation(hotObservation, warmObservation);
 			replaceObservation(warm.observations, merged);
-			const entity = exactEntity(merged);
+			const entity = resolvedEntity(merged);
 			if (side === "local") warmEntry.local = entity;
 			else warmEntry.remote = entity;
 		}

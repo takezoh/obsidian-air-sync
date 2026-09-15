@@ -7,7 +7,7 @@ import { captureAliasCollisionContents } from "./collision-content-observation";
 import { compareContent } from "./decision-engine";
 import type { ChangeDetectorDeps } from "./change-detector";
 import { LocalChangeTracker } from "./local-tracker";
-import { createMockLocalFs, createMockRemoteFs, type MockFileSystem, createMockStateStore, addFile } from "../__mocks__/sync-test-helpers";
+import { createMockLocalFs, createMockRemoteFs, type MockFileSystem, createMockStateStore, addFile, confirmMockPath } from "../__mocks__/sync-test-helpers";
 import type { FileEntity, RemoteChecksum } from "../fs/types";
 import type { IdentityEvidence, MixedEntity, PathObservation, SyncRecord } from "./types";
 import { md5 } from "../utils/md5";
@@ -36,8 +36,8 @@ describe("collectChanges — temperature selection", () => {
 	let stateStore: ReturnType<typeof createMockStateStore>;
 	let localTracker: LocalChangeTracker;
 
-	function makeDeps(): ChangeDetectorDeps {
-		return { localFs, remoteFs, stateStore, changes: localTracker.snapshot() };
+	function makeDeps(logger?: ChangeDetectorDeps["logger"]): ChangeDetectorDeps {
+		return { localFs, remoteFs, stateStore, changes: localTracker.snapshot(), logger };
 	}
 
 	beforeEach(() => {
@@ -80,16 +80,15 @@ describe("collectChanges — temperature selection", () => {
 			expect(paths).toEqual(["a.md", "b.md"]);
 		});
 
-		it("skips directories", async () => {
+		it("surfaces a directory as its own entry, alongside the file inside it", async () => {
 			addFile(localFs, "notes/a.md", "hello", 1000);
 			// notes/ directory is auto-created by addFile
 
 			const result = await collectChanges(makeDeps());
 
-			for (const entry of result.entries) {
-				expect(entry.local?.isDirectory ?? false).toBe(false);
-				expect(entry.remote?.isDirectory ?? false).toBe(false);
-			}
+			const notes = result.entries.find((entry) => entry.path === "notes");
+			expect(notes?.local?.isDirectory).toBe(true);
+			expect(result.entries.some((entry) => entry.path === "notes/a.md")).toBe(true);
 		});
 
 		it("returns empty entries when both sides are empty", async () => {
@@ -259,6 +258,55 @@ describe("collectChanges — temperature selection", () => {
 			expect(entry?.prevSync).toBeUndefined();
 		});
 
+		it("detects a new local folder with no sync record, alongside a new file", async () => {
+			addFile(localFs, "new-local.md", "brand new", 2000);
+			// "notes/" is auto-created as a side effect of addFile below.
+			addFile(localFs, "notes/child.md", "inside", 2000);
+			await stateStore.put(makeRecord("existing.md"));
+			addFile(localFs, "existing.md", "content", 1000);
+
+			const result = await collectChanges(makeDeps());
+
+			expect(result.temperature).toBe("warm");
+			const notes = result.entries.find((entry) => entry.path === "notes");
+			expect(notes?.local?.isDirectory).toBe(true);
+			expect(notes?.prevSync).toBeUndefined();
+		});
+
+		it("escalates to a full COLD collection when a previously-tracked folder is gone locally", async () => {
+			await stateStore.put(makeRecord("notes", { isDirectory: true, localSize: 0, remoteSize: 0 }));
+			// "notes" is not recreated locally — it was deleted.
+			addFile(remoteFs, "notes/child.md", "still there", 1000);
+			const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), flush: vi.fn() };
+
+			const result = await collectChanges(makeDeps(logger as never));
+
+			// WARM cannot safely tell whether "notes" still has live remote
+			// descendants from its own targeted stats alone, so it escalates to a
+			// full COLD collection instead of admitting a possibly-unsafe delete.
+			expect(result.temperature).toBe("cold");
+			expect(logger.debug).toHaveBeenCalledWith("WARM escalated to COLD", {
+				reason: "tracked_folder_missing_locally", paths: ["notes"],
+			});
+		});
+
+		it("logs why WARM escalated to COLD on a reported remote folder rename", async () => {
+			await stateStore.put(makeRecord("old-name", { isDirectory: true, localSize: 0, remoteSize: 0 }));
+			addFile(localFs, "old-name/child.md", "content", 1000);
+			const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), flush: vi.fn() };
+			remoteFs.checkpoint!.getChangedPaths = () => Promise.resolve({
+				modified: [], deleted: [],
+				renamed: [{ oldPath: "old-name", newPath: "new-name", isFolder: true }],
+			});
+
+			const result = await collectChanges(makeDeps(logger as never));
+
+			expect(result.temperature).toBe("cold");
+			expect(logger.debug).toHaveBeenCalledWith("WARM escalated to COLD", {
+				reason: "remote_folder_rename", renamePairs: ["old-name -> new-name"],
+			});
+		});
+
 		it("includes remote changed paths from getChangedPaths", async () => {
 			await stateStore.put(makeRecord("remote-changed.md"));
 			addFile(remoteFs, "remote-changed.md", "remote new content", 2000);
@@ -304,6 +352,22 @@ describe("collectChanges — temperature selection", () => {
 			const result = await collectChanges(makeDeps());
 
 			expect(result.temperature).toBe("hot");
+		});
+
+		it("surfaces a dirty local folder as its own directory entry", async () => {
+			addFile(localFs, "notes/child.md", "inside", 2000);
+			localTracker.acknowledge(localTracker.snapshot()); // initialize
+			localTracker.markDirty("notes");
+
+			const result = await collectChanges(makeDeps());
+
+			// A brand-new, unbaselined directory can escalate HOT into a WARM
+			// component acquisition (the same as an unbaselined file would) —
+			// what matters here is that the folder itself surfaces as a real
+			// directory entry either way, not which temperature got there.
+			expect(["hot", "warm"]).toContain(result.temperature);
+			const notes = result.entries.find((entry) => entry.path === "notes");
+			expect(notes?.local?.isDirectory).toBe(true);
 		});
 
 		it("only fetches stat for dirty paths", async () => {
@@ -1250,6 +1314,32 @@ describe("collectChanges — temperature selection", () => {
 			expect(result.observations).toContainEqual(expect.objectContaining({
 				kind: "exact", side: "local", requestedPath: "new",
 			}));
+		});
+
+		it("WARM keeps a settled folder's existing baseline in facts when its rename evidence resurfaces", async () => {
+			// The vault's own "rename" event fires for ANY rename, including one the
+			// sync engine just performed itself (e.g. a prior rename_local/rename_remote
+			// for this exact folder) — Obsidian cannot tell that apart from a
+			// user-initiated rename. So `markFolderRenamed` can resurface a relation
+			// that has already fully executed and settled: both sides already agree on
+			// "Folder 2", a baseline already exists there, and "Folder" is gone
+			// everywhere. Without folder rename pairs also feeding `changedPaths`,
+			// WARM would never attach that existing baseline to the entry, making
+			// Admission treat an already-synced folder as brand new (see ADR 0009).
+			await localFs.mkdir("Folder 2");
+			await remoteFs.mkdir("Folder 2");
+			confirmMockPath(remoteFs, "Folder 2");
+			await stateStore.put(makeRecord("Folder 2", { isDirectory: true }));
+			localTracker.acknowledge(localTracker.snapshot());
+			localTracker.markFolderRenamed("Folder 2", "Folder");
+
+			const result = await collectChanges(makeDeps());
+
+			expect(result.temperature).toBe("warm");
+			const entry = result.entries.find((e) => e.path === "Folder 2");
+			expect(entry?.local).toBeDefined();
+			expect(entry?.remote).toBeDefined();
+			expect(entry?.prevSync).toMatchObject({ path: "Folder 2", isDirectory: true });
 		});
 
 		it.each([false, true])("observes the absent counterpart of a new folder descendant with cold=%s", async (cold) => {

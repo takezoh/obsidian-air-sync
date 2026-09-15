@@ -42,6 +42,7 @@ export function buildSyncRecord(local: FileEntity | undefined, remote: FileEntit
 		remoteIdentityKey: remote?.identityKey,
 		backendMeta: remote?.backendMeta,
 		syncedAt: Date.now(),
+		...(local?.isDirectory || remote?.isDirectory ? { isDirectory: true as const } : {}),
 	};
 }
 
@@ -58,7 +59,7 @@ async function maybeStoreMergeBase(
 ): Promise<void> {
 	const { path, localSize: size } = record;
 	const { stateStore, localFs, enableThreeWayMerge, logger } = ctx;
-	if (!(enableThreeWayMerge && localFs && localEntity && isMergeEligible(path, size))) return;
+	if (!(enableThreeWayMerge && localFs && localEntity && !localEntity.isDirectory && isMergeEligible(path, size))) return;
 	try {
 		// The record key follows the admitted topology, while the entity path is the
 		// filesystem-resolved endpoint from which the successful bytes are readable.

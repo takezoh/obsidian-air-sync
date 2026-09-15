@@ -163,3 +163,96 @@ describe("an interrupted sync converges by re-syncing", () => {
 		expect(third.plan.actions).toHaveLength(0);
 	});
 });
+
+describe("empty folders sync and reach a fixed point", () => {
+	it("a new local folder uploads, then a re-sync plans nothing", async () => {
+		const env = makeEnv();
+		await env.localFs.mkdir("notes");
+		env.localTracker.markDirty("notes");
+
+		const first = await runCycle(env);
+		expect(first.plan.actions).toMatchObject([{ action: "push", path: "notes" }]);
+		expect((await env.remoteFs.stat("notes"))?.isDirectory).toBe(true);
+		expect(await env.stateStore.get("notes")).toBeDefined();
+
+		const second = await runCycle(env);
+		expect(second.plan.actions).toHaveLength(0);
+	});
+
+	it("a new remote folder downloads, then a re-sync plans nothing", async () => {
+		const env = makeEnv();
+		await env.remoteFs.mkdir("notes");
+
+		const first = await runCycle(env);
+		expect(first.plan.actions).toMatchObject([{ action: "pull", path: "notes" }]);
+		expect((await env.localFs.stat("notes"))?.isDirectory).toBe(true);
+
+		const second = await runCycle(env);
+		expect(second.plan.actions).toHaveLength(0);
+	});
+
+	it("deletes an already-synced empty folder on one side after it's removed on the other", async () => {
+		const env = makeEnv();
+		await env.localFs.mkdir("notes");
+		env.localTracker.markDirty("notes");
+		await runCycle(env); // establish the folder + its baseline on both sides
+
+		await env.localFs.delete("notes");
+		env.localTracker.markDirty("notes");
+		const result = await runCycle(env);
+
+		expect(result.plan.actions).toMatchObject([{ action: "delete_remote", path: "notes" }]);
+		expect(await env.remoteFs.stat("notes")).toBeNull();
+		expect(await env.stateStore.get("notes")).toBeUndefined();
+
+		const fixedPoint = await runCycle(env);
+		expect(fixedPoint.plan.actions).toHaveLength(0);
+	});
+
+	it("never deletes a synced folder out from under a live descendant visible in the same cycle", async () => {
+		const env = makeEnv();
+		await env.localFs.mkdir("notes");
+		env.localTracker.markDirty("notes");
+		await runCycle(env); // establish the empty folder's baseline on both sides
+
+		// Remotely, the folder gains a child, and — in the SAME cycle — the local
+		// side deletes the (once-empty) folder. The descendant is itself dirty
+		// this cycle (e.g. the remote delta independently reported it), so it's
+		// part of this cycle's facts, and the guard in
+		// identity-component-decision.ts can see it.
+		await env.remoteFs.write("notes/child.md", new TextEncoder().encode("new").buffer, 2000);
+		await env.localFs.delete("notes");
+		env.localTracker.markDirty("notes");
+		env.localTracker.markDirty("notes/child.md");
+
+		const result = await runCycle(env);
+
+		// The folder itself is never admitted for deletion while its descendant is
+		// still visible this cycle — it's deferred, not force-deleted.
+		expect(result.plan.actions.some((action) => action.path === "notes")).toBe(false);
+		expect(await env.remoteFs.stat("notes")).not.toBeNull();
+	});
+
+	it("known limitation: an entirely untouched remote descendant can still be missed in HOT mode", async () => {
+		// Documents the residual gap from ADR 0009: HOT only gathers facts for
+		// dirty/delta-reported paths, so a descendant that was never independently
+		// touched or reported this cycle is invisible to the guard — only a COLD
+		// (or WARM-escalated) cycle is guaranteed to see it. This is a known,
+		// accepted tradeoff, not a regression — pinned here so it's never silently
+		// "fixed" by someone unaware of why it can't be, without also reading the
+		// completeness discussion in the ADR.
+		const env = makeEnv();
+		await env.localFs.mkdir("notes");
+		env.localTracker.markDirty("notes");
+		await runCycle(env);
+
+		await env.remoteFs.write("notes/child.md", new TextEncoder().encode("new").buffer, 2000);
+		await env.localFs.delete("notes");
+		env.localTracker.markDirty("notes"); // "notes/child.md" is NOT marked dirty
+
+		const result = await runCycle(env);
+
+		expect(result.temperature).toBe("hot");
+		expect(result.plan.actions).toMatchObject([{ action: "delete_remote", path: "notes" }]);
+	});
+});

@@ -1,12 +1,38 @@
 import { describe, expect, it, vi } from "vitest";
 import type { FileEntity } from "../fs/types";
 import type { IFileSystem } from "../fs/interface";
-import type { PathObservation } from "./types";
-import { confirmEntryAbsences, confirmRenameOppositeEndpoints, exactEntity, observePath } from "./path-observation";
+import type { MixedEntity, PathObservation } from "./types";
+import { confirmEntryAbsences, confirmRenameOppositeEndpoints, exactEntity, observePath, resolvedEntity } from "./path-observation";
 
-function entity(path: string, pathAuthority?: FileEntity["pathAuthority"]): FileEntity {
-	return { path, pathAuthority, isDirectory: false, size: 1, mtime: 1, hash: "h" };
+function entity(path: string, pathAuthority?: FileEntity["pathAuthority"], isDirectory = false): FileEntity {
+	return { path, pathAuthority, isDirectory, size: 1, mtime: 1, hash: "h" };
 }
+
+describe("exactEntity vs resolvedEntity", () => {
+	it("exactEntity excludes a directory (file-only content-identity callers must never see one)", () => {
+		const observation = observePath("local", "notes", entity("notes", "actual_resolved", true));
+		expect(observation.kind).toBe("exact");
+		expect(exactEntity(observation)).toBeUndefined();
+	});
+
+	it("resolvedEntity surfaces a directory at its exact requested path", () => {
+		const observation = observePath("local", "notes", entity("notes", "actual_resolved", true));
+		expect(resolvedEntity(observation)?.path).toBe("notes");
+		expect(resolvedEntity(observation)?.isDirectory).toBe(true);
+	});
+
+	it("resolvedEntity still excludes a non-exact (alias/unresolved) observation", () => {
+		const alias = observePath("remote", "Notes", entity("notes", "actual_resolved", true));
+		expect(alias.kind).toBe("alias");
+		expect(resolvedEntity(alias)).toBeUndefined();
+	});
+
+	it("both helpers agree on an ordinary file", () => {
+		const observation = observePath("local", "a.md", entity("a.md", "actual_resolved"));
+		expect(exactEntity(observation)?.path).toBe("a.md");
+		expect(resolvedEntity(observation)?.path).toBe("a.md");
+	});
+});
 
 describe("observePath", () => {
 	it("recognizes exact and alias paths only from actual-resolved producers", () => {
@@ -69,6 +95,18 @@ describe("confirmEntryAbsences", () => {
 
 		expect(indexedReads).toBeLessThan(count * 5);
 		expect(observations.every((item) => item.kind === "absent")).toBe(true);
+	});
+
+	it("confirms a directory's presence on the missing side (not just files)", async () => {
+		const entries: MixedEntity[] = [{ path: "notes", local: entity("notes", "actual_resolved", true) }];
+		const observations: PathObservation[] = [];
+		const fs = { stat: () => Promise.resolve(entity("notes", "actual_resolved", true)) } as unknown as IFileSystem;
+
+		await confirmEntryAbsences({ entries, observations }, fs, fs);
+
+		expect(entries[0]!.remote?.isDirectory).toBe(true);
+		expect(observations).toContainEqual({ kind: "exact", side: "remote", requestedPath: "notes",
+			entity: entity("notes", "actual_resolved", true) });
 	});
 });
 

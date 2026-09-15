@@ -83,6 +83,18 @@ describe("sameContent", () => {
 	it("ignores size — content identity is checksum-only", () => {
 		expect(sameContent(entity({ hash: "h", size: 1 }), entity({ hash: "h", size: 999 }))).toBe(true);
 	});
+
+	it("two directories are always the same — there is nothing to differ", () => {
+		expect(sameContent(
+			entity({ isDirectory: true, hash: "" }),
+			entity({ isDirectory: true, hash: "" }),
+		)).toBe(true);
+	});
+
+	it("a directory and a file at the same path are never the same (kind mismatch, not content)", () => {
+		expect(sameContent(entity({ isDirectory: true, hash: "" }), entity({ hash: "h" }))).toBe(false);
+		expect(sameContent(entity({ hash: "h" }), entity({ isDirectory: true, hash: "" }))).toBe(false);
+	});
 });
 
 describe("sameSynchronizedContent", () => {

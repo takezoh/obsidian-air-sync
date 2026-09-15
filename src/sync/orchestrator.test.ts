@@ -48,6 +48,12 @@ function confirmRemoteWrites(fs: MockFileSystem): void {
 		confirmMockPath(fs, written.path);
 		return written;
 	};
+	const mkdir = fs.mkdir.bind(fs);
+	fs.mkdir = async (path) => {
+		const created = await mkdir(path);
+		confirmMockPath(fs, created.path);
+		return created;
+	};
 }
 
 function mockSettings(): AirSyncSettings {

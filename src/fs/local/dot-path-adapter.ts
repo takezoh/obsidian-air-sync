@@ -15,8 +15,26 @@ export class DotPathAdapter {
 
 	async listAll(entities: FileEntity[]): Promise<void> {
 		for (const root of this.getDotRoots()) {
+			await this.pushRootEntity(root, entities);
 			await this.list(root, entities);
 		}
+	}
+
+	/**
+	 * `list()` pushes an entity for every folder it discovers as someone else's
+	 * child, recursing into it from there — so every dot-path folder gets its own
+	 * entity except the configured root itself, which this walk never visits as a
+	 * child. Without this, a directory-tracking SyncRecord for a root (e.g. the
+	 * vault's own configDir under Config Sync) can never find itself present in
+	 * list()'s output, even though it plainly exists — misreading it as deleted
+	 * on every single cycle.
+	 */
+	private async pushRootEntity(root: string, entities: FileEntity[]): Promise<void> {
+		const s = await this.vault.adapter.stat(root);
+		if (!s) return;
+		entities.push(s.type === "folder"
+			? { path: root, pathAuthority: "actual_resolved", isDirectory: true, size: 0, mtime: 0, hash: "" }
+			: { path: root, pathAuthority: "actual_resolved", isDirectory: false, size: s.size, mtime: s.mtime, hash: "" });
 	}
 
 	async list(dir: string, entities: FileEntity[]): Promise<void> {

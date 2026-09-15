@@ -4,7 +4,7 @@
 
 1. **3-state sync** -- Compare local, remote, and last-sync-record to detect changes. Text conflicts use 3-way merge.
 2. **Swappable production core** -- All remote I/O in the backend-agnostic production core goes through `IFileSystem` + `IBackendProvider`. Adding a backend leaves that core unchanged and extends explicit integration and verification points: its implementation/provider, `fs/registry.ts`, backend-specific settings UI where applicable, the shared contract catalog/matrix, and opt-in live E2E.
-3. **Delta-first** -- Only process files that changed. O(n) full scans are allowed when durable facts require COLD: cold start, missing checkpoint, scope change, and manual rescan.
+3. **Delta-first** -- Only process files that changed. O(n) full scans are allowed when durable facts require COLD: cold start, missing checkpoint, scope change, and manual rescan. WARM also escalates itself to a full COLD collection when its own targeted view cannot safely resolve a folder rename or a tracked folder's local absence — see [ADR 0009](docs/adr/0009-empty-folders-are-a-first-class-sync-fact.md).
 4. **Fact-first pipeline** -- `ChangeSet → BatchObservation → AuthorizedSyncPlan → Result`. Observation freezes facts; Admission binds identity/topology before pure content comparison and constructs the only executable plan. Execution performs its exact effects; no intermediate result is durable authority.
 5. **Crash-safe by construction** -- State is committed only *after* success: per-file baselines after each admitted action, and the remote delta checkpoint only when no action or Admission failure remains. An interrupted attempt aborts its live derived working view and is freshly reclassified on the next invocation; COLD/WARM/HOT follow durable/current facts only. Operation intent, rename evidence, and cross-cycle failure quarantine are never persisted.
 6. **Duplicate over delete** -- When in doubt, keep the file. Deleting an unwanted copy is easy; recovering a lost file is impossible.
@@ -136,6 +136,7 @@ interface SyncRecord {
   remoteIdentityKey?: string;       // last observed same-root native identity
   backendMeta?: Record<string, unknown>;
   syncedAt: number;        // when this sync completed
+  isDirectory?: true;      // set only for a directory baseline; omitted (never false) for a file
 }
 ```
 

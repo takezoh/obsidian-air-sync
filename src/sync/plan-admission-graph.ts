@@ -33,6 +33,21 @@ export function buildFactComponents(snapshot: BatchObservation): IdentityCompone
 		graph.connect(item.kind === "alias" && item.entity.isDirectory
 			? [...group, ...folderDescendantPaths(item.requestedPath, item.resolvedPath, paths)] : group);
 	}
+	// A bare, *previously baselined* directory fact (no rename/alias relation)
+	// still needs its currently-known descendants in the same component, so
+	// Admission can tell whether a folder delete candidate still has live
+	// children visible this cycle (see the delete guard in
+	// identity-component-decision.ts). Scoped to baselined folders only — a
+	// brand-new folder can never resolve to delete_local/delete_remote (that
+	// requires a prior SyncRecord), so pulling its unrelated siblings into one
+	// serial, cascade-on-failure execution component would only cost every
+	// sibling push/pull its independent (parallel, individually-blockable) fast
+	// path for no safety benefit.
+	for (const entry of snapshot.entries) {
+		if ((entry.local?.isDirectory || entry.remote?.isDirectory) && entry.prevSync) {
+			graph.connect([entry.path, ...pathsWithPrefix(paths, `${entry.path}/`)]);
+		}
+	}
 	// Committed keys participate in publication footprints, but do not assert
 	// that their historical identity still occupies that address.
 	const identityPaths = new Map<string, string[]>();

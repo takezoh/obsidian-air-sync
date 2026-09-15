@@ -2321,6 +2321,64 @@ describe("executePlan", () => {
 	});
 });
 
+describe("directory push/pull (mkdir, not read+write)", () => {
+	it("push: creates the remote directory via mkdir, never reads or writes content", async () => {
+		const ctx = makeCtx();
+		const localFs = ctx.localFs as MockFileSystem;
+		await localFs.mkdir("notes");
+		const local = (await localFs.stat("notes"))!;
+		const remoteMkdir = vi.spyOn(ctx.remoteFs, "mkdir");
+		const localRead = vi.spyOn(localFs, "read");
+		const remoteWrite = vi.spyOn(ctx.remoteFs, "write");
+
+		const plan = makePlan([{ path: "notes", action: "push", local }]);
+		const result = await executePlan(plan, ctx);
+
+		expect(result.failed).toEqual([]);
+		expect(result.blocked).toEqual([]);
+		expect(result.succeeded).toHaveLength(1);
+		expect(remoteMkdir).toHaveBeenCalledWith("notes");
+		expect(localRead).not.toHaveBeenCalled();
+		expect(remoteWrite).not.toHaveBeenCalled();
+		expect((await ctx.remoteFs.stat("notes"))?.isDirectory).toBe(true);
+	});
+
+	it("pull: creates the local directory via mkdir, never reads or writes content", async () => {
+		const ctx = makeCtx();
+		const remoteFs = ctx.remoteFs as MockFileSystem;
+		await remoteFs.mkdir("notes");
+		const remote = (await remoteFs.stat("notes"))!;
+		const localMkdir = vi.spyOn(ctx.localFs, "mkdir");
+		const remoteRead = vi.spyOn(remoteFs, "read");
+		const localWrite = vi.spyOn(ctx.localFs, "write");
+
+		const plan = makePlan([{ path: "notes", action: "pull", remote }]);
+		const result = await executePlan(plan, ctx);
+
+		expect(result.failed).toEqual([]);
+		expect(result.blocked).toEqual([]);
+		expect(result.succeeded).toHaveLength(1);
+		expect(localMkdir).toHaveBeenCalledWith("notes");
+		expect(remoteRead).not.toHaveBeenCalled();
+		expect(localWrite).not.toHaveBeenCalled();
+		expect((await ctx.localFs.stat("notes"))?.isDirectory).toBe(true);
+	});
+
+	it("terminal proof passes for a directory pair without a size/content check", async () => {
+		const ctx = makeCtx();
+		const localFs = ctx.localFs as MockFileSystem;
+		await localFs.mkdir("notes");
+		const local = (await localFs.stat("notes"))!;
+
+		const plan = makePlan([{ path: "notes", action: "push", local }]);
+		const result = await executePlan(plan, ctx);
+
+		expect(result.succeeded[0]?.terminalProof).toBeDefined();
+		expect(result.succeeded[0]?.localEntity?.isDirectory).toBe(true);
+		expect(result.succeeded[0]?.remoteEntity?.isDirectory).toBe(true);
+	});
+});
+
 describe("withIoRetry (per-action in-cycle retry)", () => {
 	const httpErr = (status: number) => Object.assign(new Error(`HTTP ${status}`), { status });
 	const pushPlan = (path = "x.md"): AuthorizedSyncPlan =>

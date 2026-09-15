@@ -39,6 +39,15 @@ function freshEntity(path: string, hash: string, identityKey?: string): FileEnti
 	return { path, hash, identityKey, pathAuthority: "actual_resolved", isDirectory: false, size: 1, mtime: 1 };
 }
 
+function dirEntity(path: string, identityKey?: string): FileEntity {
+	return { path, identityKey, pathAuthority: "actual_resolved", isDirectory: true, size: 0, mtime: 0, hash: "" };
+}
+
+function dirRecord(path: string, remoteIdentityKey?: string): SyncRecord {
+	return { path, hash: "", localMtime: 0, remoteMtime: 0, localSize: 0, remoteSize: 0,
+		remoteIdentityKey, syncedAt: 1, isDirectory: true };
+}
+
 function recordFor(current: FileEntity): SyncRecord {
 	return {
 		path: current.path, hash: current.hash, localMtime: current.mtime,
@@ -673,11 +682,12 @@ describe("admitBatchObservation", () => {
 			entries, evidence, observations, scope, "backend\0root",
 		));
 
-		expect(result.executable.actions).toEqual([]);
 		expect(result.failures).toEqual([]);
-		expect(result.dispositions).toEqual([expect.objectContaining({
-			kind: "resolved_no_action", actions: [],
-		})]);
+		// The children are actionless (already settled at the resolved path on both
+		// sides), but the root folder itself — present and identical on both sides,
+		// with no baseline yet — now establishes one via "match", so it isn't left
+		// without a SyncRecord going forward.
+		expect(result.executable.actions).toMatchObject([{ action: "match", path: newRoot }]);
 	});
 
 	it("resolves an actionless remote report whose local alias is the settled endpoint", () => {
@@ -2144,8 +2154,13 @@ describe("admitBatchObservation", () => {
 		const result = admit([], fixture.evidence, fixture.observations, fixture.scope, fixture.entries);
 
 		expect(result.failures).toEqual([]);
+		// The root folders themselves ("A" local-only, "B" remote-only, both empty
+		// of any baseline) are now independently admitted for creation alongside
+		// each abandoned-relation descendant file.
 		expect(result.executable.actions.map(({ action, path }) => ({ action, path }))).toEqual([
+			{ action: "push", path: "A" },
 			{ action: "push", path: "A/x.md" }, { action: "push", path: "A/y.md" },
+			{ action: "pull", path: "B" },
 			{ action: "pull", path: "B/x.md" }, { action: "pull", path: "B/y.md" },
 		]);
 	});
@@ -2365,7 +2380,13 @@ describe("admitBatchObservation", () => {
 		const result = admit([action], fixture.evidence, fixture.observations, fixture.scope, fixture.entries);
 
 		expect(result.failures).toEqual([]);
-		expect(result.executable.actions).toMatchObject([{ action: "push", path: "A" }]);
+		// "A" (now a plain file, not the folder the abandoned relation expected) is
+		// preserved via push; "B" is a genuine, unrelated remote-only empty folder
+		// fixture entry and is independently admitted for creation locally.
+		expect(result.executable.actions).toMatchObject([
+			{ action: "push", path: "A" },
+			{ action: "pull", path: "B" },
+		]);
 	});
 
 	it("uses the shallowest aligned folder report as the governing root", () => {
@@ -3435,5 +3456,107 @@ describe("admitBatchObservation", () => {
 			{ role: "local_rename_candidate", evidence: candidate },
 		]);
 		expect(snapshot.evidence.filter((item) => item.role === "identity")).toEqual([]);
+	});
+
+	describe("bare directory facts (empty-folder create/steady-state/delete)", () => {
+		it("local-only new folder, no baseline → push", () => {
+			const entries: MixedEntity[] = [{ path: "notes", local: dirEntity("notes") }];
+			const observations: PathObservation[] = [
+				{ kind: "exact", side: "local", requestedPath: "notes", entity: dirEntity("notes") },
+				{ kind: "absent", side: "remote", requestedPath: "notes", authority: "stat" },
+			];
+			const result = admit([], [], observations, projection({ notes: "included" }), entries);
+
+			expect(result.failures).toEqual([]);
+			expect(result.executable.actions).toMatchObject([{ action: "push", path: "notes" }]);
+		});
+
+		it("remote-only new folder, no baseline → pull", () => {
+			const entries: MixedEntity[] = [{ path: "notes", remote: dirEntity("notes", "R") }];
+			const observations: PathObservation[] = [
+				{ kind: "absent", side: "local", requestedPath: "notes", authority: "stat" },
+				{ kind: "exact", side: "remote", requestedPath: "notes", entity: dirEntity("notes", "R") },
+			];
+			const result = admit([], [], observations, projection({ notes: "included" }), entries);
+
+			expect(result.failures).toEqual([]);
+			expect(result.executable.actions).toMatchObject([{ action: "pull", path: "notes" }]);
+		});
+
+		it("both sides already have it, no baseline yet → match (establishes one)", () => {
+			const entries: MixedEntity[] = [{ path: "notes", local: dirEntity("notes"), remote: dirEntity("notes", "R") }];
+			const observations: PathObservation[] = [
+				{ kind: "exact", side: "local", requestedPath: "notes", entity: dirEntity("notes") },
+				{ kind: "exact", side: "remote", requestedPath: "notes", entity: dirEntity("notes", "R") },
+			];
+			const result = admit([], [], observations, projection({ notes: "included" }), entries);
+
+			expect(result.failures).toEqual([]);
+			expect(result.executable.actions).toMatchObject([{ action: "match", path: "notes" }]);
+		});
+
+		it("both sides have it, baseline agrees → steady state, no busywork", () => {
+			const entries: MixedEntity[] = [{
+				path: "notes", local: dirEntity("notes"), remote: dirEntity("notes", "R"),
+				prevSync: dirRecord("notes", "R"),
+			}];
+			const observations: PathObservation[] = [
+				{ kind: "exact", side: "local", requestedPath: "notes", entity: dirEntity("notes") },
+				{ kind: "exact", side: "remote", requestedPath: "notes", entity: dirEntity("notes", "R") },
+			];
+			const result = admit([], [], observations, projection({ notes: "included" }), entries);
+
+			expect(result.failures).toEqual([]);
+			expect(result.executable.actions).toEqual([]);
+		});
+
+		it("baseline present, remote confirmed deleted, no visible descendant → delete_local", () => {
+			const entries: MixedEntity[] = [{ path: "notes", local: dirEntity("notes"), prevSync: dirRecord("notes", "R") }];
+			const observations: PathObservation[] = [
+				{ kind: "exact", side: "local", requestedPath: "notes", entity: dirEntity("notes") },
+				// delete_local requires the remote absence to be delta-confirmed
+				// (checkpoint_deleted), not merely a stat gap — the same fail-closed
+				// rule that already applies to ordinary files.
+				{ kind: "absent", side: "remote", requestedPath: "notes", authority: "checkpoint_deleted" },
+			];
+			const result = admit([], [], observations, projection({ notes: "included" }), entries);
+
+			expect(result.failures).toEqual([]);
+			expect(result.executable.actions).toMatchObject([{ action: "delete_local", path: "notes" }]);
+		});
+
+		it("baseline present, local confirmed gone, no visible descendant → delete_remote", () => {
+			const entries: MixedEntity[] = [{ path: "notes", remote: dirEntity("notes", "R"), prevSync: dirRecord("notes", "R") }];
+			const observations: PathObservation[] = [
+				{ kind: "absent", side: "local", requestedPath: "notes", authority: "stat" },
+				{ kind: "exact", side: "remote", requestedPath: "notes", entity: dirEntity("notes", "R") },
+			];
+			const result = admit([], [], observations, projection({ notes: "included" }), entries);
+
+			expect(result.failures).toEqual([]);
+			expect(result.executable.actions).toMatchObject([{ action: "delete_remote", path: "notes" }]);
+		});
+
+		it("baseline present, local gone, but a live remote descendant is visible this cycle → deferred, not deleted", () => {
+			const entries: MixedEntity[] = [
+				{ path: "notes", remote: dirEntity("notes", "R"), prevSync: dirRecord("notes", "R") },
+				{ path: "notes/child.md", remote: entity("notes/child.md", "C") },
+			];
+			const observations: PathObservation[] = [
+				{ kind: "absent", side: "local", requestedPath: "notes", authority: "stat" },
+				{ kind: "exact", side: "remote", requestedPath: "notes", entity: dirEntity("notes", "R") },
+				{ kind: "absent", side: "local", requestedPath: "notes/child.md", authority: "stat" },
+				{ kind: "exact", side: "remote", requestedPath: "notes/child.md", entity: entity("notes/child.md", "C") },
+			];
+			const result = admit([], [], observations, projection({
+				notes: "included", "notes/child.md": "included",
+			}), entries);
+
+			expect(result.failures).toEqual([]);
+			// The folder itself is never admitted for deletion while its descendant
+			// is still visible; the descendant gets its own independent pull.
+			expect(result.executable.actions.find((action) => action.path === "notes")).toBeUndefined();
+			expect(result.executable.actions).toMatchObject([{ action: "pull", path: "notes/child.md" }]);
+		});
 	});
 });
