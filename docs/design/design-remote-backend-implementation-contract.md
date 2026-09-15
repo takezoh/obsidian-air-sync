@@ -21,7 +21,7 @@ compatibility_policies: []
 tags: []
 owners: []
 relations:
-- {type: references, target: backend-support-policy}
+- {type: references, target: support-policy}
 - {type: references, target: note-20260915-cloud-backend-qualification}
 source_paths:
 - src/fs/interface.ts
@@ -63,7 +63,7 @@ Provider-specific findings and support decisions are recorded in the
 [consolidated provider investigation](../note/note-20260915-cloud-backend-qualification.md).
 That research supplies evidence for qualification; it does not override the current
 interfaces or shared contracts. The separate
-[backend support policy](../backend-support-policy.md) defines the target audience,
+[support policy](../support-policy.md) defines the target audience,
 product boundaries, maintained services, and criteria for selecting additional backends.
 
 ## Integration context

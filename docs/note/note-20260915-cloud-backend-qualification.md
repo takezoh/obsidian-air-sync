@@ -8,10 +8,10 @@ updated: '2026-09-15'
 tags: []
 owners: []
 relations:
-- {type: references, target: backend-support-policy}
+- {type: references, target: support-policy}
 - {type: references, target: design-remote-backend-implementation-contract}
 source_paths:
-- docs/backend-support-policy.md
+- docs/support-policy.md
 - docs/design/design-remote-backend-implementation-contract.md
 - src/fs/registry.ts
 - tests/fs/contracts/remote-backend-family.ts
@@ -22,7 +22,7 @@ summary: Consolidated provider evidence, technical disqualification reasons, unr
 
 ## Decision and scope
 
-The [backend support policy](../backend-support-policy.md) owns target users, product
+The [support policy](../support-policy.md) owns target users, product
 boundaries, and service selection. The
 [implementation contract](../design/design-remote-backend-implementation-contract.md)
 owns technical qualification. This note records provider evidence and the resulting

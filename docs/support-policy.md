@@ -1,7 +1,7 @@
 ---
-id: backend-support-policy
+id: support-policy
 kind: design
-title: Backend support policy
+title: Support policy
 status: active
 created: '2026-09-15'
 updated: '2026-09-15'
@@ -9,10 +9,10 @@ relations:
 - {type: references, target: design-remote-backend-implementation-contract}
 - {type: references, target: note-20260915-cloud-backend-qualification}
 summary: Target users, project boundaries, maintained services, and selection criteria
-  for Air Sync backend support.
+  for Air Sync support and feature additions.
 ---
 
-# Backend support policy
+# Support policy
 
 This document owns the product decision about which users and storage workflows Air Sync
 serves. The [implementation contract](design/design-remote-backend-implementation-contract.md)

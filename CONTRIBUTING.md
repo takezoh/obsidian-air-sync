@@ -16,8 +16,8 @@ issues, set up a development environment, and submit changes.
 ## Feature proposals and backend contributions
 
 Before proposing or implementing a feature, read the
-[support policy](docs/backend-support-policy.md), especially its
-[feature addition criteria](docs/backend-support-policy.md#feature-additions-and-customization).
+[support policy](docs/support-policy.md), especially its
+[feature addition criteria](docs/support-policy.md#feature-additions-and-customization).
 The decision criterion is whether the feature helps users introduce and use sync easily.
 Expanding functionality or customizability for its own sake is outside the project goal.
 This applies to all feature proposals, not only backend additions.
@@ -25,7 +25,7 @@ This applies to all feature proposals, not only backend additions.
 For backend proposals, also review the technical requirements and existing research:
 
 
-1. [Backend support policy](docs/backend-support-policy.md) — target users, project
+1. [Support policy](docs/support-policy.md) — target users, project
    boundaries, customization limits, supported services, and the criteria for adding support.
 2. [Backend implementation contract](docs/design/design-remote-backend-implementation-contract.md)
    — required provider capabilities, integration responsibilities, and conformance evidence.
