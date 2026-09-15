@@ -6,7 +6,8 @@ status: published
 created: '2026-09-15'
 tags: []
 owners: []
-relations: []
+relations:
+- {type: references, target: note-20260915-cloud-backend-qualification}
 source_paths:
 - docs/design/design-remote-backend-implementation-contract.md
 summary: Archived investigation of the rejected pCloud backend candidate and the incremental-change-feed
@@ -26,6 +27,13 @@ the entire vault on every ordinary cycle did not satisfy the delta-first require
 
 This note retains the useful provider findings and the rejection rationale without
 describing pCloud as a supported or planned backend.
+
+The [consolidated provider investigation](note-20260915-cloud-backend-qualification.md)
+places these findings alongside the other evaluated services. The current
+[support policy](../design/design-remote-backend-implementation-contract.md#support-policy)
+also limits maintenance to selected major personal cloud services. That policy is
+separate from pCloud's already-established technical rejection below; it does not
+replace or weaken this archived evidence.
 
 ## Provenance
 

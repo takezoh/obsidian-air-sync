@@ -22,6 +22,7 @@ tags: []
 owners: []
 relations:
 - {type: references, target: note-20260915-pcloud-backend-investigation}
+- {type: references, target: note-20260915-cloud-backend-qualification}
 source_paths:
 - src/fs/interface.ts
 - src/fs/backend.ts
@@ -61,6 +62,38 @@ The current production reference families are Google Drive, Dropbox, and OneDriv
 [archived pCloud investigation](../note/note-20260915-pcloud-backend-investigation.md)
 records a rejected candidate and is evidence for this qualification boundary, not an
 additional source of authority over the current interfaces and shared contracts.
+
+## Support policy
+
+Air Sync is a non-commercial OSS project with finite maintenance capacity. Supported
+backends MUST be limited to major cloud storage services with broad personal adoption
+that also satisfy this implementation contract. Current support is limited to **Google
+Drive, OneDrive, and Dropbox**. iCloud Drive belongs to the major personal-service group,
+but is not supported because it does not meet the current integration requirements.
+
+Product selection and technical qualification are separate gates. Technical feasibility,
+an available SDK, a contribution, or a large registered-account count does not alone
+justify adding a maintained backend. Personal adoption is a qualitative product selection
+criterion, not a claimed numerical market-share ranking; registration counts, paid seats,
+active users, and ecosystem-wide accounts are not interchangeable measurements.
+
+The [consolidated investigation](../note/note-20260915-cloud-backend-qualification.md)
+records supported services, known technical failures, unresolved qualification evidence,
+and exclusions based on maintenance scope. An unverified candidate MUST NOT be described
+as technically impossible, and a policy exclusion MUST NOT be described as a failed
+contract test. Investigated candidates are not a roadmap commitment.
+
+Built-in integration evaluation assumes a web-based authorization experience. Hosted
+exchange is allowed, but does not establish that a provider offers a suitable grant,
+acceptable scope, or safe key handoff. This policy does not change the existing providers'
+auth routes or permit proxying vault data through an auth service. Plugin-side operations
+remain subject to RB-SVC-007/008 and RB-PROV-003/006.
+
+Adding support requires an explicit maintenance-scope decision, concrete evidence for
+every service prerequisite, and the full Conformance evidence below. Reconsider a
+candidate when its relevant API/access model changes and the maintenance/adoption case
+justifies it; do not weaken checksum, delta, permission, or mobile requirements to expand
+the provider list.
 
 ## Responsibilities
 
