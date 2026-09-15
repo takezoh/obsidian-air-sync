@@ -21,7 +21,6 @@ compatibility_policies: []
 tags: []
 owners: []
 relations:
-- {type: references, target: note-20260915-pcloud-backend-investigation}
 - {type: references, target: note-20260915-cloud-backend-qualification}
 source_paths:
 - src/fs/interface.ts
@@ -59,7 +58,7 @@ behaviour, not by using the same provider API or internal class layout as an exi
 backend.
 
 The current production reference families are Google Drive, Dropbox, and OneDrive. The
-[archived pCloud investigation](../note/note-20260915-pcloud-backend-investigation.md)
+[integrated pCloud investigation](../note/note-20260915-cloud-backend-qualification.md#pcloud-proven-permissiondelta-mismatch)
 records a rejected candidate and is evidence for this qualification boundary, not an
 additional source of authority over the current interfaces and shared contracts.
 
@@ -463,7 +462,7 @@ the requirement.
 
 ### pCloud rejection evidence
 
-The [archived pCloud investigation](../note/note-20260915-pcloud-backend-investigation.md)
+The [integrated pCloud investigation](../note/note-20260915-cloud-backend-qualification.md#pcloud-proven-permissiondelta-mismatch)
 is the source study from which this requirement was clarified. pCloud was not adopted as
 a supported backend. Its intended Specific-folder-only application mode cannot call the
 account-wide `diff` feed and receives result `2096`. Full access would expose the feed but
