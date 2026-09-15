@@ -18,8 +18,11 @@ issues, set up a development environment, and submit changes.
 Before proposing or implementing a feature, read the
 [support policy](docs/support-policy.md), especially its
 [feature addition criteria](docs/support-policy.md#feature-additions-and-customization).
-The decision criterion is whether the feature helps users introduce and use sync easily.
-Expanding functionality or customizability for its own sake is outside the project goal.
+The decision criterion is whether the feature contributes to a sophisticated synchronization
+experience without making users aware of its mechanisms or complexity, so they can focus
+on creating and using their notes. Advanced technology and features are welcome when they
+support that experience. Expanding functionality or customizability for its own sake is
+outside the project goal.
 This applies to all feature proposals, not only backend additions.
 
 For backend proposals, also review the technical requirements and existing research:

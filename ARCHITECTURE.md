@@ -2,6 +2,13 @@
 
 ## Design principles
 
+Air Sync aims to deliver a sophisticated synchronization experience without making users
+aware of its underlying mechanisms or complexity. The architecture should absorb that
+complexity so users can focus on creating and using their notes, rather than configuring,
+operating, or managing synchronization. Advanced mechanisms serve this experience;
+feature count and customizability are not goals in themselves. The
+[support policy](docs/support-policy.md) defines the target audience and feature criteria.
+
 1. **3-state sync** -- Compare local, remote, and last-sync-record to detect changes. Text conflicts use 3-way merge.
 2. **Swappable production core** -- All remote I/O in the backend-agnostic production core goes through `IFileSystem` + `IBackendProvider`. Adding a backend leaves that core unchanged and extends explicit integration and verification points: its implementation/provider, `fs/registry.ts`, backend-specific settings UI where applicable, the shared contract catalog/matrix, and opt-in live E2E.
 3. **Delta-first** -- Only process files that changed. O(n) full scans are allowed when durable facts require COLD: cold start, missing checkpoint, scope change, and manual rescan.
@@ -342,7 +349,7 @@ The provider registry (`fs/registry.ts`) maps backend types to provider instance
 
 - [Sync pipeline](docs/sync-pipeline.md) -- temperature modes, decision table, execution groups, deletion safety
 - [Conflict resolution](docs/conflict-resolution.md) -- strategies, 3-way merge, conflict history
-- [Support policy](docs/support-policy.md) -- target users, product boundaries, maintained services, and criteria for feature and backend additions
+- [Support policy](docs/support-policy.md) -- project goal, target users, product boundaries, maintained services, and criteria for feature and backend additions
 - [Remote backend implementation contract](docs/design/design-remote-backend-implementation-contract.md) -- service qualification, required filesystem/provider semantics, supported provider variability, and conformance evidence for adding a backend
 - [Cloud backend investigation](docs/note/note-20260915-cloud-backend-qualification.md) -- provider evidence, technical qualification findings, and service support decisions
 - [Google Drive backend](docs/google-drive-backend.md) -- metadata cache, authentication, and the sole owner of incremental sync / cache invalidation
