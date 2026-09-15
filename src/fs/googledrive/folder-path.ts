@@ -24,10 +24,10 @@ async function resolveRootId(client: GoogleDriveClient): Promise<string | undefi
  * parent chain from the folder up toward My Drive (e.g. "Work/Projects/Notes").
  *
  * Why the result can be partial: the built-in backend uses the `drive.file`
- * OAuth scope, under which the app can read the items the user granted via the
- * Google Picker (the picked folder, the folders above it that were granted, and
- * their contents) but not arbitrary ancestors. getFile() on an ungranted
- * ancestor returns 404. When we can identify the My Drive root we stop there
+ * OAuth scope, under which the app can read only the items it created or the
+ * user granted individually via the Google Picker. Picking a folder grants that
+ * folder alone — not its ancestors, and not its contents — so getFile() on an
+ * ungranted ancestor returns 404. When we can identify the My Drive root we stop there
  * cleanly; if instead we stop on an ungranted *non-root* ancestor we prefix the
  * result with "…/" to signal there are more (hidden) folders above. If the root
  * can't be identified at all we show the clean partial path rather than a

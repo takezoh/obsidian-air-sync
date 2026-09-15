@@ -20,6 +20,8 @@ Your OAuth client must have:
 - The **Google Drive API** enabled on its project.
 - An **authorized redirect URI** matching Air Sync's **Redirect uri** field — default `https://airsync.takezo.dev/callback` (a callback page that hands the code back to Obsidian).
 - A **client secret** — unlike the other backends, Google Drive custom is a confidential client and uses both the client ID *and* secret.
+- A consent screen whose publishing status is **In production**. While it is **Testing**, Google expires every authorization seven days after consent, so you would have to reconnect weekly. For personal use (fewer than 100 users) the app does not need Google's verification; sign-in shows an unverified-app warning instead.
+  → [Manage App Audience](https://support.google.com/cloud/answer/15549945)
 
 Copy into Air Sync:
 

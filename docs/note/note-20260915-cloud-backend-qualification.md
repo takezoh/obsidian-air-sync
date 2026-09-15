@@ -8,7 +8,6 @@ updated: '2026-09-15'
 tags: []
 owners: []
 relations:
-- {type: references, target: support-policy}
 - {type: references, target: design-remote-backend-implementation-contract}
 source_paths:
 - docs/support-policy.md

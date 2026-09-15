@@ -21,9 +21,9 @@ compatibility_policies: []
 tags: []
 owners: []
 relations:
-- {type: references, target: support-policy}
 - {type: references, target: note-20260915-cloud-backend-qualification}
 source_paths:
+- docs/support-policy.md
 - src/fs/interface.ts
 - src/fs/backend.ts
 - src/fs/types.ts
