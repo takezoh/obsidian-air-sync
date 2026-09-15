@@ -13,6 +13,28 @@ issues, set up a development environment, and submit changes.
 - For security vulnerabilities, please **do not** open a public issue — see
   [Security](#security).
 
+## Feature proposals and backend contributions
+
+Before proposing or implementing a feature, read the
+[support policy](docs/backend-support-policy.md), especially its
+[feature addition criteria](docs/backend-support-policy.md#feature-additions-and-customization).
+The decision criterion is whether the feature helps users introduce and use sync easily.
+Expanding functionality or customizability for its own sake is outside the project goal.
+This applies to all feature proposals, not only backend additions.
+
+For backend proposals, also review the technical requirements and existing research:
+
+
+1. [Backend support policy](docs/backend-support-policy.md) — target users, project
+   boundaries, customization limits, supported services, and the criteria for adding support.
+2. [Backend implementation contract](docs/design/design-remote-backend-implementation-contract.md)
+   — required provider capabilities, integration responsibilities, and conformance evidence.
+3. [Provider investigation](docs/note/note-20260915-cloud-backend-qualification.md) — existing
+   findings, technical gaps, and reasons services are outside the supported set.
+
+A backend contribution must satisfy both the product selection policy and the technical
+contract. API availability or a working prototype alone does not establish eligibility.
+
 ## Development setup
 
 Prerequisites: Node.js 20 or 22 and npm. (CI runs both Node 20.x and 22.x with npm 11.)

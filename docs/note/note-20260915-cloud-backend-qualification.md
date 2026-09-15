@@ -8,8 +8,10 @@ updated: '2026-09-15'
 tags: []
 owners: []
 relations:
+- {type: references, target: backend-support-policy}
 - {type: references, target: design-remote-backend-implementation-contract}
 source_paths:
+- docs/backend-support-policy.md
 - docs/design/design-remote-backend-implementation-contract.md
 - src/fs/registry.ts
 - tests/fs/contracts/remote-backend-family.ts
@@ -20,12 +22,11 @@ summary: Consolidated provider evidence, technical disqualification reasons, unr
 
 ## Decision and scope
 
-Air Sync supports **Google Drive, OneDrive, and Dropbox**. Maintenance capacity limits
-support to selected major personal cloud services that meet the technical contract.
-**iCloud Drive is in the major personal-service group but is technically excluded under
-the current integration model.** Other investigated services are not planned additions.
-The normative [support policy and implementation contract](../design/design-remote-backend-implementation-contract.md#support-policy)
-own acceptance; this note records the research behind the decisions.
+The [backend support policy](../backend-support-policy.md) owns target users, product
+boundaries, and service selection. The
+[implementation contract](../design/design-remote-backend-implementation-contract.md)
+owns technical qualification. This note records provider evidence and the resulting
+service decisions; it does not define another support policy.
 
 This is not a numerical market-share study. Comparable personal active-user shares were
 not established. Large registration totals for MEGA or TeraBox do not establish their
@@ -33,19 +34,6 @@ share of active personal file synchronization, and Proton ecosystem totals do no
 Drive usage. No invented percentages, exact ranking, or unsupported claim that all
 excluded services are small is needed for this maintenance decision. Box was screened
 out of this personal-use-focused investigation; no technical rejection is asserted.
-
-### Infrastructure and customization exclusions
-
-Air Sync targets easy adoption and everyday use of synchronization. S3/S3-compatible
-storage, generic WebDAV endpoints, and self-managed servers are excluded by product
-scope. Users who want advanced storage features, infrastructure control, or extensive
-customization are served by power-user-oriented projects. These are not candidate
-backends awaiting spare maintenance capacity.
-
-No protocol-wide technical failure is asserted: managed S3/WebDAV services also exist,
-and individual implementations have different capabilities. The exclusion is a product
-choice, independent of any future adapter's technical conformance. The existing custom
-OAuth option for the supported services does not change that boundary.
 
 ## Evidence and status definitions
 

@@ -342,7 +342,9 @@ The provider registry (`fs/registry.ts`) maps backend types to provider instance
 
 - [Sync pipeline](docs/sync-pipeline.md) -- temperature modes, decision table, execution groups, deletion safety
 - [Conflict resolution](docs/conflict-resolution.md) -- strategies, 3-way merge, conflict history
+- [Backend support policy](docs/backend-support-policy.md) -- target users, product boundaries, maintained services, and criteria for selecting backends
 - [Remote backend implementation contract](docs/design/design-remote-backend-implementation-contract.md) -- service qualification, required filesystem/provider semantics, supported provider variability, and conformance evidence for adding a backend
+- [Cloud backend investigation](docs/note/note-20260915-cloud-backend-qualification.md) -- provider evidence, technical qualification findings, and service support decisions
 - [Google Drive backend](docs/google-drive-backend.md) -- metadata cache, authentication, and the sole owner of incremental sync / cache invalidation
 - [Dropbox backend](docs/dropbox-backend.md) -- App Folder scope, id-only addressing, worker-less PKCE auth, in-app folder modal
 - [OneDrive backend](docs/onedrive-backend.md) -- App Folder scope (personal accounts), Microsoft Graph, delta-query incremental sync, locally-computed QuickXorHash, in-app folder modal

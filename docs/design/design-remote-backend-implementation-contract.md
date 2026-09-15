@@ -21,6 +21,7 @@ compatibility_policies: []
 tags: []
 owners: []
 relations:
+- {type: references, target: backend-support-policy}
 - {type: references, target: note-20260915-cloud-backend-qualification}
 source_paths:
 - src/fs/interface.ts
@@ -61,61 +62,17 @@ The current production reference families are Google Drive, Dropbox, and OneDriv
 Provider-specific findings and support decisions are recorded in the
 [consolidated provider investigation](../note/note-20260915-cloud-backend-qualification.md).
 That research supplies evidence for qualification; it does not override the current
-interfaces, shared contracts, or support policy below.
+interfaces or shared contracts. The separate
+[backend support policy](../backend-support-policy.md) defines the target audience,
+product boundaries, maintained services, and criteria for selecting additional backends.
 
-## Support policy
-
-### Target users and project boundary
-
-Air Sync targets people who want to introduce and use synchronization easily. Its
-product goal is a straightforward connection to familiar personal cloud storage and
-routine sync that requires little configuration or ongoing attention.
-
-Users seeking self-managed synchronization infrastructure, advanced storage capabilities,
-or extensive customization are not this project's target audience. S3/S3-compatible
-object storage, generic WebDAV endpoints, and self-managed servers are outside the
-backend support scope. Supporting those workflows is the role of power-user-oriented
-projects, rather than an expansion goal for Air Sync. S3 and WebDAV can also be offered
-as managed services; this exclusion concerns the infrastructure/configuration-oriented
-workflow, not a claim that those technologies always require running a server.
-
-This is an intentional product boundary, not merely a temporary maintenance backlog or
-a claim of technical incompatibility. Backend additions and configuration features MUST
-preserve simple onboarding and routine operation. The existing custom OAuth app option
-for supported providers does not imply a generic storage connector or a commitment to
-arbitrary endpoints and storage customization.
-
-### Supported service selection
-
-Air Sync is a non-commercial OSS project with finite maintenance capacity. Supported
-backends MUST be limited to major cloud storage services with broad personal adoption
-that also satisfy this implementation contract. Current support is limited to **Google
-Drive, OneDrive, and Dropbox**. iCloud Drive belongs to the major personal-service group,
-but is not supported because it does not meet the current integration requirements.
-
-Product selection and technical qualification are separate gates. Technical feasibility,
-an available SDK, a contribution, or a large registered-account count does not alone
-justify adding a maintained backend. Personal adoption is a qualitative product selection
-criterion, not a claimed numerical market-share ranking; registration counts, paid seats,
-active users, and ecosystem-wide accounts are not interchangeable measurements.
-
-The [consolidated investigation](../note/note-20260915-cloud-backend-qualification.md)
-records supported services, known technical failures, unresolved qualification evidence,
-and exclusions based on maintenance scope. An unverified candidate MUST NOT be described
-as technically impossible, and a policy exclusion MUST NOT be described as a failed
-contract test. Investigated candidates are not a roadmap commitment.
+## Integration context
 
 Built-in integration evaluation assumes a web-based authorization experience. Hosted
 exchange is allowed, but does not establish that a provider offers a suitable grant,
-acceptable scope, or safe key handoff. This policy does not change the existing providers'
+acceptable scope, or safe key handoff. This integration model does not change the existing providers'
 auth routes or permit proxying vault data through an auth service. Plugin-side operations
 remain subject to RB-SVC-007/008 and RB-PROV-003/006.
-
-Adding support requires an explicit target-user and maintenance-scope decision, concrete evidence for
-every service prerequisite, and the full Conformance evidence below. Reconsider a
-candidate when its relevant API/access model changes and the maintenance/adoption case
-justifies it; do not weaken checksum, delta, permission, or mobile requirements to expand
-the provider list.
 
 ## Responsibilities
 
