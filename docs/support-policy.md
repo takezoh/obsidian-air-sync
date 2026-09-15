@@ -27,17 +27,12 @@ to think about how synchronization works. It should connect to familiar personal
 storage without requiring users to configure or manage synchronization as an ongoing task,
 so they can focus on creating and using their notes.
 
-The project is deliberately not a general-purpose synchronization framework. It does not
-target workflows that require arbitrary storage endpoints, fine-grained control over
-storage configuration, or extensive customization of synchronization behaviour.
-S3/S3-compatible object storage and generic WebDAV endpoints are therefore outside the
-supported backend scope and are better served by power-user-oriented projects.
+Air Sync aims to provide a capable synchronization experience while keeping its complexity
+out of the user's attention. Power-user-oriented synchronization products may instead
+prioritize detailed control, configuration, and customization.
 
-This boundary is about the user experience Air Sync chooses to support, not about technical
-feasibility. It is not a temporary maintenance backlog. Configuration needed to use a
-supported provider can still be in scope when it preserves the intended experience. For
-example, the existing custom OAuth app option for supported providers does not imply support
-for generic storage connectors, arbitrary endpoints, or unrestricted storage customization.
+New features should support this experience rather than make synchronization itself
+something the user needs to manage.
 
 ## Feature additions and customization
 
