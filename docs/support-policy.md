@@ -22,28 +22,24 @@ findings and decisions against these two documents.
 
 ## Target users and project boundary
 
-Air Sync's goal is to deliver a sophisticated synchronization experience without making
-users aware of its underlying mechanisms or complexity. Users should be able to focus
-on creating and using their notes without directing their attention to configuring,
-operating, or managing synchronization.
+Air Sync is for people who want a sophisticated synchronization experience without having
+to think about how synchronization works. It should connect to familiar personal cloud
+storage without requiring users to configure or manage synchronization as an ongoing task,
+so they can focus on creating and using their notes.
 
-Air Sync targets people who want that experience with familiar personal cloud storage.
-Easy onboarding and unobtrusive routine operation are outcomes of this goal, not limits
-on the sophistication of the synchronization technology.
+The project is deliberately not a general-purpose synchronization framework. It does not
+target workflows that require users to operate storage infrastructure, connect arbitrary
+storage endpoints, or exercise fine-grained control over storage configuration or sync
+behaviour. S3/S3-compatible object storage, generic WebDAV endpoints, and self-managed
+servers are therefore outside the supported backend scope and are better served by
+power-user-oriented projects.
 
-Users seeking self-managed synchronization infrastructure, fine-grained control over
-storage configuration or sync behaviour, or extensive customization are not this project's
-target audience. S3/S3-compatible object storage, generic WebDAV endpoints, and self-managed servers are outside the
-backend support scope. Supporting those workflows is the role of power-user-oriented
-projects, rather than an expansion goal for Air Sync. S3 and WebDAV can also be offered
-as managed services; this exclusion concerns the infrastructure/configuration-oriented
-workflow, not a claim that those technologies always require running a server.
-
-This is an intentional product boundary, not merely a temporary maintenance backlog or
-a claim of technical incompatibility. Backend additions and configuration features MUST
-preserve this experience without transferring synchronization complexity to the user.
-The existing custom OAuth app option for supported providers does not imply a generic storage connector or a commitment to
-arbitrary endpoints and storage customization.
+This boundary is about the user experience Air Sync chooses to support, not about technical
+feasibility. It is not a temporary maintenance backlog, nor does it imply that S3 or WebDAV
+always require self-hosting. Configuration needed to use a supported provider can still be
+in scope when it preserves the intended experience. For example, the existing custom OAuth
+app option for supported providers does not imply support for generic storage connectors,
+arbitrary endpoints, or unrestricted storage customization.
 
 ## Feature additions and customization
 
@@ -87,4 +83,3 @@ evidence for every service prerequisite, and the implementation contract's
 candidate when its relevant API/access model changes and the maintenance/adoption case
 justifies it; do not weaken checksum, delta, permission, or mobile requirements to expand
 the provider list.
-
