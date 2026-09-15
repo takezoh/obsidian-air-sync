@@ -283,6 +283,10 @@ export class SyncOrchestrator {
 					this.deps.notify(decision.kind === "auth"
 						? "Authentication error. Please reconnect in settings."
 						: `Permission denied. Please check your ${provider?.displayName ?? "remote backend"} permissions.`);
+					// This early return skips the guaranteed flush at the bottom of
+					// this function (the retry-exhausted path) -- an aborted cycle is
+					// just as terminal and just as worth having on disk immediately.
+					await this.deps.logger?.flush();
 					return null;
 				}
 				// "stop" (e.g. 404) and "exhausted" both fall through to the generic

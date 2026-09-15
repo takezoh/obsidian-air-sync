@@ -275,6 +275,28 @@ describe("BackendManager — auth error notification on initBackend", () => {
 	});
 });
 
+describe("BackendManager — pre-sync-cycle failures flush the logger immediately", () => {
+	// Logger.flush() otherwise only runs at sync-cycle end or plugin unload (itself
+	// un-awaited) — a connect/auth/folder-pick failure that never reaches a sync
+	// cycle would sit only in the in-memory buffer, invisible in .airsync/logs/
+	// even with logging enabled and even across a restart.
+	it("flushes after a failed startBackendConnect", async () => {
+		fakeProvider.auth.startAuth = vi.fn().mockRejectedValue(new Error("boom"));
+		const error = vi.fn();
+		const flush = vi.fn();
+		const logger = { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error, flush } as unknown as Logger;
+		const settings = mockSettings();
+		const deps = createDeps(settings, { getLogger: () => logger });
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend();
+
+		await mgr.startBackendConnect();
+
+		expect(error).toHaveBeenCalledWith("Failed to start backend connection", { message: "boom" });
+		expect(flush).toHaveBeenCalled();
+	});
+});
+
 describe("BackendManager — switchBackend (hard reset)", () => {
 	it("is a no-op when the new type equals the current", async () => {
 		const clearSpy = vi.fn();

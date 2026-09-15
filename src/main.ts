@@ -207,6 +207,9 @@ export default class AirSyncPlugin extends Plugin {
 		this.scheduler.destroy();
 		this.orchestrator.close().catch((e) => {
 			this.logger.error("Failed to close orchestrator", { message: e instanceof Error ? e.message : String(e) });
+			// Best-effort: this rejection settles after the unconditional flush above
+			// already ran, and onunload() itself isn't awaited by Obsidian either way.
+			void this.logger.flush();
 		});
 	}
 
@@ -263,6 +266,10 @@ export default class AirSyncPlugin extends Plugin {
 			this.updateStatusBar();
 			new Notice(`Sync error: ${msg}`);
 			this.logger.error("Unhandled sync error", { error: msg });
+			// runSync() normally handles and flushes its own errors internally; this
+			// catch only fires for something it didn't, so nothing else is going to
+			// flush this line otherwise.
+			await this.logger.flush();
 		}
 	}
 

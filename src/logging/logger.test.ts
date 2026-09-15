@@ -116,6 +116,60 @@ describe("Logger", () => {
 		expect(adapter.written.size).toBe(0);
 	});
 
+	it("mirrors a flush failure to console instead of swallowing it silently", async () => {
+		const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		adapter.write = vi.fn(() => Promise.reject(new Error("disk full")));
+
+		logger.info("test");
+		await logger.flush();
+
+		expect(consoleSpy).toHaveBeenCalledWith(
+			"Air Sync: failed to flush logs to .airsync/logs/",
+			expect.any(Error),
+		);
+		consoleSpy.mockRestore();
+	});
+
+	it("serializes concurrent flush() calls instead of racing on the log file", async () => {
+		// Without serialization, two overlapping flush() calls each read the same
+		// on-disk content before either writes back, and whichever writes last
+		// silently clobbers the other's lines. Control write() completion order
+		// directly to prove flush() #2 never even starts its own write until
+		// flush() #1's finishes -- not just that the end result happens to look right.
+		const pendingWrites: { resolve: () => void }[] = [];
+		adapter.write = vi.fn((path: string, data: string) => new Promise<void>((resolve) => {
+			pendingWrites.push({
+				resolve: () => { adapter.written.set(path, data); resolve(); },
+			});
+		}));
+
+		const tick = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+
+		logger.info("first");
+		const flush1 = logger.flush();
+		await tick();
+
+		logger.info("second");
+		const flush2 = logger.flush();
+		await tick();
+
+		// flush() #2 must still be blocked on the mutex -- it hasn't reached
+		// write() at all yet, since flush() #1 hasn't released the lock.
+		expect(pendingWrites).toHaveLength(1);
+
+		pendingWrites[0]!.resolve();
+		await flush1;
+		await tick();
+
+		expect(pendingWrites).toHaveLength(2);
+		pendingWrites[1]!.resolve();
+		await flush2;
+
+		const content = Array.from(adapter.written.values())[0];
+		expect(content).toContain("[INFO] first");
+		expect(content).toContain("[INFO] second");
+	});
+
 	it("appends to existing log file", async () => {
 		logger.info("first");
 		await logger.flush();

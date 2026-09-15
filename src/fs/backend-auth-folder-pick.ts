@@ -47,6 +47,11 @@ export async function completeAuthFolderPick(
 		const msg = err instanceof Error ? err.message : String(err);
 		const prefix = authCompleted ? "Folder selection failed" : "Authorization failed";
 		context.logger.error(prefix, { message: msg });
+		// A failure here happens before any sync cycle ever runs, so nothing else
+		// would flush this line to .airsync/logs/ -- it would otherwise sit only
+		// in the in-memory buffer (see BackendManager.logError() for the same
+		// pattern at its own pre-sync-cycle error sites).
+		await context.logger.flush();
 		context.notify(`${prefix}: ${msg}`);
 		return false;
 	}
