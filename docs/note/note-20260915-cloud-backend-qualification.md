@@ -127,6 +127,8 @@ The investigation was performed on the former `pcloud-fs` branch. Its source sna
 was `docs/pcloud-backend.md` at commit
 `daca3df0816dd41c0ee33526305687a56b777743`. The findings are recorded in this
 consolidated note so they do not depend on that remote branch remaining available.
+The prototype predates the current central four-contract matrix and detached priority
+requirements; it is neither a current implementation nor conformance evidence.
 
 ### Decision
 
