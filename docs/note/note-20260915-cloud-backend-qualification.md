@@ -8,8 +8,10 @@ updated: '2026-09-15'
 tags: []
 owners: []
 relations:
+- {type: references, target: support-policy}
 - {type: references, target: design-remote-backend-implementation-contract}
 source_paths:
+- docs/support-policy.md
 - docs/design/design-remote-backend-implementation-contract.md
 - src/fs/registry.ts
 - tests/fs/contracts/remote-backend-family.ts
@@ -20,12 +22,11 @@ summary: Consolidated provider evidence, technical disqualification reasons, unr
 
 ## Decision and scope
 
-Air Sync supports **Google Drive, OneDrive, and Dropbox**. Maintenance capacity limits
-support to selected major personal cloud services that meet the technical contract.
-**iCloud Drive is in the major personal-service group but is technically excluded under
-the current integration model.** Other investigated services are not planned additions.
-The normative [support policy and implementation contract](../design/design-remote-backend-implementation-contract.md#support-policy)
-own acceptance; this note records the research behind the decisions.
+The [support policy](../support-policy.md) owns target users, product
+boundaries, and service selection. The
+[implementation contract](../design/design-remote-backend-implementation-contract.md)
+owns technical qualification. This note records provider evidence and the resulting
+service decisions; it does not define another support policy.
 
 This is not a numerical market-share study. Comparable personal active-user shares were
 not established. Large registration totals for MEGA or TeraBox do not establish their
@@ -341,7 +342,7 @@ Sources: [SDK README](https://github.com/ProtonDriveApps/sdk/blob/main/README.md
 
 ## Reconsideration requirements
 
-Before reopening any excluded candidate, record the maintenance/adoption reason and
+Before reopening any excluded candidate, record the target-user fit and maintenance/adoption reason and
 updated primary-source evidence for the failed or unresolved requirements. Then complete
 the contract's qualification worksheet: bound-root liveness, stable identity and
 replacement, no-clobber mutations, checksum availability/encoding, version-bound reads,
