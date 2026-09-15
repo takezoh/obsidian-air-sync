@@ -65,6 +65,28 @@ interfaces, shared contracts, or support policy below.
 
 ## Support policy
 
+### Target users and project boundary
+
+Air Sync targets people who want to introduce and use synchronization easily. Its
+product goal is a straightforward connection to familiar personal cloud storage and
+routine sync that requires little configuration or ongoing attention.
+
+Users seeking self-managed synchronization infrastructure, advanced storage capabilities,
+or extensive customization are not this project's target audience. S3/S3-compatible
+object storage, generic WebDAV endpoints, and self-managed servers are outside the
+backend support scope. Supporting those workflows is the role of power-user-oriented
+projects, rather than an expansion goal for Air Sync. S3 and WebDAV can also be offered
+as managed services; this exclusion concerns the infrastructure/configuration-oriented
+workflow, not a claim that those technologies always require running a server.
+
+This is an intentional product boundary, not merely a temporary maintenance backlog or
+a claim of technical incompatibility. Backend additions and configuration features MUST
+preserve simple onboarding and routine operation. The existing custom OAuth app option
+for supported providers does not imply a generic storage connector or a commitment to
+arbitrary endpoints and storage customization.
+
+### Supported service selection
+
 Air Sync is a non-commercial OSS project with finite maintenance capacity. Supported
 backends MUST be limited to major cloud storage services with broad personal adoption
 that also satisfy this implementation contract. Current support is limited to **Google
@@ -89,7 +111,7 @@ acceptable scope, or safe key handoff. This policy does not change the existing 
 auth routes or permit proxying vault data through an auth service. Plugin-side operations
 remain subject to RB-SVC-007/008 and RB-PROV-003/006.
 
-Adding support requires an explicit maintenance-scope decision, concrete evidence for
+Adding support requires an explicit target-user and maintenance-scope decision, concrete evidence for
 every service prerequisite, and the full Conformance evidence below. Reconsider a
 candidate when its relevant API/access model changes and the maintenance/adoption case
 justifies it; do not weaken checksum, delta, permission, or mobile requirements to expand

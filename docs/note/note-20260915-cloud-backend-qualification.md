@@ -34,6 +34,19 @@ Drive usage. No invented percentages, exact ranking, or unsupported claim that a
 excluded services are small is needed for this maintenance decision. Box was screened
 out of this personal-use-focused investigation; no technical rejection is asserted.
 
+### Infrastructure and customization exclusions
+
+Air Sync targets easy adoption and everyday use of synchronization. S3/S3-compatible
+storage, generic WebDAV endpoints, and self-managed servers are excluded by product
+scope. Users who want advanced storage features, infrastructure control, or extensive
+customization are served by power-user-oriented projects. These are not candidate
+backends awaiting spare maintenance capacity.
+
+No protocol-wide technical failure is asserted: managed S3/WebDAV services also exist,
+and individual implementations have different capabilities. The exclusion is a product
+choice, independent of any future adapter's technical conformance. The existing custom
+OAuth option for the supported services does not change that boundary.
+
 ## Evidence and status definitions
 
 Research reviewed on 2026-09-15: current Air Sync source and contract, the archived pCloud
@@ -341,7 +354,7 @@ Sources: [SDK README](https://github.com/ProtonDriveApps/sdk/blob/main/README.md
 
 ## Reconsideration requirements
 
-Before reopening any excluded candidate, record the maintenance/adoption reason and
+Before reopening any excluded candidate, record the target-user fit and maintenance/adoption reason and
 updated primary-source evidence for the failed or unresolved requirements. Then complete
 the contract's qualification worksheet: bound-root liveness, stable identity and
 replacement, no-clobber mutations, checksum availability/encoding, version-bound reads,
