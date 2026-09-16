@@ -118,6 +118,9 @@ export async function collectChanges(
 
 	// WARM/COLD listings can under-report. Confirm every baseline path whose current
 	// side is missing before planning; a thrown stat aborts rather than becoming absence.
+	// Only the local side gets a second opinion out of this: LocalFs.stat() falls back to
+	// the raw adapter, while CachingRemoteFs.stat() re-reads the cache the listing came
+	// from. Remote absence rests on that cache being a clean-scan projection (ADR 0001).
 	if (changeSet.temperature !== "hot") {
 		await confirmEntryAbsences(changeSet, deps.localFs, deps.remoteFs);
 	}

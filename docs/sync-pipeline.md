@@ -80,7 +80,7 @@ Selected when the hot condition fails (tracker uninitialized, or initialized but
 - Calls `localFs.list()` for a full local listing
 - Calls `getChangedPaths()` for the remote delta
 - Compares the full local listing against all stored `SyncRecord`s to find local changes and deletions
-- Confirms every baseline absence against the authoritative filesystem (`confirmBaselineAbsences`) so an under-reporting list cannot authorize deletion on either side — see [Deletion safety](#deletion-safety)
+- Confirms every baseline absence against the authoritative filesystem (`confirmBaselineAbsences`) so an under-reporting local list cannot authorize deletion — see [Deletion safety](#deletion-safety)
 - Adds both endpoints of every local reported rename from the cycle snapshot to the observations/change surface; the normative record is then `ChangeSet.identityEvidence`
 - Calls `remoteFs.stat()` only for paths identified as changed
 
@@ -168,7 +168,9 @@ There is no volume-based abort gate. Deletion safety rests on four independent l
 
 1. **Decision rules** -- an ambiguous case (a file gone on one side while the surviving side changed since baseline) is routed to `conflict` (keep both), never to a deletion; a missing baseline never yields a deletion.
 2. **layoutReady gate** -- sync does not run before the Obsidian vault index is loaded. `SyncScheduler` defers its event wiring, and `runSync()` is gated on `app.workspace.layoutReady`, so a `list()` that under-reports during startup cannot be mistaken for mass local deletions.
-3. **Authoritative observation** -- listing absence is re-`stat()`'d before it can authorize deletion. `LocalFs.stat()` falls back to the vault adapter on an index miss. `actual_resolved` proves an exact/alias path; `requested_echo` proves presence only; `null` proves absence; a thrown stat aborts the cycle. HOT checkpoint tombstones remain authoritative remote absence (Issue #44).
+3. **Authoritative observation** -- listing absence is re-`stat()`'d before it can authorize deletion. `actual_resolved` proves an exact/alias path; `requested_echo` proves presence only; `null` proves absence; a thrown stat aborts the cycle. HOT checkpoint tombstones remain authoritative remote absence (Issue #44).
+
+   The two sides get their authority from different places, and the re-`stat()` is only a second opinion on one of them. `LocalFs.stat()` falls back to the vault adapter on an index miss, so it can contradict a listing the index under-reported — that is a genuine independent check. `CachingRemoteFs.stat()` instead reads the same metadata cache the listing came from, so it returns the same answer by construction; on the remote side the authority is the cache itself, which is a complete projection of a wholly clean scan (ADR 0001), not the re-read. A path dropped from that cache — a duplicate id collapsing a sibling, say — is therefore not caught here, and the layers that do catch it are (1) and (4).
 4. **Whole-component admission** -- rename, alias, unresolved-presence, and stable-ID edges connect related managed paths. Paths excluded by system-junk rules, user ignore patterns, dot-path scope, Config Sync policy, or reserved-path policy are absent from the Admission snapshot. An included-to-included folder rename is one opaque folder operation; excluded physical entries are not identity nodes and do not participate in mapping completeness. If the component decision cannot prove that every managed resource survives, `admitDestructivePlan()` fails it before execution. Deletions are additionally soft (trash), but recoverability is not used as authorization.
 
 ## Identity-component action shaping
