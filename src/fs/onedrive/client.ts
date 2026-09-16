@@ -129,9 +129,18 @@ export class OneDriveClient {
 	 * Drain a full delta enumeration of the subtree under `rootId` (no token),
 	 * following `@odata.nextLink`. Returns every item EXCEPT the root itself and any
 	 * `deleted` tombstone — the shape `buildFromFiles` expects.
+	 *
+	 * Graph may repeat a driveItem across the drained pages: "The same item may appear
+	 * more than once in a delta feed, for various reasons. You should use the last
+	 * occurrence you see." (driveItem: delta, Remarks). So the drain is keyed by stable
+	 * id across ALL pages — not per page, since a repeat typically straddles a page
+	 * boundary — and the last occurrence wins. Without that, a valid Graph response
+	 * reaches `MetadataCache.bulkLoad()` as a duplicate stable id and the whole scan
+	 * fails as corrupt metadata. For the same last-occurrence reason a tombstone
+	 * retires an earlier live occurrence rather than being skipped outright.
 	 */
 	async fullList(rootId: string): Promise<OneDriveItem[]> {
-		const items: OneDriveItem[] = [];
+		const itemsById = new Map<string, OneDriveItem>();
 		let url: string | undefined = `${GRAPH_API}/me/drive/items/${rootId}/delta`;
 		for (let guard = 0; url; guard++) {
 			if (guard >= LIST_PAGE_CAP) {
@@ -139,12 +148,13 @@ export class OneDriveClient {
 			}
 			const res: OneDriveDeltaResponse = await this.json<OneDriveDeltaResponse>("fullList", url, "GET");
 			for (const item of res.value) {
-				if (item.id === rootId || item.deleted) continue;
-				items.push(item);
+				if (item.id === rootId) continue;
+				if (item.deleted) itemsById.delete(item.id);
+				else itemsById.set(item.id, item);
 			}
 			url = res["@odata.nextLink"];
 		}
-		return items;
+		return [...itemsById.values()];
 	}
 
 	/** Fetch one page of a delta carrying `token` (or a follow-on nextLink). */

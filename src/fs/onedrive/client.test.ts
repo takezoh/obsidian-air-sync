@@ -57,6 +57,71 @@ describe("OneDriveClient.fullList", () => {
 		const items = await client.fullList(ROOT);
 		expect(items.map((i) => i.id)).toEqual(["f1", "f2"]); // root + deleted excluded
 	});
+
+	// Graph documents that the same item may appear more than once in a delta feed and
+	// that clients should use the last occurrence. A repeat usually straddles a page
+	// boundary, so the drain must be keyed across ALL pages — otherwise the repeat
+	// reaches bulkLoad() as a duplicate stable id and the whole full scan fails.
+	it("collapses an id repeated across pages, keeping the last occurrence", async () => {
+		(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
+			const url = typeof opts === "string" ? opts : opts.url;
+			if (url.includes("nextpage")) {
+				return Promise.resolve(mockRes({
+					value: [odFile("f1", "renamed.md", ROOT)],
+					"@odata.deltaLink": "https://g?token=z",
+				}));
+			}
+			return Promise.resolve(mockRes({
+				value: [odFile("f1", "a.md", ROOT), odFile("f2", "b.md", ROOT)],
+				"@odata.nextLink": "https://graph/nextpage",
+			}));
+		});
+		const client = await makeClient();
+		const items = await client.fullList(ROOT);
+		expect(items.map((i) => i.id)).toEqual(["f1", "f2"]);
+		expect(items.find((i) => i.id === "f1")?.name).toBe("renamed.md");
+	});
+
+	it("retires an earlier live occurrence when a later page tombstones it", async () => {
+		(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
+			const url = typeof opts === "string" ? opts : opts.url;
+			if (url.includes("nextpage")) {
+				return Promise.resolve(mockRes({
+					value: [odDeleted("f1")],
+					"@odata.deltaLink": "https://g?token=z",
+				}));
+			}
+			return Promise.resolve(mockRes({
+				value: [odFile("f1", "a.md", ROOT), odFile("f2", "b.md", ROOT)],
+				"@odata.nextLink": "https://graph/nextpage",
+			}));
+		});
+		const client = await makeClient();
+		const items = await client.fullList(ROOT);
+		expect(items.map((i) => i.id)).toEqual(["f2"]);
+	});
+
+	// The mirror of the case above: "last occurrence wins" runs in both directions, so
+	// a tombstone must not be sticky. Restoring from the recycle bin keeps the id, and
+	// the restore can land on a later page than the tombstone.
+	it("keeps an item a later page revives after tombstoning it", async () => {
+		(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
+			const url = typeof opts === "string" ? opts : opts.url;
+			if (url.includes("nextpage")) {
+				return Promise.resolve(mockRes({
+					value: [odFile("f1", "a.md", ROOT)],
+					"@odata.deltaLink": "https://g?token=z",
+				}));
+			}
+			return Promise.resolve(mockRes({
+				value: [odDeleted("f1")],
+				"@odata.nextLink": "https://graph/nextpage",
+			}));
+		});
+		const client = await makeClient();
+		const items = await client.fullList(ROOT);
+		expect(items.map((i) => i.id)).toEqual(["f1"]);
+	});
 });
 
 describe("OneDriveClient.fetchDelta", () => {

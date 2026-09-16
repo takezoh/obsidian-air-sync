@@ -1,6 +1,14 @@
 import "fake-indexeddb/auto";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { RequestUrlParam } from "obsidian";
 import type { OneDriveItem } from "./types";
+import { spyRequestUrl, mockRes, odFile } from "./test-helpers";
+
+vi.mock("obsidian");
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
 
 describe("OneDriveFs case-only parent resolution", () => {
 	it("preserves provider casing when the requested parent differs only by case", async () => {
@@ -36,5 +44,39 @@ describe("OneDriveFs case-only parent resolution", () => {
 		expect(warn).not.toHaveBeenCalled();
 		expect((await fs.stat("Templates/note.md"))?.identityKey).toBe("child-1");
 		expect(await fs.stat("TemplateS/note.md")).toBeNull();
+	});
+});
+
+describe("OneDriveFs full scan with a repeated delta id", () => {
+	// Reproduces the reported failure: Graph repeats a driveItem across delta pages,
+	// which reached MetadataCache.bulkLoad() as a duplicate stable id and failed the
+	// whole scan ("Metadata cache contains duplicate stable id ...") — classified
+	// transient, so it burned three full enumerations before giving up.
+	it("completes instead of failing the scan as corrupt metadata", async () => {
+		(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
+			const url = typeof opts === "string" ? opts : opts.url;
+			if (url.includes("token=latest")) {
+				return Promise.resolve(mockRes({ value: [], "@odata.deltaLink": "https://g?token=START" }));
+			}
+			if (url.includes("nextpage")) {
+				return Promise.resolve(mockRes({
+					value: [odFile("f1", "a.md", "root")],
+					"@odata.deltaLink": "https://g?token=END",
+				}));
+			}
+			return Promise.resolve(mockRes({
+				value: [odFile("f1", "a.md", "root"), odFile("f2", "b.md", "root")],
+				"@odata.nextLink": "https://graph/nextpage",
+			}));
+		});
+
+		const { OneDriveClient } = await import("./client");
+		const { OneDriveFs } = await import("./index");
+		const client = new OneDriveClient(() => Promise.resolve("tok"), undefined, () => Promise.resolve());
+		const fs = new OneDriveFs(client, "root");
+
+		const entries = await fs.list();
+
+		expect(entries.map((e) => e.path).sort()).toEqual(["a.md", "b.md"]);
 	});
 });

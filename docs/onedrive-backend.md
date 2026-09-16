@@ -26,7 +26,7 @@ supplies the OneDrive-specific seams and the mutating ops:
 | Seam | Microsoft Graph call |
 |---|---|
 | `getStartCursor()` | `GET …/items/{root}/delta?token=latest` → token from `@odata.deltaLink` |
-| `fullList()` | drain `GET …/items/{root}/delta` (no token) via `@odata.nextLink`, excluding the root item and `deleted` tombstones |
+| `fullList()` | drain `GET …/items/{root}/delta` (no token) via `@odata.nextLink`, excluding the root item; keyed by stable id across all pages so a repeated driveItem collapses to its last occurrence (see below) |
 | `fetchChanges(cursor)` | drain the delta from the cursor token; **410 Gone** → `needsFullScan` |
 | `downloadFile(id)` | `GET …/items/{id}/content` (requestUrl follows the 302) |
 | `deleteRemote(id)` | `DELETE …/items/{id}` (404 → idempotent no-op) |
@@ -59,6 +59,30 @@ fallbacks (lowercased) for the Business shape.
 driveItem shape (`parentReference.id` as a one-element parent array, the `folder`
 facet) and projects a `FileEntity`. All path/tree logic is inherited from
 `AbstractMetadataCache` (id→parent-chain resolution, identical to Google Drive).
+
+### A delta feed may repeat the same item
+
+Graph documents that the same driveItem can appear more than once in a delta feed
+and that clients should **use the last occurrence** ([driveItem: delta][delta-remarks],
+Remarks). `fullList()` therefore accumulates into a `Map` keyed by stable id across
+**all** drained pages — not per page, since a repeat typically straddles a page
+boundary — and a `deleted` tombstone retires an earlier live occurrence rather than
+being skipped outright.
+
+That normalization belongs in the backend adapter, not the cache:
+`MetadataCache.bulkLoad()` deliberately rejects a duplicate stable id — one id maps to
+exactly one path, the bijection `setFile()` keeps at its single mutation seam
+(`fs/caching/metadata-cache.ts`, pinned by `fs/googledrive/metadata-cache.test.ts`
+"rejects persisted duplicate stable ids"). Without the adapter-side normalization a
+valid Graph response reached the cache as *corrupt metadata* and failed the whole scan.
+The failure classified as `transient`, so it also burned three full enumerations
+(one attempt plus two retries) before giving up.
+
+The incremental path never needed this: `applyOneDriveDelta` applies a page at a time
+through `applyIdDeltaPage`, so a repeat is naturally last-write-wins and never reaches
+`bulkLoad()`.
+
+[delta-remarks]: https://learn.microsoft.com/en-us/graph/api/driveitem-delta?view=graph-rest-1.0#remarks
 
 ## Incremental sync
 
