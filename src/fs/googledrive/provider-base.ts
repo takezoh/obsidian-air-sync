@@ -183,8 +183,9 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 		// erasing it, so getFile() above still succeeds (200, not 404) for a folder
 		// the user can no longer see or add content to — the same ambiguity
 		// resolveLinked() (remote-vault.ts) guards for the cached-id rebind path.
-		// The Picker can still surface a trashed folder as a selectable result, so
-		// this path needs its own check rather than inheriting that one.
+		// This path needs its own check because `id` above is not necessarily a
+		// Picker result: params.id is accepted as a fallback, so an arbitrary folder
+		// id can reach here without the Picker ever having offered it.
 		if (file.trashed) {
 			throw new Error("That folder is in Google Drive's Trash. Restore it, or pick a different folder.");
 		}

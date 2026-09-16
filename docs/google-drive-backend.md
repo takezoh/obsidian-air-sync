@@ -206,7 +206,7 @@ Layout: `<Google Drive root>/obsidian-air-sync/<Vault Name>` — the folder **na
 - If `remoteVaultFolderId` is cached, `resolveLinked()` confirms the folder is accessible via `getFile()` and not trashed. Drive's normal single-click delete moves a folder to Trash rather than erasing it, so `getFile()` alone would keep succeeding (200, not 404) against a folder the user can no longer see or add content to — the trashed check fails closed instead of silently binding to it forever.
 - Otherwise it find-or-creates the root `obsidian-air-sync` folder, then find-or-creates `obsidian-air-sync/<Vault Name>` (`findChildByName` / `createFolder`) and binds it.
 
-Bound folders picked via either Google Picker flow are addressed purely by id (`completeWebFolderPick`), independent of this layout. The built-in top-level flow completes authorization and binding under one `BackendManager` connecting gate so no filesystem is exposed between those two steps.
+Bound folders picked via either Google Picker flow are addressed purely by id (`completeWebFolderPick`), independent of this layout. `completeWebFolderPick` rejects a folder that is trashed, for the same reason `resolveLinked()` does: the id it validates is not necessarily a Picker result, because `params.id` is accepted as a fallback for `picked_file_ids`, so an arbitrary folder id can reach it. The built-in top-level flow completes authorization and binding under one `BackendManager` connecting gate so no filesystem is exposed between those two steps.
 
 ### createFs() contract
 

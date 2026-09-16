@@ -228,8 +228,9 @@ describe("GoogleDriveProvider.completeWebFolderPick", () => {
 	it("rejects a folder picked from Trash instead of silently binding to it", async () => {
 		// Drive's single-click delete moves a folder to Trash rather than erasing
 		// it, so getFile() still succeeds (200, not 404) here -- the same ambiguity
-		// resolveLinked() guards for the cached-id rebind path (remote-vault.ts),
-		// but the Picker can still surface a trashed folder as a pickable result.
+		// resolveLinked() guards for the cached-id rebind path (remote-vault.ts).
+		// This path needs its own check because params.id is accepted as a fallback
+		// for picked_file_ids, so an arbitrary folder id can reach it.
 		(await spyRequestUrl()).mockResolvedValue(
 			mockRes({ id: "FID", name: "MyVault", mimeType: FOLDER_MIME, trashed: true }),
 		);
