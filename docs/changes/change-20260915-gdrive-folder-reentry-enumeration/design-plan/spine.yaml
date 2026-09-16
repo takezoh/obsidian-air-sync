@@ -1,0 +1,484 @@
+artifact: design-plan-spine
+version: 2
+granularity_profile: boundary-complete
+
+scope_expansion_signals:
+  - id: scope-signal-id-delta-entered-folder-ids
+    kind: shared_boundary
+    target_ref: component-id-delta-seam
+    witness: >-
+      IdDeltaResult in src/fs/caching/id-delta.ts, shared by Google Drive and OneDrive,
+      gains enteredFolderIds; OneDrive computes it per call and never reads it. Apply-time
+      recording is required because page-start or drain-start sampling loses a folder
+      evicted within the same page by its ancestor's tombstone.
+    requirement_refs: [FR-1, NFR-2]
+    authority_refs:
+      - "critique.json#issue-reenum-path-keyed-idat-stale"
+      - "critique.json#dimension_coverage/control_flow"
+  - id: scope-signal-caching-harness-scope-entry-members
+    kind: shared_boundary
+    target_ref: component-caching-contract-harnesses
+    witness: >-
+      CachingRemoteFsHarness<TFile>, implemented by the Google Drive, OneDrive and Dropbox
+      harnesses, gains two required members and runCachingRemoteFsContract gains one
+      scope-entry case run for all three registered families.
+    requirement_refs: [FR-1, FR-5]
+    authority_refs:
+      - "recovery-decisions.json#unknown-e2e-contract-harness-extension-need"
+      - "docs/design/design-remote-backend-implementation-contract.md#failure-responsibility"
+  - id: scope-signal-verification-tiers-user-decision
+    kind: post_consultation_decision
+    target_ref: component-gdrive-live-e2e
+    witness: >-
+      The user fixed verification to unit plus shared contract harness with provider-faithful
+      fakes plus opt-in live e2e, which adds the shared scope-entry case and the Google Drive
+      live move-in/move-out/move-back-in case.
+    requirement_refs: [FR-1, FR-5]
+    authority_refs:
+      - "recovery-decisions.json#unknown-e2e-contract-harness-extension-need"
+  - id: scope-signal-adr-renamed-narrowed-successor
+    kind: smaller_structural_alternative
+    target_ref: adr-20260916-gdrive-delta-relists-entered-folders
+    witness: >-
+      Both drafts proposed an ADR for this same decision under different ids (draft-1
+      adr-gdrive-folder-scope-entry-reenumeration, draft-2
+      adr-20260916-newly-resolved-folder-reenumeration-order-independence), so no draft
+      baseline carries the final id. The final ADR is their renamed and narrowed successor:
+      it fixes a Google-Drive-scoped delta mechanism rather than draft-2's cross-backend
+      order-independence norm, and it adds no decision the drafts did not already raise.
+    requirement_refs: [FR-1, FR-5]
+    authority_refs:
+      - "draft-1/spine-draft.yaml#adr-gdrive-folder-scope-entry-reenumeration"
+      - "draft-2/spine-draft.yaml#adr-20260916-newly-resolved-folder-reenumeration-order-independence"
+      - "critique.json#issue-rbchk003-amendment-enforcement-unfounded"
+      - "recovery-decisions.json#live-probe-onedrive"
+
+requirements:
+  - id: FR-1
+    type: event-driven
+    priority: MUST
+    statement: >-
+      WHEN Google Drive incremental delta application applies a folder change whose stable
+      id has no cached path immediately before that change is applied, and that folder still
+      resolves inside the bound root when the changes drain ends, the Google Drive filesystem
+      SHALL include in the same getChangedPaths() or list() working view that folder and every
+      descendant the configured OAuth grant lists under it, each descendant reported as
+      modified, or as a renamed pair when its id was cached at another path.
+  - id: FR-2
+    type: unwanted-behavior
+    priority: MUST
+    statement: >-
+      IF more than one folder satisfies FR-1 in one changes drain and one folder's post-drain
+      path is a '/'-delimited descendant of another's, THEN the Google Drive filesystem SHALL
+      list only the topmost folder, and a folder whose name merely extends another folder's
+      name SHALL still be listed.
+  - id: FR-3
+    type: event-driven
+    priority: MUST
+    statement: >-
+      WHEN a Google Drive changes drain contains no folder that satisfies FR-1, including a
+      rename or move of an already-cached folder, the Google Drive filesystem SHALL issue no
+      subtree listing request.
+  - id: FR-4
+    type: unwanted-behavior
+    priority: MUST
+    statement: >-
+      IF a subtree listing for FR-1 fails after the listing's own bounded retries, THEN
+      getChangedPaths() and list() SHALL reject with that error, the durable checkpoint SHALL
+      remain unchanged, and the next attempt SHALL list the same folders again from the
+      committed window; an HTTP 410 takes the existing full-scan fallback.
+  - id: FR-5
+    type: event-driven
+    priority: MUST
+    statement: >-
+      WHEN a folder with pre-existing descendants moves into the bound root on OneDrive or
+      Dropbox, the existing delta application SHALL report the folder and every descendant in
+      the same result, without a production code change and without any request beyond its
+      ordinary delta pages.
+  - id: NFR-1
+    type: performance
+    priority: MUST
+    statement: >-
+      Within one Google Drive changes drain, subtree listings SHALL run sequentially with at
+      most one listAllFiles walk in flight, their count SHALL NOT exceed the number of topmost
+      folders satisfying FR-1, and no retry layer SHALL be added around listAllFiles.
+  - id: NFR-2
+    type: ubiquitous
+    priority: MUST
+    statement: >-
+      The system SHALL keep the entered-folder set and listing targets only within one delta
+      application call, SHALL persist no new field, cursor, evidence or recovery marker, SHALL
+      never remove, tombstone or re-key a cached entry because it is absent from a subtree
+      listing, and SHALL keep sync-state-ownership-guard.test.mjs and
+      sync-admission-authority-guard.test.mjs green without fixture edits.
+
+components:
+  - id: component-id-delta-seam
+    kind: existing
+    contract_refs: [contract-entered-folder-recording]
+    paths:
+      - src/fs/caching/id-delta.ts
+  - id: component-gdrive-incremental-sync
+    kind: existing
+    contract_refs: [contract-gdrive-entered-folder-relisting]
+    paths:
+      - src/fs/googledrive/incremental-sync.ts
+      - src/fs/googledrive/incremental-sync.test.ts
+      - src/fs/googledrive/list-all.ts
+      - docs/google-drive-backend.md
+  - id: component-caching-contract-harnesses
+    kind: existing
+    contract_refs: [contract-scope-entry-shared-case]
+    paths:
+      - tests/fs/contracts/caching-remote-fs.contract.ts
+      - tests/fs/googledrive/caching-remote-fs.contract-harness.ts
+      - tests/fs/onedrive/caching-remote-fs.contract-harness.ts
+      - tests/fs/dropbox/caching-remote-fs.contract-harness.ts
+  - id: component-gdrive-live-e2e
+    kind: existing
+    contract_refs: [contract-gdrive-live-scope-entry-e2e]
+    paths:
+      - e2e/googledrive.e2e.ts
+      - docs/e2e-testing.md
+
+contracts:
+  - id: contract-entered-folder-recording
+    dimension: control_flow
+    owner: component-id-delta-seam
+    requirement_refs: [FR-1, FR-3, NFR-2]
+    unit_refs:
+      - "Record entered folders and re-list them in Google Drive delta application"
+    adr_refs: [adr-20260916-gdrive-delta-relists-entered-folders]
+    verification:
+      - id: v-gd-unit
+        tier: T1
+        command: npx vitest run src/fs/googledrive/incremental-sync.test.ts
+      - id: v-build
+        tier: T0
+        command: npm run build
+
+  - id: contract-gdrive-entered-folder-relisting
+    dimension: integration_contract
+    owner: component-gdrive-incremental-sync
+    requirement_refs: [FR-1, FR-2, FR-3, FR-4, NFR-1, NFR-2]
+    unit_refs:
+      - "Record entered folders and re-list them in Google Drive delta application"
+    adr_refs: [adr-20260916-gdrive-delta-relists-entered-folders]
+    partition:
+      outcomes: [determinate, unknown]
+      default_policy: >-
+        A rejected listAllFiles (unknown) is never treated as empty, partial or complete: it
+        propagates through the existing catch so the attempt aborts without commit; an HTTP
+        410 takes the existing full-scan fallback.
+    verification:
+      - id: v-gd-unit
+        tier: T1
+        command: npx vitest run src/fs/googledrive/incremental-sync.test.ts
+      - id: v-guards
+        tier: T1
+        command: npm run lint:bot-repro
+      - id: v-build
+        tier: T0
+        command: npm run build
+      - id: v-lint
+        tier: T0
+        command: npm run lint
+    discretion:
+      - id: discretion-relist-helper-shape
+        unit_ref: "Record entered folders and re-list them in Google Drive delta application"
+        question: >-
+          Inline the target/listing loop in applyIncrementalChanges or extract a private
+          helper, and the private GoogleDriveFile-to-IdDeltaEntry mapper's name.
+        scope:
+          files:
+            - src/fs/googledrive/incremental-sync.ts
+          component: component-gdrive-incremental-sync
+          visibility: private
+        escalate_when:
+          - "the shape needs an export or a new module"
+          - "it needs an id-delta.ts change beyond contract-entered-folder-recording"
+          - "any named witness would observe a difference"
+        preserves:
+          contract_refs: [contract-gdrive-entered-folder-relisting]
+          observable_refs:
+            - observable-entered-subtree-facts
+            - observable-listing-calls
+            - observable-attempt-abort
+        verification_refs: [v-gd-unit]
+
+  - id: contract-scope-entry-shared-case
+    dimension: integration_contract
+    owner: component-caching-contract-harnesses
+    requirement_refs: [FR-1, FR-5, NFR-2]
+    unit_refs:
+      - "Add the scope-entry case to the shared caching contract for all families"
+    adr_refs: [adr-20260916-gdrive-delta-relists-entered-folders]
+    verification:
+      - id: v-shared-contract
+        tier: T1
+        command: npx vitest run tests/fs/remote-backend-contracts.test.ts
+      - id: v-build
+        tier: T0
+        command: npm run build
+    discretion:
+      - id: discretion-scope-entry-seam-shape
+        unit_ref: "Add the scope-entry case to the shared caching contract for all families"
+        question: >-
+          Names and signatures of the two required harness members, fixture ids, and the
+          outside-container representation inside each harness.
+        scope:
+          files:
+            - tests/fs/contracts/caching-remote-fs.contract.ts
+            - tests/fs/googledrive/caching-remote-fs.contract-harness.ts
+            - tests/fs/onedrive/caching-remote-fs.contract-harness.ts
+            - tests/fs/dropbox/caching-remote-fs.contract-harness.ts
+          component: component-caching-contract-harnesses
+          visibility: private
+        escalate_when:
+          - "a family's recorded delta shape cannot be expressed through the two members"
+          - "any case assertion would have to become family-conditional"
+        preserves:
+          contract_refs: [contract-scope-entry-shared-case]
+          observable_refs: [observable-shared-scope-entry]
+        verification_refs: [v-shared-contract]
+
+  - id: contract-gdrive-live-scope-entry-e2e
+    dimension: integration_contract
+    owner: component-gdrive-live-e2e
+    requirement_refs: [FR-1]
+    unit_refs:
+      - "Add the Google Drive live scope-entry e2e case"
+    adr_refs: [adr-20260916-gdrive-delta-relists-entered-folders]
+    verification:
+      - id: v-e2e-typecheck
+        tier: T0
+        command: npm run typecheck:e2e
+      - id: v-gd-live
+        tier: T2
+        command: npm run test:e2e:google
+    discretion:
+      - id: discretion-live-poll-bounds
+        unit_ref: "Add the Google Drive live scope-entry e2e case"
+        question: >-
+          Poll count and interval, fixture names, and helper extraction inside the Google
+          Drive e2e file.
+        scope:
+          files:
+            - e2e/googledrive.e2e.ts
+          component: component-gdrive-live-e2e
+          visibility: private
+        escalate_when:
+          - "changes.list propagation routinely needs more than about 60 seconds"
+          - "the assertion would have to span more than one getChangedPaths result"
+        preserves:
+          contract_refs: [contract-gdrive-live-scope-entry-e2e]
+          observable_refs: [observable-live-subtree-facts]
+        verification_refs: [v-gd-live]
+
+adrs:
+  - id: adr-20260916-gdrive-delta-relists-entered-folders
+    status: accepted
+    status_provenance:
+      source: user_consultation
+      confidence: confirmed
+      evidence_refs:
+        - "design-plan/design.md#adr-20260916-gdrive-delta-relists-entered-folders"
+        - "docs/adr/adr-20260916-gdrive-delta-relists-entered-folders.md"
+      rationale: >-
+        Project owner approved the proposed ADR during the design consult step on
+        2026-09-16; the plan carried no other unresolved question.
+      consultation_id: consultation-gdrive-folder-reentry-enumeration-r3
+    decision_input_refs:
+      - decision-input-scope-googledrive-only
+      - decision-input-shared-seam-vs-gdrive-local
+      - decision-input-shared-seam-placement
+      - decision-input-subtree-merge-algorithm
+      - decision-input-reuse-list-all
+      - decision-input-folder-scope-entry-contract-shape
+      - decision-input-adr-home-choice
+      - decision-input-dropbox-scope-entry-shape
+
+adr_impacts: []
+
+units:
+  - title: "Record entered folders and re-list them in Google Drive delta application"
+    chunk: null
+    contract_refs: [contract-entered-folder-recording, contract-gdrive-entered-folder-relisting]
+    files:
+      - src/fs/caching/id-delta.ts
+      - src/fs/googledrive/incremental-sync.ts
+      - src/fs/googledrive/incremental-sync.test.ts
+      - src/fs/googledrive/list-all.ts
+      - docs/google-drive-backend.md
+    depends_on: []
+    acceptance:
+      - "IdDeltaResult has enteredFolderIds: Set<string>, initialized by createIdDeltaResult, and applyEntry adds entry.id only when the upsert's oldPath is undefined, newPath is defined and entry.isFolder is true; wasFolder is not consulted and the sort, tombstone, moved-outside and moved branches are unchanged."
+      - "After the page loop and inside the existing try, applyIncrementalChanges snapshots enteredFolderIds, drops ids without a current path, drops targets nested by the '/'-delimited test, and lists the rest with ctx.client.listAllFiles(id) one at a time in first-entered order, merging each result through applyIdDeltaPage with a private mapper."
+      - "src/fs/googledrive/incremental-sync.test.ts contains, against a real GoogleDriveMetadataCache, the witnesses never-tracked, reentry-after-move-out, evicted-within-page, child-before-parent, stale-path, nested, name-prefix-sibling, left-scope-later, no-entered-folder, tracked-rename, failure, sequential, grant-subset and descendant-cached-elsewhere, all passing."
+      - "never-tracked, reentry-after-move-out, evicted-within-page, child-before-parent and stale-path were observed failing against the unmodified production code before the change."
+      - "The list-all.ts doc comment and docs/google-drive-backend.md describe the single scoped incremental-path use of listAllFiles instead of claiming it never runs on the delta path."
+      - "npm run build, npm run lint and npm run lint:bot-repro pass with no ownership-guard fixture edit."
+    objective: >-
+      Make Google Drive's incremental delta report the full current subtree of every folder
+      whose id gained a cached path during the drain, in the same attempt, by recording the
+      entry at apply time in the shared id-delta seam and re-listing topmost targets through
+      the existing listAllFiles and applyIdDeltaPage.
+    output_format: "TypeScript edits to id-delta.ts and googledrive/incremental-sync.ts, new test cases, and two documentation corrections."
+    tool_guidance: >-
+      Read id-delta.ts, metadata-cache.ts, googledrive/incremental-sync.ts and list-all.ts
+      fully first. Write the named witnesses with a real GoogleDriveMetadataCache("root") and a
+      client mock exposing listChanges and listAllFiles, and confirm the RED subset before
+      editing production code. Keep the existing mocked-cache cases unchanged.
+    task_boundaries: >-
+      Do not change applyIdDeltaPage's comparator or any existing applyEntry branch,
+      AbstractMetadataCache, CachingRemoteFs, list-all.ts behavior, src/fs/onedrive or
+      src/fs/dropbox. Add no try/catch, persisted field, export, concurrency or retry layer.
+    decision_closure_reason: null
+
+  - title: "Add the scope-entry case to the shared caching contract for all families"
+    chunk: null
+    contract_refs: [contract-scope-entry-shared-case]
+    files:
+      - tests/fs/contracts/caching-remote-fs.contract.ts
+      - tests/fs/googledrive/caching-remote-fs.contract-harness.ts
+      - tests/fs/onedrive/caching-remote-fs.contract-harness.ts
+      - tests/fs/dropbox/caching-remote-fs.contract-harness.ts
+    depends_on:
+      - "Record entered folders and re-list them in Google Drive delta application"
+    acceptance:
+      - "CachingRemoteFsHarness gains two required members (seed a folder with a.md and sub/b.md outside the bound root; stage its move into the root) implemented by every implementer: the three backend harnesses and the mock harness in src/fs/caching/remote-fs.contract.test.ts, which self-registers rather than going through the composition root; tests/fs/remote-backend-contracts.test.ts is unchanged."
+      - "The Google Drive harness listAllFiles(folderId) returns only the descendants of folderId in parent-first order, the Google Drive stage emits one change for the folder only, and the OneDrive and Dropbox stages emit the folder and all descendants in the order their live probes recorded (live-probe-onedrive, live-probe-dropbox)."
+      - "runCachingRemoteFsContract's scope-entry case asserts pre-move invisibility, exact modified [F, F/a.md, F/sub, F/sub/b.md] with empty deleted and renamed, stat of F/sub/b.md, and the same modified set after abortWorkingView and a second getChangedPaths."
+      - "The Google Drive cell fails on production code without unit 1 and fails with the old whole-baseline listAllFiles stub; all existing cases in every harness stay green."
+      - "The OneDrive and Dropbox cells pass over unchanged production code, with no added client method and no request beyond the ordinary delta pages."
+    objective: >-
+      Pin RB-CHK-003 scope-entry completeness for every registered caching family through the
+      real filesystems over fakes whose delta shapes match recorded live observations.
+    output_format: "One shared contract case, a widened harness interface and its harness implementations (three backend harnesses plus the mock harness)."
+    tool_guidance: >-
+      Follow the stageRemoteRename precedent (ADR 0006). Witness the Google Drive stub
+      fidelity by running the case once against the old stub before replacing it. Take each
+      family's staged delta shape from its recorded live probe in recovery-decisions.json.
+    task_boundaries: >-
+      Do not create a separate contract module, family-filtered registration, skip, optional
+      member or family-conditional assertion. Change only the four listed test files: no
+      production file changes, in particular none under src/fs/onedrive, src/fs/dropbox,
+      src/fs/caching/remote-fs.ts or src/fs/caching/metadata-cache.ts.
+    decision_closure_reason: null
+
+  - title: "Add the Google Drive live scope-entry e2e case"
+    chunk: null
+    contract_refs: [contract-gdrive-live-scope-entry-e2e]
+    files:
+      - e2e/googledrive.e2e.ts
+      - docs/e2e-testing.md
+    depends_on:
+      - "Record entered folders and re-list them in Google Drive delta application"
+    acceptance:
+      - "In the credentialed branch, one case creates F with a.md and sub/b.md in an outside sibling folder, commits a checkpoint on a fresh root with a real MetadataStore, then moves F in, out and back in, polling getChangedPaths until F appears and asserting that same result contains all four paths (modified on move-in, deleted on move-out) plus stat of F/sub/b.md after re-entry."
+      - "An exhausted poll bound fails with a message naming changes.list propagation; missing credentials keep the existing file-level skip."
+      - "docs/e2e-testing.md Notes describes the scenario, the polling reason, and why the assertion is bound to the first result containing F."
+      - "npm run typecheck:e2e passes; the case is not part of npm test or CI."
+    objective: "Backstop the Google Drive scope-entry fix against the real API, including the re-entry case the live probe reproduced."
+    output_format: "One new live e2e case and a documentation note."
+    tool_guidance: >-
+      Reuse makeGoogleDriveChild for both the root and the outside folder and
+      client.updateFileMetadata(id, {}, addParents, removeParents) for moves. Run
+      npm run test:e2e:google outside the agent sandbox per docs/e2e-testing.md.
+    task_boundaries: "e2e/googledrive.e2e.ts and docs/e2e-testing.md only; no new e2e file and no production change."
+    decision_closure_reason: null
+
+acceptance:
+  - id: AC-1
+    criteria: >-
+      A Google Drive folder that enters the bound root (never tracked, re-entered after a
+      move-out, evicted within the page by an ancestor tombstone, restored, listed after its
+      own child, or re-keyed later in the drain) yields the folder and every grant-visible
+      descendant as modified (or renamed when cached elsewhere) in the same getChangedPaths()
+      result; the shared scope-entry case passes for Google Drive and the live re-entry case
+      passes.
+    requirement_refs: [FR-1]
+  - id: AC-2
+    criteria: >-
+      Nested entered folders produce exactly one listing for the topmost folder, while Notes
+      and Notes2 produce two listings.
+    requirement_refs: [FR-2]
+  - id: AC-3
+    criteria: >-
+      A drain with no entered folder, including a rename or move of a cached folder, issues
+      zero listAllFiles calls.
+    requirement_refs: [FR-3]
+  - id: AC-4
+    criteria: >-
+      A rejected listing rejects applyIncrementalChanges with the same error, lists no later
+      target, commits nothing, and the shared case's abort-and-replay step re-derives the same
+      subtree facts.
+    requirement_refs: [FR-4]
+  - id: AC-5
+    criteria: >-
+      OneDrive and Dropbox production files are unchanged and the shared scope-entry case
+      passes for both, each over a fake that emits the shape its live probe recorded.
+    requirement_refs: [FR-5]
+  - id: AC-6
+    criteria: >-
+      Listings run strictly one at a time and their count equals the number of topmost
+      targets.
+    requirement_refs: [NFR-1]
+  - id: AC-7
+    criteria: >-
+      No new persisted or retained state exists, absence from a listing never removes a cached
+      entry, and both ownership guards pass without fixture edits.
+    requirement_refs: [NFR-2]
+
+dispositions:
+  - decision_input_ref: decision-input-scope-googledrive-only
+    disposition: "adopted: production fix and new I/O are Google Drive only; live-probe-onedrive shows OneDrive already complete (ADR decision 5)."
+    adr_refs: [adr-20260916-gdrive-delta-relists-entered-folders]
+    contract_refs: [contract-gdrive-entered-folder-relisting, contract-scope-entry-shared-case]
+  - decision_input_ref: decision-input-shared-seam-vs-gdrive-local
+    disposition: "rejected: leaving id-delta.ts untouched forces page-start or drain-start sampling, which loses a folder evicted within the page by its ancestor's tombstone; its Google-Drive-only I/O half is carried by decision-input-shared-seam-placement."
+    adr_refs: [adr-20260916-gdrive-delta-relists-entered-folders]
+    contract_refs: [contract-entered-folder-recording]
+  - decision_input_ref: decision-input-shared-seam-placement
+    disposition: "adopted (modified): apply-time recording of stable ids in the shared seam, I/O only in Google Drive; the future-third-backend rationale is replaced by apply-time exactness."
+    adr_refs: [adr-20260916-gdrive-delta-relists-entered-folders]
+    contract_refs: [contract-entered-folder-recording, contract-gdrive-entered-folder-relisting]
+  - decision_input_ref: decision-input-subtree-merge-algorithm
+    disposition: "rejected: re-feeding the parent-first listAllFiles result through applyIdDeltaPage is order-safe (stable sort, depth-1 tie, cached parents resolve by id, unknown parents dropped), so a new AbstractMetadataCache resolver prevents no failure."
+    adr_refs: [adr-20260916-gdrive-delta-relists-entered-folders]
+    contract_refs: [contract-gdrive-entered-folder-relisting]
+  - decision_input_ref: decision-input-reuse-list-all
+    disposition: "adopted: GoogleDriveClient.listAllFiles is reused unchanged, called sequentially per topmost target with no added retry layer."
+    adr_refs: [adr-20260916-gdrive-delta-relists-entered-folders]
+    contract_refs: [contract-gdrive-entered-folder-relisting]
+  - decision_input_ref: decision-input-folder-scope-entry-contract-shape
+    disposition: "rejected: a Google-Drive-and-OneDrive-only module would opt Dropbox out of a normative shared case; the case lives in runCachingRemoteFsContract for all registered families."
+    adr_refs: [adr-20260916-gdrive-delta-relists-entered-folders]
+    contract_refs: [contract-scope-entry-shared-case]
+  - decision_input_ref: decision-input-harness-fidelity-asymmetric-fakes
+    disposition: "adopted (extended): each family's harness emits its live-recorded delta shape and the Google Drive listAllFiles stub is scoped to the requested folder; all three shapes are now grounded in recorded probes (live-probe-googledrive, live-probe-onedrive, live-probe-dropbox)."
+    contract_refs: [contract-scope-entry-shared-case]
+  - decision_input_ref: decision-input-adr-home-choice
+    disposition: "adopted: a standalone ADR, because ADR 0006 reorders a complete delta while this decision recovers entries the provider never sends."
+    adr_refs: [adr-20260916-gdrive-delta-relists-entered-folders]
+  - decision_input_ref: decision-input-adr-home
+    disposition: "subsumed into decision-input-adr-home-choice (same question and same standalone outcome)."
+    adr_refs: [adr-20260916-gdrive-delta-relists-entered-folders]
+  - decision_input_ref: decision-input-verification-tiers
+    disposition: "adopted: unit witnesses and the shared contract case in the enforced gate (T1), the live Google Drive e2e opt-in (T2), static and type checks (T0); no probe tier remains in the change, because all three provider shapes are already recorded."
+    contract_refs:
+      - contract-entered-folder-recording
+      - contract-gdrive-entered-folder-relisting
+      - contract-scope-entry-shared-case
+      - contract-gdrive-live-scope-entry-e2e
+  - decision_input_ref: decision-input-empty-folder-nongoal
+    disposition: "adopted: recorded as a non-goal in change.md and the requirements member per the user decision; change-detector.ts is untouched and no issue is filed."
+  - decision_input_ref: decision-input-empty-folder-followup
+    disposition: "subsumed into decision-input-empty-folder-nongoal (no follow-up issue)."
+  - decision_input_ref: decision-input-repro-test-deleted
+    disposition: "adopted: the deleted file is never referenced as existing; RED-first witnesses in src/fs/googledrive/incremental-sync.test.ts replace it and add the never-tracked variant."
+    contract_refs: [contract-gdrive-entered-folder-relisting]
+  - decision_input_ref: decision-input-dropbox-scope-entry-shape
+    disposition: "adopted: closed by live evidence rather than by a planned probe. live-probe-dropbox (2026-09-16) recorded a determinate complete scope-entry delta, so the Dropbox fake emits the folder with every pre-existing descendant, exactly as the OneDrive fake is grounded; no probe unit, evidence gate or escalation branch remains in the change."
+    adr_refs: [adr-20260916-gdrive-delta-relists-entered-folders]
+    contract_refs: [contract-scope-entry-shared-case]

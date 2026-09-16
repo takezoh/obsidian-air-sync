@@ -23,10 +23,27 @@ export interface IdDeltaResult {
 	changedPaths: Set<string>;
 	renamedPaths: RenamePair[];
 	count: number;
+	/**
+	 * Ids of folders that gained a cached path during THIS delta application — a
+	 * folder whose old cached path was undefined and whose new one resolved. It
+	 * covers never-tracked, evicted-then-reentered, trash-restored, and
+	 * ancestor-chain entry alike, because all four look the same at apply time.
+	 *
+	 * A provider whose delta reports only the changed item (Google Drive) sends no
+	 * change for that folder's unchanged descendants, so those descendants are facts
+	 * this page cannot carry. The Google Drive backend re-lists these ids after its
+	 * drain; OneDrive's delta is already complete and never reads the set.
+	 *
+	 * Per-call bookkeeping only: it is discarded with the call, never persisted,
+	 * never copied into `IncrementalChangesResult`, and never read by the cache.
+	 * Insertion order is first-entry order, and re-entry within one drain collapses
+	 * to one element.
+	 */
+	enteredFolderIds: Set<string>;
 }
 
 export function createIdDeltaResult(): IdDeltaResult {
-	return { changedPaths: new Set<string>(), renamedPaths: [], count: 0 };
+	return { changedPaths: new Set<string>(), renamedPaths: [], count: 0, enteredFolderIds: new Set<string>() };
 }
 
 /**
@@ -87,6 +104,13 @@ function applyEntry<TFile>(
 		return;
 	}
 	if (!newPath) return;
+
+	// This folder had no cached path immediately before its own mutation and has one
+	// now: it entered the tracked root on THIS entry. Recording here (rather than
+	// sampling `hasId` at page or drain start) is what catches a folder evicted
+	// earlier in the same page by an ancestor's tombstone. `wasFolder` describes the
+	// OLD path and is always false when `oldPath` is undefined, so it is never used.
+	if (!oldPath && entry.isFolder) acc.enteredFolderIds.add(entry.id);
 
 	acc.changedPaths.add(newPath);
 	const moved = !!oldPath && oldPath !== newPath;

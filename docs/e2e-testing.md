@@ -280,6 +280,27 @@ durability evidence.
   though it does mean two edits within the same second are mtime-indistinguishable, falling to
   the duplicate path in conflict resolution. OneDrive runs under the App Folder scope, so the
   throwaway `airsync-e2e-*` tree is created inside `special/approot`.
+- **Google Drive folder scope entry.** The Google Drive suite runs one extra live case for
+  the class of bug where a folder *enters* the bound root. It creates `F` holding `a.md` and
+  `sub/b.md` in a sibling folder **outside** a fresh root, commits a checkpoint on that empty
+  root with a real `MetadataStore`, then moves `F` in, out, and back in. Each move must be
+  reported with the **whole** subtree — `F`, `F/a.md`, `F/sub`, `F/sub/b.md` (as `modified` on
+  the way in, `deleted` on the way out) — and after re-entry `stat("F/sub/b.md")` must be
+  non-null. Drive's `changes.list` reports only the item that actually changed, so a move-in
+  produces a single change for `F` and nothing for its untouched descendants: without the
+  backend re-listing an entered folder, the case sees just `F` and fails. The re-entry leg is
+  the one the live probe reproduced — by then `F` is absent from the cache, so its own change
+  is genuinely all Drive sends.
+  - **Why it polls.** Drive publishes a mutation to `changes.list` some time *after* the
+    mutation response returns, so a single fixed read would be flaky. The case polls
+    `getChangedPaths()` up to 20 times at 1.5s intervals per leg and, when the bound is
+    exhausted, **fails** with a message naming `changes.list` propagation — it never skips
+    and never passes.
+  - **Why the assertion is bound to the first result containing `F`.** Each
+    `getChangedPaths()` call *consumes* what it returns — the delta cursor advances — so a
+    change is reported exactly once. The result in which `F` first appears is therefore the
+    only one that can carry the rest of the subtree; a later read would show the change
+    gone rather than incomplete, which would turn a real regression green.
 - **Leftover folders.** Cleanup runs in `afterAll` but is **best-effort** — it warns instead
   of failing the run (Google Drive's `drive.file` scope can't hard-delete and may 403 on trash under
   load). Folders are uniquely named, so delete any stray `airsync-e2e-*` from the test account

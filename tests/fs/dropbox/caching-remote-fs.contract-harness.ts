@@ -12,6 +12,8 @@ vi.mock("obsidian");
 
 const ROOT_ID = "id:root";
 const ROOT_PATH = "/root";
+/** A path the bound root never contains — the fake's "elsewhere in the Dropbox". */
+const OUTSIDE_PATH = "/outside";
 
 /**
  * Run the shared base crash-safety contract (ADR 0001) against the REAL DropboxFs over
@@ -23,6 +25,8 @@ const ROOT_PATH = "/root";
 function makeDropboxHarness(): CachingRemoteFsHarness<DropboxEntry> {
 	const baseline = new Map<string, DropboxEntry>(); // absolute path → entry
 	const events: DropboxEntry[] = []; // delta entries (deletes / upserts), append-only
+	/** Folder path → its subtree, held outside the bound root until it is moved in. */
+	const outside = new Map<string, { rel: string; entry: DropboxEntry }[]>();
 	let idSeq = 0;
 	let failAfterFirstPage = false;
 	const cursorAt = (n: number): string => `c${n}`;
@@ -51,6 +55,7 @@ function makeDropboxHarness(): CachingRemoteFsHarness<DropboxEntry> {
 	} as unknown as DropboxClient;
 
 	const abs = (path: string): string => `${ROOT_PATH}/${path}`;
+	const outsideAbs = (path: string): string => `${OUTSIDE_PATH}/${path}`;
 
 	return {
 		makeStore: (id) => new MetadataStore<DropboxEntry>(id, { dbNamePrefix: "air-sync-dropbox-contract", version: 1 }),
@@ -62,6 +67,32 @@ function makeDropboxHarness(): CachingRemoteFsHarness<DropboxEntry> {
 			baseline.set(abs(folderPath), dbxFolder(`d${++idSeq}`, abs(folderPath)));
 			const childPath = `${folderPath}/${childName}`;
 			baseline.set(abs(childPath), dbxFile(`f${++idSeq}`, abs(childPath)));
+		},
+		// Held at absolute paths outside the bound root, so `listFolderAll` (a bound-root
+		// enumeration) never returns it and the delta reports nothing until the move.
+		seedFolderOutsideRoot: (folderPath) => {
+			const rels = [folderPath, `${folderPath}/a.md`, `${folderPath}/sub`, `${folderPath}/sub/b.md`];
+			outside.set(folderPath, rels.map((rel) => ({
+				rel,
+				entry: rel.endsWith(".md")
+					? dbxFile(`f${++idSeq}`, outsideAbs(rel))
+					: dbxFolder(`d${++idSeq}`, outsideAbs(rel)),
+			})));
+		},
+		// live-probe-dropbox: one `list_folder/continue` window carries the folder AND
+		// every pre-existing descendant as adds, in the observed order F, F/a.md, F/sub,
+		// F/sub/b.md. There is no `deleted` tombstone — the old paths were never inside
+		// the bound root, so the recursive path delta had never reported them.
+		stageMoveIntoRoot: (folderPath) => {
+			const seeded = outside.get(folderPath);
+			if (!seeded) throw new Error(`stageMoveIntoRoot: no folder seeded outside the root at "${folderPath}"`);
+			outside.delete(folderPath);
+			for (const { rel, entry } of seeded) {
+				const np = abs(rel);
+				const moved: DropboxEntry = { ...entry, path_lower: np.toLowerCase(), path_display: np };
+				baseline.set(np, moved);
+				events.push(moved);
+			}
 		},
 		stageRemoteDelete: (path) => {
 			if (!baseline.delete(abs(path))) throw new Error(`stageRemoteDelete: no such file "${path}"`);

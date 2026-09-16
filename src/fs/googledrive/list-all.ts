@@ -12,8 +12,12 @@ const MAX_LIST_RETRIES = 3;
  * and per-page rate-limit retry. Split out of the client (principle #7) so the
  * recursive enumeration + its AIMD/retry policy is independently testable.
  *
- * Reached only on a cold/initial scan, a rescan, or the 410 cursor-expiry full
- * scan — never the steady-state hot/warm delta path. Concurrency is an
+ * Reached on a cold/initial scan, a rescan, or the 410 cursor-expiry full scan —
+ * and, on the incremental path, for the one scoped exception: `changes.list`
+ * reports only the changed item, so `applyIncrementalChanges` re-lists each folder
+ * that newly entered the bound root (see `incremental-sync.ts`) to recover the
+ * descendants Google Drive never sends. A steady-state delta with no entering
+ * folder still issues no walk at all. Concurrency is an
  * `AdaptivePool` (start 3 ⇒ no change at t=0; ramps toward 8 on sustained success,
  * halves on a rate-limit). Each page (`listFiles`) is retried up to
  * `MAX_LIST_RETRIES` on a `rateLimit`/`transient` error honoring `Retry-After`; on

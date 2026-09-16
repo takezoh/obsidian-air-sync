@@ -28,6 +28,19 @@ export interface CachingRemoteFsHarness<TFile> {
 	 * id-addressed backends emit a single id-keyed change.
 	 */
 	stageRemoteRename(oldPath: string, newPath: string, opts?: { isFolder?: boolean }): void;
+	/**
+	 * Create, OUTSIDE the bound root, a folder at `folderPath` already holding `a.md`
+	 * and `sub/b.md`. None of it is visible to a full root listing or to any delta
+	 * until {@link stageMoveIntoRoot} moves it in.
+	 */
+	seedFolderOutsideRoot(folderPath: string): void;
+	/**
+	 * Move a folder seeded by {@link seedFolderOutsideRoot} under the bound root, keeping
+	 * its name. The next delta reports the move in the backend's own recorded live shape —
+	 * Google Drive's `changes.list` reports ONLY the folder, while OneDrive's and Dropbox's
+	 * deltas carry the folder plus every pre-existing descendant.
+	 */
+	stageMoveIntoRoot(folderPath: string): void;
 }
 
 /**
@@ -371,6 +384,49 @@ export function runCachingRemoteFsContract<TFile>(
 			expect(second?.renamed).toContainEqual({
 				oldPath: "papers", newPath: "archive", isFolder: true,
 			});
+			await store.close();
+		});
+
+		// ── Scope entry: a folder with pre-existing descendants moves INTO the root ──
+		// The required fact is the same for every family — the working view must end up
+		// holding what a cold scan would — while the deltas that carry it differ: Google
+		// Drive reports only the moved folder (its unchanged descendants produce no
+		// change at all), OneDrive and Dropbox report the whole subtree. Each harness
+		// emits its family's recorded live shape, so a backend that leaves the
+		// descendants unenumerated reports only "F" here and fails.
+
+		it("reports a folder entering the bound root with its whole pre-existing subtree", async () => {
+			const h = makeHarness();
+			h.seedFile("keep.md");
+			h.seedFolderOutsideRoot("F");
+			const store = h.makeStore("contract-scope-entry");
+			const fs = h.makeFs(store);
+
+			// Scope consistency: the full listing and the delta must agree on what is
+			// inside the root. Without this, a fake that leaks outside items into the
+			// baseline would satisfy the exact-set assertion below for the wrong reason.
+			const before = (await fs.list()).map((entry) => entry.path);
+			expect(before).toContain("keep.md");
+			for (const path of ["F", "F/a.md", "F/sub", "F/sub/b.md", "a.md", "sub", "b.md"]) {
+				expect(before).not.toContain(path);
+			}
+			await fs.commitCheckpoint();
+
+			h.stageMoveIntoRoot("F");
+			const d = await fs.getChangedPaths();
+
+			// Exact set: the folder AND every descendant, none of them as a deletion and
+			// none of them as a rename (nothing moved WITHIN the root).
+			expect([...(d?.modified ?? [])].sort()).toEqual(["F", "F/a.md", "F/sub", "F/sub/b.md"]);
+			expect(d?.deleted).toEqual([]);
+			expect(d?.renamed ?? []).toEqual([]);
+			expect(await fs.stat("F/sub/b.md")).not.toBeNull();
+
+			// The uncommitted attempt is discarded and replayed from committed state
+			// alone: re-observing the same remote must yield the same complete subtree.
+			await fs.abortWorkingView();
+			const replay = await fs.getChangedPaths();
+			expect([...(replay?.modified ?? [])].sort()).toEqual(["F", "F/a.md", "F/sub", "F/sub/b.md"]);
 			await store.close();
 		});
 	});

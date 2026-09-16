@@ -11,6 +11,8 @@ import type { CachingRemoteFsHarness } from "../contracts/caching-remote-fs.cont
 vi.mock("obsidian");
 
 const ROOT_ID = "root";
+/** A parent id the bound root never reaches — the fake's "somewhere else in the drive". */
+const OUTSIDE_ID = "outside";
 
 /**
  * Run the shared base crash-safety contract (ADR 0001) against the REAL OneDriveFs
@@ -24,6 +26,8 @@ const ROOT_ID = "root";
 function makeOneDriveHarness(): CachingRemoteFsHarness<OneDriveItem> {
 	const baseline = new Map<string, { id: string; item: OneDriveItem }>(); // path → item
 	const events: OneDriveItem[] = []; // delta items (deletes / upserts), append-only
+	/** Folder path → its subtree, held outside the bound root until it is moved in. */
+	const outside = new Map<string, { path: string; item: OneDriveItem }[]>();
 	let idSeq = 0;
 	let failAfterFirstPage = false;
 	const cursorAt = (n: number): string => `c${n}`;
@@ -64,6 +68,34 @@ function makeOneDriveHarness(): CachingRemoteFsHarness<OneDriveItem> {
 			const childId = `f${++idSeq}`;
 			baseline.set(folderPath, { id: folderId, item: odFolder(folderId, folderPath, ROOT_ID) });
 			baseline.set(`${folderPath}/${childName}`, { id: childId, item: odFile(childId, childName, folderId) });
+		},
+		// Parented outside the bound root, so `fullList` (a bound-root enumeration) never
+		// returns it and the folder-scoped delta reports nothing until the move.
+		seedFolderOutsideRoot: (folderPath) => {
+			const folderId = `d${++idSeq}`;
+			const subId = `d${++idSeq}`;
+			outside.set(folderPath, [
+				{ path: folderPath, item: odFolder(folderId, folderPath, OUTSIDE_ID) },
+				{ path: `${folderPath}/a.md`, item: odFile(`f${++idSeq}`, "a.md", folderId) },
+				{ path: `${folderPath}/sub`, item: odFolder(subId, "sub", folderId) },
+				{ path: `${folderPath}/sub/b.md`, item: odFile(`f${++idSeq}`, "b.md", subId) },
+			]);
+		},
+		// live-probe-onedrive: Graph's folder-scoped delta reports a folder entering the
+		// scope TOGETHER WITH every pre-existing descendant, as new items, in the observed
+		// order F, F/a.md, F/sub, F/sub/b.md. Only the folder changes parent; the
+		// descendants keep their own parent ids and are re-emitted unchanged.
+		stageMoveIntoRoot: (folderPath) => {
+			const seeded = outside.get(folderPath);
+			if (!seeded) throw new Error(`stageMoveIntoRoot: no folder seeded outside the root at "${folderPath}"`);
+			outside.delete(folderPath);
+			// Only the folder (the first seeded entry) changes parent.
+			const moved = seeded.map(({ path, item }, i) =>
+				i === 0 ? { path, item: odFolder(item.id, folderPath, ROOT_ID) } : { path, item });
+			for (const { path, item } of moved) {
+				baseline.set(path, { id: item.id, item });
+				events.push(item);
+			}
 		},
 		stageRemoteDelete: (path) => {
 			const entry = baseline.get(path);

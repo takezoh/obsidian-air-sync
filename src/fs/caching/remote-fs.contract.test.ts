@@ -44,6 +44,8 @@ class FakeRemote {
 	readonly rootId = "root";
 	private files = new Map<string, MockFile>();
 	private events: MockChange[] = [];
+	/** Folder path → its subtree, outside the bound root until it is moved in. */
+	private pendingOutside = new Map<string, MockFile[]>();
 	private idSeq = 0;
 
 	/** Current head cursor — "cN" means N events have happened. */
@@ -80,6 +82,37 @@ class FakeRemote {
 		const childId = `id${++this.idSeq}`;
 		this.files.set(folderId, { id: folderId, name: folderPath, parentId: this.rootId, checksum: `v-${folderId}`, isFolder: true });
 		this.files.set(childId, { id: childId, name: childName, parentId: folderId, checksum: `v-${childId}` });
+	}
+
+	/**
+	 * A folder + `a.md` + `sub/b.md` held OUTSIDE the bound root: absent from `list()`
+	 * and from the delta log until {@link stageMoveIntoRoot} moves it in. The mock has no
+	 * provider to probe, and its base-machinery delta carries no per-backend re-listing
+	 * seam, so the move emits the COMPLETE shape (folder then every descendant) — the
+	 * facts the base itself must be able to serve. Google Drive's folder-only delta and
+	 * the re-listing that completes it are that backend's own harness's business.
+	 */
+	seedFolderOutsideRoot(folderPath: string): void {
+		const folderId = `id${++this.idSeq}`;
+		const subId = `id${++this.idSeq}`;
+		const aId = `id${++this.idSeq}`;
+		const bId = `id${++this.idSeq}`;
+		this.pendingOutside.set(folderPath, [
+			{ id: folderId, name: folderPath, parentId: this.rootId, checksum: `v-${folderId}`, isFolder: true },
+			{ id: aId, name: "a.md", parentId: folderId, checksum: `v-${aId}` },
+			{ id: subId, name: "sub", parentId: folderId, checksum: `v-${subId}`, isFolder: true },
+			{ id: bId, name: "b.md", parentId: subId, checksum: `v-${bId}` },
+		]);
+	}
+
+	stageMoveIntoRoot(folderPath: string): void {
+		const seeded = this.pendingOutside.get(folderPath);
+		if (!seeded) throw new Error(`stageMoveIntoRoot: no folder seeded outside the root at "${folderPath}"`);
+		this.pendingOutside.delete(folderPath);
+		for (const file of seeded) {
+			this.files.set(file.id, file);
+			this.events.push({ kind: "upsert", file });
+		}
 	}
 
 	stageDelete(path: string): void {
@@ -202,6 +235,8 @@ function makeMockHarness(): CachingRemoteFsHarness<MockFile> {
 		stageRemoteDelete: (path) => remote.stageDelete(path),
 		failNextDeltaAfterFirstPage: () => fs?.requestLaterPageFailure(),
 		stageRemoteRename: (oldPath, newPath, opts) => remote.stageRename(oldPath, newPath, opts),
+		seedFolderOutsideRoot: (folderPath) => remote.seedFolderOutsideRoot(folderPath),
+		stageMoveIntoRoot: (folderPath) => remote.stageMoveIntoRoot(folderPath),
 	};
 }
 
