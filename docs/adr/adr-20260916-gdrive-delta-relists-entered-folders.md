@@ -5,6 +5,7 @@ title: Google Drive delta application re-lists folders that newly enter the boun
   root
 status: accepted
 created: '2026-09-16'
+updated: '2026-09-16'
 decision_makers:
 - project owner
 consulted:
@@ -118,8 +119,10 @@ re-derivation from current facts.
      each entry as `{ id, isFolder: mimeType === FOLDER_MIME, file }`.
    The targets are computed once. No other request, concurrency, or retry layer is added.
 
-3. **Merge through the existing apply, upsert-only.** `list-all.ts` pushes every item before
-   it lists that item's folder, so each descendant follows its ancestor. `applyIdDeltaPage`
+3. **Merge through the existing apply, upsert-only.** `list-all.ts` records every item before
+   it lists that item's folder, so each descendant follows its ancestor. (It records into a
+   `Map` keyed by stable id; overwriting keeps the first insertion position, so a folder
+   re-reported by a second parent does not move behind its own child.) `applyIdDeltaPage`
    sorts every folder before every file. Uncached folders compare equal at depth 1, and the
    stable sort keeps listing order. An already-cached folder resolves through `idToPath`
    wherever it sorts. An entry with an unknown parent is dropped by `applyFileChange`. A

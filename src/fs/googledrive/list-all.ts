@@ -3,9 +3,13 @@ import { classifyGoogleDriveError } from "./errors";
 import { decideRetry, sleep as defaultSleep } from "../errors";
 import { FOLDER_MIME, LIST_PAGE_CAP } from "./types";
 import type { GoogleDriveFile, GoogleDriveFileList } from "./types";
+import type { Logger } from "../../logging/logger";
 
 /** Per-page retry attempts for the full-scan listing (rate-limit / transient). */
 const MAX_LIST_RETRIES = 3;
+
+/** Cap the ids named in the repeated-id warning so one bad scan can't flood the log. */
+const REPEATED_ID_SAMPLE = 10;
 
 /**
  * Recursively list every file under `rootFolderId` with **adaptive** concurrency
@@ -25,14 +29,33 @@ const MAX_LIST_RETRIES = 3;
  * its ceiling drops immediately while the task holds its slot (a natural throttle).
  * `auth`/`permission`/`notFound` propagate, failing the scan exactly as before.
  *
+ * The result is keyed by stable id and each folder is walked once, so neither a
+ * repeated file nor a repeated folder can reach the cache (see the body).
+ *
  * `sleepFn` is injectable so tests run instantly.
  */
 export async function listAllFiles(
 	listFiles: (folderId: string, pageToken?: string) => Promise<GoogleDriveFileList>,
 	rootFolderId: string,
-	sleepFn: (ms: number) => Promise<void> = defaultSleep,
+	opts: { sleepFn?: (ms: number) => Promise<void>; logger?: Logger } = {},
 ): Promise<GoogleDriveFile[]> {
-	const allFiles: GoogleDriveFile[] = [];
+	const { sleepFn = defaultSleep, logger } = opts;
+	// Keyed by stable id, not a flat array: one file can be returned by two folder
+	// listings (a legacy multi-parent file whose parents are both in scope), and a
+	// single folder's pages are not a point-in-time snapshot. A repeat would otherwise
+	// reach `MetadataCache.bulkLoad()`, whose one-id-one-path guard fails the whole
+	// scan as corrupt metadata. Last occurrence wins; `Map` keeps the first insertion
+	// position, so the parent-before-child order `incremental-sync.ts` relies on holds.
+	const byId = new Map<string, GoogleDriveFile>();
+	// Unlike OneDrive's delta feed, Drive does not document repeats — a collapse here
+	// means something unexpected, so warn (the level a vault owner actually sees) and
+	// name a bounded sample of the ids, or the report is not actionable.
+	const repeated: string[] = [];
+	// LIST_PAGE_CAP below bounds the pages of ONE folder, not the walk itself. Without
+	// this, a parent cycle would grow `tasks` forever, and a multi-parent folder would
+	// re-walk its whole subtree. Drive rejects moving a folder into its own descendant,
+	// but nothing here should depend on that staying true.
+	const visited = new Set<string>();
 	const pool = new AdaptivePool({ min: 1, start: 3, max: 8, rampAfter: 8 });
 	const tasks: Promise<void>[] = [];
 	// Capture each task's rejection so a failing folder can't leave a sibling task's
@@ -59,6 +82,8 @@ export async function listAllFiles(
 	};
 
 	const enqueueFolder = (folderId: string): void => {
+		if (visited.has(folderId)) return;
+		visited.add(folderId);
 		const task = pool.run(async () => {
 			let pageToken: string | undefined;
 			// Bound the pagination drain: a server that never clears nextPageToken
@@ -68,7 +93,8 @@ export async function listAllFiles(
 			for (let guard = 0; guard < LIST_PAGE_CAP; guard++) {
 				const result = await listPage(folderId, pageToken);
 				for (const file of result.files) {
-					allFiles.push(file);
+					if (byId.has(file.id)) repeated.push(file.id);
+					byId.set(file.id, file);
 					if (file.mimeType === FOLDER_MIME) {
 						enqueueFolder(file.id);
 					}
@@ -96,5 +122,12 @@ export async function listAllFiles(
 	for (let i = 0; i < tasks.length; i++) await tasks[i];
 	if (failed) throw firstError;
 
-	return allFiles;
+	if (repeated.length > 0) {
+		logger?.warn("Full scan listing returned repeated ids", {
+			collapsed: repeated.length,
+			kept: byId.size,
+			ids: repeated.slice(0, REPEATED_ID_SAMPLE),
+		});
+	}
+	return [...byId.values()];
 }

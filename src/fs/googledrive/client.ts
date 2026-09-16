@@ -177,6 +177,7 @@ export class GoogleDriveClient {
 		return listAllFilesRecursive(
 			(folderId, pageToken) => this.listFiles(folderId, pageToken),
 			rootFolderId,
+			{ logger: this.logger },
 		);
 	}
 

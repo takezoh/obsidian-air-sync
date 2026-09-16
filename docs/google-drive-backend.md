@@ -116,6 +116,24 @@ Key methods:
 
 `listAllFiles()` is the cold/initial enumeration: it walks the folder tree one `files.list` per folder (the `drive.file` scope can't flat-list the whole drive), reached on a first sync / rescan / 410 cursor-expiry full-scan — plus one scoped exception on the incremental path: the entered-folder re-listing described under [Cache invalidation](#cache-invalidation). A steady-state delta with no entering folder issues no walk. It runs on an **`AdaptivePool`** (AIMD): it starts at concurrency **3** (the historical fixed value ⇒ no change at t=0), ramps **+1 every 8** cleanly-listed folders up to **8**, and **halves** (floor 1) on a rate-limit. Each page (`listFiles`) is wrapped in a bounded retry (`MAX_LIST_RETRIES = 3`) via `classifyGoogleDriveError` + `decideRetry`/`sleep`: a `rateLimit` (incl. Google's 403-means-rate-limit) or `transient` error is retried honoring `Retry-After`, and on a rate-limit the pool is signalled (`noteRateLimit`) **before** the backoff sleep so its ceiling drops immediately while the task holds its slot (a natural throttle). `auth`/`permission`/`notFound` propagate, failing the scan exactly as before. This lets a folder-heavy vault's initial enumeration discover the sustainable rate instead of a fixed 3. The recursive walk lives in `list-all.ts` as a free function (`client.listAllFiles` is a thin delegate), so it is testable in isolation; its `sleepFn` is injectable for fast deterministic tests. (Mirrors the sync engine's transfer-phase `AdaptivePool` + `withIoRetry`; the AIMD primitive is shared in `queue/`, and the classification + `decideRetry` policy in `fs/errors.ts`.)
 
+#### One entry per id, one walk per folder
+
+The walk accumulates into a `Map` keyed by stable file id (last occurrence wins) and
+skips a folder it has already enqueued. Both guard the same downstream contract:
+`MetadataCache.bulkLoad()` deliberately rejects a duplicate stable id — one id maps to
+exactly one path — so a repeat would fail the entire scan as corrupt metadata, and the
+plain `Error` classifies as `transient`, burning three full enumerations before giving
+up. A repeat is reachable two ways: a legacy multi-parent file whose parents are both
+inside the synced root is returned by both listings, and a single folder's pages are not
+a point-in-time snapshot. The per-folder guard additionally stops a multi-parent *folder*
+from re-walking its whole subtree, and bounds the walk itself — `LIST_PAGE_CAP` caps the
+pages of one folder, not the traversal, so without it a parent cycle would enqueue
+forever. Drive rejects moving a folder into its own descendant, but nothing here depends
+on that staying true. `Map` preserves the first insertion position when it overwrites, so
+the parent-before-child order the entered-folder re-listing relies on still holds. Unlike
+OneDrive — where Graph documents repeats and collapsing them is the normal case — Drive
+does not, so an actual collapse is logged at `warn` with a bounded sample of the ids.
+
 ### Transport-level 401 retry
 
 `request()` injects `Authorization: Bearer <token>` and, on a 401 from the first attempt only, forces a token refresh via `getToken(true)` and retries the request exactly once (guarded by the `retried` flag). Every Google Drive error is re-thrown as `Error("Google Drive API <operation> failed: <msg>")` that copies `status`, `headers`, and `json` from the original, so `classifyGoogleDriveError()` (status/headers via `classifyHttpError`, plus the `error.json` rate-limit reasons) can classify it -- and so upstream 410 (changes-token-expired) handling can read them.
