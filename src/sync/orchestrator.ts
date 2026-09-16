@@ -14,8 +14,8 @@ import { classifyHttpError } from "../fs/errors";
 import { decideRetry, sleep } from "./error";
 import type { ConflictRecord, ConflictStrategy, SyncStatus } from "./types";
 import { CycleSummary, type SyncCycleOutcome, type SyncCycleResult } from "./sync-notification";
+import { logChangeDetection } from "./sync-cycle-diagnostics";
 import {
-	logChangeDetection,
 	logSyncCyclePlan,
 	prepareSyncCycleSnapshotForExecution,
 } from "./sync-cycle-planning";

@@ -44,6 +44,13 @@ const CURSOR_META_KEY = "changesStartPageToken";
 const SCOPE_FINGERPRINT_META_KEY = "scopeFingerprint";
 
 /**
+ * How many cached paths a completed full scan lists at debug level. Enough to
+ * identify a missing file in an ordinary vault without letting a large one turn
+ * a routine scan into an unbounded log write.
+ */
+const FULL_SCAN_PATH_LOG_CAP = 200;
+
+/**
  * Shared base for an id-addressed remote backend with an incremental delta cursor
  * and a crash-safe, co-located metadata checkpoint (ADR 0001).
  *
@@ -199,16 +206,20 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 
 		this.initialized = true;
 		this.logger?.info("Full scan completed", { fileCount: this.cache.size });
-		// "Full scan completed" only ever logged the count. Every downstream
-		// diagnostic (Excluded paths, Unresolved observations) has since come back
-		// empty while this count still exceeds what change detection ever sees,
-		// meaning whatever the gap is happens between this cache and there. Log the
-		// exact cached paths (not just how many) so that gap is a direct answer
-		// instead of another layer to add a diagnostic for. Capped, like the other
-		// path-listing diagnostics, so a large vault can't turn a routine full scan
-		// into an unbounded debug-log write on every cycle.
-		const allPaths = [...this.cache.entries()].map(([path]) => path);
-		this.logger?.debug("Full scan paths", { paths: allPaths.slice(0, 200), total: allPaths.length });
+		// "Full scan completed" only ever logged the count, which says whether this
+		// cache and change detection disagree but never where. Log the paths
+		// themselves so "why isn't this specific file syncing" is a direct answer
+		// rather than another layer to add a diagnostic for. Capped so a large vault
+		// can't turn a routine scan into an unbounded debug write, and built inside
+		// the level check so it costs nothing at all when logging is off.
+		if (this.logger?.enabled("debug")) {
+			const paths: string[] = [];
+			for (const [path] of this.cache.entries()) {
+				if (paths.length === FULL_SCAN_PATH_LOG_CAP) break;
+				paths.push(path);
+			}
+			this.logger.debug("Full scan paths", { paths, total: this.cache.size });
+		}
 	}
 
 	/**
