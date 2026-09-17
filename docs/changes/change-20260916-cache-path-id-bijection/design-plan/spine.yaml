@@ -1,0 +1,1100 @@
+artifact: design-plan-spine
+version: 2
+granularity_profile: algorithm-bound
+
+scope_expansion_signals:
+  - id: scope-signal-arbitration-module
+    kind: shared_boundary
+    target_ref: component-address-arbiter
+    witness: A new backend-agnostic module under src/fs/caching/ becomes the single decision point every derived-address writer reaches, so its rule binds Google Drive and OneDrive at once.
+    requirement_refs: [FR-ADDR-001, FR-ADDR-003, NFR-ADDR-002]
+    authority_refs:
+      - 'GitHub issue #90 ("The design must decide who owns address assignment, rather than adding a fourth local rule")'
+      - docs/design/design-remote-backend-implementation-contract.md
+  - id: scope-signal-delta-result-shape
+    kind: shared_boundary
+    target_ref: contract-absence-authority
+    witness: RemoteDelta, IncrementalChangesResult, IdDeltaResult and IncrementalCheckpoint.getChangedPaths all widen for all three families; 83fd2aa's enteredFolderIds is the precedent for per-call bookkeeping that is never persisted.
+    requirement_refs: [FR-ADDR-005, FR-ADDR-010, NFR-ADDR-001]
+    authority_refs:
+      - commit 83fd2aa
+      - AGENTS.md (cycle evidence never becomes another state owner)
+  - id: scope-signal-identity-rename-capability
+    kind: shared_boundary
+    target_ref: contract-identity-addressed-rename
+    witness: IFileSystem gains an optional identity-addressed rename capability and RenameAction gains an optional provider-identity input, because IFileSystem.rename (interface.ts:94) is path-addressed and the object to rename is by definition the one with no cache path.
+    requirement_refs: [FR-ADDR-008, FR-ADDR-007, NFR-ADDR-002]
+    authority_refs:
+      - /home/take/.dev-skills/design/issue90-cache-path-id-bijection/artifacts/owner-decision.md
+      - AGENTS.md ("Exact source/destination CAS is storage mechanism, not identity policy"; "Only provider-resolved metadata, or the successful endpoint of an explicit provider rename, may change cached topology")
+  - id: scope-signal-contention-admission-stage
+    kind: shared_boundary
+    target_ref: component-contention-admission
+    witness: A new Admission stage under src/sync/ originates a rename_remote from current-cycle contention facts and sets the cycle's checkpoint block; plan-admission-case-alias.ts:105 and :157 are the existing precedent for Admission originating a rename_remote from current facts.
+    requirement_refs: [FR-ADDR-008, FR-ADDR-009]
+    authority_refs:
+      - /home/take/.dev-skills/design/issue90-cache-path-id-bijection/artifacts/owner-decision.md
+      - AGENTS.md (two durable publication points; no new action kind, DAG or recovery queue)
+  - id: scope-signal-sync-boundary-contested-field
+    kind: shared_boundary
+    target_ref: component-contention-signal
+    witness: A per-cycle contended count is threaded from the caching filesystem through remote-change-source.ts, change-detector.ts, orchestrator.ts and sync-notification.ts to main.ts's status bar, because enableLogging (settings.ts:74) and showSyncNotifications (settings.ts:73) are both false by default and the status bar is the only unconditional per-cycle surface.
+    requirement_refs: [FR-ADDR-011]
+    authority_refs:
+      - /home/take/.dev-skills/design/issue90-cache-path-id-bijection/artifacts/integrator-addendum.md (unknown-user-visible-signal promoted from unknown to requirement)
+      - src/sync/remote-change-source.ts (the existing onIdentityEvidence callback this reuses)
+  - id: scope-signal-harness-collision-script
+    kind: critic_induced_contract
+    target_ref: contract-enumeration-uniqueness-conformance
+    witness: CachingRemoteFsHarness gains a collision-staging seam and the central matrix obliges every family to supply either a script or a cited non-producibility, while two families' cells rest on unsettled unknowns.
+    requirement_refs: [FR-ADDR-012]
+    authority_refs:
+      - docs/issue/issue-20260916-no-shared-contract-pins-enumeration.md
+      - AGENTS.md ("Extend a registry fixture only when the backend needs backend-specific construction data")
+
+requirements:
+  - id: FR-ADDR-001
+    type: functional
+    priority: must
+    statement: >-
+      THE shared metadata cache SHALL decide which cache path an object receives, whenever that
+      path is one the cache composed itself from a provider name and a parent chain, through a
+      single arbitration owner; no other writer SHALL decide a contended derived address on its
+      own authority.
+  - id: FR-ADDR-002
+    type: invariant
+    priority: must
+    statement: >-
+      THE shared metadata cache SHALL, after every mutation on both the full-scan and the
+      incremental-delta route, hold at most one stable backend id at each cache path and at most
+      one cache path for each stable backend id, with no stable id left mapped to a path that no
+      longer holds it.
+  - id: FR-ADDR-003
+    type: invariant
+    priority: must
+    statement: >-
+      WHEN two or more distinct stable ids claim one derived cache path within one evidence unit,
+      THE cache contents and the announced facts at the close of that unit SHALL be identical for
+      every permutation of the unit's claims, including the permutations in which a claimant's
+      children are applied before that claimant has lost and in which the losing claimant is
+      applied first.
+  - id: FR-ADDR-004
+    type: invariant
+    priority: must
+    statement: >-
+      AT the close of an evidence unit, no entry whose resolved parent chain passes through a
+      displaced claimant SHALL be cached, listed, stat-able or announced under the winning
+      claimant's path; such entries SHALL be reported as displaced alongside their claimant.
+  - id: FR-ADDR-005
+    type: functional
+    priority: must
+    statement: >-
+      WHEN any cache writer removes or withholds a live occupant, a live claimant, or any of their
+      descendants because another stable id holds that cache path, THE cache SHALL name the
+      contended path, the admitted id, the withheld id, every displaced descendant path and the
+      reason in the value returned by the call that caused it, and SHALL emit one warn-level log
+      for that contended address.
+  - id: FR-ADDR-006
+    type: invariant
+    priority: must
+    statement: >-
+      A contention observed part-way through an evidence unit SHALL NOT be final: it SHALL be
+      settled against the facts held at the close of the complete unit, so that a tombstone for the
+      admitted id arriving later in the same unit readmits the withheld claimant; and nothing about
+      that settlement SHALL survive the unit.
+  - id: FR-ADDR-007
+    type: invariant
+    priority: must
+    statement: >-
+      EVERY object that existed on the provider before a contention was observed SHALL still exist
+      on the provider afterwards and SHALL be reachable in the vault once synced, unless the user
+      deleted it; NO object SHALL be deleted, emptied, truncated or made permanently unreachable in
+      order to free a cache address, on any route, including every failure path of the remediation.
+  - id: FR-ADDR-008
+    type: functional
+    priority: must
+    statement: >-
+      WHEN two claims that are both provider-resolved contend for one cache address, THE plugin
+      SHALL rename on the provider the claimant that is not to keep that address, to the address
+      produced by the existing conflict-suffix convention with a discriminator derived from that
+      claimant's own stable id, as an action of the existing rename_remote kind authorized by
+      Admission from current-cycle facts; WHERE a contending claim is not provider-resolved, NO
+      rename SHALL be performed for it.
+  - id: FR-ADDR-009
+    type: invariant
+    priority: must
+    statement: >-
+      WHEN a cycle observes a contention for which a remediation is owed, THAT cycle SHALL be
+      checkpoint-blocked: the remote cursor SHALL NOT advance, the derived cache SHALL NOT be
+      committed, and the working view SHALL be aborted, so the next cycle re-derives the same
+      evidence unit from the last committed checkpoint.
+  - id: FR-ADDR-010
+    type: invariant
+    priority: must
+    statement: >-
+      THE remote delta SHALL NOT report as deleted any path whose absence is attributable to a
+      displacement decided within the same evidence unit; a path whose object the provider really
+      removed, and a path whose parent left the tracked root, SHALL continue to be reported as
+      deleted.
+  - id: FR-ADDR-011
+    type: functional
+    priority: must
+    statement: >-
+      WHEN a sync cycle observes at least one contended cache address, THE plugin SHALL surface, as
+      a non-error fact distinct from the error count, how many addresses were contended, through a
+      surface visible to a user who has changed no settings; and the contended paths with both
+      stable ids SHALL be recoverable from the log without reproducing the failure.
+  - id: FR-ADDR-012
+    type: functional
+    priority: must
+    statement: >-
+      A shared contract case SHALL pin "two distinct stable ids resolving to one cache path" at the
+      public filesystem boundary for every registered caching family, in both provider orderings,
+      asserting the survival of both objects rather than merely a stable winner; and the central
+      required-contract matrix SHALL oblige each family to supply either a collision-producing
+      harness script or a cited non-producibility.
+  - id: FR-ADDR-013
+    type: functional
+    priority: must
+    statement: >-
+      THE address arbitration SHALL NOT throw for a contended cache path, and every uncontested
+      path SHALL continue to sync in the cycle that observes a contention, including the cycles in
+      which the checkpoint is blocked.
+  - id: NFR-ADDR-001
+    type: non_functional
+    priority: must
+    statement: >-
+      THIS change SHALL NOT persist a collision record, chosen-address table, disposition, failure
+      reason, repair queue or recovery marker; SHALL NOT add a persistent store or a retained
+      in-memory correctness owner; SHALL NOT add an instance field to AbstractMetadataCache; SHALL
+      NOT bump METADATA_CACHE_VERSION or change the FileRecord shape; SHALL NOT add a
+      SyncActionType, a DAG or a recovery queue; and SHALL leave sync-state-ownership-guard.test.mjs
+      and sync-admission-authority-guard.test.mjs green with no fixture edits.
+  - id: NFR-ADDR-002
+    type: non_functional
+    priority: must
+    statement: >-
+      THE backend-agnostic base SHALL contain no provider-specific branch, predicate or capability
+      hook, and AbstractMetadataCache SHALL issue no provider request and hold no client; the
+      identity-addressed rename SHALL be an optional filesystem capability in the shape the
+      codebase already uses for checkpoint, never a predicate on backend identity.
+  - id: NFR-ADDR-003
+    type: non_functional
+    priority: must
+    statement: >-
+      NO address the cache computed itself SHALL be stored as actual_resolved or reach
+      exportRecords or the durable checkpoint as provider-resolved topology; in particular the
+      disambiguated address SHALL NOT be written to the cache in advance of the rename, and becomes
+      a cache address only when the provider reports the renamed object.
+  - id: NFR-ADDR-004
+    type: non_functional
+    priority: must
+    statement: >-
+      RESOLVING a contention SHALL cost zero additional provider read requests on either route; the
+      only provider mutation introduced SHALL be one rename per contended address per cycle, issued
+      from the execution phase as an admitted action and never from the cache or from a drain.
+  - id: NFR-ADDR-005
+    type: non_functional
+    priority: must
+    statement: >-
+      NO part of this change SHALL reference Logger.enabled or src/sync/sync-cycle-diagnostics.ts,
+      neither of which is on main (commit 50c02c2 is not an ancestor of HEAD 60e85b0).
+
+components:
+  - id: component-address-arbiter
+    kind: planned
+    contract_refs: [contract-derived-address-arbitration]
+    paths:
+      - src/fs/caching/address-arbitration.ts
+      - src/fs/caching/address-arbitration.test.ts
+  - id: component-metadata-cache
+    kind: existing
+    contract_refs: [contract-claim-set-assignment, contract-derived-address-arbitration]
+    paths:
+      - src/fs/caching/metadata-cache.ts
+      - src/fs/caching/path-authority.ts
+  - id: component-delta-apply
+    kind: existing
+    contract_refs: [contract-drain-settlement]
+    paths:
+      - src/fs/caching/id-delta.ts
+  - id: component-caching-remote-fs
+    kind: existing
+    contract_refs: [contract-absence-authority]
+    paths:
+      - src/fs/caching/remote-fs.ts
+      - src/fs/interface.ts
+  - id: component-contention-admission
+    kind: planned
+    contract_refs: [contract-no-loss-remediation]
+    paths:
+      - src/sync/plan-admission-address-contention.ts
+      - src/sync/plan-admission-address-contention.test.ts
+  - id: component-provider-rename
+    kind: existing
+    contract_refs: [contract-identity-addressed-rename]
+    paths:
+      - src/sync/types.ts
+      - src/sync/plan-executor.ts
+      - src/fs/googledrive/index.ts
+  - id: component-contention-signal
+    kind: existing
+    contract_refs: [contract-contention-user-signal]
+    paths:
+      - src/sync/remote-change-source.ts
+      - src/sync/change-detector.ts
+      - src/sync/orchestrator.ts
+      - src/sync/sync-notification.ts
+      - src/main.ts
+  - id: component-shared-contract-conformance
+    kind: existing
+    contract_refs: [contract-enumeration-uniqueness-conformance]
+    paths:
+      - tests/fs/contracts/caching-remote-fs.contract.ts
+      - tests/fs/remote-backend-contracts.test.ts
+      - tests/fs/googledrive/caching-remote-fs.contract-harness.ts
+      - tests/fs/dropbox/caching-remote-fs.contract-harness.ts
+      - tests/fs/onedrive/caching-remote-fs.contract-harness.ts
+
+contracts:
+  - id: contract-derived-address-arbitration
+    dimension: data_model
+    owner: component-address-arbiter
+    requirement_refs: [FR-ADDR-001, FR-ADDR-003, FR-ADDR-013, NFR-ADDR-002]
+    unit_refs: [unit-1-address-arbiter, unit-2-claim-set-assignment]
+    adr_refs: [adr-cache-address-assignment-owner, adr-derived-vs-provider-keyed-address-domain]
+    verification:
+      - id: verify-arbitration-permutation-invariance
+        tier: T0
+        command: npm test -- src/fs/caching/address-arbitration.test.ts
+      - id: verify-authority-tier-precedes-lowest-id
+        tier: T0
+        command: npm test -- src/fs/caching/address-arbitration.test.ts
+      - id: verify-arbiter-pure-and-total
+        tier: T1
+        command: npm test -- src/fs/caching/address-arbitration.test.ts
+      - id: verify-no-backend-import-in-arbiter
+        tier: T1
+        command: npm run lint
+    partition:
+      outcomes: [determinate, conflicting, inconclusive]
+      default_policy: >-
+        Equal ids yield no_contest. Otherwise tier 1 (actual_resolved over requested_echo) then
+        tier 2 (lexicographically lowest stable id) admit exactly one claim and name the other;
+        inconclusive is unreachable because both claims are in hand at the decision point. The
+        function never throws and never leaves the address unoccupied. A requested_echo claim that
+        loses is additionally marked as owing no provider remediation, because it addresses an
+        object outside the bound sync root.
+    discretion:
+      - id: discretion-arbiter-outcome-spelling
+        unit_ref: unit-1-address-arbiter
+        question: >-
+          How the arbitration outcome is spelled as a TypeScript type — a discriminated union, a
+          pair of flags plus a reason, or an enum with a side record.
+        scope:
+          files:
+            - src/fs/caching/address-arbitration.ts
+          component: component-address-arbiter
+          visibility: private
+        escalate_when:
+          - The spelling would require AbstractMetadataCache to learn a backend-specific fact or the TFile type parameter.
+          - The spelling cannot express no_contest, admit_incumbent and admit_claimant plus the owes-remediation fact without a default branch.
+          - The spelling forces a caller outside src/fs/caching/ to change.
+        constraints:
+          - The module stays pure, stateless, TFile-agnostic and free of any provider client or logger.
+        preserves:
+          invariant_refs: [FR-ADDR-003]
+        verification_refs: [verify-arbitration-permutation-invariance]
+        difficulty_inputs:
+          decision_reasoning: local_tradeoff
+          boundary_reach: private
+          context_scope: files
+          reversibility: trivial
+          verification_strength: discriminating
+          runtime_risk: normal
+          coupling: independent
+          grounding: evidenced
+  - id: contract-claim-set-assignment
+    dimension: state_lifecycle
+    owner: component-metadata-cache
+    requirement_refs: [FR-ADDR-001, FR-ADDR-002, FR-ADDR-003, FR-ADDR-004, FR-ADDR-005, FR-ADDR-013, NFR-ADDR-001, NFR-ADDR-003]
+    unit_refs: [unit-2-claim-set-assignment]
+    adr_refs: [adr-cache-address-assignment-owner, adr-derived-vs-provider-keyed-address-domain]
+    verification:
+      - id: verify-both-permutations-equal-contents
+        tier: T0
+        command: npm test -- src/fs/caching/metadata-cache.test.ts
+      - id: verify-setfile-returns-displacement
+        tier: T0
+        command: npm test -- src/fs/caching/metadata-cache.test.ts
+      - id: verify-bijection-after-every-mutation
+        tier: T0
+        command: npm test -- src/fs/caching/metadata-cache.test.ts
+      - id: verify-dropbox-pinned-tests-unmodified
+        tier: T1
+        command: npm test -- src/fs/dropbox/metadata-cache.test.ts
+    partition:
+      outcomes: [determinate, conflicting, unknown]
+      default_policy: >-
+        Claims are grouped by resolved path; a single claimant is written as today, a contended
+        path is arbitrated, and a claim whose resolved parent chain passes through a withheld
+        claimant is displaced transitively over the unit's complete claim set. Every claim is
+        either placed or named as displaced; none is dropped. unknown (a claim with no resolvable
+        path) is unreachable in buildFromFiles because the bare-name fallback is retained. No
+        disambiguated address is written here.
+    discretion:
+      - id: discretion-displacement-accumulator-threading
+        unit_ref: unit-2-claim-set-assignment
+        question: >-
+          How the displacement accumulator is threaded through setFile's private index helpers — an
+          out-parameter, a returned value folded by the caller, or a stack-local collector.
+        scope:
+          files:
+            - src/fs/caching/metadata-cache.ts
+          component: component-metadata-cache
+          visibility: private
+        escalate_when:
+          - The threading would require a new instance field on AbstractMetadataCache.
+          - Any displacement survives the call that produced it.
+          - The public signature of a method other than setFile, bulkLoad or buildFromFiles has to change.
+        constraints:
+          - No displacement may be readable by the cache itself as a later decision input.
+        preserves:
+          invariant_refs: [NFR-ADDR-001]
+          contract_refs: [contract-absence-authority]
+        verification_refs: [verify-setfile-returns-displacement]
+        difficulty_inputs:
+          decision_reasoning: local_tradeoff
+          boundary_reach: private
+          context_scope: files
+          reversibility: bounded
+          verification_strength: discriminating
+          runtime_risk: normal
+          coupling: coupled_within_unit
+          grounding: evidenced
+  - id: contract-drain-settlement
+    dimension: control_flow
+    owner: component-delta-apply
+    requirement_refs: [FR-ADDR-003, FR-ADDR-005, FR-ADDR-006, FR-ADDR-010, NFR-ADDR-001]
+    unit_refs: [unit-3-drain-settlement]
+    adr_refs: [adr-cache-address-assignment-owner]
+    verification:
+      - id: verify-folder-collision-names-children
+        tier: T0
+        command: npm test -- src/fs/caching/id-delta.test.ts
+      - id: verify-later-tombstone-readmits-claimant
+        tier: T0
+        command: npm test -- src/fs/caching/id-delta.test.ts
+      - id: verify-page-permutation-equal-result
+        tier: T0
+        command: npm test -- src/fs/caching/id-delta.test.ts
+      - id: verify-two-causes-of-null-separated
+        tier: T0
+        command: npm test -- src/fs/caching/id-delta.test.ts
+    partition:
+      outcomes: [determinate, conflicting, inconclusive]
+      default_policy: >-
+        Every entry is applied, withheld-then-settled, displaced or tombstoned and the result names
+        which. A later tombstone for the admitted id within the unit withdraws the contention
+        before publication. When applyFileChange returns null, the old path is reported deleted
+        unless the entry's resolved parent id is in this unit's displacement set, in which case it
+        is reported displaced; the out-of-root move is the inconclusive branch and stays a
+        deletion. Nothing accumulated survives the drain.
+    discretion:
+      - id: discretion-withheld-carrier-shape
+        unit_ref: unit-3-drain-settlement
+        question: >-
+          How withheld claimants and displacements are held inside IdDeltaResult for the duration
+          of one drain — maps keyed by contended path, flat lists re-filtered at settlement, or
+          ordered queues.
+        scope:
+          files:
+            - src/fs/caching/id-delta.ts
+          component: component-delta-apply
+          visibility: private
+        escalate_when:
+          - The chosen shape has to outlive the drain or be reachable from another cycle.
+          - Settlement order at drain end changes which claimant is admitted at a still-contended address.
+          - The shape needs a field on the cache or the filesystem rather than on the per-call result.
+        constraints:
+          - Must stay per-call bookkeeping in the same sense as enteredFolderIds (83fd2aa) — never persisted, never read by the cache.
+        preserves:
+          invariant_refs: [FR-ADDR-006, NFR-ADDR-001]
+        verification_refs: [verify-page-permutation-equal-result]
+        difficulty_inputs:
+          decision_reasoning: local_tradeoff
+          boundary_reach: private
+          context_scope: files
+          reversibility: bounded
+          verification_strength: discriminating
+          runtime_risk: normal
+          coupling: coupled_within_unit
+          grounding: evidenced
+  - id: contract-absence-authority
+    dimension: integration_contract
+    owner: component-caching-remote-fs
+    requirement_refs: [FR-ADDR-002, FR-ADDR-005, FR-ADDR-010, FR-ADDR-013, NFR-ADDR-001]
+    unit_refs: [unit-4-absence-authority]
+    adr_refs: [adr-cache-address-assignment-owner]
+    verification:
+      - id: verify-snapshot-fixture-empty-deleted
+        tier: T0
+        command: npm test -- src/fs/caching/remote-fs.contract.test.ts
+      - id: verify-genuine-deletion-still-reported
+        tier: T0
+        command: npm test -- src/fs/caching/remote-fs.contract.test.ts
+      - id: verify-cursor-expiry-excludes-displaced
+        tier: T0
+        command: npm test -- src/fs/caching/remote-fs.contract.test.ts
+      - id: verify-no-absence-decided-under-src-sync
+        tier: T1
+        command: npm run lint && npm run build
+    partition:
+      outcomes: [determinate, unknown, inconclusive]
+      default_policy: >-
+        Every changed path is classified modified, deleted, renamed or displaced at exactly one of
+        the three producers (remote-fs.ts:374-387, remote-fs.ts:429-431, id-delta.ts's
+        oldPath-and-no-newPath branch). A path whose absence is attributable to a displacement
+        decided in this unit is excluded from deleted at all three; an absence whose cause cannot
+        be attributed is classified exactly as main does today, which never upgrades and never
+        suppresses it.
+  - id: contract-no-loss-remediation
+    dimension: failure_recovery
+    owner: component-contention-admission
+    requirement_refs: [FR-ADDR-007, FR-ADDR-008, FR-ADDR-009, FR-ADDR-011, FR-ADDR-013, NFR-ADDR-001, NFR-ADDR-003, NFR-ADDR-004]
+    unit_refs: [unit-6-contention-remediation]
+    adr_refs: [adr-upstream-rename-remedy, adr-rename-target-and-discriminator]
+    verification:
+      - id: verify-keeper-and-target-order-independent
+        tier: T0
+        command: npm test -- src/sync/plan-admission-address-contention.test.ts
+      - id: verify-remediation-plan-partition
+        tier: T0
+        command: npm test -- src/sync/plan-admission-address-contention.test.ts
+      - id: verify-failed-rename-leaves-cursor-uncommitted
+        tier: T0
+        command: npm test -- src/sync/orchestrator.test.ts
+      - id: verify-two-cycle-both-objects-present
+        tier: T1
+        command: npm test -- tests/fs/remote-backend-contracts.test.ts
+    partition:
+      outcomes: [determinate, conflicting, unknown]
+      default_policy: >-
+        A contention is remediable only when both claims are provider-resolved and the filesystem
+        offers the identity-addressed rename capability. The keeper is the claimant holding a
+        committed SyncRecord at the contended path, else the claimant the arbiter admitted; the
+        other is renamed to insertConflictSuffix(path, "id-" + its stable id). When a remediation
+        is owed the cycle is checkpoint-blocked, so no cursor advances past a withheld claimant.
+        unknown (capability absent) is treated as not remediable: nothing is done to the provider,
+        the contention is announced, and the checkpoint is not blocked because no cycle could do
+        anything differently.
+  - id: contract-identity-addressed-rename
+    dimension: integration_contract
+    owner: component-provider-rename
+    requirement_refs: [FR-ADDR-007, FR-ADDR-008, NFR-ADDR-002, NFR-ADDR-004]
+    unit_refs: [unit-5-identity-addressed-rename]
+    adr_refs: [adr-upstream-rename-remedy, adr-rename-target-and-discriminator]
+    verification:
+      - id: verify-executor-renames-by-provider-identity
+        tier: T0
+        command: npm test -- src/sync/plan-executor.test.ts
+      - id: verify-remote-only-rename-no-longer-throws
+        tier: T0
+        command: npm test -- src/sync/plan-executor.test.ts
+      - id: verify-backend-without-capability-gets-no-action
+        tier: T1
+        command: npm test -- src/sync/plan-admission-address-contention.test.ts
+      - id: verify-live-drive-identity-rename
+        tier: T2
+        command: npm run test:e2e:google
+    partition:
+      outcomes: [determinate, unknown, inconclusive]
+      default_policy: >-
+        With a provider identity supplied the executor renames by identity and never by path, and
+        publishes no SyncRecord (RecordPublication already excludes rename_remote). Without the
+        capability no such action is produced at all; there is no silent path-addressed fallback,
+        because that would rename the keeper. The cache is updated only from the rename's
+        successful endpoint, with provider authority.
+  - id: contract-contention-user-signal
+    dimension: user_observability
+    owner: component-contention-signal
+    requirement_refs: [FR-ADDR-011, NFR-ADDR-005]
+    unit_refs: [unit-7-contention-signal]
+    adr_refs: [adr-upstream-rename-remedy]
+    verification:
+      - id: verify-one-warn-per-contended-address
+        tier: T0
+        command: npm test -- src/fs/caching/metadata-cache.test.ts
+      - id: verify-count-distinct-from-error-count
+        tier: T0
+        command: npm test -- src/sync/sync-notification.test.ts
+      - id: verify-default-settings-status-bar-states-count
+        tier: T0
+        command: npm test -- src/sync/orchestrator.test.ts
+      - id: verify-no-unmerged-symbol-referenced
+        tier: T1
+        command: npm run build
+    partition:
+      outcomes: [determinate, unknown]
+      default_policy: >-
+        A cycle that observes n contended addresses states n, as a non-error fact, in the warn log
+        (path and both ids), in the cycle summary and in the status bar; emission is a function of
+        contended addresses, never of descendant count. unknown is the cycle that produced no delta
+        at all, where nothing is stated. Silence occurs only when the cycle observed nothing.
+    discretion:
+      - id: discretion-contended-summary-wording
+        unit_ref: unit-7-contention-signal
+        question: >-
+          What exact noun and phrasing the cycle summary and status bar use for contended
+          addresses, and where the clause sits relative to errors and blocked.
+        scope:
+          files:
+            - src/sync/sync-notification.ts
+          component: component-contention-signal
+          visibility: private
+        escalate_when:
+          - The wording implies the objects were deleted or that the user lost data.
+          - Conveying it needs a Notice, a modal or a new setting rather than the existing summary line and status bar.
+          - The count has to be derived from anything other than the cycle's own contention report.
+        constraints:
+          - Follow the existing counts-only idiom of buildNotificationMessage; path and id detail belongs in the log.
+        preserves:
+          contract_refs: [contract-contention-user-signal]
+        verification_refs: [verify-count-distinct-from-error-count]
+        difficulty_inputs:
+          decision_reasoning: local_tradeoff
+          boundary_reach: private
+          context_scope: files
+          reversibility: trivial
+          verification_strength: mechanical_partial
+          runtime_risk: normal
+          coupling: independent
+          grounding: evidenced
+  - id: contract-enumeration-uniqueness-conformance
+    dimension: integration_contract
+    owner: component-shared-contract-conformance
+    requirement_refs: [FR-ADDR-012, FR-ADDR-002, FR-ADDR-003, FR-ADDR-004, FR-ADDR-007]
+    unit_refs: [unit-8-shared-contract-conformance]
+    adr_refs: [adr-cache-address-assignment-owner, adr-upstream-rename-remedy]
+    verification:
+      - id: verify-two-ids-one-path-both-orderings
+        tier: T0
+        command: npm test -- tests/fs/remote-backend-contracts.test.ts
+      - id: verify-both-objects-survive-the-repair
+        tier: T0
+        command: npm test -- tests/fs/remote-backend-contracts.test.ts
+      - id: verify-matrix-requires-script-or-citation
+        tier: T1
+        command: npm run build
+      - id: verify-live-onedrive-shape
+        tier: T2
+        command: npm run test:e2e:onedrive
+    partition:
+      outcomes: [determinate, unknown, inconclusive]
+      default_policy: >-
+        Every family supplies either a collision-producing harness script or a cited
+        non-producibility naming the reason or the unsettled unknown; a missing cell stays a
+        compile error through the existing satisfies at remote-backend-contracts.test.ts:23-42, and
+        a declared gap carries its citation rather than silence.
+
+adrs:
+  - id: adr-cache-address-assignment-owner
+    status: proposed
+    decision_input_refs:
+      - decision-input-address-owner-location
+      - decision-input-bulkload-as-choke-point
+      - decision-input-inverted-keying
+      - decision-input-winner-rule-stable-fact
+      - decision-input-single-upsert-distinguishability
+      - decision-input-orphan-fallback-removal
+      - decision-input-resolver-guessing-asymmetry
+      - decision-input-rewritechildpaths-inclusion
+      - decision-input-rewritechildpaths-occupant-guard
+      - decision-input-throw-on-collision
+      - decision-input-cold-warm-hot-sameness
+      - decision-input-commit-last-adr0001
+      - decision-input-no-migration-cold-start
+      - decision-input-shared-contract-shape
+      - decision-input-shared-harness-capability
+  - id: adr-derived-vs-provider-keyed-address-domain
+    status: proposed
+    decision_input_refs:
+      - decision-input-dropbox-replacement-policy
+      - decision-input-onedrive-duplicate-names
+      - decision-input-provider-liveness-probe
+  - id: adr-upstream-rename-remedy
+    status: accepted
+    decision_input_refs:
+      - decision-input-remedy-tiebreak-vs-rewrite
+      - decision-input-pr83-rewrite-shape
+      - decision-input-issue-doc-tiebreak-recommendation
+      - decision-input-pathauthority-enforcement-mechanism
+      - decision-input-pathauthority-enforceable-type
+      - decision-input-probe-cost
+      - decision-input-contested-signal-reach
+      - decision-input-diagnostics-seam-pr94
+  - id: adr-rename-target-and-discriminator
+    status: proposed
+    decision_input_refs:
+      - decision-input-rename-target-selection
+      - decision-input-rename-discriminator
+
+units:
+  - title: unit-1-address-arbiter
+    chunk: arbitration-owner
+    contract_refs: [contract-derived-address-arbitration]
+    files:
+      - src/fs/caching/address-arbitration.ts
+      - src/fs/caching/address-arbitration.test.ts
+    acceptance:
+      - The module exports one pure function over (contended path, incumbent claim, arriving claim) and holds no state, no client, no logger and no TFile type parameter.
+      - Tier 1 (actual_resolved over requested_echo) is applied before tier 2 (lexicographically lowest stable id); equal ids yield no_contest.
+      - Every permutation of a claim set of size 2 and 3 yields the same admitted id and the same displacement set.
+      - The outcome marks a losing requested_echo claim as owing no provider remediation, so the caller can tell an out-of-root guess from a genuine duplicate.
+      - The function never throws for any input, including empty-string ids and identical authorities.
+    objective: Make derived address assignment an explicit, total, pure function so order-independence comes from the rule rather than from the storage layout.
+    output_format: One new TypeScript module plus its unit test; no changes elsewhere.
+    tool_guidance: Drive permutations exhaustively over small claim sets rather than sampling, and assert on the returned decision object rather than on any cache state.
+    task_boundaries: Do not import AbstractMetadataCache, any backend type, any provider client, any logger, or any sync-state type; read PathAuthority only from the passed arguments.
+    decision_closure_reason: The comparator tiers, their order and the remediation-eligibility fact are fixed by the design; only the outcome type's private spelling remains discretionary.
+  - title: unit-2-claim-set-assignment
+    chunk: cache-single-owner
+    contract_refs: [contract-derived-address-arbitration, contract-claim-set-assignment]
+    files:
+      - src/fs/caching/metadata-cache.ts
+      - src/fs/caching/metadata-cache.test.ts
+      - src/fs/googledrive/metadata-cache.test.ts
+    depends_on: [unit-1-address-arbiter]
+    acceptance:
+      - buildFromFiles groups resolved claims by path, arbitrates every contended path, propagates the loss down resolved parent-id ancestry, and bulk-loads only survivors, returning the displacement facts.
+      - setFile's occupant branch returns the displacement it caused, naming the path, both ids and every removed descendant path, and is otherwise behaviourally unchanged.
+      - applyFileChange arbitrates before setFile when the resolved path is held by a different live id, and returns enough for its caller to record a withheld claimant.
+      - The nested-collision fixture (docs=d1{a.md,b.md} vs docs=d2{x.md}) yields identical list(), stat() and displacement sets in both permutations, including the order where the loser's child precedes its parent's loss.
+      - A legacy Drive multi-parent entry yields the same contents for both orders of its parents array.
+      - After any sequence of setFile/bulkLoad/buildFromFiles calls, every (path,id) in exportRecords satisfies getPathById(id) === path and idAt(path) === id, and snapshotPathsById().size === size.
+      - bulkLoad's duplicate-stable-id throw keeps exactly its current message and breadth and gains no path-duplication throw; resolveFilePathCached's bare-name fallback is unchanged and googledrive/metadata-cache.test.ts:410-421 stays green.
+      - googledrive/metadata-cache.test.ts:704-717, which pins the silent displacing behaviour, is updated to assert the announced outcome rather than left green.
+      - AbstractMetadataCache gains no instance field, and no displacement survives the call that produced it.
+    objective: Move the derived-address decision out of the cache's internal rules into the single owner, and make every loss a returned fact computed over the unit's whole claim set.
+    output_format: Modified cache module, the first unit test file that owns AbstractMetadataCache's invariants directly, and the updated Drive test.
+    tool_guidance: Build fixtures through the abstract class with a minimal in-test subclass; assert the bijection in both directions after every mutation, not only at the end; run each collision fixture in both permutations.
+    task_boundaries: Do not change the five index maps' shapes, exportRecords' row shape, the requested_echo re-key guard at :104-109, applyFileChange's actual_resolved label, or Dropbox's setEntry. Do not write any disambiguated address.
+    decision_closure_reason: Which writers delegate, what they must produce and how the cascade is computed are fixed; only the private accumulator threading remains discretionary.
+  - title: unit-3-drain-settlement
+    chunk: drain-settlement
+    contract_refs: [contract-drain-settlement]
+    files:
+      - src/fs/caching/id-delta.ts
+      - src/fs/caching/id-delta.test.ts
+    depends_on: [unit-2-claim-set-assignment]
+    acceptance:
+      - IdDeltaResult carries displacements and withheld claimants alongside changedPaths, renamedPaths, count and enteredFolderIds, never persisted and never read back by the cache.
+      - The measured folder fixture names the withheld id and both child paths instead of leaving changedPaths=["docs"] alone.
+      - A tombstone for the admitted id later in the same drain readmits the withheld claimant and withdraws the contention before publication.
+      - Settlement runs before the caller's relistTargets walk, so a folder admitted at settlement enters enteredFolderIds and is re-listed.
+      - The published result for a multiset of entries is equal across page permutations.
+      - applyFileChange returning null reports the old path as deleted for an out-of-root move and as displaced only when the entry's resolved parent id is in this unit's displacement set.
+    objective: Accumulate and settle contentions inside one drain, and stop the branch that manufactures absence from manufacturing it for a displacement.
+    output_format: Modified shared applier plus the first unit test for applyIdDeltaPage.
+    tool_guidance: Assert drain-result equality across page permutations of the same entry multiset, and use the recovery's exact measured fixtures so the before/after is comparable.
+    task_boundaries: Do not touch src/sync/**, do not persist anything, do not add a field to the cache or the filesystem, and do not reclassify the out-of-root move as a displacement.
+    decision_closure_reason: The settlement point, the phase order and the two-cause discriminator are fixed; only the private carrier shape remains discretionary.
+  - title: unit-4-absence-authority
+    chunk: absence-authority
+    contract_refs: [contract-absence-authority]
+    files:
+      - src/fs/caching/remote-fs.ts
+      - src/fs/interface.ts
+      - src/fs/caching/remote-fs.contract.test.ts
+    depends_on: [unit-3-drain-settlement]
+    acceptance:
+      - RemoteDelta and IncrementalChangesResult carry the unit's contention and displacement facts, and IncrementalCheckpoint.getChangedPaths widens accordingly.
+      - _applyIncrementalChanges' hasFile split and diffById's vanished-id sweep both exclude displaced ids, so the measured snapshot fixture yields an empty deleted for docs, docs/a.md and docs/b.md.
+      - fullScan hands buildFromFiles' returned facts to fullScanWithDelta and diffById, so the full-scan exclusion has a declared producer.
+      - Seeding a checkpoint with a bare-name-collapsed orphan and forcing a 410 leaves RemoteDelta.deleted without that orphan's old path.
+      - A genuine remote deletion still reaches deleted and still becomes checkpoint_deleted; no file under src/sync/ decides an absence.
+      - Everything stays inside cacheMutex.run; abortWorkingView and commitCheckpoint are unchanged.
+    objective: Give the three producers of `deleted` one attribution rule and a declared carrier on both routes.
+    output_format: Modified caching filesystem and interface, plus new contract-test cases.
+    tool_guidance: Enumerate all three producers in the test names so a future reader can see the set is complete; assert the cursor-expiry route explicitly, since it is the one measured to reach delete_local.
+    task_boundaries: Do not change cursor handling, do not advance or commit anything new, and do not add a provider request on either route.
+    decision_closure_reason: All three producers are named by line and their exclusion rule is fixed; only result-field naming remains local.
+  - title: unit-5-identity-addressed-rename
+    chunk: provider-rename
+    contract_refs: [contract-identity-addressed-rename]
+    files:
+      - src/fs/interface.ts
+      - src/fs/googledrive/index.ts
+      - src/sync/types.ts
+      - src/sync/plan-executor.ts
+    depends_on: [unit-4-absence-authority]
+    acceptance:
+      - IFileSystem gains an optional identity-addressed rename capability in the same shape as checkpoint; Google Drive implements it and no other backend does.
+      - RenameAction gains an optional provider-identity input; no SyncActionType is added.
+      - plan-executor renames by provider identity when one is supplied and never falls back to a path-addressed rename for that action shape.
+      - A remote-only namespace-repair rename, with no local counterpart and no baseline, no longer throws at plan-executor.ts:383-384 and publishes no SyncRecord.
+      - Descendants of a renamed folder are not remapped locally, because none are synced; they arrive through the next cycle's relist.
+      - Every existing rename_remote test stays green.
+    objective: Make it possible to rename a provider object the cache is deliberately not holding, without adding an action kind or a backend predicate.
+    output_format: One optional capability on the filesystem interface, its Drive implementation, one optional action field, and the executor branch.
+    tool_guidance: Assert that the keeper is untouched when the executor renames by identity — a path-addressed fallback would move the wrong object and the test must be able to catch it.
+    task_boundaries: Do not add a SyncActionType, a DAG or a recovery queue; do not implement the capability on Dropbox or OneDrive; do not write the target address into the cache before the provider reports it.
+    decision_closure_reason: The addressing mechanism, the capability shape and the executor's branch conditions are fixed by the design.
+  - title: unit-6-contention-remediation
+    chunk: contention-remediation
+    contract_refs: [contract-no-loss-remediation]
+    files:
+      - src/sync/plan-admission-address-contention.ts
+      - src/sync/plan-admission-address-contention.test.ts
+      - src/sync/orchestrator.ts
+    depends_on: [unit-4-absence-authority, unit-5-identity-addressed-rename]
+    acceptance:
+      - A contention is treated as remediable only when both claims are provider-resolved and the rename capability is present.
+      - The keeper is the claimant holding a committed SyncRecord at the contended path, else the claimant the arbiter admitted; the choice is identical for both orders of the claim pair and for COLD, WARM and HOT.
+      - The target address is insertConflictSuffix(contendedPath, "id-" + the renamed claimant's stable id), stable across two planning runs, and never matches directConflictCandidateHint's 64-hex preservation form.
+      - A remediable contention produces exactly one rename_remote action and sets the cycle's checkpoint block, so commitCheckpoint is not called and abortWorkingView is.
+      - An orphan-collapse contention produces no action, no provider mutation and no checkpoint block.
+      - A failed rename leaves the cursor at its previous value, and the next cycle re-observes the same contention and retries idempotently.
+      - Uncontested paths still sync in a cycle whose checkpoint is blocked.
+    objective: Repair the contention at its source through an admitted action, and prove nothing is lost on the success, failure, impossible and non-remediable paths.
+    output_format: One new Admission stage with its unit test, plus the orchestrator wiring that supplies the contention facts and sets the checkpoint block.
+    tool_guidance: Model the stage on plan-admission-case-alias.ts, which already originates a rename_remote from current-cycle facts; drive the keeper rule from a seeded SyncStateStore rather than from arrival order.
+    task_boundaries: Do not persist a contention, a disposition, a failure reason or a repair marker; do not add an action kind, a DAG or a recovery queue; do not add a consent prompt, setting or opt-out for the rename; do not rename a claimant whose authority is requested_echo.
+    decision_closure_reason: The keeper rule, the target address, the remediability test and the commit gate are fixed by adr-upstream-rename-remedy and adr-rename-target-and-discriminator; nothing material is left to the implementer.
+  - title: unit-7-contention-signal
+    chunk: user-signal
+    contract_refs: [contract-contention-user-signal]
+    files:
+      - src/sync/remote-change-source.ts
+      - src/sync/change-detector.ts
+      - src/sync/orchestrator.ts
+      - src/sync/sync-notification.ts
+      - src/main.ts
+    depends_on: [unit-6-contention-remediation]
+    acceptance:
+      - The contention facts reach the orchestrator through an optional callback on getRemoteChanges, in the same shape as the existing onIdentityEvidence, without adding a field to RemoteChanges, ChangeSet or sync-cycle-planning.ts.
+      - Each distinct contended address emits at most one logger.warn per cycle naming the path, both stable ids and the disposition; a 500-descendant displaced folder emits one line, not 501.
+      - With logger undefined the cache behaves identically and the cycle-level count still reaches the result.
+      - The cycle summary gains a contended clause distinct from the error count and not counted as an error.
+      - On default settings (enableLogging false, showSyncNotifications false) the status bar states the count, and its clause takes precedence over the generic partial-cycle text when there are no errors.
+      - Nothing references Logger.enabled or src/sync/sync-cycle-diagnostics.ts.
+    objective: Replace the silent case with a bounded, named signal that a user who changed no settings can actually see.
+    output_format: One optional callback threaded to the orchestrator, one field on SyncCycleOutcome, one summary clause and one status-bar clause.
+    tool_guidance: Use a counting logger double; assert emission counts under a 500-descendant displaced folder; assert the status bar text with DEFAULT_SETTINGS rather than a test-only settings object.
+    task_boundaries: Do not add a Notice, a modal or a new setting; do not derive the count from anything but the cycle's own contention report; do not make the count raise the error count or set an error status.
+    decision_closure_reason: The three surfaces, the bound on emission and the recurrence semantics are fixed; only the exact wording remains discretionary.
+  - title: unit-8-shared-contract-conformance
+    chunk: conformance
+    contract_refs: [contract-enumeration-uniqueness-conformance]
+    files:
+      - tests/fs/contracts/caching-remote-fs.contract.ts
+      - tests/fs/remote-backend-contracts.test.ts
+      - tests/fs/googledrive/caching-remote-fs.contract-harness.ts
+      - tests/fs/dropbox/caching-remote-fs.contract-harness.ts
+      - tests/fs/onedrive/caching-remote-fs.contract-harness.ts
+    depends_on: [unit-6-contention-remediation, unit-7-contention-signal]
+    acceptance:
+      - The shared caching contract gains cases for two ids at one path, the reverse ordering, a nested collision in both permutations, cold-versus-delta collision-outcome parity, no contested path deleted after a cursor expiry, survival of both objects after the repair, and no commit while a claimant is withheld.
+      - Every case asserts only through list, stat, listDir and the delta result, with no cache reference and no private-state inspection.
+      - CachingRemoteFsHarness gains one collision-staging seam; Google Drive supplies it, Dropbox records a cited non-producibility (path-keyed namespace, extractId is entry.id ?? entry.path_lower) and OneDrive records one citing unknown-onedrive-duplicate-names.
+      - The Drive-specific cases cover the /-in-name shape, orphan collapse asserting no provider mutation, and a legacy multi-parent entry with varied parents[].
+      - A missing matrix cell remains a compile error, and a declared gap carries its unsettled unknown id rather than silence.
+      - Each new assertion is load-bearing by a RED-first or mutation witness, and no existing shared case is weakened.
+    objective: Put the regression stop where it covers every caching family at once, in the terms the harnesses can actually observe, and pin survival rather than a stable winner.
+    output_format: Extended shared contract, one harness seam or cited gap per family, and the updated matrix.
+    tool_guidance: Seed through each family's own provider script so no fake is more generous than the real API; where a family cannot produce the shape, record the unsettled unknown id rather than a fabricated fixture.
+    task_boundaries: Do not add a production capability hook to the backend-agnostic base, do not hold a cache reference in a harness, and do not weaken any existing shared case.
+    decision_closure_reason: The case set, its observable vocabulary and the per-family obligation are fixed; only per-family script construction remains, and the two non-producing families are declared gaps rather than guesses.
+
+acceptance:
+  - id: AC-ADDR-001
+    criteria: After every mutation on both routes, one cache path maps to exactly one stable backend id, and getPathById, idAt and exportRecords agree in both directions with no stranded id.
+    requirement_refs: [FR-ADDR-001, FR-ADDR-002]
+  - id: AC-ADDR-002
+    criteria: The same two Drive siblings loaded (id1,id2) and (id2,id1) leave identical cache contents and identical announced facts, on the full-scan route and the delta route alike.
+    requirement_refs: [FR-ADDR-003]
+  - id: AC-ADDR-003
+    criteria: With a displaced folder, list() contains no path under the winner belonging to the loser's subtree and stat() on any such path returns null, in both permutations of the nested-collision fixture including the one where the loser's child is applied before its parent loses.
+    requirement_refs: [FR-ADDR-004, FR-ADDR-003]
+  - id: AC-ADDR-004
+    criteria: No cache writer removes or withholds a live occupant, claimant or subtree without a returned fact naming the path, the admitted id, the withheld id, the descendants and the reason, and one warn line per contended address.
+    requirement_refs: [FR-ADDR-005]
+  - id: AC-ADDR-005
+    criteria: A tombstone for the admitted id arriving later in the same drain readmits the withheld claimant and withdraws the contention before publication, and the drain result equals the reverse-page-order result.
+    requirement_refs: [FR-ADDR-006, FR-ADDR-003]
+  - id: AC-ADDR-006
+    criteria: After a contention is repaired, both objects exist on the provider and both are reachable in the vault — the keeper at the plain address and the other at insertConflictSuffix(path, "id-" + its stable id); and on the rename-failure, rename-impossible and orphan-collapse paths every object that existed before still exists on the provider afterwards.
+    requirement_refs: [FR-ADDR-007]
+  - id: AC-ADDR-007
+    criteria: Two provider-resolved claims at one address produce exactly one rename_remote action naming the non-keeper's provider identity and the conflict-suffixed target; a contention involving a requested_echo claim produces no provider mutation at all.
+    requirement_refs: [FR-ADDR-008]
+  - id: AC-ADDR-008
+    criteria: A cycle that owes a remediation does not call commitCheckpoint, does call abortWorkingView, leaves the remote cursor at its previous value, and is followed by a cycle that re-observes the same evidence unit.
+    requirement_refs: [FR-ADDR-009]
+  - id: AC-ADDR-009
+    criteria: For the measured snapshot fixture RemoteDelta.deleted contains none of docs, docs/a.md, docs/b.md and no checkpoint_deleted observation is produced for them; a folder moved outside the tracked root still names its paths in RemoteDelta.deleted; and after a forced 410 with a bare-name-collapsed orphan in the checkpoint that orphan's old path is absent from deleted.
+    requirement_refs: [FR-ADDR-010]
+  - id: AC-ADDR-010
+    criteria: A colliding cycle on DEFAULT_SETTINGS surfaces a non-error contended count in the status bar distinct from the error count, one warn line per contended address naming both ids, and no additional lines under a 500-descendant displaced folder.
+    requirement_refs: [FR-ADDR-011]
+  - id: AC-ADDR-011
+    criteria: The shared caching contract's two-ids-one-path and survival cases run for every registered family in both orderings or record a cited non-producibility, and the composition root still fails to compile on a missing cell.
+    requirement_refs: [FR-ADDR-012]
+  - id: AC-ADDR-012
+    criteria: Address arbitration never throws for a contended path, and in a cycle whose checkpoint is blocked every uncontested path still syncs and bulkLoad's duplicate-stable-id throw keeps its current message and breadth.
+    requirement_refs: [FR-ADDR-013]
+  - id: AC-ADDR-013
+    criteria: METADATA_CACHE_VERSION is unchanged at 4, FILES_STORE keeps keyPath "path", exportRecords keeps its row shape, no collision record, disposition, recovery marker, repair queue, persistent store or new cache instance field exists, no SyncActionType is added, and both AST guards stay green with no fixture edits.
+    requirement_refs: [NFR-ADDR-001]
+  - id: AC-ADDR-014
+    criteria: AbstractMetadataCache issues no provider request and carries no backend-specific branch or predicate, the identity-addressed rename is an optional capability implemented only by Google Drive, and resolving a contention adds zero provider read requests on either route with at most one rename per contended address per cycle.
+    requirement_refs: [NFR-ADDR-002, NFR-ADDR-004]
+  - id: AC-ADDR-015
+    criteria: No cache-computed address is stored as actual_resolved or exported as provider-resolved topology, the disambiguated address appears in the cache only after the provider reports the renamed object, and no source file references Logger.enabled or src/sync/sync-cycle-diagnostics.ts.
+    requirement_refs: [NFR-ADDR-003, NFR-ADDR-005]
+
+dispositions:
+  - decision_input_ref: decision-input-address-owner-location
+    disposition: >-
+      Adopted, scoped to derived addresses. The owner is a pure module reached from the base's
+      buildFromFiles claim-set pass and from applyFileChange — the two places the cache composes an
+      address from a provider name and a parent chain. Placement, not a runtime predicate, is what
+      keeps Dropbox's provider-keyed address out of its domain.
+    adr_refs: [adr-cache-address-assignment-owner, adr-derived-vs-provider-keyed-address-domain]
+    contract_refs: [contract-derived-address-arbitration, contract-claim-set-assignment]
+  - decision_input_ref: decision-input-bulkload-as-choke-point
+    disposition: >-
+      Rejected. DropboxMetadataCache.buildFromFiles (dropbox/metadata-cache.ts:147-154) overrides
+      the base and reaches setEntry then setFile directly, so Dropbox's full scan never passes
+      bulkLoad; and bulkLoad (metadata-cache.ts:155-173) has no address rule of its own — it
+      validates stable-id uniqueness and calls setFile in a loop. This is an independent reason PR
+      #83's placement could not have worked.
+    adr_refs: [adr-cache-address-assignment-owner]
+    contract_refs: [contract-claim-set-assignment]
+  - decision_input_ref: decision-input-inverted-keying
+    disposition: >-
+      Rejected on principle as well as cost. The destination is a real filesystem that cannot hold
+      two objects at one address, so the cache's path-keying mirrors it correctly; inverting it
+      would make the cache model something the destination cannot represent. The measured cost
+      (roughly 100 path-addressed call sites, three backends, the path-keyed children index, a
+      version bump forcing re-enumeration) stands and was independently re-verified. Its three
+      surviving findings — explicit ownership, a set-based rather than arrival-based rule, and
+      displacement as typed output — are in the design.
+    adr_refs: [adr-cache-address-assignment-owner]
+    contract_refs: [contract-derived-address-arbitration]
+  - decision_input_ref: decision-input-winner-rule-stable-fact
+    disposition: >-
+      Closed as lexicographically lowest stable id, after the authority tier. Under the upstream
+      remedy both objects survive and both sync, so which claimant holds the plain address is not a
+      correctness property; determinism and order-independence are. Oldest creation timestamp is
+      better motivated but needs a new per-backend seam that does not exist uniformly across the
+      three families, which is variability bought for no observable gain.
+    adr_refs: [adr-cache-address-assignment-owner]
+    contract_refs: [contract-derived-address-arbitration]
+  - decision_input_ref: decision-input-single-upsert-distinguishability
+    disposition: >-
+      Dissolved by the evidence unit rather than answered at the upsert. A single upsert need not
+      distinguish a genuine second object from a re-key: the contention is provisional until the
+      close of the unit, a later tombstone withdraws it, and PR #83's per-route fork — the thing
+      that made the routes reverse each other — is therefore unnecessary.
+    adr_refs: [adr-cache-address-assignment-owner]
+    contract_refs: [contract-drain-settlement]
+  - decision_input_ref: decision-input-orphan-fallback-removal
+    disposition: >-
+      Rejected. Making the full-scan resolver decline would leave the entry with no cache record
+      while it is still in the pre-scan snapshot, so diffById's sweep at remote-fs.ts:429-431 would
+      convert it into checkpoint_deleted and delete_local — a new instance of the harm this plan
+      removes — and it would break what googledrive/metadata-cache.test.ts:410-421 pins.
+    adr_refs: [adr-cache-address-assignment-owner]
+    contract_refs: [contract-claim-set-assignment, contract-absence-authority]
+  - decision_input_ref: decision-input-resolver-guessing-asymmetry
+    disposition: >-
+      Kept and demoted rather than aligned, and the asymmetry is given a second job. The bare-name
+      guess already carries requested_echo (path-authority.ts:26,30), so the arbiter's tier 1 makes
+      it lose in every listing order without either resolver changing; and the same fact identifies
+      the claimant as being outside the bound sync root, which is what makes it ineligible for a
+      provider rename.
+    adr_refs: [adr-cache-address-assignment-owner, adr-upstream-rename-remedy]
+    contract_refs: [contract-derived-address-arbitration, contract-no-loss-remediation]
+  - decision_input_ref: decision-input-rewritechildpaths-inclusion
+    disposition: >-
+      Rejected. rewriteChildPaths propagates an address already decided rather than assigning one,
+      and Correction 1 established that all five callers compensate for its missing occupant check
+      today. Including it would be structure without a witness. Any new caller inherits the
+      obligation the existing five discharge, and that obligation is recorded in the plan.
+    adr_refs: [adr-cache-address-assignment-owner]
+    contract_refs: [contract-claim-set-assignment]
+  - decision_input_ref: decision-input-rewritechildpaths-occupant-guard
+    disposition: >-
+      Subsumed into decision-input-rewritechildpaths-inclusion and resolved the same way. Draft-2
+      included it only for ownership closure rather than for a measured defect; with the owner
+      scoped to derived-address assignment, propagation is outside it and the existing guards stay
+      as defence-in-depth.
+    adr_refs: [adr-cache-address-assignment-owner]
+    contract_refs: [contract-claim-set-assignment]
+  - decision_input_ref: decision-input-throw-on-collision
+    disposition: >-
+      Rejected for path duplication. A deterministic throw classifies as transient (fs/errors.ts:104)
+      and burns MAX_RETRIES full enumerations, which is issue #88 verbatim. bulkLoad's existing
+      duplicate-stable-id throw keeps exactly its current message and breadth.
+    adr_refs: [adr-cache-address-assignment-owner]
+    contract_refs: [contract-claim-set-assignment]
+  - decision_input_ref: decision-input-cold-warm-hot-sameness
+    disposition: >-
+      Binding, and it eliminates the most tempting comparator tier. Incumbency drawn from the
+      committed checkpoint would make COLD and HOT decide differently for the same current facts,
+      so the cache's arbiter may not use it. The same rule permits the committed SyncRecord as an
+      Admission-level input, which is where the keeper choice legitimately reads it.
+    adr_refs: [adr-cache-address-assignment-owner, adr-rename-target-and-discriminator]
+    contract_refs: [contract-derived-address-arbitration, contract-no-loss-remediation]
+  - decision_input_ref: decision-input-commit-last-adr0001
+    disposition: >-
+      Retained without amendment. The cache stays a derived projection committed last; every
+      displacement is a return value inside one evidence unit and is never persisted. The new
+      checkpoint block tightens when the commit happens; it does not change who owns it.
+    adr_refs: [adr-cache-address-assignment-owner]
+    contract_refs: [contract-absence-authority, contract-no-loss-remediation]
+  - decision_input_ref: decision-input-no-migration-cold-start
+    disposition: >-
+      Binding, and moot for the chosen design. No schema change is made, METADATA_CACHE_VERSION
+      stays 4, FILES_STORE keeps keyPath "path", and no cold start is engaged. The rejected
+      byId-primary carrier would have engaged one, and that is recorded as part of its cost.
+    adr_refs: [adr-cache-address-assignment-owner, adr-upstream-rename-remedy]
+    contract_refs: [contract-claim-set-assignment]
+  - decision_input_ref: decision-input-shared-contract-shape
+    disposition: >-
+      Adopted and extended. The shared case asserts at the public filesystem boundary in both
+      provider orderings, and — because the remedy makes both objects survivable — it asserts the
+      survival of both rather than merely a stable winner. Cases for cold-versus-delta parity, the
+      cursor-expiry route and the no-commit-while-withheld rule are included because they are the
+      only ones that turn red for the measured defects.
+    adr_refs: [adr-cache-address-assignment-owner]
+    contract_refs: [contract-enumeration-uniqueness-conformance]
+  - decision_input_ref: decision-input-shared-harness-capability
+    disposition: >-
+      Adopted as test infrastructure only. The per-family seam and the cited-non-producibility
+      field live entirely under tests/fs/, which AGENTS.md already sanctions for backend-specific
+      construction data; no production capability hook is added to the backend-agnostic base, which
+      is the distinction from PR #83.
+    contract_refs: [contract-enumeration-uniqueness-conformance]
+  - decision_input_ref: decision-input-dropbox-replacement-policy
+    disposition: >-
+      Closed as a deliberate retention with its reason stated, not a silent exemption. Dropbox's
+      address is the provider key (extractId is entry.id ?? entry.path_lower), so a second id at
+      one address is provider topology rather than a contention; setEntry keeps its path-keyed
+      last-write-wins policy and Dropbox receives no production change. Draft-2's claim that
+      setEntry could inherit the arbiter and still preserve dropbox/metadata-cache.test.ts:92-98
+      and :100-116 is falsified by the source. No position is taken on
+      unknown-dropbox-folder-replacement-contract.
+    adr_refs: [adr-derived-vs-provider-keyed-address-domain]
+    contract_refs: [contract-claim-set-assignment, contract-enumeration-uniqueness-conformance]
+  - decision_input_ref: decision-input-onedrive-duplicate-names
+    disposition: >-
+      Carried as an unsettled unknown, with its consequence fixed in advance. OneDrive receives no
+      production change and its matrix cell is a cited non-producibility. If the unknown settles
+      positive, OneDrive implements the same optional rename capability and inherits every contract
+      here unchanged — nothing in the design is Drive-shaped except that capability's
+      implementation.
+    adr_refs: [adr-derived-vs-provider-keyed-address-domain]
+    contract_refs: [contract-identity-addressed-rename, contract-enumeration-uniqueness-conformance]
+  - decision_input_ref: decision-input-provider-liveness-probe
+    disposition: >-
+      Not adopted, and no longer needed. It was one of the two admissible carriers for the
+      cross-drain tombstone failure under a no-repair remedy; with the upstream rename and the
+      checkpoint gate, no withheld claimant survives a committed cursor advance, so there is
+      nothing to carry. It would also have cost a provider read per vacated address on every
+      deletion, and AbstractMetadataCache holds no client (RB-INV-001).
+    adr_refs: [adr-upstream-rename-remedy, adr-derived-vs-provider-keyed-address-domain]
+    contract_refs: [contract-no-loss-remediation]
+  - decision_input_ref: decision-input-remedy-tiebreak-vs-rewrite
+    disposition: >-
+      Closed by the repository owner during design, in favour of neither: the remedy is a
+      provider-side rename that removes the condition at its source. The bare tie-break and the
+      vault-local rewritten address are recorded as considered and rejected with their reasons. The
+      tie-break's machinery is not eliminated — arbitration still decides who keeps the plain
+      address, and announce-and-stall is the fallback when the repair cannot be performed.
+    adr_refs: [adr-upstream-rename-remedy]
+    contract_refs: [contract-no-loss-remediation, contract-derived-address-arbitration]
+  - decision_input_ref: decision-input-pr83-rewrite-shape
+    disposition: >-
+      Rejected, and the upstream rename is distinguished from it point by point. A vault-local
+      invented address is not re-derivable from a delta page's own facts, must be requested_echo,
+      and is snapped back by setFile's re-key guard at :104-109 — PR #83's measured reversal. The
+      upstream rename's new name exists on the provider, is reported by the delta with provider
+      authority, and is therefore re-derivable on both routes.
+    adr_refs: [adr-upstream-rename-remedy]
+    contract_refs: [contract-no-loss-remediation, contract-identity-addressed-rename]
+  - decision_input_ref: decision-input-issue-doc-tiebreak-recommendation
+    disposition: >-
+      Partly adopted, and superseded as the primary path. Its criterion — stop the listing-order
+      flip-flop — is met by the arbiter, and its pathAuthority-preferring preference is tier 1. Its
+      recommendation that the remedy stop there is superseded by the owner's decision to repair the
+      source.
+    adr_refs: [adr-upstream-rename-remedy, adr-cache-address-assignment-owner]
+    contract_refs: [contract-derived-address-arbitration]
+  - decision_input_ref: decision-input-pathauthority-enforcement-mechanism
+    disposition: >-
+      Deferred as a mechanism; retained as an obligation. NFR-ADDR-003 stands, and the design
+      strengthens it by never writing the disambiguated address before the provider reports it. No
+      main-today violation of the labels is constructible (path-authority.ts:26,30, pinned by
+      googledrive/metadata-cache.test.ts:410-421), so a branded type, a schema and an AST guard
+      would enforce a label that is not currently forgeable.
+    adr_refs: [adr-upstream-rename-remedy]
+    contract_refs: [contract-claim-set-assignment, contract-identity-addressed-rename]
+  - decision_input_ref: decision-input-pathauthority-enforceable-type
+    disposition: >-
+      Subsumed into decision-input-pathauthority-enforcement-mechanism and resolved the same way.
+      Draft-2 made the deferral conditional on the reserved remedy; the owner's decision removes the
+      condition, because the upstream rename creates no invented address inside the vault for
+      PathAuthority to arbitrate.
+    adr_refs: [adr-upstream-rename-remedy]
+    contract_refs: [contract-claim-set-assignment]
+  - decision_input_ref: decision-input-probe-cost
+    disposition: >-
+      Closed at zero. NFR-ADDR-004 fixes zero additional provider read requests on both routes; the
+      only provider mutation is one rename per contended address per cycle, issued from the
+      execution phase as an admitted action. Draft-1's bounded-probe clause is not needed because
+      no probe is built.
+    adr_refs: [adr-upstream-rename-remedy]
+    contract_refs: [contract-no-loss-remediation, contract-identity-addressed-rename]
+  - decision_input_ref: decision-input-contested-signal-reach
+    disposition: >-
+      Closed at three surfaces, after a verification that changes the answer both drafts assumed.
+      enableLogging is false by default (settings.ts:74) and showSyncNotifications is also false
+      (settings.ts:73, orchestrator.ts:230-233), so neither the warn log nor the cycle summary
+      reaches a default user; the status bar (main.ts:287-304) is the only unconditional per-cycle
+      surface and therefore carries the count. The log keeps the diagnostic detail and the summary
+      keeps the counts idiom.
+    adr_refs: [adr-upstream-rename-remedy]
+    contract_refs: [contract-contention-user-signal]
+  - decision_input_ref: decision-input-diagnostics-seam-pr94
+    disposition: >-
+      Not depended on. Logger.enabled and src/sync/sync-cycle-diagnostics.ts are not on main
+      (50c02c2 is not an ancestor of HEAD 60e85b0; src/logging/logger.ts has no enabled member and
+      the module does not exist), and the diagnostics module would live under src/sync/ where
+      src/fs/** does not import it. NFR-ADDR-005 pins the absence so no implementer reaches for a
+      symbol that is not there.
+    contract_refs: [contract-contention-user-signal]
+  - decision_input_ref: decision-input-rename-target-selection
+    disposition: >-
+      Closed as: the claimant that does not hold a committed SyncRecord at the contended path keeps
+      the suffixed name, and if neither holds one it is the claimant the arbiter did not admit. At
+      most one claimant can hold that record because records are path-keyed, so the choice is a
+      function of the unordered claim set plus committed state and is identical under COLD, WARM and
+      HOT. Renaming whichever claimant the cache withheld was rejected: it can rename a file the
+      user has been syncing for months to make room for a newly appeared duplicate.
+    adr_refs: [adr-rename-target-and-discriminator]
+    contract_refs: [contract-no-loss-remediation]
+  - decision_input_ref: decision-input-rename-discriminator
+    disposition: >-
+      Closed as "id-" plus the renamed claimant's stable id, passed to the existing
+      insertConflictSuffix (conflict.ts:60-67), which already accepts a string. It is the object's
+      own identity, so the target is a function of the unordered claim set and stable across
+      retries, making the rename idempotent; it needs no content fetch and is meaningful for a
+      folder; and it can never match directConflictCandidateHint's [0-9a-f]{64} preservation form,
+      so a disambiguated object is never acquired as a preserved version. A sequence number was
+      rejected because assignment among several losers depends on iteration order, which RB-CHK-003
+      forbids; the content SHA-256 was rejected because it requires fetching content the cycle has
+      not read and a folder has no content.
+    adr_refs: [adr-rename-target-and-discriminator]
+    contract_refs: [contract-no-loss-remediation]

@@ -1,0 +1,1489 @@
+artifact: design-plan-spine
+version: 2
+granularity_profile: spike-first
+
+scope_expansion_signals:
+  - id: scope-signal-fs-contract-widening
+    kind: shared_boundary
+    target_ref: contract-seam-carried-identity
+    witness: RenamePair is declared part of the IFileSystem contract (src/fs/types.ts:69-73) and appears in IncrementalCheckpoint.getChangedPaths, so adding a field binds all three backend families, every registered harness and every test double at once.
+    requirement_refs: [FR-RIK-001, FR-RIK-002, FR-RIK-011]
+    authority_refs:
+      - src/fs/types.ts:69-79
+      - src/fs/interface.ts:128-140
+      - AGENTS.md:44-50
+  - id: scope-signal-identity-uniqueness-persisted-constraint
+    kind: persistent_state
+    target_ref: contract-record-identity-uniqueness
+    witness: The durable authority's primary key changes. sync-records moves from keyPath "path" to keyPath "remoteIdentityKey" and sync-content moves with it, which re-expresses 17 production call sites and six mutating methods, collapses compareAndMove into compareAndPut, makes SyncRecord.remoteIdentityKey required, and makes an identity-less record unstorable. createIndex has zero occurrences in src/ and tests/ (measured), so the accompanying unique index over path is also the repository's first IndexedDB index. It arrives with a DB_VERSION bump whose onUpgrade drops both stores, which is the only place either declaration is legal.
+    requirement_refs: [FR-RIK-006, FR-RIK-007, FR-RIK-008, FR-RIK-012]
+    authority_refs:
+      - src/sync/state.ts:17
+      - src/sync/state.ts:27-40
+      - /home/take/.dev-skills/design/remote-identity-keyed-correspondence/artifacts/owner-decision.md
+      - /home/take/.dev-skills/design/remote-identity-keyed-correspondence/authority-deltas/000001-c7074fbeca79fc0c.message
+  - id: scope-signal-store-index-not-rekey
+    kind: post_consultation_decision
+    target_ref: adr-record-key-shape
+    witness: The smaller structural alternative was measured, presented and overruled, and this signal records that rather than the alternative. A unique index over remoteIdentityKey with keyPath "path" delivers the same two invariants while leaving 17 production call sites and six CAS methods untouched, so the plan reserved the choice for the owner and wrote its body against the index. The owner's binding authority delta rejected the frame the comparison was posed in — the store was never the thing that had to refuse a second record at one path, because path uniqueness is an invariant fs owes the sync engine upstream of the store — and settled adr-record-key-shape on keyPath "remoteIdentityKey" with a unique index over path. The larger structure is therefore adopted on authority, not on the cost comparison, and the comparison survives only as this change's work inventory.
+    requirement_refs: [FR-RIK-006, FR-RIK-007, FR-RIK-012]
+    authority_refs:
+      - /home/take/.dev-skills/design/remote-identity-keyed-correspondence/authority-deltas/000001-c7074fbeca79fc0c.message
+      - /home/take/.dev-skills/design/remote-identity-keyed-correspondence/artifacts/owner-decision.md
+      - /home/take/.dev-skills/design/remote-identity-keyed-correspondence/artifacts/conductor-resolution.md
+      - src/fs/dropbox/types.ts:23
+  - id: scope-signal-conformance-cell-rewrites-existing-assertions
+    kind: shared_boundary
+    target_ref: contract-cross-family-identity-conformance
+    witness: The seam change forces edits to three already-passing shared cases — caching-remote-fs.contract.ts:314, :333 and :351-356 assert the pair by object literal — plus per-family staging in the three caching-remote-fs.contract-harness.ts files; rewriting a passing shared conformance assertion across all three families is this change's widest blast radius and the literals must be updated rather than loosened.
+    requirement_refs: [FR-RIK-011, FR-RIK-001]
+    authority_refs:
+      - tests/fs/contracts/caching-remote-fs.contract.ts:297-360
+      - tests/fs/remote-backend-contracts.test.ts
+      - AGENTS.md:52-58
+  - id: scope-signal-critic-induced-merge-base-contract
+    kind: critic_induced_contract
+    target_ref: contract-merge-base-survives-relocation
+    witness: A normative contract added in response to the critique's second graft item. Its concrete failure without it is user-visible and current — compareAndMove (state.ts:132-133) and compareAndRewritePaths (:186-187) discard sync-content at both addresses unconditionally where compareAndPut (:104-108) applies a predicate, so every rename destroys the three-way merge base and the next conflict on a renamed file resolves by newer-mtime-wins at conflict-resolver.ts:135.
+    requirement_refs: [FR-RIK-013]
+    authority_refs:
+      - src/sync/state.ts:104-108
+      - src/sync/state.ts:132-133
+      - src/sync/state.ts:186-187
+      - src/sync/conflict-resolver.ts:135
+  - id: scope-signal-critic-induced-record-floor-contract
+    kind: critic_induced_contract
+    target_ref: contract-record-identity-floor-disposition
+    witness: A normative contract added in response to issue-d2-m2-not-closed-by-the-bump and inverted by the owner's authority delta. Its concrete failure without it is that the plan leaves the record layer's identity floor implicit in a storage mechanism — buildSyncRecord (state-committer.ts:42) copies remote?.identityKey with no floor of its own, so under keyPath "remoteIdentityKey" an entity whose provider supplied no id produces a DataError deep inside a transaction instead of a named publication failure, and an empty-string identity — a perfectly valid IndexedDB key — silently folds two entities into one row.
+    requirement_refs: [FR-RIK-012, FR-RIK-007]
+    authority_refs:
+      - src/sync/state-committer.ts:42
+      - src/sync/identity-component-decision.ts:405-410
+      - src/fs/dropbox/types.ts:23
+  - id: scope-signal-post-resolution-record-floor-adr
+    kind: post_consultation_decision
+    target_ref: adr-record-identity-floor-tolerated
+    witness: A fourth ADR that appears in neither draft-1 nor draft-2. It exists because the conductor resolution settled with the owner after the critique split one question into two layers — what a cycle-local rename report must name is governed by ADR 0008 and stays optional, while what a durable SyncRecord must carry is a separate matter the record layer owes. The minimality audit classified it optional under keyPath "path", where it recorded a choice that fr-rik-012 and contract-record-identity-floor-disposition already discharged. Under the owner's authority delta it inverts and becomes load-bearing — the floor is no longer a choice but the storage mechanism, and the ADR is the only place that records what an id-less entity gets, why synthesizing a key stays forbidden precisely because it would dissolve the floor, and why the record layer's floor does not propagate up to rename reports. Folding it back into the seam ADR is how draft-1 arrived at a requirement contradicting ADR 0008.
+    requirement_refs: [FR-RIK-012, FR-RIK-007]
+    authority_refs:
+      - /home/take/.dev-skills/design/remote-identity-keyed-correspondence/authority-deltas/000001-c7074fbeca79fc0c.message
+      - /home/take/.dev-skills/design/remote-identity-keyed-correspondence/artifacts/conductor-resolution.md
+      - /home/take/.dev-skills/design/remote-identity-keyed-correspondence/artifacts/owner-decision.md
+      - src/sync/state-committer.ts:42
+      - src/sync/identity-component-decision.ts:405-410
+  - id: scope-signal-required-field-binds-the-whole-test-surface
+    kind: shared_boundary
+    target_ref: contract-record-identity-floor-disposition
+    witness: Adopted from the independent plan attack and re-measured. Promoting SyncRecord.remoteIdentityKey to a required non-empty string binds every SyncRecord construction in the repository, not only production, because tsconfig.json includes tests/**/*.ts alongside src/**/*.ts. Measured on main at 60e85b0 - 27 files contain a SyncRecord literal (grep "syncedAt:"), of which three are production (src/sync/types.ts, src/sync/state.ts, src/sync/state-committer.ts), leaving 24 test and mock files; tests/fs/contracts/remote-change-detection.contract.ts calls buildSyncRecord at :64, :74 and :90; and the shared store double at src/__mocks__/sync-test-helpers.ts carries both the removed methods and the record shape. The previous revision listed thirteen files across unit-4 and unit-5 and none of the broken ones, so the store half priced no test surface at all while scope-signal-conformance-cell-rewrites-existing-assertions priced exactly this for the seam half. unit-5 now enumerates the record-literal surface and unit-4 the compareAndMove surface.
+    requirement_refs: [FR-RIK-007, FR-RIK-012, FR-RIK-009]
+    authority_refs:
+      - tsconfig.json
+      - src/sync/state.test.ts:7-17
+      - src/sync/fact-first-execution.test.ts:402-417
+      - src/sync/plan-executor.test.ts:1101
+      - tests/fs/contracts/remote-change-detection.contract.ts:64
+  - id: scope-signal-critic-induced-admission-measurement
+    kind: critic_induced_contract
+    target_ref: contract-positional-mechanism-evidence
+    witness: A normative contract added in response to issue-d2-enrichment-removal-overstated and the critique's fourth graft item. Its concrete failure without it is removing the rename enrichment on a reading that does not close — indexFacts' insert at identity-component-decision.ts:328 is a different selection, not a stricter check, so an identity-less prior can outlive an identity-bearing one at one path and yield undefined !== "X" at the guard.
+    requirement_refs: [FR-RIK-014, FR-RIK-004]
+    authority_refs:
+      - src/sync/identity-component-decision.ts:328
+      - src/sync/identity-evidence.ts:41-44
+      - /home/take/.dev-skills/design/remote-identity-keyed-correspondence/artifacts/recovery.json
+  - id: scope-signal-replacement-is-an-operation-not-a-rule
+    kind: post_consultation_decision
+    target_ref: contract-record-identity-uniqueness
+    witness: Owner decision 8 settles the record model and collapses the structure two previous revisions grew around the displaced incumbent. A SyncRecord is the record of a local file that is synced; path is mandatory; when either side deletes the file the deletion synchronises and the record is deleted with it; and a reappearing object is a new file, with no baseline retained to recognise it. The error this corrects is that the plan treated SyncRecord as a record of the remote object when it is a record of the correspondence - and a correspondence whose address now belongs to another object has ended, an end the cycle directly observes because the new object is at the address now. No evidence of the object's death is required, ADR 0008 is not engaged, and the impasse the previous revision worked around does not exist. What this deletes rather than adds - the four-way classification, the checkpoint_deleted conjunct, currentByIdentity as a retirement input, the fail-closed disposition and its convergence narrative, relocating-first emission, the claimer-expects-vacant expectation change, the address-permutation refusal, and the baseline-continuity motivation - leaves two operations in their place, both of them store operations already implied by the key. A rename is a single put whose primary key does not move, simpler than today's compareAndMove; a replacement is a delete plus insert in one transaction. The unique path index earns its keep exactly here - under keyPath path, store.put overwrites the incumbent silently at state.ts:101-103, while under keyPath remoteIdentityKey plus a unique path index the write must delete the old row explicitly or the constraint aborts - so the discard becomes an admitted action instead of a side effect. FR-RIK-015, DP-7, contract-displaced-record-retirement and AC-RIK-016 are removed rather than re-contented.
+    requirement_refs: [FR-RIK-006, FR-RIK-013]
+    authority_refs:
+      - /home/take/.dev-skills/design/remote-identity-keyed-correspondence/artifacts/owner-decision.md
+      - src/sync/state.ts:101-103
+      - src/sync/identity-component-decision.ts:509-511
+      - src/sync/identity-component-decision.ts:719
+      - src/sync/record-rekey-across-commit.test.ts
+
+requirements:
+  - id: FR-RIK-001
+    type: functional
+    priority: must
+    statement: Every RenamePair a remote filesystem produces shall carry, in an identityKey field, the provider identity of the object at newPath as that filesystem's own FileEntity projection yields it; the field shall be absent only when that projection yields none.
+  - id: FR-RIK-002
+    type: invariant
+    priority: must
+    statement: The carried identity shall never be the metadata cache's internal total id (extractId); in particular Dropbox's entry.path_lower fallback shall never appear as a RenamePair.identityKey, and a carried identity shall always equal the identityKey a later stat or list observation of the same object in the same cycle would report.
+  - id: FR-RIK-003
+    type: invariant
+    priority: must
+    statement: A carried identity shall survive unchanged from producer to Admission; no downstream stage shall overwrite it, two rename claims that agree on side, oldPath, newPath and isFolder but disagree on identityKey shall not be collapsed into one claim, and a carried key, an absent key and an empty key shall be three distinct values to the rename-evidence dedupe key with none aliasing another.
+  - id: FR-RIK-004
+    type: functional
+    priority: must
+    statement: Admission's validation of a reported remote rename shall compare the report's carried identity against current remote facts derived independently of that report; the path-keyed re-attachment of a remote rename's identity from the destination address shall be removed, a report carrying no identity shall be handled exactly as it is on main, and no rule shall fail a component because a report carries no key.
+  - id: FR-RIK-005
+    type: invariant
+    priority: must
+    statement: Carried identity shall only narrow report-family selection and component admission; no report family, folder relation or binding that the current positional rules reject shall become admissible because an identity is now present.
+  - id: FR-RIK-006
+    type: invariant
+    priority: must
+    statement: The durable record store shall hold at most one SyncRecord per remoteIdentityKey by construction, because that property is the store's key, and at most one SyncRecord per path, enforced by a unique index over that field, with both fields mandatory. Every publication shall be exactly one of two operations. A rename - the same identity at a new address - shall change only the path field of one row and shall be a single put, moving no primary key, deleting no row and leaving the identically keyed sync-content row in place. A replacement - a terminal whose identity differs from that of the record holding the claimed address - shall delete that incumbent and insert the terminal within one transaction, after comparing the incumbent against the expectation Admission captured, so that the discard is an admitted, compared and asserted operation rather than a silent side effect of the key as it is under keyPath path at state.ts:101-103; nothing shall be inferred about whether the incumbent's object still exists, because the record asserts a correspondence and that correspondence's end is directly observed. A write that would place a second record at an address a different record already holds without deleting that record shall abort its transaction having written nothing and shall reach its caller as a thrown transaction failure, never as the ordinary stale-baseline false return, and shall never be resolved by catching the abort, by re-parsing or recovering its name, or by replacing the incumbent after the fact; no requirement, witness or verification shall depend on that failure naming itself, because idb-helper.ts:142 rejects on tx.onerror where tx.error is still null so every aborted transaction on main arrives unnamed, and that helper defect shall be neither repaired nor worked around by this change; each CAS method shall take two explicit expectations - the row keyed by the record's identity, and the current occupant of the record's address read through the path index - with no defaulted parameter, so a baseline-free create keeps today's vacancy check and a replacement's continued row is undefined; the comparison shall precede the delete, so a stale expectation returns false having removed nothing; and a relocation set in which every terminal record carries its own source record's identity shall never be refused by either rule, whatever its size.
+  - id: FR-RIK-007
+    type: invariant
+    priority: must
+    statement: SyncRecord.remoteIdentityKey shall be a required, non-empty string, and no SyncRecord with an absent or empty identity shall exist; absent and empty shall be one inadmissible case, refused inside buildSyncRecord itself - not in any one of its three production callers in two files, src/sync/state-committer.ts:119, src/sync/opened-file-priority.ts:61 and :88 - with a named error before any store write, rather than surfacing as a storage-level DataError or as a silently replaced row; no caller shall fold an absent identity to the empty string to satisfy the required type; each caller shall dispose of the refusal by its own established route, a failed action and an incomplete cycle from commitAction and an invalidated target deferred to the batch from the opened-file priority attempt; and this shall constrain only what a durable record carries, never what a rename report carries, where an absent key remains admissible.
+  - id: FR-RIK-008
+    type: functional
+    priority: must
+    statement: DB_VERSION shall be bumped so the existing onUpgrade drop-and-recreate rebuilds every record from current facts under the new key; no migration, transform, or record-preserving upgrade code shall be added, and the version comment shall record both the reason and what the bump does not do — it is not what closes the identity-less record class, the key is, and it is the same cold start the product already performs on reconnect, on a bound-root change and on resetAll.
+  - id: FR-RIK-009
+    type: functional
+    priority: must
+    statement: SyncStateStore.rewritePaths shall be removed from the public surface, from the ownership guard's mutating-method set and from the shared store test double, compareAndMove shall leave the same three places as it collapses into compareAndPut, the state-commit section of docs/sync-pipeline.md shall name compareAndPut, compareAndRewritePaths and compareAndDelete where it currently names put, rewritePaths and delete, and the ownership guard's import, reference, constructor and mutation-caller inventories shall be byte-identical afterwards, which is what proves the removal is detector hygiene; the guard's fixture itself shall be edited in the same change at both of the two sites that consume the mutating-method set - the set at sync-state-ownership-guard.test.mjs:9-12 and the hardcoded method list at :320 that generates two negative-fixture tests per name - and the previous claim that the set is consumed at exactly one site shall not be restated.
+  - id: FR-RIK-010
+    type: functional
+    priority: must
+    statement: SyncRecord.backendMeta shall be removed, since it has one writer and no production reader and the identifying half of its contents duplicates the now-uniquely-observed remoteIdentityKey; FileEntity.backendMeta and every backend that populates it shall be unaffected.
+  - id: FR-RIK-011
+    type: functional
+    priority: must
+    statement: The shared caching contract shall assert, for googledrive, dropbox and onedrive alike and in both provider orderings, that a reported remote file rename and a reported remote folder rename each carry an identityKey equal to the identityKey observed at newPath, and that the pair never carries the identity previously observed at oldPath's occupant when that occupant is a different object.
+  - id: FR-RIK-012
+    type: functional
+    priority: must
+    statement: The positional baseline fallback at identity-component-decision.ts:408-410 shall be retired because the population it serves cannot exist once remoteIdentityKey is the record store's key and buildSyncRecord refuses an absent or empty one; the retirement shall be verified by a test that fails when an identity-less record is constructed and shall not be asserted through npm run build, because a required string is not always-truthy to TypeScript - the empty string is falsy, the ternary compiles clean under this repository's own tsc --strict, and eslint.config.mts configures no no-unnecessary-condition; every other production branch that tested a stored record's own identity absence shall be disposed of with it, removed where the whole branch was the absent-identity branch, reduced to its comparison where the absence test was a vacuous term, and tightened where a runtime shape validator would otherwise keep admitting the forbidden shape, with none repaired by restoring a positional route or by folding an absent identity to the empty string, and with tests of an absent record rather than an absent field left untouched; and no rename report shall be failed in order to compensate for anything at the record layer.
+  - id: FR-RIK-013
+    type: invariant
+    priority: must
+    statement: A publication that relocates a record to a different vault address shall preserve the stored three-way merge base exactly when an in-place publication of the same record would — that is, under compareAndPut's existing invalidation predicate — and no rename shall destroy a merge base that an in-place publication of the same record would have kept; the predicate shall survive compareAndMove's collapse into compareAndPut rather than disappearing with the method, and shall replace compareAndRewritePaths' unconditional content deletes.
+  - id: FR-RIK-014
+    type: functional
+    priority: must
+    statement: Before any positional rename mechanism is removed or its removal is accepted as lossless, five named fixture shapes shall be driven through the production Admission entry on unchanged production code and the branch taken by selectReportFamily, aliasFolder, completeIdentityEvidence's newPath lookup and the identity guard shall be asserted by name for each; this measurement shall retire no mechanism. The measurement has been taken and its recorded result is binding on this plan - src/sync/plan-admission.test.ts carries the five shapes plus a sixth case pinning the two map-keying divergences under which the guard does fail, and records that identity-component-decision.ts:106-107 cannot fail on any fact shape today's Observation layer emits, so removing the positional enrichment is lossless and the change is not justified on that guard. A second measurement, src/sync/record-rekey-across-commit.test.ts, shall carry the same discipline across the publication boundary on the real SyncStateStore over fake-indexeddb and record that the same-cycle baseline is preserved by identity-keyed binding at identity-component-decision.ts:408-409 while the split-cycle baseline is not retained, the old row being discarded and the object re-downloaded as new. That second result shall be asserted deliberately as the model's expected end state under owner decision 8a, which settles that a correspondence whose address now belongs to another object has ended and that a reappearing object is a new file, and shall not be recorded as a defect or a loss awaiting repair. Both files shall be landed, cited and kept green; no clause of this plan shall describe an equivalent test that does not exist, and no later claim shall cite the plan's earlier analysis over these recorded results.
+  - id: NFR-RIK-001
+    type: non_functional
+    priority: must
+    statement: The change shall add no third durable authority, no persisted evidence, rename intent, Admission disposition, retry instruction or recovery marker, and no retained in-memory correctness owner; carried identity shall live only in the cycle's evidence and be discarded with it; the record layer's refusal for an identity-less entity and the store's abort for a second record at one address shall be raised and never recorded, with no persisted marker explaining either; no row shall be removed by anything other than the publication that claims its address or the publication that deletes the file it records; and because a replacement simply deletes the displaced row under owner decision 8a, no classification, ordering pass, disposition, evidence test or deferral shall exist for anything to persist.
+  - id: NFR-RIK-002
+    type: non_functional
+    priority: must
+    statement: No local identity shall be invented or inferred, LocalFs shall keep emitting identityKey undefined and no production branch shall read a local entity's identityKey as evidence; and the change shall state where a reader will find it that a missed local rename event, a cross-scope local rename, Dropbox's path-derived topology and acquisition reach are not improved by it.
+  - id: NFR-RIK-003
+    type: non_functional
+    priority: must
+    statement: Remote rename detection shall remain order-independent per ADR 0006, Dropbox's path-keyed upsertedPaths reclaim guard shall be unchanged, and no backend-specific import or branch shall be added to src/sync/.
+  - id: NFR-RIK-004
+    type: non_functional
+    priority: must
+    statement: The change shall introduce no new SyncStateStore importer, referencer, constructor or mutation caller and no new persistent-store owner; the ownership guard's four per-file inventories shall stay byte-identical, which is the machine proof that removing two names from its mutating-method set is detector hygiene over methods that no longer exist rather than the intentional new writer, owner or field that AGENTS.md:71-73 binds the ADR-0001-plus-enforcement-document triple to; the guard's own fixture shall nonetheless be edited at both sites that consume that set, which is a consequence of the removal and not evidence of a new writer; and sync-admission-authority-guard.test.mjs shall stay green with no fixture edit, since needing one would mean identity policy had moved into the store.
+
+components:
+  - id: component-fs-rename-contract
+    kind: existing
+    contract_refs: [contract-seam-carried-identity]
+    paths:
+      - src/fs/types.ts
+      - src/fs/interface.ts
+  - id: component-metadata-cache-identity
+    kind: existing
+    contract_refs: [contract-seam-carried-identity]
+    paths:
+      - src/fs/caching/metadata-cache.ts
+  - id: component-delta-producers
+    kind: existing
+    contract_refs: [contract-seam-carried-identity]
+    paths:
+      - src/fs/caching/id-delta.ts
+      - src/fs/caching/remote-fs.ts
+      - src/fs/dropbox/incremental-sync.ts
+  - id: component-rename-evidence
+    kind: existing
+    contract_refs: [contract-evidence-identity-preservation]
+    paths:
+      - src/sync/identity-evidence.ts
+      - src/sync/remote-change-source.ts
+  - id: component-admission-identity-gate
+    kind: existing
+    contract_refs: [contract-cross-source-rename-validation, contract-positional-mechanism-evidence]
+    paths:
+      - src/sync/identity-component-decision.ts
+      - src/sync/identity-component-report-family.ts
+  - id: component-local-endpoint
+    kind: existing
+    contract_refs: [contract-local-positional-boundary]
+    paths:
+      - src/fs/local/index.ts
+      - src/sync/local-tracker.ts
+      - src/sync/scheduler.ts
+  - id: component-record-store
+    kind: existing
+    contract_refs: [contract-record-identity-uniqueness, contract-merge-base-survives-relocation]
+    paths:
+      - src/sync/state.ts
+  - id: component-record-shape
+    kind: existing
+    contract_refs: [contract-record-field-audit, contract-record-identity-floor-disposition]
+    paths:
+      - src/sync/types.ts
+      - src/sync/state-committer.ts
+  - id: component-two-authority-enforcement
+    kind: existing
+    contract_refs: [contract-record-identity-uniqueness]
+    paths:
+      - sync-state-ownership-guard.test.mjs
+      - docs/code-enforcement.md
+      - docs/adr/0001-metadata-cache-is-subordinate-to-commit-last.md
+      - docs/sync-pipeline.md
+  - id: component-shared-fs-contracts
+    kind: existing
+    contract_refs: [contract-cross-family-identity-conformance]
+    paths:
+      - tests/fs/contracts/caching-remote-fs.contract.ts
+      - tests/fs/remote-backend-contracts.test.ts
+      - tests/fs/googledrive/caching-remote-fs.contract-harness.ts
+      - tests/fs/dropbox/caching-remote-fs.contract-harness.ts
+      - tests/fs/onedrive/caching-remote-fs.contract-harness.ts
+
+contracts:
+  - id: contract-seam-carried-identity
+    dimension: integration_contract
+    owner: component-fs-rename-contract
+    requirement_refs: [FR-RIK-001, FR-RIK-002, NFR-RIK-001, NFR-RIK-003]
+    unit_refs: [unit-1-seam-identity-carrier, unit-7-cross-family-conformance]
+    adr_refs: [adr-remote-correspondence-identity-carrier]
+    verification:
+      - id: verify-renamepair-carries-projected-identity
+        tier: T0
+        command: npm test -- src/fs/caching/id-delta.test.ts
+      - id: verify-dropbox-delta-rename-carries-entry-id
+        tier: T0
+        command: npm test -- src/fs/dropbox/incremental-sync.test.ts
+      - id: verify-fullscan-diff-carries-projected-identity
+        tier: T0
+        command: npm test -- src/fs/caching/remote-fs.contract.test.ts
+      - id: verify-order-independence-unchanged
+        tier: T1
+        command: npm test -- tests/fs/remote-backend-contracts.test.ts
+    partition:
+      outcomes: [determinate, unknown]
+      default_policy: A produced pair carries identityKey when the producing filesystem's own entity projection for newPath yields one (determinate); it omits the field when the projection yields none (unknown). There is no third outcome and no substitute value; the producer never invents, defaults, or falls back to a cache-internal id, and extractId, idAt, getPathById and snapshotPathsById are forbidden as sources for any value crossing the IFileSystem boundary.
+    discretion:
+      - id: discretion-identity-lookup-call-shape
+        unit_ref: unit-1-seam-identity-carrier
+        question: Whether each producer calls the cache projection helper once per moved entry, hoists it above the branch, or passes the already-held TFile to a projection call.
+        scope:
+          files:
+            - src/fs/caching/id-delta.ts
+            - src/fs/caching/remote-fs.ts
+            - src/fs/dropbox/incremental-sync.ts
+          component: component-delta-producers
+          visibility: private
+        escalate_when:
+          - The shape would read extractId, idAt, getPathById or snapshotPathsById as the identity source.
+          - The shape would make the carried value differ from the entity projection for any backend.
+          - The shape would require a backend-specific branch in src/fs/caching/.
+        constraints:
+          - The three producers must reach the same single rule; no producer keeps a private identity source.
+        preserves:
+          invariant_refs: [FR-RIK-002]
+        verification_refs: [verify-renamepair-carries-projected-identity]
+        difficulty_inputs:
+          decision_reasoning: mechanical
+          boundary_reach: private
+          context_scope: files
+          reversibility: trivial
+          verification_strength: discriminating
+          runtime_risk: normal
+          coupling: independent
+          grounding: evidenced
+      - id: discretion-projection-helper-placement
+        unit_ref: unit-1-seam-identity-carrier
+        question: Whether the helper the producers reach toEntity through is a public method on AbstractMetadataCache, a protected one plus a public accessor, or a free function over the cache's public getters.
+        scope:
+          files:
+            - src/fs/caching/metadata-cache.ts
+          component: component-metadata-cache-identity
+          visibility: private
+        escalate_when:
+          - The placement requires a new abstract member that every backend subclass must implement.
+          - The placement makes the helper reachable without going through toEntity.
+          - The placement forces a caller outside src/fs/ to change.
+        constraints:
+          - The helper must be total, allocate nothing that outlives the call, and hold no state.
+          - The helper is concrete over the already-public abstract toEntity, so no subclass gains an obligation.
+        preserves:
+          invariant_refs: [FR-RIK-002]
+        verification_refs: [verify-fullscan-diff-carries-projected-identity]
+        difficulty_inputs:
+          decision_reasoning: local_tradeoff
+          boundary_reach: component
+          context_scope: files
+          reversibility: trivial
+          verification_strength: discriminating
+          runtime_risk: normal
+          coupling: independent
+          grounding: evidenced
+
+  - id: contract-evidence-identity-preservation
+    dimension: data_model
+    owner: component-rename-evidence
+    requirement_refs: [FR-RIK-003, FR-RIK-004, NFR-RIK-001]
+    unit_refs: [unit-2-evidence-preservation]
+    adr_refs: [adr-remote-correspondence-identity-carrier]
+    verification:
+      - id: verify-carried-identity-reaches-evidence
+        tier: T0
+        command: npm test -- src/sync/identity-evidence.test.ts
+      - id: verify-different-identity-same-edge-not-collapsed
+        tier: T0
+        command: npm test -- src/sync/identity-evidence.test.ts
+      - id: verify-rename-newpath-enrichment-removed
+        tier: T0
+        command: npm test -- src/sync/identity-evidence.test.ts
+      - id: verify-stable-identity-and-alias-passes-intact
+        tier: T1
+        command: npm test -- src/sync/change-detector.test.ts
+    partition:
+      outcomes: [determinate, unknown, conflicting]
+      default_policy: A remote rename claim is determinate when the producer carried an identity; unknown when it did not, in which case no identity is attached from any address; conflicting when two claims share side, oldPath, newPath and isFolder but carry different identities, which the dedupe key now preserves for the report-family stage to reject. Local rename claims are always unknown by construction and this is not a failure. A carried, an absent and an empty key never alias in the dedupe key, which is an encoding rule and not the record layer's admissibility rule. The removal of the destination-address enrichment is admitted only after contract-positional-mechanism-evidence has recorded each of its five shapes on unchanged production code.
+    discretion:
+      - id: discretion-dedupe-key-encoding
+        unit_ref: unit-2-evidence-preservation
+        question: How identityKey is encoded into the rename-evidence dedupe key given that undefined and the empty string must not alias.
+        scope:
+          files:
+            - src/sync/identity-evidence.ts
+          component: component-rename-evidence
+          visibility: private
+        escalate_when:
+          - The encoding lets a carried key and an absent key collapse to one entry.
+          - The encoding changes the observable order of the returned evidence array.
+          - The encoding requires a change to RenameEvidence's public shape.
+        constraints:
+          - The key stays a private string derivation inside this module and is never persisted or exported.
+          - A carried key, an absent key and an empty key are three values the key must keep distinct. This is an encoding question and deliberately not the record layer's admissibility question, where absent and empty are one inadmissible case.
+        preserves:
+          invariant_refs: [FR-RIK-003]
+        verification_refs: [verify-different-identity-same-edge-not-collapsed]
+        difficulty_inputs:
+          decision_reasoning: mechanical
+          boundary_reach: private
+          context_scope: files
+          reversibility: trivial
+          verification_strength: discriminating
+          runtime_risk: normal
+          coupling: independent
+          grounding: evidenced
+
+  - id: contract-cross-source-rename-validation
+    dimension: control_flow
+    owner: component-admission-identity-gate
+    requirement_refs: [FR-RIK-004, FR-RIK-005, NFR-RIK-003]
+    unit_refs: [unit-3-cross-source-validation]
+    adr_refs: [adr-remote-correspondence-identity-carrier]
+    verification:
+      - id: verify-carried-identity-mismatch-fails-component
+        tier: T0
+        command: npm test -- src/sync/plan-admission.test.ts
+      - id: verify-carried-identity-match-admits-rename
+        tier: T0
+        command: npm test -- src/sync/plan-admission.test.ts
+      - id: verify-absent-identity-behaves-as-today
+        tier: T0
+        command: npm test -- src/sync/plan-admission.test.ts
+      - id: verify-identity-only-narrows-report-family
+        tier: T0
+        command: npm test -- src/sync/plan-admission.test.ts
+    partition:
+      outcomes: [determinate, unknown, conflicting]
+      default_policy: For a remote rename report, determinate means the carried identity equals the identity of the current remote fact at newPath and the relation may be bound; unknown means the report carries no identity, in which case ADR 0008 forbids treating absence as evidence and the report is handled exactly as on main; conflicting means the carried identity differs from the current remote fact at newPath, which fails the component with an existing failure reason, blocks cycle completeness, leaves the checkpoint uncommitted and replays the same delta. No outcome authorizes a rename that the positional rules already reject, and no outcome fails a component because a key is missing.
+    discretion:
+      - id: discretion-failure-reason-reuse
+        unit_ref: unit-3-cross-source-validation
+        question: Whether the mismatch keeps reusing the existing conflicting_identity reason or is expressed through a different existing AdmissionFailureReason member.
+        scope:
+          files:
+            - src/sync/identity-component-decision.ts
+          component: component-admission-identity-gate
+          visibility: private
+        escalate_when:
+          - A new AdmissionFailureReason member would have to be added to the public union.
+          - The chosen reason would make a failed component anything other than cycle-blocking.
+          - The reason would have to encode which producer supplied the identity.
+        constraints:
+          - No proposed action may participate in this decision, and no failure may be persisted.
+        preserves:
+          invariant_refs: [NFR-RIK-001, FR-RIK-005]
+          contract_refs: [contract-evidence-identity-preservation]
+        verification_refs: [verify-carried-identity-mismatch-fails-component]
+        difficulty_inputs:
+          decision_reasoning: local_tradeoff
+          boundary_reach: component
+          context_scope: files
+          reversibility: bounded
+          verification_strength: discriminating
+          runtime_risk: normal
+          coupling: independent
+          grounding: evidenced
+
+  - id: contract-positional-mechanism-evidence
+    dimension: control_flow
+    owner: component-admission-identity-gate
+    requirement_refs: [FR-RIK-014, FR-RIK-004]
+    unit_refs: [unit-0-admission-branch-measurement, unit-2-evidence-preservation, unit-5-record-shape-and-identity-floor]
+    adr_refs: [adr-remote-correspondence-identity-carrier]
+    verification:
+      - id: verify-five-shapes-reach-named-branches
+        tier: T0
+        command: npm test -- src/sync/plan-admission.test.ts
+      - id: verify-replaced-destination-shape-records-guard-branch
+        tier: T0
+        command: npm test -- src/sync/plan-admission.test.ts
+      - id: verify-guard-failure-boundary-stays-pinned
+        tier: T0
+        command: npm test -- src/sync/plan-admission.test.ts
+      - id: verify-committed-baseline-fate-is-recorded
+        tier: T0
+        command: npm test -- src/sync/record-rekey-across-commit.test.ts
+    partition:
+      outcomes: [determinate, unknown]
+      default_policy: >-
+        A shape is determinate when it reaches a named branch at each of the four observed sites through
+        admitBatchObservation and that branch is asserted; it is unknown when the shape cannot be constructed
+        through the production entry, in which case the reason is recorded rather than replaced by a direct call to
+        an internal function. No mechanism is retired by either outcome; an unknown shape blocks only the claim
+        that depended on it. The measurement has been taken and this contract now records its result rather than
+        the work. All five shapes are determinate: shapes 1, 2 and 3 fill the rename claim's identity from the
+        newPath lookup and the guard passes because the filled key is the current occupant's own, shape 4's lookup
+        misses so line 106's precondition short-circuits the guard, and shape 5 produces no remote rename evidence
+        at all; shape 3, the replaced-destination case, is authorized with a match rather than a wrong rename,
+        because indexFacts and bindFiles:420-421 discriminate it ahead of the guard. The recorded answer is that
+        identity-component-decision.ts:106-107 cannot fail on any fact shape today's Observation layer emits, so
+        removing the positional enrichment is lossless and the change is not justified on that guard. The record is
+        complete in both directions: a sixth case constructs the two divergences where the completion map and
+        current.remote key one entity differently - an entry addressed at one path carrying a remote endpoint
+        resolved at another, and two remote observations at one address where insert keeps the hashed unkeyed
+        prior - and records conflicting_identity with no actions for both, so the boundary of the cannot-fail claim
+        stays pinned rather than being softened into never-fails. Whether the Observation layer can emit either
+        divergence is not established and is not claimed either way. A second measurement,
+        src/sync/record-rekey-across-commit.test.ts, records across the publication boundary that the same-cycle
+        baseline is preserved by identity-keyed binding at identity-component-decision.ts:408-409 and not by the
+        store's key, and that the split-cycle baseline is not retained - the old row is discarded and the object
+        re-downloaded as new. Under owner decision 8a that second result is the model working rather than a defect,
+        because a correspondence whose address now belongs to another object has ended and a reappearing object is a
+        new file, so the case is asserted deliberately as the expected end state. Both files
+        must be landed and kept green; deleting or weakening the divergence case, or replacing either file with a
+        described equivalent, is forbidden.
+
+  - id: contract-local-positional-boundary
+    dimension: integration_contract
+    owner: component-local-endpoint
+    requirement_refs: [NFR-RIK-002]
+    unit_refs: [unit-3-cross-source-validation]
+    adr_refs: [adr-remote-correspondence-identity-carrier]
+    verification:
+      - id: verify-localfs-identity-stays-undefined
+        tier: T0
+        command: npm test -- src/fs/local/local-fs.test.ts
+      - id: verify-local-rename-evidence-carries-no-identity
+        tier: T0
+        command: npm test -- src/sync/identity-evidence.test.ts
+      - id: verify-local-tracker-unchanged
+        tier: T1
+        command: npm test -- src/sync/local-tracker.test.ts
+    partition:
+      outcomes: [determinate, unknown]
+      default_policy: Every local endpoint is unknown with respect to provider identity, permanently and by construction; determinate applies only to the remote endpoint. A local rename is bound by the live vault event plus vacancy and terminal proofs, never by an identity, no code may read a local entity's identityKey as evidence, and the change states rather than repairs the missed-event and cross-scope cases.
+
+  - id: contract-record-identity-uniqueness
+    dimension: data_model
+    owner: component-record-store
+    requirement_refs: [FR-RIK-006, FR-RIK-007, FR-RIK-008, FR-RIK-009, FR-RIK-012, NFR-RIK-001, NFR-RIK-004]
+    unit_refs: [unit-4-store-constraint-and-merge-base, unit-6-enforcement-triple]
+    adr_refs: [adr-record-identity-uniqueness-mechanism, adr-record-key-shape]
+    verification:
+      - id: verify-replacement-deletes-incumbent-and-inserts-one-row
+        tier: T0
+        command: npm test -- src/sync/state.test.ts
+      - id: verify-rename-is-a-single-put-that-deletes-nothing
+        tier: T0
+        command: npm test -- src/sync/state.test.ts
+      - id: verify-duplicate-path-aborts-and-propagates
+        tier: T0
+        command: npm test -- src/sync/state.test.ts
+      - id: verify-refusals-return-false-without-reaching-the-index
+        tier: T0
+        command: npm test -- src/sync/state.test.ts
+    partition:
+      outcomes: [determinate, conflicting, unknown]
+      default_policy: sync-records uses keyPath remoteIdentityKey with a unique index over path, and sync-content is re-keyed the same way; both remoteIdentityKey and path are mandatory. At most one record per remote identity holds by construction, so there is no duplicate-identity outcome to handle. Each CAS method takes two explicit expectations with no defaulted parameter — expectedRow for the row keyed by record.remoteIdentityKey, and expectedOccupant for the current occupant of record.path read through the path index — so compareAndMove's inherited default at state.ts:119 does not survive in any form and compareAndPut(undefined, record, undefined) keeps today's vacancy check for a baseline-free create; compareAndDelete with no expected record verifies the address is vacant, deletes nothing and returns true, which is today's verified no-op. Admission fills the two expectations mechanically from facts it already holds - expectedRow is the row carrying the identity this publication writes and is undefined for a replacement, expectedOccupant is the row holding the claimed address - which corrects identity-component-decision.ts:509-511 and :549-551, where a same-address replacement today passes the incumbent as both source and destination; left as it is, the CAS would look for a row keyed by the new identity, compare it against the old record and return false on every cycle. Every publication is one of exactly two operations. A rename, where expectedRow and the terminal carry one identity and only path differs, is a single put - the primary key does not move, no row is deleted, and sync-content's identically keyed row stays in place; this is simpler than today's compareAndMove, which had to delete at the old key and put at the new one, and is why that method collapses rather than being re-expressed. A replacement, where expectedOccupant is a record for a different identity than the terminal's, deletes that incumbent and inserts the terminal in one transaction, after comparing the incumbent against expectedOccupant. Nothing is inferred about whether the incumbent's object still exists - owner decision 8a settles that a SyncRecord records a correspondence, that a correspondence whose address now belongs to another object has ended, and that the claiming publication observes that end directly - so there is no classification, evidence test, ordering pass or failure reason anywhere in this contract. A durable record write is determinate when both comparisons pass and the write applies, deleting a displaced incumbent in the same transaction when the publication is a replacement; conflicting when either comparison fails, in which case nothing is written, nothing is deleted because the comparison precedes the delete, and the method returns false exactly as a stale baseline does today; unknown when the write nonetheless reached the unique path index and the index aborted it, which can only mean the filesystem layer's path-uniqueness guarantee is broken, in which case nothing is written and the transaction failure propagates as a throw rather than being caught, mapped to false, or compensated by deleting an incumbent after the fact - the only row a write removes is the incumbent captured as that publication's destination and compared inside the same transaction. The unknown outcome is asserted by its shape — a throw where a stale baseline returns false, with both stores unchanged — and never by a DOMException name, because idb-helper.ts:142 rejects on tx.onerror with tx.error still null so every abort on main is unnamed; measured against the repository's own fake-indexeddb, request.onerror is ConstraintError, tx.onerror is null and tx.onabort is ConstraintError. That helper defect is independently repairable, is not repaired here, and is not worked around at any call site. Conflicting produces the ordinary re-plan; unknown fails the action, blocks cycle completeness and leaves the checkpoint uncommitted. A multi-record relocation updates each identity-keyed row in place and, where an item's terminal address is held by a captured foreign incumbent at identity-component-decision.ts:719, that item is a replacement and deletes it under the one transaction image; the set refuses — publishing nothing, returning false — any arrangement in which one item's terminal address equals a different item's source address, or which is cyclic; self-overlap, where an unmoved item's terminal address is its own source address, is admitted.
+    discretion:
+      - id: discretion-cas-address-comparison-shape
+        unit_ref: unit-4-store-constraint-and-merge-base
+        question: Whether each CAS method reads the target address through the path index directly, or through one shared private helper issued inside the same readwrite transaction.
+        scope:
+          files:
+            - src/sync/state.ts
+          component: component-record-store
+          visibility: private
+        escalate_when:
+          - The shape would change any CAS method's boolean return contract into a new result type.
+          - The shape would let an abort from the path index be caught, mapped to false, or compensated by deleting an incumbent to make room after the fact; the only row a write may remove is the incumbent captured as that publication's destination and compared inside the same transaction before it is removed.
+          - The shape would issue the incumbent's delete before comparing it, so that a stale expectation could destroy a row the engine did not admit.
+          - The shape would issue a delete on the rename path, where the primary key does not move and a single put is the whole operation.
+          - The shape would recover the abort's DOMException name by catching the request-level error or re-parsing a message string.
+          - The shape would require a change to src/store/idb-helper.ts, or a second transaction.
+        constraints:
+          - The address comparison is issued inside the same readwrite transaction as the write it guards, so an ordinary stale destination is conflicting and never reaches the index.
+          - No pre-read is added to name the holder of a duplicated identity; there is no such holder under this key.
+        preserves:
+          invariant_refs: [FR-RIK-006]
+        verification_refs: [verify-refusals-return-false-without-reaching-the-index]
+        difficulty_inputs:
+          decision_reasoning: local_tradeoff
+          boundary_reach: component
+          context_scope: files
+          reversibility: bounded
+          verification_strength: discriminating
+          runtime_risk: data_loss
+          coupling: independent
+          grounding: evidenced
+
+  - id: contract-merge-base-survives-relocation
+    dimension: state_lifecycle
+    owner: component-record-store
+    requirement_refs: [FR-RIK-013]
+    unit_refs: [unit-4-store-constraint-and-merge-base]
+    adr_refs: [adr-record-identity-uniqueness-mechanism]
+    verification:
+      - id: verify-unchanged-rename-keeps-merge-base
+        tier: T0
+        command: npm test -- src/sync/state.test.ts
+      - id: verify-content-changing-rename-drops-merge-base
+        tier: T0
+        command: npm test -- src/sync/state.test.ts
+      - id: verify-folder-relocation-preserves-every-child-base
+        tier: T0
+        command: npm test -- src/sync/state.test.ts
+      - id: verify-renamed-file-still-three-way-merges
+        tier: T1
+        command: npm test -- src/sync/conflict-resolver.test.ts
+    partition:
+      outcomes: [determinate, conflicting]
+      default_policy: The relocating publication paths apply compareAndPut's existing invalidation predicate — delete the base when there is no expected record, when the record has no hash, or when hash, localSize or remoteIdentityKey changed — and otherwise leave the content row in place (determinate), which suffices because sync-content is keyed by remoteIdentityKey and a relocation does not move the row. Where the enclosing CAS comparison fails, nothing is published, the call returns false exactly as a stale baseline does today, and the base is untouched (conflicting). A relocation set never partially applies. The predicate must survive compareAndMove's collapse into compareAndPut rather than being carried across as that method's unconditional content deletes, and must replace compareAndRewritePaths' two unconditional deletes with one per-item application. This is a method-body policy and is not counted as a payoff of the record key shape.
+    discretion:
+      - id: discretion-merge-base-invalidation-site
+        unit_ref: unit-4-store-constraint-and-merge-base
+        question: Whether the invalidation predicate is factored into one private helper the CAS bodies share, or applied inline in each.
+        scope:
+          files:
+            - src/sync/state.ts
+          component: component-record-store
+          visibility: private
+        escalate_when:
+          - The site would need a second transaction or a read outside the transaction that guards the write.
+          - The site would change getContent's or putContent's public signature beyond the key change the store shape already requires.
+          - The site would let a relocation set apply partially, or let any path delete a base unconditionally.
+        constraints:
+          - The invalidation predicate is compareAndPut's existing one, referenced rather than copied into a second statement of it.
+        preserves:
+          invariant_refs: [FR-RIK-013]
+          contract_refs: [contract-record-identity-uniqueness]
+        verification_refs: [verify-unchanged-rename-keeps-merge-base]
+        difficulty_inputs:
+          decision_reasoning: local_tradeoff
+          boundary_reach: component
+          context_scope: files
+          reversibility: bounded
+          verification_strength: discriminating
+          runtime_risk: data_loss
+          coupling: coupled_within_unit
+          grounding: evidenced
+
+  - id: contract-record-field-audit
+    dimension: data_model
+    owner: component-record-shape
+    requirement_refs: [FR-RIK-010, FR-RIK-008, NFR-RIK-001]
+    unit_refs: [unit-5-record-shape-and-identity-floor]
+    adr_refs: [adr-record-identity-uniqueness-mechanism]
+    verification:
+      - id: verify-backendmeta-absent-from-record
+        tier: T0
+        command: npm test -- src/sync/state-committer.test.ts
+      - id: verify-no-production-reader-of-record-backendmeta
+        tier: T1
+        command: npm run build
+      - id: verify-cas-equality-unaffected
+        tier: T0
+        command: npm test -- src/sync/state.test.ts
+      - id: verify-entity-backendmeta-untouched
+        tier: T1
+        command: npm test -- src/sync/plan-admission.test.ts
+    partition:
+      outcomes: [determinate, unknown]
+      default_policy: Each SyncRecord field is kept when its last-sync value is both underivable from current state and not already carried by the correspondence key, and removed otherwise; backendMeta is the single removal, and path, remoteIdentityKey, remoteChecksum, hash, localMtime, remoteMtime, localSize, remoteSize and syncedAt are kept. path is kept as a persisted, queryable fact carrying a unique index — a constraint, not the identity of the row — and remoteIdentityKey is kept and promoted to the store's keyPath, becoming required and non-empty. syncedAt is kept as underivable although no production reader was found, and that observation is recorded rather than acted on. The reversal condition for the one removal is a named production reader of SyncRecord.backendMeta.
+
+  - id: contract-record-identity-floor-disposition
+    dimension: failure_recovery
+    owner: component-record-shape
+    requirement_refs: [FR-RIK-012, FR-RIK-007]
+    unit_refs: [unit-5-record-shape-and-identity-floor]
+    adr_refs: [adr-record-identity-floor-tolerated]
+    verification:
+      - id: verify-empty-identity-takes-the-same-branch-as-absent
+        tier: T0
+        command: npm test -- src/sync/state-committer.test.ts
+      - id: verify-identityless-record-construction-fails
+        tier: T0
+        command: npm test -- src/sync/state-committer.test.ts
+      - id: verify-priority-attempt-defers-instead-of-baselining
+        tier: T0
+        command: npm test -- src/sync/opened-file-priority.test.ts
+      - id: verify-identityless-publication-writes-nothing
+        tier: T0
+        command: npm test -- src/sync/state.test.ts
+    partition:
+      outcomes: [determinate, unknown]
+      default_policy: >-
+        SyncRecord.remoteIdentityKey is a required non-empty string and buildSyncRecord is the single construction function, which is where the value floor lives — not in any one of its three production callers in two files, src/sync/state-committer.ts:119 and src/sync/opened-file-priority.ts:61 and :88, because a floor in commitAction would leave the priority path unguarded and would force a remote?.identityKey ?? "" fold inside buildSyncRecord to keep the required type satisfiable. A record is determinate when the provider supplied a non-empty identity, in which case the record carries it and is the unique row for it. It is unknown when the provider supplied none or an empty string, which are one inadmissible case — no record is constructed, buildSyncRecord throws naming the entity before any store write, nothing is written, and each caller disposes of the throw by its own established route: commitAction fails the action so the cycle does not complete, the checkpoint stays uncommitted and the entity is re-observed next cycle, while the opened-file priority attempt takes no baseline, invalidates its target and defers to the batch through the try/catch it already has, where the same entity reaches commitAction. The entity is not refused at the backend boundary and stays listed, compared and conflict-resolvable; what it cannot acquire is a durable baseline. The unknown outcome's expected population is empty, because every cached entry of all three families carries a provider id, and the outcome is asserted by test rather than assumed unreachable. The retirement of the positional arm at identity-component-decision.ts:408-410 follows from this outcome's emptiness and is asserted by the construction test, never by npm run build, which was measured non-discriminating.
+    discretion:
+      - id: discretion-identity-floor-refusal-site
+        unit_ref: unit-5-record-shape-and-identity-floor
+        question: Whether the floor is a guard clause inside buildSyncRecord's body or a small named predicate that buildSyncRecord calls and that narrows the remote entity's type for it.
+        scope:
+          files:
+            - src/sync/state-committer.ts
+            - src/sync/opened-file-priority.ts
+          component: component-record-shape
+          visibility: private
+        escalate_when:
+          - The refusal would sit in a caller rather than in buildSyncRecord, which would leave the two opened-file-priority callers at :61 and :88 unguarded while they both write to the store at :62 and :91.
+          - The refusal would require a remote?.identityKey ?? "" fold anywhere to keep the required type satisfiable.
+          - The check would let an absent or empty identity reach the store and surface as a DataError or as a silently replaced row.
+          - The check would also rewrite FileEntity.identityKey, refuse the entity at the backend boundary, or remove it from a listing.
+          - The refusal would make the opened-file priority attempt fail the cycle, or make commitAction defer instead of failing the action.
+        constraints:
+          - Absent and empty are one case with one branch; no third state is introduced, and this answer is not exported to the rename-evidence dedupe key, which must keep them distinct.
+          - Both representatives put the branch inside buildSyncRecord, so all three production callers in both files reach the same refusal and the same observable.
+        preserves:
+          invariant_refs: [FR-RIK-007, FR-RIK-012]
+        verification_refs: [verify-empty-identity-takes-the-same-branch-as-absent, verify-identityless-record-construction-fails]
+        difficulty_inputs:
+          decision_reasoning: mechanical
+          boundary_reach: private
+          context_scope: files
+          reversibility: trivial
+          verification_strength: discriminating
+          runtime_risk: normal
+          coupling: independent
+          grounding: evidenced
+
+  - id: contract-cross-family-identity-conformance
+    dimension: integration_contract
+    owner: component-shared-fs-contracts
+    requirement_refs: [FR-RIK-011, FR-RIK-001, NFR-RIK-003]
+    unit_refs: [unit-7-cross-family-conformance]
+    adr_refs: [adr-remote-correspondence-identity-carrier]
+    verification:
+      - id: verify-file-rename-pair-identity-matches-stat
+        tier: T0
+        command: npm test -- tests/fs/remote-backend-contracts.test.ts
+      - id: verify-folder-rename-pair-identity-matches-stat
+        tier: T0
+        command: npm test -- tests/fs/remote-backend-contracts.test.ts
+      - id: verify-both-provider-orderings-agree
+        tier: T0
+        command: npm test -- tests/fs/remote-backend-contracts.test.ts
+      - id: verify-matrix-still-fails-closed-on-missing-cell
+        tier: T1
+        command: npm run build
+    partition:
+      outcomes: [determinate, unknown, conflicting]
+      default_policy: For each registered family a rename case is determinate when the pair's identityKey equals the identityKey a stat of newPath reports; unknown when the family's projection legitimately yields no identity, which the case must assert as an explicit absence with a cited reason rather than skip; conflicting when the pair carries an identity stat does not report, which fails the shared case for that family with no opt-out. The existing object literals at :314, :333 and :351-356 are updated to include the identity, never loosened to a partial match.
+
+adrs:
+  - id: adr-remote-correspondence-identity-carrier
+    status: proposed
+    decision_input_refs:
+      - decision-input-owner-purpose-is-misoperation
+      - decision-input-conductor-note-boundary-carried-identity
+      - decision-input-renamepair-has-no-identity-field
+      - decision-input-enrichment-is-self-satisfying
+      - decision-input-dropbox-extractid-total-fallback
+      - decision-input-dropbox-tombstone-positional-guard
+      - decision-input-local-side-no-identity
+      - decision-input-adr-0008-missing-keys-no-evidence
+      - decision-input-adr-0006-order-independence
+      - decision-input-agents-two-publication-points
+      - decision-input-selectreportfamily-identity-checks-unreachable
+      - decision-input-renameevidencekey-omits-identity
+      - decision-input-aliasfolder-is-report-free
+      - decision-input-warm-escalation-covers-hot-miss
+      - decision-input-required-contract-matrix
+      - decision-input-shared-rename-cells-and-harnesses
+      - decision-input-indexfacts-insert-is-a-different-selection
+      - decision-input-dropbox-idless-rename-is-case-only
+  - id: adr-record-identity-uniqueness-mechanism
+    status: proposed
+    decision_input_refs:
+      - decision-input-owner-decision-6-ordering-retirement-and-floor
+      - decision-input-displaced-incumbent-is-implicit-under-path-keying
+      - decision-input-idb-helper-loses-every-abort-name
+      - decision-input-ownership-guard-second-fixture-consumer
+      - decision-input-owner-decision-3-persist-only-underivable
+      - decision-input-owner-decision-4-version-bump-cold-start
+      - decision-input-record-store-enforces-only-path-uniqueness
+      - decision-input-owner-decision-5-path-uniqueness-is-upstream
+      - decision-input-same-transaction-pre-read-is-atomic
+      - decision-input-relocation-order-is-load-bearing
+      - decision-input-merge-base-discarded-by-method-body
+      - decision-input-rewritepaths-uncalled-no-cas
+      - decision-input-backendmeta-never-interpreted
+      - decision-input-agents-no-migration
+      - decision-input-adr-0001-cache-commits-last
+      - decision-input-relocation-terminal-is-a-source-spread
+      - decision-input-scaffold-lists-deleted-rename-debt
+      - decision-input-issue90-cache-bijection-scaffold
+      - decision-input-no-operator-signal-on-main
+  - id: adr-record-key-shape
+    status: accepted
+    decision_input_refs:
+      - decision-input-owner-decision-6-ordering-retirement-and-floor
+      - decision-input-cas-expectations-separate-under-identity-keying
+      - decision-input-required-field-binds-the-test-surface
+      - decision-input-owner-decision-5-path-uniqueness-is-upstream
+      - decision-input-owner-decision-2-identity-keyed
+      - decision-input-keypath-replacement-probe-withdrawn
+      - decision-input-path-addressed-call-site-inventory
+      - decision-input-getmany-is-a-primary-key-lookup
+      - decision-input-conflict-resolver-reads-content-by-path
+      - decision-input-relocation-overlap-under-inversion
+      - decision-input-dropbox-entry-without-id-unsettled
+      - decision-input-dropbox-refusal-creates-the-harm
+  - id: adr-record-identity-floor-tolerated
+    status: proposed
+    decision_input_refs:
+      - decision-input-owner-decision-6-ordering-retirement-and-floor
+      - decision-input-required-field-is-not-a-type-error
+      - decision-input-buildsyncrecord-has-three-callers-in-two-files
+      - decision-input-owner-decision-5-path-uniqueness-is-upstream
+      - decision-input-buildsyncrecord-has-no-identity-floor
+      - decision-input-identityless-class-is-bounded-to-dropbox
+      - decision-input-empty-string-is-an-index-key
+      - decision-input-dropbox-refusal-creates-the-harm
+      - decision-input-adr-0008-missing-keys-no-evidence
+      - decision-input-owner-decision-4-version-bump-cold-start
+
+units:
+  - title: unit-0-admission-branch-measurement
+    chunk: evidence
+    contract_refs: [contract-positional-mechanism-evidence]
+    files:
+      - src/sync/plan-admission.test.ts
+      - src/sync/record-rekey-across-commit.test.ts
+    acceptance:
+      - Both measurement files exist in the working tree already and this unit lands them unchanged in substance - no file under src/ other than these two tests is modified by this unit, and neither file is replaced by a described equivalent.
+      - Five fixtures are driven through captureBatchObservation into admitBatchObservation on unchanged production code, each asserting by name the branch taken by selectReportFamily, aliasFolder, completeIdentityEvidence's newPath lookup and the identity guard at identity-component-decision.ts:105-107, so that a mutation to any of those branches fails at least one assertion.
+      - The five shapes are present and distinguishable — a remote object renamed under an unchanged local file with a baseline carrying an identity; the same with a baseline carrying none; a remote object replaced at an address by a different id; a rename whose evidence carries no identity; and a folder rename whose descendants are not re-emitted.
+      - The recorded answer to whether identity-component-decision.ts:106-107 can fail on main is carried by the file and cited by every later claim in place of the plan's earlier analysis - it cannot fail on any fact shape today's Observation layer emits, the replaced-destination shape is authorized with a match rather than a wrong rename, and removing the rename enrichment is therefore lossless.
+      - A sixth case pins the boundary of that answer by constructing the two divergences where the completion map and current.remote key one entity differently and recording conflicting_identity with no actions for both; deleting or weakening that case is a failure of this unit, because the claim it bounds is a claim about a population and not about impossibility.
+      - The second measurement drives the orchestrator's own chain — collectChanges, prepareSyncCycleSnapshotForExecution, admitBatchObservation, executePlan — over the real SyncStateStore on fake-indexeddb with pass-through spies on the durable publication routes, and records that the same-cycle baseline is preserved by identity-keyed binding at identity-component-decision.ts:408-409 rather than by the store's key, and that the split-cycle baseline is not retained, the old row being discarded and the object re-downloaded as new, with no wrong-object operation in either shape since decision-engine.ts:19 yields conflict rather than delete_remote. Under owner decision 8a that second result is the model's expected end state and is asserted deliberately as such, not as a defect.
+      - No production behaviour changes and no mechanism is retired by this unit.
+    objective: Land, as this change's evidence base, the two measurements that settle what production Admission does for five never-measured shapes and what survives a commit, so that every later claim cites a recorded result rather than an analysis.
+    output_format: Two test files carried into the change unchanged - one new describe block in the existing Admission test, one new end-to-end measurement over the real store - with the branch or the commit route recorded per shape as an explicit assertion.
+    tool_guidance: Drive the production entry rather than calling decideIdentityComponent or selectReportFamily directly, because the unknown this settles is specifically about the end-to-end path; seed the baseline through the same store double the other cases use so the facts are the ones Admission would really see; for the commit-boundary measurement keep the spies pass-through so the real store still performs every write.
+    task_boundaries: Change no production file. Do not retire, relax or reroute any positional mechanism. Do not add an AdmissionFailureReason member. Do not assert on internal helpers reached outside admitBatchObservation. Do not adjust either file to the post-change behaviour here - the split-cycle case records the loss on main, and inverting it is unit-4's.
+    decision_closure_reason: The five shapes, the four observation sites, the commit-boundary chain and the prohibition on retiring anything are fixed, and the measurements have already been taken; what they found is the point and is not a design choice.
+
+  - title: unit-1-seam-identity-carrier
+    chunk: seam
+    contract_refs: [contract-seam-carried-identity]
+    files:
+      - src/fs/types.ts
+      - src/fs/interface.ts
+      - src/fs/caching/metadata-cache.ts
+      - src/fs/caching/id-delta.ts
+      - src/fs/caching/id-delta.test.ts
+      - src/fs/caching/remote-fs.ts
+      - src/fs/caching/remote-fs.contract.test.ts
+      - src/fs/dropbox/incremental-sync.ts
+      - src/fs/dropbox/incremental-sync.test.ts
+    acceptance:
+      - RenamePair gains an optional identityKey documented as the producing filesystem's own FileEntity projection for newPath, and the doc comment names extractId, idAt, getPathById and snapshotPathsById as forbidden sources for any value crossing the IFileSystem boundary.
+      - The producers reach the identity through one total helper over the already-public abstract toEntity, whose returned value equals toEntity(path, file).identityKey for every cached path and undefined for every uncached one, which never routes through extractId, and which forces no new abstract member on any backend subclass.
+      - All three producers — applyEntry's move branch in id-delta.ts, diffById in remote-fs.ts, and applyRename in dropbox/incremental-sync.ts — set identityKey through that one helper and through no other source.
+      - A Dropbox full-scan case-only rename of a cached entry with no provider id produces a rename pair with identityKey absent, never with the path_lower value that extractId returns for the same entry, and the test asserts the two differ; this is staged in remote-fs.contract.test.ts, because it is the only shape an id-less entry can reach — incremental-sync.ts:158 gates applyRename on entry.id, and remote-fs.ts:416-421's surrogate key entry.id ?? entry.path_lower changes with any path-changing rename, while path_lower is stable across a case-only one.
+      - A Dropbox delta rename of an id-bearing entry produces a pair whose identityKey is the entity projection's, staged in incremental-sync.test.ts, which is the constructible witness that file can host.
+      - A Google Drive and a OneDrive fixture each produce a pair whose identityKey equals the id the delta entry carried, and the existing order-independence cases stay green unchanged.
+    objective: Stop discarding an identity the producer already holds, using one rule that cannot leak a cache-internal synthetic id.
+    output_format: One widened FS type, one new cache helper, three one-line producer changes, and the first unit test file for applyIdDeltaPage.
+    tool_guidance: Build fixtures through each backend's own cache subclass so the projection is the real one; assert the carried value against a stat or list projection of the same object rather than against the raw id, so a projection that diverges is caught. At remote-fs.ts:416 the TFile is already in the destructured pair and only needs to stop being thrown away.
+    task_boundaries: Do not change apply ordering, descendant enumeration, removeTree, upsertedPaths, or any path-derived behaviour; do not make identityKey required; do not touch src/sync/.
+    decision_closure_reason: The identity source and the three call sites are fixed by contract; only the private call shape and the helper's placement remain discretionary.
+
+  - title: unit-2-evidence-preservation
+    chunk: evidence-carrier
+    contract_refs: [contract-evidence-identity-preservation]
+    files:
+      - src/sync/identity-evidence.ts
+      - src/sync/identity-evidence.test.ts
+      - src/sync/remote-change-source.ts
+      - src/sync/plan-admission.test.ts
+    depends_on: [unit-0-admission-branch-measurement, unit-1-seam-identity-carrier]
+    acceptance:
+      - collectRemoteRenameEvidence copies identityKey from the pair onto the RenameEvidence and adds nothing when the pair carries none.
+      - The rename-evidence dedupe key distinguishes a carried key from an absent key and from a different key, so two claims on one edge with different identities both survive into the report family; absent and empty do not alias. This is this module's own encoding rule and is deliberately not the record layer's admissibility rule, where absent and empty are one inadmissible case.
+      - completeIdentityEvidence no longer attaches a remote rename's identityKey from a destination-address lookup, and a report with no carried key reaches Admission with identityKey undefined.
+      - The stable_identity occurrence index and the alias pass in the same function are unchanged, and their existing cases stay green.
+      - Local rename evidence still carries no identityKey and none is inferred for it.
+      - unit-0's recorded branches are cited in this unit's review as the evidence that the removal loses nothing; they show exactly that, so the removal proceeds on a measurement rather than on an argument.
+      - The measurement file is updated with the removal rather than left stale - fixtures 1 through 4 record the rename claim reaching Admission with no identity where they currently record the newPath fill, and the sixth case's two divergences record the guard as not reached where they currently record conflicting_identity, which is the observable form of the manufactured failures going with the enrichment. No assertion is loosened into a partial match.
+    objective: Carry the producer's identity intact to Admission and remove the address-derived re-attachment that made the downstream check compare a value to its own source.
+    output_format: Two small edits in identity-evidence.ts plus the evidence tests that pin the removal and the dedupe distinction.
+    tool_guidance: Write the removal test first and watch it fail against the current enrichment; assert on the evidence array rather than on downstream decisions so the two concerns stay separable.
+    task_boundaries: Do not change RenameEvidence's public shape beyond the field that already exists, do not add a provenance field, and do not alter the alias or stable_identity passes.
+    decision_closure_reason: What is removed, what is preserved and what gates the removal are named line by line; only the private dedupe-key encoding remains discretionary.
+
+  - title: unit-3-cross-source-validation
+    chunk: admission
+    contract_refs: [contract-cross-source-rename-validation, contract-local-positional-boundary]
+    files:
+      - src/sync/identity-component-decision.ts
+      - src/sync/identity-component-report-family.ts
+      - src/sync/plan-admission.test.ts
+      - src/fs/local/local-fs.test.ts
+    depends_on: [unit-2-evidence-preservation]
+    acceptance:
+      - A fixture driven through admitBatchObservation in which the carried identity for a remote rename differs from the identity observed at newPath fails the component and produces no action; the RED half is the same producer-level input on main, staged by giving the rename pair an identity rather than by hand-keying the report, which on main reaches Admission keyless, is filled from the destination and is admitted. A fixture whose report is pre-keyed is not a valid RED witness, because completeIdentityEvidence's fill is guarded by !item.identityKey and such a fixture already fails on main.
+      - A fixture in which the carried identity matches admits the relation and produces the same actions main produces today.
+      - A fixture whose report carries no identity produces exactly the actions main produces today, so ADR 0008's missing-keys-are-no-evidence rule is preserved and no component fails for a missing key.
+      - A fixture in which two remote rename claims share an edge but carry different identities reaches the report family and is classified conflicting, and the component degrades to ordinary actions rather than binding either claim.
+      - No fixture exists in which a report family, folder relation or binding rejected without identity becomes admissible with one; a mutation that would allow it fails at least one case.
+      - LocalFs still reports identityKey undefined, no branch reads a local entity's identityKey as evidence, and the cross-scope local rename and missed-event non-improvements are stated where a reader of the change will find them.
+    objective: Turn a self-satisfying guard into a genuine cross-source check without widening what Admission will admit.
+    output_format: A minimal change at the remote-rename validation site, no change to the report family's positional rules, and the fixtures that pin the four outcomes.
+    tool_guidance: Drive captureBatchObservation into admitBatchObservation rather than calling decideIdentityComponent directly, reusing unit-0's fixture scaffolding; record the branch taken for each fixture as unit-0 did.
+    task_boundaries: Do not relax any positional rule, do not add an AdmissionFailureReason member, do not persist a failure, and do not touch decideFolder's suffix coverage or aliasFolder.
+    decision_closure_reason: The validation's inputs, outcomes and the prohibition on widening are fixed; only which existing failure reason is reused remains discretionary.
+
+  - title: unit-4-store-constraint-and-merge-base
+    chunk: store
+    contract_refs: [contract-record-identity-uniqueness, contract-merge-base-survives-relocation]
+    files:
+      - src/sync/state.ts
+      - src/sync/state.test.ts
+      - src/sync/state-committer.ts
+      - src/sync/state-committer.test.ts
+      - src/sync/plan-executor.ts
+      - src/sync/plan-executor.test.ts
+      - src/sync/change-detector.ts
+      - src/sync/opened-file-priority.ts
+      - src/sync/conflict-resolver.ts
+      - src/sync/identity-component-decision.ts
+      - src/sync/plan-admission.test.ts
+      - src/sync/fact-first-execution.test.ts
+      - src/sync/record-rekey-across-commit.test.ts
+      - src/__mocks__/sync-test-helpers.ts
+    depends_on: [unit-5-record-shape-and-identity-floor]
+    acceptance:
+      - sync-records is created with keyPath remoteIdentityKey and createIndex over path declared unique inside the existing onUpgrade recreate, sync-content is re-keyed the same way, and DB_VERSION is bumped with a comment in the established style recording both the reason and that the bump is not what closes the identity-less record class.
+      - Two records carrying the same remoteIdentityKey cannot both exist, asserted by writing the second and observing exactly one row for that identity with the later address; no refusal, named duplicate-identity error, or same-transaction holder pre-read exists anywhere in the store.
+      - A write whose target address is occupied by a record that is not the expected occupant returns false having written nothing, without reaching the unique path index — the ordinary stale-baseline outcome, asserted to be distinguishable from a transaction abort.
+      - Two distinct records written at one path through the uncompared put abort the transaction having written nothing, and the failure reaches the caller as a thrown IDBTransactionError rather than as false, with both stores unchanged; a test fails if it is caught, mapped to false, or compensated by deleting the incumbent. The test does not assert domName, which is null on main for every abort, and nothing in this unit changes or works around src/store/idb-helper.ts.
+      - compareAndRewritePaths publishes nothing and returns false when any item's terminal address equals a different item's source address, or when the set is cyclic, while admitting self-overlap where an unmoved item's terminal address is its own source address; a twelve-child folder relocation publishes normally, and a folder relocation whose terminal subtree already holds baselined records outside the set publishes too, each such item being a replacement that deletes its captured foreign incumbent under the one transaction image rather than aborting on the index.
+      - compareAndMove no longer exists; compareAndPut takes two explicit expectations — expectedRow for the row keyed by record.remoteIdentityKey and expectedOccupant for the current occupant of record.path through the path index — with no defaulted parameter, and does not acquire compareAndMove's unconditional sync-content deletes. compareAndPut(undefined, record, undefined) still refuses a non-vacant address, and compareAndDelete with no expected record verifies vacancy, deletes nothing and returns true.
+      - Every publication is one of exactly two operations and the tests distinguish them. A rename - a terminal carrying expectedRow's own identity at a new address - is a single put, so no delete is issued at all, the primary key is unchanged, and the identically keyed sync-content row stays in place. A replacement - a terminal whose identity differs from that of the record holding the claimed address - deletes that incumbent and inserts the terminal within one transaction, so that afterwards exactly one row holds the address and the incumbent's sync-content row is gone with it; the delete is observable as its own operation rather than as a side effect of the put. A replacement publication carries no continued row, so identity-component-decision.ts:509-511 and :549-551 stop passing the incumbent as both source and destination; a mutation that leaves them passing it as both makes the replacement return false forever and fails at least one case.
+      - The comparison precedes the delete, so a replacement whose captured expectation no longer matches the row at the address deletes nothing and returns false, so a stale expectation can never destroy a row the engine did not admit. No classification vocabulary, evidence test, ordering pass, deferral or new AdmissionFailureReason appears anywhere in this unit; an address permutation behaves exactly as on main, the first publication committing and the second returning false on its stale expectation.
+      - The commit-boundary measurement is re-priced rather than inverted. src/sync/record-rekey-across-commit.test.ts's split-cycle cases already record the correct end state under owner decision 8a - the old row discarded and the object re-downloaded as new - and are changed only to assert it deliberately, as the model working, rather than as a defect — shape 2 cycle 1 keeps its single surviving row at P and additionally asserts that the incumbent's removal was an explicit delete inside the claiming transaction, and shape 2 cycle 2 keeps its assertion that K1 is treated as a new file. traceCommits loses its compareAndMove spy because the method ceases to exist; the control and same-cycle cases record compareAndPut where they record compareAndMove; and the merge-base case's relocation leg records the base preserved where it records absent, because a rename does not move the row. No instrumentation is weakened and no assertion is loosened into a partial match.
+      - compareAndPut and compareAndRewritePaths apply compareAndPut's existing invalidation predicate to the merge base and otherwise leave it in place; a folder relocation either preserves or invalidates every child's base under one transaction image and never partially applies.
+      - rewritePaths no longer exists on SyncStateStore or on the store double at src/__mocks__/sync-test-helpers.ts, and nothing in src/ or tests/ references it or compareAndMove. The compareAndMove surface is enumerated and closed — src/sync/state.test.ts, src/sync/fact-first-execution.test.ts (:282, :402-417, :671, :727-742), src/sync/state-committer.test.ts:210-215, src/sync/plan-executor.test.ts:1101 and src/__mocks__/sync-test-helpers.ts:270 — and each spy or bind is re-expressed against compareAndPut rather than deleted.
+      - The seventeen key-addressed production call sites are re-expressed — address-asking reads through the path index, row-addressing writes by identity — plan-executor.ts's checkRecord sites are :420, :421, :436 and :437 over the single store.get at :414, and conflict-resolver.ts:135 reads the merge base by the baseline record it already holds rather than by ctx.baselinePath.
+      - Every CAS method keeps its boolean return and its stale-baseline false, which stays distinct from a thrown transaction failure.
+      - npm run lint, npm run build and npm run test:coverage are green at this unit's boundary.
+    objective: Re-key the durable correspondence to provider object identity so two baselines for one object become unrepresentable, split publication into the two operations owner decision 8b names so the displacement the old keyPath performed silently becomes an explicit, compared, asserted delete, guard the filesystem layer's path-uniqueness premise without turning it into a policy branch, stop every rename destroying the three-way merge base, and delete the CAS-free overwrite route.
+    output_format: A schema change, seventeen re-expressed call sites, one collapsed CAS method taking two explicit expectations and performing either a single put or a delete-plus-insert, one corrected pair of Admission publication expectations, one invalidation predicate applied where two unconditional deletes were, one relocation admission rule, and the store, Admission and execution tests that pin each.
+    tool_guidance: Use fake-indexeddb; seed a previous-version database to prove the cold start rather than asserting on the upgrade callback. Assert the index case through the uncompared put, since every replacement now deletes its own incumbent and cannot reach the index; assert it by the shape of the failure — a throw where a stale baseline returns false, both stores unchanged — and never by a DOMException name, because idb-helper.ts:142 rejects on tx.onerror with tx.error still null and every abort on main is unnamed. Write a test that fails if the error is swallowed into the boolean return. Distinguish the two operations by observing the store's calls and not only its final contents — the rename case must fail if any delete is issued, and the replacement case must fail if the incumbent disappears without one. Write the overlapping and cyclic relocation cases as direct constructions so they stay true if the production loop is rewritten. Drive the corrected publication expectations through admitBatchObservation, reusing unit-0's fixture scaffolding. Let the compiler enumerate the call sites rather than grepping.
+    task_boundaries: Do not add a convergence strategy, retry, recovery path, recovery marker or queue for the path-index violation; the index stays a pure defect signal, and a correctly built replacement never reaches it. Do not reintroduce anything owner decision 8 removed — no evidence test for whether a displaced object still exists, no classification vocabulary, no ordering between bindings, no relocating-first emission, no claimer-expects-vacant expectation, no address-permutation refusal and no fail-closed disposition - the correspondence's end is directly observed and a replacement simply deletes the incumbent. Do not add an identity-keyed deletion channel, a scope-completeness or temperature fact carried into Admission, or a new observation kind. Do not push anything to the executor and do not add ordering, regrouping, a dependency graph or a recovery queue there. Do not add a store-side reaper. Do not add a by-identity refusal, a duplicate-identity error, or a holder pre-read — there is no holder to name under this key. Do not order or add a temporary for overlapping relocation sets; refuse them. Do not issue a delete on the rename path, and do not delete an incumbent before comparing it. Do not add a new mutating method, do not add an AdmissionFailureReason member, do not remove put or putContent, do not repair or work around src/store/idb-helper.ts, and do not design or assume anything about how fs enforces path uniqueness or how two objects at one address are arbitrated, which is issue #90's. The record type's required-identity change and the floor land in unit-5, which runs first; this unit must not re-open them.
+    decision_closure_reason: The key shape is owner decision 5's and is fixed; the index's role as a hard constraint and guard rather than a policy mechanism under owner decision 7a, the two operations under owner decision 8b, the two CAS expectations and which record fills each, the relocation admission rule, the invalidation predicate and the deletions are all stated; only the private shape of the address comparison and where the invalidation predicate is factored remain discretionary.
+
+  - title: unit-5-record-shape-and-identity-floor
+    chunk: store
+    contract_refs: [contract-record-field-audit, contract-record-identity-floor-disposition]
+    files:
+      - src/sync/types.ts
+      - src/sync/state-committer.ts
+      - src/sync/state-committer.test.ts
+      - src/sync/identity-component-decision.ts
+      - src/sync/opened-file-priority.ts
+      - src/sync/opened-file-priority.test.ts
+      - src/sync/plan-admission.ts
+      - src/sync/plan-executor.ts
+      - src/sync/priority-batch-state.ts
+      - src/sync/change-hash-enrichment.ts
+      - src/sync/conflict-action-contract.ts
+      - src/sync/plan-admission-case-alias.ts
+      - src/sync/sync-cycle-finalization.ts
+      - src/sync/identity-evidence.ts
+      - src/__mocks__/sync-test-helpers.ts
+      - src/sync/state.test.ts
+      - src/sync/plan-executor.test.ts
+      - src/sync/change-detector.test.ts
+      - src/sync/conflict-resolver.test.ts
+      - src/sync/conflict.test.ts
+      - src/sync/content-identity.test.ts
+      - src/sync/convergence.test.ts
+      - src/sync/decision-engine.test.ts
+      - src/sync/delete-safety.test.ts
+      - src/sync/delta-first.test.ts
+      - src/sync/identity-evidence.test.ts
+      - src/sync/orchestrator.test.ts
+      - src/sync/plan-admission.test.ts
+      - src/sync/priority-batch-state.test.ts
+      - src/sync/scheduler.test.ts
+      - src/sync/scope-projection.test.ts
+      - src/sync/sync-cycle-finalization.test.ts
+      - src/sync/sync-cycle-planning.test.ts
+      - src/sync/admission-action-uniqueness.test.ts
+      - src/sync/change-compare.test.ts
+      - src/fs/onedrive/incremental-sync.test.ts
+      - tests/fs/contracts/remote-change-detection.contract.ts
+    depends_on: [unit-0-admission-branch-measurement]
+    acceptance:
+      - SyncRecord no longer declares backendMeta and buildSyncRecord no longer writes it; FileEntity.backendMeta, hot-warm-promotion's entity merge and every backend that populates it are untouched, and the type change alone makes any production read a compile error.
+      - SyncRecord.remoteIdentityKey is declared required, and buildSyncRecord itself refuses a remote entity whose identityKey is absent or empty with one named error before any store write; both inputs take the same branch and nothing is written. The refusal is in the construction function, so all three production callers reach it — state-committer.ts:119, opened-file-priority.ts:61 and :88 — and no site folds an absent identity to the empty string to satisfy the required type.
+      - >-
+          The refusal's two consumer contexts keep their own established routes: commitAction fails the action so the cycle does not complete, and the opened-file priority attempt takes no baseline, invalidates its target and defers to the batch rather than failing a cycle it is not part of.
+      - The positional arm at identity-component-decision.ts:408-410 is removed, and a test that fails when an identity-less record is constructed is what asserts the retirement; npm run build is explicitly not the assertion, because a required string is not always-truthy to TypeScript and the arm still compiles.
+      - Every production branch that tested a stored record's own identity absence is disposed of and none is repaired positionally — the whole branch at opened-file-priority.ts:41 is removed, the vacuous terms at plan-admission.ts:125, plan-executor.ts:556 and :788, priority-batch-state.ts:63, change-hash-enrichment.ts:33, conflict-action-contract.ts:42, plan-admission-case-alias.ts:152, sync-cycle-finalization.ts:44, identity-evidence.ts:57 and identity-component-decision.ts:420 and :459 are dropped with their comparisons unchanged, and the runtime shape validator at conflict-action-contract.ts:150 is tightened to require a non-empty string. Sites that test an absent record rather than an absent field are untouched.
+      - A test asserts that the refused entity is still listed, still compared and still conflict-resolvable — the refusal is at the baseline, not at the backend boundary or the listing.
+      - The measurement fixture that can no longer exist is deleted with its reason cited, not repaired - unit-0's shape 2, a baseline carrying no identity, becomes unconstructible the moment the field is required and the floor lands, and its disappearance is the observable form of fr-rik-012's retirement. Every other SyncRecord literal in that file gains a non-empty identity rather than an empty-string fold.
+      - Whole-record JSON equality in every CAS method compares the same field set on both sides, and the existing publication cases stay green.
+      - Every other field is kept with its reason recorded, including syncedAt, which is kept as underivable although no production reader was found.
+      - npm run lint, npm run build and npm run test:coverage are green at this unit's boundary with the store's keyPath still "path". tsconfig.json type-checks tests/**/*.ts as well as src/**/*.ts, so every SyncRecord literal in the 24 measured test and mock files carries a non-empty identity; the file list above is the measured set and the unit's boundary is that set plus any further file the compiler names.
+    objective: Apply the persist-only-what-cannot-be-derived discipline field by field, and make the record layer's identity floor real before anything depends on it — the declared shape by the type, the value by a refusal inside the single construction function — with the consequence for an id-less entity named and tested and the whole type-checked construction surface closed. This unit runs before the re-key so that no intermediate state ever has a keyPath over an optional property, which would force a non-null assertion or an empty-string fold.
+    output_format: One field removed from the record type and its single writer, one field promoted to required, one refusal inside buildSyncRecord, the now-dead positional arm and every vacuous absence guard removed, one shape validator tightened, plus the test-helper and test-literal updates that follow.
+    tool_guidance: Let the compiler enumerate the construction sites rather than grepping; it is the reliable enumerator here precisely because tsconfig covers tests/. Keep the entity-side backendMeta in every assertion that already exercises it so the two fields are visibly separate. Write the floor test as an assertion of the declared outcome — the construction throws and nothing is written — not as an assertion that the input cannot occur, and do not reach for npm run build to assert the positional arm's retirement. When dropping a vacuous term, change nothing else on the line.
+    task_boundaries: Do not touch the store's keyPath, its index or DB_VERSION — those are unit-4's and depend on this unit. Do not remove any other field, do not touch FileEntity, do not synthesize an identity from a path, do not fold an absent identity to the empty string anywhere, and do not refuse an id-less entity at the backend boundary or remove it from a listing. Do not make the opened-file priority attempt fail a cycle. src/sync/identity-component-decision.ts is touched by three units on two independent chains - unit-3 on the seam chain, this unit and unit-4 on the store chain - so the two halves must not be integrated concurrently in that file; each chain lands whole before the other starts, which is also what lets the halves ship independently.
+    decision_closure_reason: The audit outcome is stated field by field with a reversal condition for the single removal; the floor, its site, its two consumer dispositions and the disposition of every absence guard are decided by owner decisions 5 and 6a and enumerated from the repository; only whether the refusal is a guard clause or a named predicate inside buildSyncRecord remains discretionary.
+
+  - title: unit-6-enforcement-triple
+    chunk: enforcement
+    contract_refs: [contract-record-identity-uniqueness]
+    files:
+      - sync-state-ownership-guard.test.mjs
+      - docs/adr/0001-metadata-cache-is-subordinate-to-commit-last.md
+      - docs/code-enforcement.md
+      - docs/sync-pipeline.md
+    depends_on: [unit-4-store-constraint-and-merge-base, unit-5-record-shape-and-identity-floor]
+    acceptance:
+      - The guard's mutating-method set at sync-state-ownership-guard.test.mjs:9-12 is reduced by exactly the names rewritePaths and compareAndMove, both of which no longer exist on SyncStateStore, and the hardcoded method list at :320 — which generates two negative-fixture tests per name — is reduced by compareAndMove in the same edit. Its negative fixtures still catch a destructured call to every remaining CAS method, in both the records.<method> and records["<method>"] forms.
+      - The SyncStateStore import, reference, constructor and mutation-caller sets are byte-identical to their current values before and after the edit, which is the machine proof that removing two detector names is hygiene and not an intentional new writer, owner or field; mutationCallers stays [opened-file-priority.ts, orchestrator.ts, state-committer.ts] because opened-file-priority still calls compareAndPut, orchestrator still calls clear and state-committer still calls compareAndDelete, compareAndPut, compareAndPutContent and compareAndRewritePaths. sync-admission-authority-guard.test.mjs is green with no fixture edit.
+      - The two fixture sites are edited together with the method removals, so lint:bot-repro is green at this unit's boundary. A failure at :320 between the removals and the detector-set edit is the expected consequence of the removal, not evidence that a removed name was load-bearing; only an inventory change would be that.
+      - ADR 0001 records the record store's new key and its unique path index as storage mechanism subordinate to commit-last, and records the path index as a guard on the filesystem layer's path-uniqueness guarantee rather than as an identity policy owner.
+      - docs/code-enforcement.md's two-authority row names the reduced mutating set, and docs/sync-pipeline.md's state-commit bullets name compareAndPut, compareAndRewritePaths and compareAndDelete where they currently name put, rewritePaths and delete.
+      - npm run lint:bot-repro is green.
+    objective: Keep the enforcement artefacts describing the store surface this change actually moves, as hygiene consequent on that move rather than as an obligation the change incurs.
+    output_format: A two-name fixture reduction plus three documentation updates that agree with it.
+    tool_guidance: >-
+      Run the guard before and after the method removals and confirm no **inventory** changes — that, and only that, is the claim being checked. Do not read a failure of the generated negative fixtures at :320 as falsifying it: those are generated from the mutating-method set itself, so removing a name from the set necessarily fails them until the list at :320 is reduced with it. Both sites are edited in one commit.
+    task_boundaries: Do not widen any writer set, do not add a checkpoint accessor, do not rewrite ADR 0001's two-publication-point statement, and do not edit sync-admission-authority-guard.test.mjs's fixture. Do not state in any artefact that AGENTS.md:71-73 compelled this work.
+    decision_closure_reason: What each artefact must say is fixed by the store surface after unit-4 and unit-5 and by the three stale doc lines; nothing here is a design choice.
+
+  - title: unit-7-cross-family-conformance
+    chunk: conformance
+    contract_refs: [contract-cross-family-identity-conformance, contract-seam-carried-identity]
+    files:
+      - tests/fs/contracts/caching-remote-fs.contract.ts
+      - tests/fs/remote-backend-contracts.test.ts
+      - tests/fs/googledrive/caching-remote-fs.contract-harness.ts
+      - tests/fs/dropbox/caching-remote-fs.contract-harness.ts
+      - tests/fs/onedrive/caching-remote-fs.contract-harness.ts
+    depends_on: [unit-1-seam-identity-carrier]
+    acceptance:
+      - The existing remote FILE and FOLDER rename cases assert the pair's identityKey against a stat of newPath, and their current object literals at :314, :333 and :351-356 are updated to include the identity rather than loosened to a partial match.
+      - Both provider orderings — including the Dropbox harness's deliberate deleted-old-first ordering — produce the same identityKey on the pair.
+      - A family whose projection legitimately yields no identity records that as an explicit asserted absence with a cited reason; no family silently skips the case.
+      - A pair never carries the identity of a different object previously observed at oldPath, asserted by a delete-then-recreate-at-the-same-path-with-a-different-id case.
+      - The central matrix still makes a missing family or cell a compile error, no harness inspects private cache state, and no registry fixture is extended except for backend-specific construction data.
+    objective: Put the seam's guarantee where it binds all three backend families at once, in the observable vocabulary the harnesses already use.
+    output_format: Extended shared caching contract cases plus whatever minimal harness staging each family needs.
+    tool_guidance: Seed through each family's own provider script so no fake is more generous than the real API; where a family cannot produce a shape, cite the unsettled unknown rather than fabricating a fixture.
+    task_boundaries: Do not add a production capability hook to the backend-agnostic base, do not weaken any existing shared case, and do not register a case outside the central composition root.
+    decision_closure_reason: The assertion set and its observable vocabulary are fixed; only per-family staging construction remains, and the one unsettled family is declared rather than guessed.
+
+acceptance:
+  - id: AC-RIK-001
+    criteria: For every registered backend family and both provider orderings, each reported remote rename pair carries the identityKey that a stat of newPath reports, or explicitly no identity with a cited reason; no pair ever carries a cache-internal synthetic id, and a Dropbox entry with no provider id yields a pair whose identityKey is absent rather than path_lower.
+    requirement_refs: [FR-RIK-001, FR-RIK-002, FR-RIK-011]
+  - id: AC-RIK-002
+    criteria: A carried identity reaches Admission unchanged, and two rename claims on one edge carrying different identities both survive the evidence stage and are classified conflicting rather than collapsed by the dedupe key.
+    requirement_refs: [FR-RIK-003]
+  - id: AC-RIK-003
+    criteria: Driven through admitBatchObservation, a remote rename whose carried identity disagrees with the identity observed at newPath fails its component and produces no action, where the same producer-level input on main produces one or more actions. The RED half is staged by giving the rename pair an identity, never by hand-keying the report - completeIdentityEvidence's fill is guarded by !item.identityKey at identity-evidence.ts:41-44, so a pre-keyed report already fails on main and is no witness; and the action main produces for that input is not a wrong rename, since plan-admission.test.ts's fixture 3 records a match for the same-address form.
+    requirement_refs: [FR-RIK-004]
+  - id: AC-RIK-004
+    criteria: No fixture exists in which a report family, folder relation or binding that the positional rules reject becomes admissible because an identity is present; a report with no carried identity produces exactly main's actions and no component fails for a missing key.
+    requirement_refs: [FR-RIK-005, NFR-RIK-003]
+  - id: AC-RIK-005
+    criteria: Two SyncRecords cannot both claim one remoteIdentityKey, because that property is the store's key and the second write updates the one row rather than creating a second, and both remoteIdentityKey and path are mandatory. A rename - a terminal carrying the expected row's own identity at a new address - is a single put that issues no delete, leaves the primary key unchanged and leaves the identically keyed sync-content row in place. A replacement - a terminal whose identity differs from that of the record holding the claimed address - deletes that incumbent and inserts the terminal within one transaction, after comparing the incumbent, so that afterwards exactly one row holds the address, the incumbent's sync-content row is gone with it, and the delete is observable as its own operation rather than as a side effect of the put; a replacement whose captured expectation no longer matches deletes nothing and returns false, because the comparison precedes the delete. A replacement publication carries no continued row, so identity-component-decision.ts:509-511 and :549-551 no longer pass the incumbent as both source and destination. Two distinct records written at one path without the incumbent being deleted abort the transaction having written nothing, with the failure reaching the caller as a throw and never as the stale-baseline false, and with the assertion made on that shape rather than on a DOMException name, which is null on main for every abort; a baseline-free create still refuses a non-vacant address and a delete with no expected record verifies vacancy, deletes nothing and returns true; a twelve-child relocation that preserves every identity publishes normally; and a relocation set whose terminal addresses intersect another item's source addresses, or which is cyclic, publishes nothing and returns false.
+    requirement_refs: [FR-RIK-006]
+  - id: AC-RIK-006
+    criteria: No stored SyncRecord has an absent or empty remoteIdentityKey; a remote entity supplying either is refused inside buildSyncRecord with one named error before any store write, so all three production callers in two files reach the same refusal and none folds the value to the empty string; both inputs take the same branch and nothing is written; commitAction's caller fails the action so the cycle does not complete, the opened-file priority attempt takes no baseline and defers to the batch, and the refused entity is still listed, compared and conflict-resolvable.
+    requirement_refs: [FR-RIK-007]
+  - id: AC-RIK-007
+    criteria: A database seeded at the previous version opens at the new one with zero records and zero content entries, both stores are recreated with keyPath remoteIdentityKey and sync-records carries a unique index over path, no migration, transform or record-preserving upgrade code exists anywhere in src/, and the version comment records what the bump does not do.
+    requirement_refs: [FR-RIK-008]
+  - id: AC-RIK-008
+    criteria: rewritePaths and compareAndMove are both absent from SyncStateStore, from the store test double, from the ownership guard's mutating-method set at :9-12, from the generated negative-fixture list at :320 and from docs/sync-pipeline.md; every remaining CAS method still has both of its generated negative fixtures; that document names the three compare-and-swap routes production takes; the guard's import, reference, constructor and mutation-caller inventories are byte-identical before and after; and lint:bot-repro is green.
+    requirement_refs: [FR-RIK-009, NFR-RIK-004]
+  - id: AC-RIK-009
+    criteria: SyncRecord carries no backendMeta, FileEntity.backendMeta is unchanged, and whole-record CAS equality compares the same field set on both sides.
+    requirement_refs: [FR-RIK-010]
+  - id: AC-RIK-010
+    criteria: No persisted evidence, rename intent, Admission disposition, retry instruction or recovery marker exists, no new retained in-memory correctness owner exists, the SyncStateStore import, reference, constructor and mutation-caller sets are unchanged, and sync-admission-authority-guard.test.mjs is green with no fixture edit.
+    requirement_refs: [NFR-RIK-001, NFR-RIK-004]
+  - id: AC-RIK-011
+    criteria: LocalFs still reports identityKey undefined, local rename evidence carries no identityKey, no production branch reads a local entity's identityKey as evidence, and the four non-improvements are stated in the change's own documents.
+    requirement_refs: [NFR-RIK-002]
+  - id: AC-RIK-012
+    criteria: The positional arm at identity-component-decision.ts:408-410 no longer exists, and what stops it returning is the absence of its population, not a type error - a test fails when a SyncRecord is constructed without a non-empty identity, and npm run build is not the assertion, because the arm's exact shape compiles clean under this repository's own tsc --strict with remoteIdentityKey typed string and eslint.config.mts configures no no-unnecessary-condition. Every stored baseline resolves its remote endpoint through currentByIdentity with no address fallback available; every production branch that tested a stored record's own identity absence is removed, reduced or tightened with none repaired positionally and none folding to the empty string; and nothing in the change claims that fallback is still live or asserts its retirement through the build.
+    requirement_refs: [FR-RIK-012]
+  - id: AC-RIK-013
+    criteria: A file renamed remotely with unchanged bytes keeps its three-way merge base and the next conflict on it resolves by merge rather than newer-mtime-wins, including on the path that compareAndMove used to take before it collapsed into compareAndPut; a rename that changes the content hash drops the base; a 500-child folder relocation preserves or invalidates every child's base under one transaction image.
+    requirement_refs: [FR-RIK-013]
+  - id: AC-RIK-014
+    criteria: Five fixture shapes are recorded against unchanged production code with the branch taken named at each of the four observation sites; the record says that identity-component-decision.ts:106-107 cannot fail on any fact shape today's Observation layer emits, and a sixth case pins that boundary by recording conflicting_identity for the two map-keying divergences where it does fail; a second measurement over the real SyncStateStore records that the same-cycle baseline is preserved by identity-keyed binding while the split-cycle baseline is not retained, the old row being discarded and the object re-downloaded as new, which owner decision 8a settles is the model working and which the case asserts deliberately rather than as a defect; both measurement files exist in the change rather than being described, every later claim cites their recorded results rather than the plan's earlier analysis, and no positional mechanism is retired by the measurement itself.
+    requirement_refs: [FR-RIK-014]
+  - id: AC-RIK-015
+    criteria: npm run lint, npm run lint:bot-repro, npm run build and npm run test:coverage are all green at every unit boundary, not only at the end — in particular no boundary leaves a keyPath over an optional property, so no non-null assertion and no empty-string fold is ever required — with Dropbox's path-keyed upsertedPaths reclaim guard and every ADR 0006 ordering case unchanged.
+    requirement_refs: [NFR-RIK-003, FR-RIK-011]
+
+dispositions:
+  - decision_input_ref: decision-input-owner-purpose-is-misoperation
+    disposition: >-
+      Binding and used as the sole judging criterion, and the criterion is now applied against measurement rather than
+      against analysis. The plan previously claimed every mechanism was justified by a named wrong operation it
+      prevents. Two measurements landed and that claim does not survive intact. src/sync/plan-admission.test.ts shows
+      the guard at identity-component-decision.ts:106-107 cannot fail on any fact shape today's Observation layer
+      emits and that the replaced-destination shape is admitted as a match rather than a wrong rename, because
+      indexFacts and bindFiles:420-421 discriminate it first, so the seam half is carried as replacing a tautology
+      with a real cross-source check and removing failures the enrichment manufactures - not as stopping a reachable
+      wrong operation. src/sync/record-rekey-across-commit.test.ts shows no wrong-object operation occurring, and
+      owner decision 8a settles that its split-cycle end state is the model working rather than a loss, so the
+      record half's payoff is claimed as structural and only as structural - M2 and M3 stop being representable and
+      the silent discard of an incumbent becomes an admitted, compared and asserted operation - and never as
+      baseline continuity across cycles. M3's delete_local-of-a-live-file consequence is marked analytical. Collision representation remains out of scope and no mechanism that only matters for it was
+      proposed. The one graft that failed this test — a store-level identity-preservation check on folder
+      relocations — was rejected rather than kept for symmetry.
+    adr_refs: [adr-remote-correspondence-identity-carrier, adr-record-identity-uniqueness-mechanism]
+    contract_refs: [contract-cross-source-rename-validation, contract-record-identity-uniqueness]
+  - decision_input_ref: decision-input-conductor-note-boundary-carried-identity
+    disposition: Adopted as the change's first half and measured. Boundary-carried identity is not sufficient on its own and not subsumed by the store change; it is the only thing that closes the in-flight mis-binding, because the rename report never reaches any store. Verdict recorded as complementary with a named division of labour across M1, M2 and M3.
+    adr_refs: [adr-remote-correspondence-identity-carrier]
+    contract_refs: [contract-seam-carried-identity, contract-cross-source-rename-validation]
+  - decision_input_ref: decision-input-renamepair-has-no-identity-field
+    disposition: The historical question is closed by decision rather than by evidence. No commit, ADR or design clause states the omission as intentional; the ADR now records that the FS contract carries identity, so the provenance no longer gates anything and unknown-renamepair-identity-omission-intent is dissolved.
+    adr_refs: [adr-remote-correspondence-identity-carrier]
+    contract_refs: [contract-seam-carried-identity]
+  - decision_input_ref: decision-input-enrichment-is-self-satisfying
+    disposition: >-
+      Established by reading, made the design's pivot, and now closed by measurement rather than carried as an
+      assumption. completeIdentityEvidence fills a remote rename's identity from the same two sources indexFacts
+      builds current.remote from, so the guard compares a value to its own source; src/sync/plan-admission.test.ts
+      drives five fixtures through the production entry and records exactly that at every one. Removing the
+      enrichment for rename evidence is what makes the check real, and the claim that it loses nothing is now a
+      recorded result: the only outcomes the fill changes are the two map-keying divergences the same file
+      constructs, where what it produces is a conflicting_identity the world does not support. What the closure also
+      costs the plan is recorded rather than hidden - the guard cannot admit a wrong operation today, so no clause
+      rests on that any more.
+    adr_refs: [adr-remote-correspondence-identity-carrier]
+    contract_refs: [contract-evidence-identity-preservation, contract-cross-source-rename-validation]
+  - decision_input_ref: decision-input-indexfacts-insert-is-a-different-selection
+    disposition: >-
+      Adopted as the limit on the previous input, and the limit is now measured at the capture boundary.
+      identity-component-decision.ts:328-329 selects the prior entity when it has a hash and the incoming one does
+      not, and the incoming entity otherwise — a different selection, not a stricter check — and it keys by
+      entity.path where completeIdentityEvidence keys an entry's identity by entry.path at identity-evidence.ts:39.
+      src/sync/plan-admission.test.ts constructs both divergences directly and records the guard failing with
+      conflicting_identity and no actions for each, so the limit is real rather than hypothetical. Whether the
+      Observation layer can emit either shape is still not established and is claimed neither way; what follows
+      regardless is that the only failures the guard produces are manufactured by the enrichment, which is why the
+      removal is lossless and why the divergence case must stay in the file to keep the cannot-fail claim bounded to
+      the population it is true of.
+    adr_refs: [adr-remote-correspondence-identity-carrier]
+    contract_refs: [contract-positional-mechanism-evidence, contract-evidence-identity-preservation]
+  - decision_input_ref: decision-input-dropbox-extractid-total-fallback
+    disposition: Decisive, and it fixed the contract's wording. Lifting the cache's id would carry Dropbox's path_lower pseudo-identity into a rename pair on the shared full-scan route, where it can never equal any FileEntity.identityKey and would fail every such rename closed, stalling the component forever. contract-seam-carried-identity is written against the entity projection, names extractId, idAt, getPathById and snapshotPathsById as forbidden sources, and carries the adversarial witness that asserts the two values differ for an id-less Dropbox entry — which is the structural half a separate projection-source contract used to hold. That contract was removed as uncompelled by the minimality audit, since the helper is concrete over the already-public abstract toEntity and forces no new member on any subclass; its outcome survives in the seam contract and in contract-cross-family-identity-conformance, and its discretion moved to the seam contract. extractId remains legitimate as the cache-internal total address function it is.
+    adr_refs: [adr-remote-correspondence-identity-carrier]
+    contract_refs: [contract-seam-carried-identity, contract-cross-family-identity-conformance]
+  - decision_input_ref: decision-input-renameevidencekey-omits-identity
+    disposition: Adopted as a latent defect to close in the same change. renameEvidenceKey at identity-evidence.ts:22-24 omits identityKey while selectReportFamily's own unique map already includes report.identityKey ?? "", so the upstream dedupe is what makes the downstream arbitration dead. Without the repair, once producers carry keys, Map.set last-wins silently drops one of two conflicting claims on one edge and a wrong rename is admitted.
+    adr_refs: [adr-remote-correspondence-identity-carrier]
+    contract_refs: [contract-evidence-identity-preservation]
+  - decision_input_ref: decision-input-selectreportfamily-identity-checks-unreachable
+    disposition: Established by reading and used as the safety argument, with the correction that reachability also requires the dedupe repair. edgesByIdentity and identitiesByEdge cannot fire today because one enrichment pass yields at most one key per newPath and two edges sharing a newPath are already conflicting via sourcesByTarget. Producer-carried identity plus an identity-bearing dedupe key makes them reachable, and they only ever tighten, so no widening risk is introduced.
+    adr_refs: [adr-remote-correspondence-identity-carrier]
+    contract_refs: [contract-cross-source-rename-validation, contract-evidence-identity-preservation]
+  - decision_input_ref: decision-input-adr-0008-missing-keys-no-evidence
+    disposition: Binding, and it is why the report.identityKey guard keeps its shape. ADR 0008 Decision section 2 has three states and missing keys provide no evidence is the third; requiring an identity on every remote rename would encode absence of evidence as evidence of conflict against an accepted ADR and would stall Dropbox's unsettled id-less case. What changes is the source of the key, not whether it is required. This rule is about cycle-local rename evidence only and does not discharge the record layer's discipline.
+    adr_refs: [adr-remote-correspondence-identity-carrier, adr-record-identity-floor-tolerated]
+    contract_refs: [contract-cross-source-rename-validation]
+  - decision_input_ref: decision-input-adr-0006-order-independence
+    disposition: Binding and treated as a preserved contract. The seam change touches only what is reported, never apply ordering, descendant enumeration or the reclaim guard, and the existing both-orderings cases in the shared caching contract are the regression stop.
+    adr_refs: [adr-remote-correspondence-identity-carrier]
+    contract_refs: [contract-cross-family-identity-conformance, contract-seam-carried-identity]
+  - decision_input_ref: decision-input-dropbox-tombstone-positional-guard
+    disposition: Binding and untouched. The upsertedPaths reclaim guard keys on path because a Dropbox tombstone carries no id; an identity-keyed guard is unconstructible, not merely worse. Nothing in this design changes it, and Dropbox's eighteen path-derived topology sites stay path-derived because extractParentIds returns an empty array unconditionally.
+    adr_refs: [adr-remote-correspondence-identity-carrier]
+    contract_refs: [contract-seam-carried-identity]
+  - decision_input_ref: decision-input-local-side-no-identity
+    disposition: Binding and made an explicit contract rather than an omission. The local endpoint of every correspondence stays positional permanently; neither half of this change reaches it, no local identity is invented or inferred, and the change states what it does not improve — the missed local rename event and the cross-scope local rename — where a reader will find it.
+    adr_refs: [adr-remote-correspondence-identity-carrier]
+    contract_refs: [contract-local-positional-boundary]
+  - decision_input_ref: decision-input-aliasfolder-is-report-free
+    disposition: Settled by reading, closing one of the recovery's four open sub-questions. aliasFolder reads only local alias observations and current occupancy; no remote identity can produce or replace a local casing alias, so it is not an identification mechanism and is unchanged. The eighth part of the residual-obligation unknown is the only one reading could not close, and it is measured instead.
+    adr_refs: [adr-remote-correspondence-identity-carrier]
+    contract_refs: [contract-positional-mechanism-evidence]
+  - decision_input_ref: decision-input-required-contract-matrix
+    disposition: Adopted as the placement rule. The seam guarantee is asserted in the shared caching contract inside the central composition root so it binds all three families at once and a missing cell stays a compile error; no case is registered elsewhere and no registry fixture is extended except for backend-specific construction data.
+    adr_refs: [adr-remote-correspondence-identity-carrier]
+    contract_refs: [contract-cross-family-identity-conformance]
+  - decision_input_ref: decision-input-shared-rename-cells-and-harnesses
+    disposition: Adopted as a grounding correction. The rename cells are caching-remote-fs.contract.ts:297-360 with object literals at :314, :333 and :351-356 that break the instant RenamePair gains a field; remote-change-detection.contract.ts contains no rename content at all and stableIdentity is an option of ifilesystem.contract.ts:42,157. The three caching-remote-fs.contract-harness.ts registrations are named in unit-7's file list so the widening is costed at design time rather than discovered at build time, and the literals are updated rather than loosened.
+    adr_refs: [adr-remote-correspondence-identity-carrier]
+    contract_refs: [contract-cross-family-identity-conformance]
+  - decision_input_ref: decision-input-agents-two-publication-points
+    disposition: Binding and unchanged. Carried identity lives only in the cycle's evidence and is discarded with it; the store's DataError and ConstraintError refusals are raised and not persisted; no third durable authority, no new persistent-store owner and no retained in-memory correctness owner is added, and the measurement unit records nothing durable either.
+    adr_refs: [adr-remote-correspondence-identity-carrier, adr-record-identity-uniqueness-mechanism]
+    contract_refs: [contract-seam-carried-identity, contract-record-identity-uniqueness]
+  - decision_input_ref: decision-input-record-store-enforces-only-path-uniqueness
+    disposition: >-
+      Adopted as the store half's justification, answered by the key rather than by an observation, and narrowed
+      after measurement. Nothing observes identity uniqueness across records today, so two baselines may claim one
+      provider object; bindFiles binds the first and occurrenceClaimed silently drops the second. The further step
+      the plan asserted - that the dropped address then falls through to a confirmed-deletion binding that deletes
+      a live local file - is analytical and is withdrawn as an established claim, because
+      identity-component-decision.ts:568-569 refuses delete_local without a provider-reported deletion at that
+      address and no measurement produces the destructive outcome; the one wrong-operation candidate driven end to
+      end, a local deletion under a substituted path in record-rekey-across-commit.test.ts, yields conflict rather
+      than delete_remote. Neither the seam nor the version bump closes the two-baseline state. Making
+      remoteIdentityKey the store's key makes it unrepresentable rather than merely observed, which is claimed as a
+      structural result, so no refusal, no named duplicate-identity error and no holder pre-read is built.
+    adr_refs: [adr-record-identity-uniqueness-mechanism]
+    contract_refs: [contract-record-identity-uniqueness]
+  - decision_input_ref: decision-input-same-transaction-pre-read-is-atomic
+    disposition: Correct, and no longer needed. The measurement stands — a read issued from the failing put's onerror cannot complete because the transaction is already aborting, while an index read issued before the put inside the same readwrite transaction completes and returns the holder, since IndexedDB serialises readwrite transactions over a store — and it corrected draft-2's rejection of application-level checking. But it existed to let a duplicate-identity refusal name the record already holding the identity, and under keyPath remoteIdentityKey there is no such refusal and no such holder. The pre-read is retired unbuilt, contract-record-identity-uniqueness forbids re-adding it, and the store declines to represent the state rather than arbitrating it.
+    adr_refs: [adr-record-identity-uniqueness-mechanism]
+    contract_refs: [contract-record-identity-uniqueness]
+  - decision_input_ref: decision-input-relocation-order-is-load-bearing
+    disposition: Adopted, then superseded by the key shape and replaced with an obligation of the same kind. Under a unique identity index, delete-before-put was what made a folder rename publishable at all. Under keyPath remoteIdentityKey the delete disappears, because each relocation is an in-place update of one row, and what is load-bearing instead is which sets may be admitted. contract-record-identity-uniqueness states the admission rule, and a verification pins it, so a future caller that needs an overlapping or cyclic set fails a named test instead of aborting in production.
+    adr_refs: [adr-record-identity-uniqueness-mechanism]
+    contract_refs: [contract-record-identity-uniqueness]
+  - decision_input_ref: decision-input-merge-base-discarded-by-method-body
+    disposition: Adopted as a defect to repair, and still detached from the key choice. compareAndMove at state.ts:132-133 and compareAndRewritePaths at :186-187 delete sync-content at both addresses unconditionally on CAS success where compareAndPut at :104-108 applies a predicate, so every rename destroys the three-way merge base and conflict-resolver.ts:135 falls through to newer-mtime-wins. One correction to the attribution — commitAction's folder branch returning before maybeStoreMergeBase is correct, because a folder has no content, so the repair lands in the CAS bodies only. What the key shape supplies for free is the carry, because sync-content is keyed by identity and a relocation does not move the row; what it threatens is the predicate, which must survive compareAndMove's collapse into compareAndPut rather than being carried across as that method's unconditional deletes. The predicate repair is owed under any shape and is not counted as a payoff of this one.
+    adr_refs: [adr-record-identity-uniqueness-mechanism]
+    contract_refs: [contract-merge-base-survives-relocation]
+  - decision_input_ref: decision-input-relocation-terminal-is-a-source-spread
+    disposition: Rejected the graft it was offered to support, with the witness, and then load-bearing for the key shape. state-committer.ts:104-105 builds each terminal as a spread of its source with only path changed, so a terminal's remote identity is its source's identity by construction at the only production caller. Under keyPath remoteIdentityKey that spread is why a relocation is an in-place field update of one row rather than a key change, which is what collapses compareAndMove into compareAndPut and what makes the source delete disappear. Identity injectivity across terminals reduces to identity injectivity across sources, which the key makes unrepresentable, so a store-level identity-preservation check would be structure with no reachable failure behind it and is not added.
+    adr_refs: [adr-record-identity-uniqueness-mechanism]
+    contract_refs: [contract-record-identity-uniqueness, contract-merge-base-survives-relocation]
+  - decision_input_ref: decision-input-rewritepaths-uncalled-no-cas
+    disposition: Position taken — remove it. Zero callers in src/, no compare-and-swap, and a put that silently overwrites whatever occupies the destination address, which is a sanctioned route to the exact mis-operation this change exists to remove; its documented role at docs/sync-pipeline.md:304 was taken over by compareAndRewritePaths. Under the chosen key it is additionally incoherent, since it rewrites a field that is no longer the key while leaving the row it should have moved untouched, and its content-carry at :216-222 is not a mechanism the merge-base repair reuses but one the identity key makes unnecessary. Measured alongside it — SyncStateStore.put and putContent also have zero production callers — is recorded and deliberately not acted on; they are re-expressed with the rest of the surface, and correcting the same doc section removes the only named route to them, so removing them would be structure-reduction without a named failure.
+    adr_refs: [adr-record-identity-uniqueness-mechanism]
+    contract_refs: [contract-record-identity-uniqueness]
+  - decision_input_ref: decision-input-backendmeta-never-interpreted
+    disposition: Position taken — remove it from SyncRecord only. Measured — one writer at state-committer.ts:43, the type declaration, and hot-warm-promotion.ts:43 merging the entity's field, not the record's; no production reader. The identifying half of its contents duplicates the correspondence key. Reversal condition recorded as a named production reader of SyncRecord.backendMeta.
+    adr_refs: [adr-record-identity-uniqueness-mechanism]
+    contract_refs: [contract-record-field-audit]
+  - decision_input_ref: decision-input-owner-decision-3-persist-only-underivable
+    disposition: Applied field by field rather than to one field. Nine fields are kept with a stated reason and one is removed; syncedAt is kept as underivable although no production reader was found, and that observation is recorded and carried to consultation rather than acted on.
+    adr_refs: [adr-record-identity-uniqueness-mechanism]
+    contract_refs: [contract-record-field-audit]
+  - decision_input_ref: decision-input-owner-decision-4-version-bump-cold-start
+    disposition: Binding and not re-litigated, with its reach corrected. The bump is the only place a keyPath or an index can be declared, and the existing onUpgrade drop-and-recreate is the whole upgrade. What it does not do is retire the positional fallback at identity-component-decision.ts:408-410 — that is the key's doing, not the bump's, because buildSyncRecord has no floor of its own and would otherwise re-mint the class. The plan says so explicitly rather than crediting the bump with a closure it does not give. The standing cold-start cost is not specific to this change and is not re-costed.
+    adr_refs: [adr-record-identity-uniqueness-mechanism, adr-record-identity-floor-tolerated]
+    contract_refs: [contract-record-identity-uniqueness, contract-record-identity-floor-disposition]
+  - decision_input_ref: decision-input-agents-no-migration
+    disposition: Retained without amendment. The existing onUpgrade drop-and-recreate is the whole upgrade; no transform is written and no proposal to preserve sync-content across the bump is entertained. Preserving the merge base across a rename is a method-body policy, not a migration, and is a separate matter.
+    adr_refs: [adr-record-identity-uniqueness-mechanism]
+    contract_refs: [contract-record-identity-uniqueness, contract-merge-base-survives-relocation]
+  - decision_input_ref: decision-input-adr-0001-cache-commits-last
+    disposition: Retained and extended by one sentence. The record store's new key and its unique path index are storage mechanism subordinate to commit-last, not an identity policy owner — the store declines to represent a state rather than deciding between claimants, and the path index guards a guarantee the filesystem layer owes rather than a policy this layer sets. Identity policy stays confined to identity-component-decision.ts, and sync-admission-authority-guard.test.mjs staying green with no fixture edit is the machine proof of that. The ADR sentence and the accompanying enforcement-document correction are carried by unit-6 as hygiene consequent on the store surface change, not as an obligation AGENTS.md:71-73 imposes; that clause binds an intentional new writer, owner or field, and removing two dead detector names is neither.
+    adr_refs: [adr-record-identity-uniqueness-mechanism]
+    contract_refs: [contract-record-identity-uniqueness]
+  - decision_input_ref: decision-input-no-operator-signal-on-main
+    disposition: >-
+      Adopted as a constraint on every observable this plan asserts, with one claim withdrawn as measured false.
+      Logger.enabled and src/sync/sync-cycle-diagnostics.ts are not on main, and DEFAULT_SETTINGS.enableLogging and
+      showSyncNotifications are both false, so no requirement or witness here depends on a log line or a notice;
+      every asserted observable is a cycle outcome, and a stalled component is silent to the user and shows only as
+      work not progressing. The previous revision went one step further and said the path index's constraint
+      classification "is the only diagnosable trace a violated fs premise leaves". That is false as the code stands:
+      idb-helper.ts:142 registers tx.onerror before tx.onabort and the transaction's error attribute is only set
+      during the abort steps, so the onerror rejection wins the race with tx.error still null and
+      IDBTransactionError.domName is null for every aborted transaction, not only for a constraint violation.
+      Measured against the repository's own fake-indexeddb: request.onerror ConstraintError, tx.onerror null,
+      tx.onabort ConstraintError, rows unchanged. So the diagnosable trace is not the name but the shape — a thrown
+      transaction failure from a CAS method that never returns false for it, an action that fails, and a checkpoint
+      that stays uncommitted — and that is what this plan asserts. The helper defect is independently repairable
+      with a blast radius of both persistent stores; it is recorded as open question 5, is not repaired by this
+      change, and is not worked around at any call site.
+    adr_refs: [adr-record-identity-uniqueness-mechanism]
+    contract_refs: [contract-record-identity-uniqueness, contract-cross-source-rename-validation]
+  - decision_input_ref: decision-input-owner-decision-5-path-uniqueness-is-upstream
+    disposition: Binding, and applied by rejecting a frame rather than by answering a question. The owner's authority delta states that trying to hold several records at one path is the mistake, that path may simply be a unique constraint, and that fs owes the sync engine object-path uniqueness. Four things follow and all four are applied. First, adr-record-key-shape resolves to keyPath remoteIdentityKey with a unique index over path, and its status moves from reserved to accepted; the cost comparison that was reserved for the owner is retired as a decision input and survives only as this change's work inventory. Second, the unique path index is a guard on a broken upstream and not a policy mechanism — it aborts rather than replaces, its ConstraintError is a defect signal, it is never mapped onto the ordinary stale-baseline false, and each CAS method compares the target address itself so the index is only reachable when the premise is false. Third, the premise that fs guarantees object-path uniqueness is stated explicitly under scope with its owner named — issue #90, resolving a provider that permits two objects at one name below the IFileSystem seam by provider rename — and is out of this change's scope. Fourth, the record identity floor stops being a choice — a keyPath over a missing property is a DataError, so adr-record-identity-floor-tolerated inverts from tolerance to a floor and fr-rik-012 inverts from declaring the positional fallback live to retiring it by construction.
+    adr_refs: [adr-record-key-shape, adr-record-identity-uniqueness-mechanism, adr-record-identity-floor-tolerated]
+    contract_refs: [contract-record-identity-uniqueness, contract-record-identity-floor-disposition, contract-record-field-audit, contract-merge-base-survives-relocation]
+  - decision_input_ref: decision-input-owner-decision-2-identity-keyed
+    disposition: Read literally, as owner decision 5 says it always should have been. The decision fixes that the remote side of the correspondence is identified by provider object identity with path as a persisted field carrying a secondary index. The plan previously read it for its observable content, offered a unique index as an equivalent realization, and reserved the choice; the owner's authority delta confirmed the literal reading and rejected the frame that made the two look interchangeable. sync-records now uses keyPath remoteIdentityKey with a unique index over path, and adr-record-key-shape is accepted rather than reserved.
+    adr_refs: [adr-record-key-shape]
+    contract_refs: [contract-record-identity-uniqueness]
+  - decision_input_ref: decision-input-keypath-replacement-probe-withdrawn
+    disposition: Withdrawn as a blocker and still not replaced by a substitute defect, with one residue relocated to where it is real. The probe wrote one identity at two paths, which is one object that moved and whose record correctly updates. Under the chosen key the replacement it described is genuine in exactly one case — two entities carrying an empty-string identity would fold into one row, because an empty string is a valid key — and contract-record-identity-floor-disposition refuses an empty identity rather than storing it. Nothing else in this plan is justified by the probe.
+    adr_refs: [adr-record-key-shape]
+    contract_refs: [contract-record-identity-uniqueness]
+  - decision_input_ref: decision-input-path-addressed-call-site-inventory
+    disposition: Re-measured from the repository rather than inherited. It was presented to the owner as the costing artifact and was explicitly not allowed to decide the shape; the owner decided on other grounds, so it is now this change's work inventory. Production has 21 SyncStateStore call sites; 17 address a row by the primary key and are re-expressed — address-asking reads through the path index, row-addressing writes by identity — while getAll at change-detector.ts:84, :96 and :104 and clear at orchestrator.ts:95 are key-agnostic and do not change. Inside state.ts six mutating methods are rewritten plus get, getMany, getContent and putContent, and compareAndMove ceases to exist.
+    adr_refs: [adr-record-key-shape]
+    contract_refs: [contract-record-identity-uniqueness]
+  - decision_input_ref: decision-input-getmany-is-a-primary-key-lookup
+    disposition: Adopted as the correction that made the inherited table unusable as is, and now as work. SyncStateStore.getMany at state.ts:61-76 issues store.get(p) per path, so change-detector.ts:147 and :180 are primary-key lookups and not record.path field reads, and the conclusion that three sites need nothing is false; both move to the path index. One further correction the critique did not make is carried with it — getAll is neither a field read nor a key lookup, because it returns every value regardless of keyPath.
+    adr_refs: [adr-record-key-shape]
+    contract_refs: [contract-record-identity-uniqueness]
+  - decision_input_ref: decision-input-conflict-resolver-reads-content-by-path
+    disposition: Adopted as a consumer-disposition correction and now discharged. conflict-resolver.ts:135 calls getContent(ctx.baselinePath ?? ctx.path), a by-path read of the content store, so draft-1's listing of it as needing no change was wrong. sync-content is re-keyed with sync-records, so getContent takes the identity and this one caller supplies it from the baseline record it already holds — the expression is guarded by ctx.baseline && and baseline is typed SyncRecord at conflict-resolver.ts:21 — and stops consulting ctx.baselinePath there. The content store gains no path index, because nothing reads a merge base by address afterwards.
+    adr_refs: [adr-record-key-shape]
+    contract_refs: [contract-merge-base-survives-relocation]
+  - decision_input_ref: decision-input-relocation-overlap-under-inversion
+    disposition: Live, and discharged by refusing the class rather than ordering it. Injectivity in addresses and in identities does not imply the terminal address set is disjoint from the source address set, and under identity keying the store.delete(item.source.path) that makes today's order safe is gone — source and terminal are one row — so an overlapping set aborts in one put order and completes in the reverse while a cyclic set has no safe order without a temporary. contract-record-identity-uniqueness extends compareAndRewritePaths' existing non-injectivity refusal at state.ts:167-169 with one more admission condition of the same shape — any item's terminal address equalling a different item's source address publishes nothing and returns false, and self-overlap is admitted because it is one row whose address does not change. Ordering is not added, because the only production caller cannot construct either class — all sources share the old folder prefix, all terminals the new one, and a folder cannot be renamed into its own subtree — so ordering would be structure with no reachable failure behind it, the same test that rejected the folder-relocation identity graft.
+    adr_refs: [adr-record-key-shape]
+    contract_refs: [contract-record-identity-uniqueness]
+  - decision_input_ref: decision-input-dropbox-entry-without-id-unsettled
+    disposition: Kept on record with its settling observation — the Dropbox list_folder contract text plus one opt-in e2e raw page dump — and re-pointed at what it actually is under the chosen key — a precondition of the store shape rather than a sizing question, and no longer a gate on any decision here. Measurement bounds its expected population to empty — DropboxEntry.id is optional only because the same type covers deleted tombstones, whose doc comment says they are never cached and which buildFromFiles skips at dropbox/metadata-cache.ts:148, while googledrive/types.ts:25 and onedrive/types.ts:20 declare id as a required string. contract-record-identity-floor-disposition is total either way and asserts the id-less outcome by test rather than assuming it unreachable. The unknown still gates whether a remote folder rename may ever require an identity, which stays out of scope.
+    adr_refs: [adr-record-key-shape, adr-record-identity-floor-tolerated]
+    contract_refs: [contract-record-identity-floor-disposition, contract-record-identity-uniqueness]
+  - decision_input_ref: decision-input-dropbox-refusal-creates-the-harm
+    disposition: Withdrawn as a mitigation, restated by its real outcome, and still honoured under the floor. Refusing an id-less entity at the Dropbox boundary does not avoid the unbaselinable object, it creates one and additionally removes it from listings, because decision-engine.ts:8-21 puts delete_local, delete_remote and cleanup all under if (prevSync). Nothing in this plan does that — the refusal is at the baseline, not at the backend boundary, so an id-less entity stays listed, compared and conflict-resolvable and only fails to acquire a durable record. That narrower consequence is named in contract-record-identity-floor-disposition and asserted by test, and no requirement here depends on the unknown resolving a particular way.
+    adr_refs: [adr-record-identity-floor-tolerated, adr-record-key-shape]
+    contract_refs: [contract-record-identity-floor-disposition]
+  - decision_input_ref: decision-input-buildsyncrecord-has-no-identity-floor
+    disposition: Adopted as the correction to the version bump's stated reach, and inverted by owner decision 5. buildSyncRecord at state-committer.ts:42 copies remote?.identityKey with no floor of its own, so the bump alone would re-mint the identity-less class. Under keyPath remoteIdentityKey the class is unstorable — SyncRecord.remoteIdentityKey becomes required, the positional fallback at identity-component-decision.ts:408-410 stops type-checking and is removed, and the publication path refuses an entity that cannot supply an identity with a named error before any store write. The consequence for that entity is stated and tested rather than tolerated, and it is still not restated as a rule that fails a rename report.
+    adr_refs: [adr-record-identity-floor-tolerated]
+    contract_refs: [contract-record-identity-floor-disposition]
+  - decision_input_ref: decision-input-identityless-class-is-bounded-to-dropbox
+    disposition: Established by reading the three wire types, then sharpened by one further measurement and used to size the floor's failure branch rather than to bound a tolerated class. googledrive/types.ts:25 and onedrive/types.ts:20 declare id as a required string; dropbox/types.ts:23 declares id as optional only because the same type also covers deleted tombstones, whose own doc comment says they are never cached and which buildFromFiles skips at dropbox/metadata-cache.ts:148. Every cached entry of all three families therefore carries a provider id, so the floor's refusal branch is expected to be unreachable in production — which is why it is asserted by test rather than designed around.
+    adr_refs: [adr-record-identity-floor-tolerated]
+    contract_refs: [contract-record-identity-floor-disposition]
+  - decision_input_ref: decision-input-empty-string-is-an-index-key
+    disposition: Adopted, and its mechanism inverted with the key. Normalizing an empty identity to absent was correct when an absent property meant skipped by a unique index. Under keyPath remoteIdentityKey an absent property is a DataError and an empty string is a perfectly valid key that would silently fold two entities into one row — the only place the withdrawn replacement probe describes something real. The single construction path therefore refuses both as one inadmissible case, and fr-rik-007 states that the field ranges over non-empty strings only. This answer is deliberately not exported to the rename-evidence dedupe key, which must keep a carried, an absent and an empty key distinct; the two layers ask different questions and the plan no longer claims one answer serves both.
+    adr_refs: [adr-record-identity-floor-tolerated]
+    contract_refs: [contract-record-identity-floor-disposition, contract-evidence-identity-preservation]
+  - decision_input_ref: decision-input-warm-escalation-covers-hot-miss
+    disposition: Costed and the resulting mechanism excluded, with one caveat carried. A by-identity record read was considered and rejected, because rename evidence already contributes oldPath to the HOT fetch set and an unreported move leaves a component with a current occurrence and no prevSync, which needsWarmComponentAcquisition escalates to a full getAll. The caveat neither draft carried — CurrentFacts.records is rebuilt per cycle from MixedEntity.prevSync and never read from the store inside Admission, but candidateFacts[].baseline is store-derived via getMany at change-detector.ts:147, so the no-store-read statement is true of the first and not the second.
+    adr_refs: [adr-record-identity-uniqueness-mechanism]
+    contract_refs: [contract-record-identity-uniqueness]
+  - decision_input_ref: decision-input-scaffold-lists-deleted-rename-debt
+    disposition: Checked and found to need no correction. src/sync/rename-debt.ts and adr-20260902-rename-identity-evidence-model.md are both absent from the repository, but neither appears in the change package's source_paths; the stale references live in recovery-scope.json's seed refs, which is not a change-package artifact. No unit owns a correction because none is owed, and the observation is recorded so the question is not reopened.
+    adr_refs: [adr-record-identity-uniqueness-mechanism]
+  - decision_input_ref: decision-input-issue90-cache-bijection-scaffold
+    disposition: Kept separate and not merged, and now also named as the owner of this change's stated premise. The issue-90 direction owns the derived metadata cache's path-to-id bijection and its own change package, and owner decision 5 makes it the owner of the filesystem layer's object-path-uniqueness guarantee — a provider that permits two objects at one name resolving that below the IFileSystem seam, by provider rename, before the sync engine observes it. This change is entitled to assume that guarantee, says so explicitly under scope, designs none of it, and guards it with a unique path index whose violation is a defect signal rather than a branch. This direction owns the durable correspondence and the FS seam; the only overlap is the rename pair's shape, and this plan adds one optional field without widening getChangedPaths' result type, touching RenameAction, or adding an Admission stage.
+    adr_refs: [adr-record-identity-uniqueness-mechanism]
+    contract_refs: [contract-seam-carried-identity]
+  - decision_input_ref: decision-input-owner-decision-6-ordering-retirement-and-floor
+    disposition: >-
+      Binding, and applied by correcting a decomposition rather than by adding a mechanism. The owner's three
+      clauses settle the three blockers the independent plan attack returned against the shape-(A) plan, and each
+      is applied as stated. 6a - an empty identity is impossible, because a SyncRecord is only written after the
+      remote side is settled, so the floor is buildSyncRecord's own and must fail loudly, naming the entity, across
+      all three production callers in two files; the plan's claim that the positional fallback is retired because
+      its arm stops type-checking is withdrawn as measured false and replaced with retirement by absent population,
+      verified by a construction test. 6b - a SyncRecord is no longer authoritative for the address it records once
+      the object it names has left that address; the open point the owner required be settled is settled by owner
+      decision 8a, which generalises 6b into the record model itself, because the literal "a path the vault no
+      longer manages" reading does not reach the attack's witness, where row Z carries path B.md and B.md is still
+      managed locally as the move's terminal. Under 8a the record is the correspondence, so the correspondence at
+      that address ended when the address became another object's, and the claiming publication observes that end
+      directly rather than inferring anything about object Z. 6c - the constraint violation is not a third problem,
+      and the first reading of this decision, which proposed a separate issue with a convergence strategy, was
+      rejected by the owner for treating a symptom as a new problem without first checking whether an
+      already-assigned upstream guarantee closes it. What this change therefore owes is the replacement operation
+      of owner decision 8b - delete the incumbent and insert the terminal in one transaction - and not a
+      publication order, which owner decision 8 removed along with the evidence rule it served; no convergence
+      strategy, retry, recovery path, recovery marker, queue or ordering pass is added, nothing is pushed to the
+      executor, and the unique path index stays the pure defect signal owner decision 5 framed it as.
+    adr_refs: [adr-record-identity-uniqueness-mechanism, adr-record-key-shape, adr-record-identity-floor-tolerated]
+    contract_refs: [contract-record-identity-uniqueness, contract-record-identity-floor-disposition]
+  - decision_input_ref: decision-input-owner-decision-7-hard-constraint-and-evidence-retirement
+    disposition: >-
+      Binding in part, and superseded in part by owner decision 8. 7a stands and is applied: keyPath
+      remoteIdentityKey and the unique path index both stay, and the proposal to drop the index is rejected,
+      because facts.records is keyed by prevSync.path at identity-component-decision.ts:353 and Admission looks up
+      the record for this path, so SyncRecord.path is which local file a record is the correspondence for and two
+      such rows are a contradiction; a real filesystem resolves the contention by silently letting the last writer
+      win and a durable store of correspondences must refuse. 7b and 7c are superseded outright. 7b asked for
+      evidence that an incumbent's object is gone before its row could be retired, and 7c made the absence of that
+      evidence a fail-closed component. Owner decision 8a dissolves the question both were answering rather than
+      answering it differently: a SyncRecord records a correspondence, not the object's existence, so a
+      correspondence whose address now belongs to another object has ended - and that end is directly observed,
+      because the new object is at the address now. No death evidence is required, ADR 0008 is not engaged, and the
+      whole apparatus 7b and 7c motivated is removed rather than re-contented: the four-way classification, the
+      checkpoint_deleted conjunct, currentByIdentity as a retirement input, the analysis of what Admission does not
+      hold, the fail-closed disposition, the convergence narrative, the relocating-first ordering, the
+      claimer-expects-vacant expectation change and the address-permutation refusal. What replaces them is the
+      operation of owner decision 8b - a replacement deletes the incumbent and inserts the terminal in one
+      transaction, a rename is a single put - stated in contract-record-identity-uniqueness. Two measurements drive
+      what survives and are folded into the verification surface rather than described: plan-admission.test.ts,
+      which settles that the guard cannot fail on any shape Observation emits and that the change may not be
+      justified on it, and record-rekey-across-commit.test.ts, whose split-cycle end state is the one owner
+      decision 8a prescribes, and which unit-4 must re-price so that the case asserts it deliberately rather than
+      as a defect.
+    adr_refs: [adr-record-key-shape, adr-record-identity-uniqueness-mechanism]
+    contract_refs: [contract-record-identity-uniqueness, contract-positional-mechanism-evidence]
+  - decision_input_ref: decision-input-displaced-incumbent-is-implicit-under-path-keying
+    disposition: >-
+      Established by measurement and made the whole basis of the replacement operation's minimality. Every
+      publication route on main displaces the record occupying the destination address by overwriting its key, and
+      three of them are live - identity-component-decision.ts:509-511 and :549-551 build a same-address replacement
+      publication whose liveness follows from state.ts:104-106 invalidating the merge base on exactly
+      expected.remoteIdentityKey !== record.remoteIdentityKey; src/sync/state.test.ts:250-261 moves object X onto an
+      address row Z still holds and asserts the move succeeds; and identity-component-decision.ts:719 carries a
+      captured foreign destination outside the relocation set, which state.ts:181-183 compares and today's
+      store.put displaces. Under keyPath "path" that displacement is free and invisible at state.ts:101-103; under
+      keyPath remoteIdentityKey the displaced row survives the write, keeps its old path and holds the unique path
+      index. The consequence taken is that (A) creates no new obligation at all: the discard is exactly the one
+      today's put already performs, and what changes is that it must now be written as a delete inside the claiming
+      action's own transaction, after the incumbent has been compared. That is the whole reason the unique path
+      index earns its keep - it converts a silent side effect of the key into an admitted, compared and asserted
+      operation. Under owner decision 8a no disposition falls outside that equivalence, so the previous revision's
+      priced behaviour change - a component failing closed and writing nothing where no evidence of the incumbent's
+      death existed - is withdrawn along with the rule that produced it. That is why no new durable authority, no
+      second publication point, no reaper and no queue is introduced, and why the third scope-expansion signal the
+      attack raised - that rows for retired identities would accumulate with no reclamation route - is resolved
+      outright: every row whose address is claimed by a record for a different object is deleted by the claiming
+      write, with its sync-content row under the same key, and no row is retained past the end of its
+      correspondence.
+    adr_refs: [adr-record-identity-uniqueness-mechanism, adr-record-key-shape]
+    contract_refs: [contract-record-identity-uniqueness]
+  - decision_input_ref: decision-input-cas-expectations-separate-under-identity-keying
+    disposition: >-
+      Adopted as the correction that closes the store's outcome partition. Under keyPath "path" a single captured
+      record served as both "the row this publication continues" and "the row holding this address", because they
+      were the same row, which is why state-committer.ts:122 can pass publication.destination as compareAndPut's
+      only expectation. Under (A) they separate, and two representative implementations that both satisfied the
+      previous wording diverged observably - addressing the row by record.remoteIdentityKey makes a replacement
+      publication return false forever, addressing it by expected.remoteIdentityKey drives the write into the path
+      index. The plan now states both expectations explicitly with no defaulted parameter, so compareAndMove's
+      inherited expected.path === record.path ? expected : undefined at state.ts:119 does not survive in any form,
+      compareAndPut(undefined, record, undefined) keeps today's vacancy check for a baseline-free create, and
+      compareAndDelete with no expected record keeps today's verified no-op. Which record fills each expectation is
+      stated in the same contract, which also corrects :509-511's and :549-551's source: expected
+      for a replacement publication, where the continued row is undefined and the incumbent is the destination.
+    adr_refs: [adr-record-key-shape, adr-record-identity-uniqueness-mechanism]
+    contract_refs: [contract-record-identity-uniqueness]
+  - decision_input_ref: decision-input-idb-helper-loses-every-abort-name
+    disposition: >-
+      Measured, accepted, and used to remove a requirement rather than to add work. src/store/idb-helper.ts:139-143
+      registers tx.oncomplete, then tx.onerror = () => reject(new IDBTransactionError("error", tx.error)), then
+      tx.onabort; per the IndexedDB error-bubbling order the transaction's error attribute is only set during the
+      abort steps, so the onerror rejection wins the race and domName is null. Re-measured independently here
+      against the repository's own fake-indexeddb with a keyPath remoteIdentityKey store and a unique path index:
+      request.onerror ConstraintError, tx.onerror null, tx.onabort ConstraintError, store empty afterwards. This
+      affects every aborted transaction, not only a constraint violation, so it is an ordinary helper defect and
+      not a design question for this change - owner decision 6c says so explicitly. FR-RIK-006,
+      contract-record-identity-uniqueness, AC-RIK-005, verify-duplicate-path-aborts-and-propagates and unit-4's
+      acceptance therefore drop the requirement that the failure name ConstraintError and assert what is observable
+      instead: the write throws where a stale baseline returns false, nothing is written, the action fails and the
+      cycle does not complete. The two repairs an implementer would reach for - catching the request-level error,
+      re-parsing the message string - stay forbidden; discretion-cas-address-comparison-shape keeps its prohibition
+      on touching idb-helper.ts, which is now consistent rather than contradictory, because the observable no
+      longer needs the helper. The defect is recorded as open question 5 and is neither repaired nor worked around.
+    adr_refs: [adr-record-identity-uniqueness-mechanism]
+    contract_refs: [contract-record-identity-uniqueness]
+  - decision_input_ref: decision-input-required-field-is-not-a-type-error
+    disposition: >-
+      Accepted as a falsification and applied by replacing the verification, per owner decision 6a. The claim that
+      making SyncRecord.remoteIdentityKey required turns the positional arm at
+      identity-component-decision.ts:408-410 into a type error was measured false: the empty string is falsy, so
+      x ? A : B over x: string is a legal, unflagged condition, the exact shape compiles clean under this
+      repository's own tsc -noEmit -skipLibCheck --strict, and eslint.config.mts configures no
+      @typescript-eslint/no-unnecessary-condition. npm run build therefore cannot discriminate whether the arm is
+      present, so AC-RIK-012 was unachievable and verify-positional-fallback-does-not-type-check was
+      non-discriminating. Both are replaced. The arm is retired because the population it serves cannot exist -
+      buildSyncRecord refuses an absent or empty identity - and that is asserted by
+      verify-identityless-record-construction-fails, a test that fails when an identity-less record is constructed.
+      The same false premise is removed from fr-rik-012, unit-5's acceptance and
+      adr-record-identity-floor-tolerated. The attack's accompanying enumeration of other absence-branching sites
+      is taken and extended by re-measurement, and disposed of under DP-6 by the distinction it blurred: an absent
+      record stays possible and its optional chains are untouched, while an absent field does not and every test of
+      it is removed, reduced or tightened, none repaired positionally and none folded to the empty string.
+    adr_refs: [adr-record-identity-floor-tolerated]
+    contract_refs: [contract-record-identity-floor-disposition]
+  - decision_input_ref: decision-input-buildsyncrecord-has-three-callers-in-two-files
+    disposition: >-
+      Measured and made the floor's placement rule, per owner decision 6a. buildSyncRecord (state-committer.ts:33-46)
+      is one function with three production callers in two files - state-committer.ts:119,
+      opened-file-priority.ts:61 and :88 - and the two the previous revision did not name both write to the store,
+      at opened-file-priority.ts:62 and :91. So a floor placed in commitAction leaves the priority path unguarded,
+      and to keep the required field satisfiable an implementer taking that option must write
+      remote?.identityKey ?? "" inside buildSyncRecord, which is exactly the fold fr-rik-007 forbids - meaning the
+      discretion's two permitted alternatives did not preserve the same observable. discretion-identity-floor-refusal-site
+      now offers only representatives inside buildSyncRecord, scopes to both files, and unit-5's file list carries
+      opened-file-priority.ts. A second gap is closed with it: the contract's unknown outcome no longer describes
+      the priority path as a cycle action. It is not one - its outer try/catch at :37 and :116-123 ends a failed
+      attempt with a warn, requestNormalLifecycle() and failed_retryable, and its inner baseline commit at :89-99
+      warns and defers - so the refusal takes that existing route, and the same entity reaches commitAction in the
+      batch cycle where the cycle-level outcome applies.
+    adr_refs: [adr-record-identity-floor-tolerated]
+    contract_refs: [contract-record-identity-floor-disposition]
+  - decision_input_ref: decision-input-required-field-binds-the-test-surface
+    disposition: >-
+      Accepted and priced, closing the asymmetry the attack named. tsconfig.json includes tests/**/*.ts as well as
+      src/**/*.ts, so npm run build type-checks the whole test surface and a required non-empty field binds every
+      SyncRecord construction in the repository. Re-measured on main at 60e85b0 - 27 files contain a SyncRecord
+      literal, of which three are production, leaving 24 test and mock files; tests/fs/contracts/remote-change-detection.contract.ts
+      calls buildSyncRecord at :64, :74 and :90; state.test.ts's makeRecord at :7-17 omits the field entirely; and
+      compareAndMove is referenced in five files, of which fact-first-execution.test.ts and plan-executor.test.ts
+      appeared in no unit's file list while unit-4 required that nothing in src/ or tests/ reference it. The seam
+      half priced exactly this blast radius through scope-signal-conformance-cell-rewrites-existing-assertions and
+      the store half priced none of it. unit-5 now enumerates the record-literal surface and unit-4 the
+      compareAndMove surface, the work inventory under approach carries a row for it, and
+      scope-signal-required-field-binds-the-whole-test-surface records it. The unit boundary is the measured set
+      plus any further file the compiler names, because the compiler is the reliable enumerator here.
+    adr_refs: [adr-record-key-shape, adr-record-identity-floor-tolerated]
+    contract_refs: [contract-record-identity-floor-disposition, contract-record-field-audit]
+  - decision_input_ref: decision-input-ownership-guard-second-fixture-consumer
+    disposition: >-
+      Accepted as a correction to a measurement this plan made and got wrong. The claim that
+      MUTATING_SYNC_STATE_METHODS is "consumed at exactly one site, :199" is false: sync-state-ownership-guard.test.mjs:320
+      is a second, hardcoded consumer iterating the five compare-and-swap names and generating two negative-fixture
+      tests per name, so once compareAndMove leaves the set at :9-12 both of its generated tests fail and
+      npm run lint:bot-repro goes red. The claim is removed from DP-5, fr-rik-009 and nfr-rik-004. What survives,
+      re-derived by hand here, is the load-bearing half: the four per-file inventories stay byte-identical -
+      mutationCallers remains [opened-file-priority.ts, orchestrator.ts, state-committer.ts] because each still
+      calls a method that remains in the reduced set, and imports, references and constructors are untouched - so
+      this is detector hygiene and not the intentional new writer, owner or field AGENTS.md:71-73 binds the triple
+      to, and the removal of contract-two-authority-enforcement-triple stands. unit-6 now prices the fixture edit at
+      both sites and its tool_guidance is corrected, because it previously instructed the implementer to read a
+      :320 failure as evidence that a removed name was still load-bearing, which would be the opposite of the
+      truth: only an inventory change is that evidence.
+    adr_refs: [adr-record-identity-uniqueness-mechanism]
+    contract_refs: [contract-record-identity-uniqueness]
+  - decision_input_ref: decision-input-dropbox-idless-rename-is-case-only
+    disposition: >-
+      Accepted, and used to re-home a witness and re-ground a rejection rather than to drop either. Re-measured -
+      on the delta route dropbox/incremental-sync.ts:158 computes oldPath only when entry.id is truthy, so
+      applyRename at :201 is unreachable for an id-less entry and no pair is pushed; on the full-scan route
+      remote-fs.ts:416-421 keys on extractId = entry.id ?? entry.path_lower, so for an id-less entry the surrogate
+      key is the lowercased path and any path-changing rename changes it, missing oldPathById and surfacing as
+      delete-plus-add. The one constructible shape is a case-only rename, where path_lower is stable while the
+      cached display path changes. contract-seam-carried-identity's adversarial witness was bound to
+      verify-dropbox-delta-rename-carries-entry-id, a verification that runs incremental-sync.test.ts and therefore
+      cannot host it; it moves onto the case-only full-scan shape and onto
+      verify-fullscan-diff-carries-projected-identity, which runs remote-fs.contract.test.ts where diffById and
+      idAt are both reachable, and the delta verification keeps a constructible id-bearing normal witness. DP-1's
+      rejection of option (a) is re-grounded rather than preserved: the decisive reason is that fr-rik-002 cannot
+      be stated over extractId at all, because extractId's own doc comment declares it a total address function, so
+      any agreement with the entity projection would be coincidental rather than contractual; the stall survives at
+      one-sub-case size and is now described at that size. unit-1's acceptance is restated to match.
+    adr_refs: [adr-remote-correspondence-identity-carrier]
+    contract_refs: [contract-seam-carried-identity, contract-cross-family-identity-conformance]

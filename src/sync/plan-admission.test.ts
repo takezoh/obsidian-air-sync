@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import type { FileEntity } from "../fs/types";
 import {
 	admitBatchObservation,
+	type AdmissionDisposition,
 	type AuthorizedSyncPlan,
 } from "./plan-admission";
 import { captureBatchObservation } from "./sync-cycle-planning";
+import { completeIdentityEvidence } from "./identity-evidence";
 import { decideIdentityComponent } from "./identity-component-decision";
 import { compileSamePathConflictContract } from "./conflict-policy-admission";
 import { insertConflictSuffix } from "./conflict";
@@ -3435,5 +3437,411 @@ describe("admitBatchObservation", () => {
 			{ role: "local_rename_candidate", evidence: candidate },
 		]);
 		expect(snapshot.evidence.filter((item) => item.role === "identity")).toEqual([]);
+	});
+});
+
+/**
+ * Measurement, not a fix. Question: can the remote-rename identity guard at
+ * `identity-component-decision.ts:106-107` — `current.remote.get(report.newPath)
+ * ?.identityKey !== report.identityKey` — ever be true on `main`, given that
+ * `report.identityKey` may have just been filled by `completeIdentityEvidence`
+ * (`identity-evidence.ts:38-44`) out of a map built from the same observations and
+ * entries `indexFacts` builds `current.remote` from?
+ *
+ * Every shape is driven through the production entry only: `captureBatchObservation`
+ * → `admitBatchObservation`. `completeIdentityEvidence` is called exactly where
+ * `change-detector.ts:151` calls it — before capture — so the evidence Admission
+ * sees is the evidence production hands it. The fill is then read back out of the
+ * admission disposition (`AdmissionDisposition.evidence`), never off the helper.
+ *
+ * Instrument: `ScopeProjection.isConfiguredScopeCompatible` is a production input
+ * that `immutableSnapshot` copies by reference, so recording its `(from, to)`
+ * arguments in call order yields an ordered execution trace of
+ * `decideIdentityComponent`: the entry-endpoint loop (98-102), the rename-report
+ * loop (104-107), the alias-evidence loop (109-114), the alias-observation loop
+ * (115-118), `bindFiles` (442) and `decideFolder` (648, 687). That trace is what
+ * attributes an outcome to one observation site without calling any internal.
+ */
+describe("positional identity binding: end-to-end site measurement", () => {
+	type ReportFamilyBranch = "none" | "reported" | "conflicting";
+	type AliasFolderBranch =
+		| "not_consulted_governing_folder_report"
+		| "consulted_no_directory_alias_candidate"
+		| "consulted_candidate_rejected"
+		| "consulted_relation_selected";
+	type EvidenceFillBranch =
+		| "no_remote_rename_evidence"
+		| "reported_identity_kept"
+		| "filled_from_newPath_lookup"
+		| "newPath_lookup_missed";
+	type IdentityGuardBranch =
+		| "not_reached_family_not_reported"
+		| "not_reached_evidence_carries_no_identity"
+		| "passed_current_identity_equals_filled_key"
+		| "failed_conflicting_identity";
+
+	interface ObservedFacts {
+		readonly entries: readonly MixedEntity[];
+		readonly observations: readonly PathObservation[];
+		/** Evidence as collection reports it, before `completeIdentityEvidence`. */
+		readonly reported: readonly IdentityEvidence[];
+		readonly scopePaths: readonly string[];
+	}
+
+	interface Measurement {
+		readonly reportFamily: ReportFamilyBranch;
+		readonly aliasFolder: AliasFolderBranch;
+		readonly evidenceFill: EvidenceFillBranch;
+		readonly identityGuard: IdentityGuardBranch;
+		readonly trace: readonly string[];
+		readonly kind: AdmissionDisposition["kind"];
+		readonly reasons: readonly string[];
+		readonly actions: readonly SyncActionType[];
+		/** `identityKey` on every remote rename claim as Admission received it. */
+		readonly admittedRemoteRenameKeys: readonly (string | undefined)[];
+	}
+
+	type RenameClaim = Extract<IdentityEvidence, { kind: "rename" }>;
+
+	function renameClaims(evidence: readonly IdentityEvidence[]): RenameClaim[] {
+		return evidence.filter((item): item is RenameClaim => item.kind === "rename");
+	}
+
+	function remoteRenameClaims(evidence: readonly IdentityEvidence[]): RenameClaim[] {
+		return renameClaims(evidence).filter((item) => item.side === "remote");
+	}
+
+	function tracingScope(paths: readonly string[], trace: string[]): ScopeProjection {
+		return {
+			byEndpoint: new Map<string, ScopeDisposition>(paths.map((path) => [path, "included"])),
+			isConfiguredScopeCompatible: (from, to) => {
+				trace.push(`${from}=>${to}`);
+				return true;
+			},
+		};
+	}
+
+	function classify(
+		facts: ObservedFacts,
+		disposition: AdmissionDisposition,
+		trace: readonly string[],
+	): Measurement {
+		const admittedRenames = renameClaims(disposition.evidence);
+		const admittedRemote = remoteRenameClaims(disposition.evidence);
+		const reportedRemote = remoteRenameClaims(facts.reported);
+		// One report per fixture keeps "the loop reached this pair" unambiguous.
+		expect(admittedRenames.length).toBeLessThanOrEqual(1);
+
+		const reportFamily: ReportFamilyBranch = admittedRenames.length === 0
+			? "none"
+			: admittedRenames.every((claim) => trace.includes(`${claim.oldPath}=>${claim.newPath}`))
+				? "reported"
+				: "conflicting";
+
+		const evidenceFill: EvidenceFillBranch = reportedRemote.length === 0
+			? "no_remote_rename_evidence"
+			: reportedRemote.some((claim) => claim.identityKey)
+				? "reported_identity_kept"
+				: admittedRemote.some((claim) => claim.identityKey)
+					? "filled_from_newPath_lookup"
+					: "newPath_lookup_missed";
+
+		const keyed = admittedRemote.filter((claim) => claim.identityKey);
+		// Only line 107 returns `conflicting_identity` from inside the report loop:
+		// every later producer of that reason (bindFiles 451, decideFolder 693/696)
+		// first records its own compatibility pair, and indexFacts fails before the
+		// entry-endpoint loop records anything at all.
+		const stoppedInReportLoop = trace.length > 0 && keyed.some((claim) =>
+			trace[trace.length - 1] === `${claim.oldPath}=>${claim.newPath}`);
+		const failedOnIdentity = disposition.kind === "failed" &&
+			disposition.reasons.length === 1 &&
+			disposition.reasons[0] === "conflicting_identity" && stoppedInReportLoop;
+		const identityGuard: IdentityGuardBranch = reportFamily !== "reported"
+			? "not_reached_family_not_reported"
+			: keyed.length === 0
+				? "not_reached_evidence_carries_no_identity"
+				: failedOnIdentity
+					? "failed_conflicting_identity"
+					: "passed_current_identity_equals_filled_key";
+
+		const directoryAliases = facts.observations.filter((item) =>
+			item.kind === "alias" && item.entity.isDirectory);
+		const folderRenameActions = disposition.actions.filter((action) =>
+			(action.action === "rename_local" || action.action === "rename_remote") &&
+			action.isFolder === true);
+		const aliasFolder: AliasFolderBranch =
+			admittedRenames.some((claim) => claim.isFolder) && reportFamily === "reported"
+				? "not_consulted_governing_folder_report"
+				: directoryAliases.length === 0
+					? "consulted_no_directory_alias_candidate"
+					: folderRenameActions.length > 0
+						? "consulted_relation_selected"
+						: "consulted_candidate_rejected";
+
+		return {
+			reportFamily, aliasFolder, evidenceFill, identityGuard, trace,
+			kind: disposition.kind,
+			reasons: disposition.kind === "failed" ? disposition.reasons : [],
+			actions: disposition.actions.map((action) => action.action),
+			admittedRemoteRenameKeys: admittedRemote.map((claim) => claim.identityKey),
+		};
+	}
+
+	function measure(facts: ObservedFacts): Measurement {
+		const trace: string[] = [];
+		// change-detector.ts:151 — Observation completes identity evidence, then hands
+		// entries, evidence and observations to the capture boundary unchanged.
+		const completed = completeIdentityEvidence(
+			facts.reported, facts.observations, facts.entries,
+		);
+		const admission = admitBatchObservation(captureBatchObservation(
+			[...facts.entries], completed, [...facts.observations],
+			tracingScope(facts.scopePaths, trace), "backend\0root",
+		));
+		expect(admission.dispositions).toHaveLength(1);
+		return classify(facts, admission.dispositions[0]!, trace);
+	}
+
+	function remoteRenameReport(oldPath: string, newPath: string, isFolder = false): IdentityEvidence {
+		// `collectRemoteRenameEvidence` builds exactly this: a RenamePair has no id,
+		// so a remote rename claim never carries an identityKey before completion.
+		return { kind: "rename", side: "remote", oldPath, newPath, isFolder, authority: "reported" };
+	}
+
+	it("fixture 1: remote rename under an unchanged local file, baseline carrying an identity", () => {
+		const localA = entity("notes/a.md");
+		const remoteB = entity("notes/b.md", "drive-1");
+		const baseline = recordFor(entity("notes/a.md", "drive-1"));
+
+		const measurement = measure({
+			entries: [
+				{ path: "notes/a.md", local: localA, prevSync: baseline },
+				{ path: "notes/b.md", remote: remoteB },
+			],
+			observations: [
+				{ kind: "exact", side: "local", requestedPath: "notes/a.md", entity: localA },
+				{ kind: "absent", side: "local", requestedPath: "notes/b.md", authority: "stat" },
+				{ kind: "absent", side: "remote", requestedPath: "notes/a.md", authority: "stat" },
+				{ kind: "exact", side: "remote", requestedPath: "notes/b.md", entity: remoteB },
+			],
+			reported: [remoteRenameReport("notes/a.md", "notes/b.md")],
+			scopePaths: ["notes/a.md", "notes/b.md"],
+		});
+
+		expect(measurement.reportFamily).toBe("reported");
+		expect(measurement.aliasFolder).toBe("consulted_no_directory_alias_candidate");
+		expect(measurement.evidenceFill).toBe("filled_from_newPath_lookup");
+		expect(measurement.identityGuard).toBe("passed_current_identity_equals_filled_key");
+		expect(measurement.admittedRemoteRenameKeys).toEqual(["drive-1"]);
+		expect(measurement.trace).toEqual([
+			"notes/a.md=>notes/a.md", "notes/b.md=>notes/b.md",
+			"notes/a.md=>notes/b.md", "notes/a.md=>notes/b.md",
+		]);
+		expect(measurement.kind).toBe("authorized");
+		expect(measurement.actions).toEqual(["rename_local"]);
+	});
+
+	it("fixture 2: remote rename under an unchanged local file, baseline carrying no identity", () => {
+		const localA = entity("notes/a.md");
+		const remoteB = entity("notes/b.md", "drive-1");
+		const baseline = recordFor(entity("notes/a.md"));
+		expect(baseline.remoteIdentityKey).toBeUndefined();
+
+		const measurement = measure({
+			entries: [
+				{ path: "notes/a.md", local: localA, prevSync: baseline },
+				{ path: "notes/b.md", remote: remoteB },
+			],
+			observations: [
+				{ kind: "exact", side: "local", requestedPath: "notes/a.md", entity: localA },
+				{ kind: "absent", side: "local", requestedPath: "notes/b.md", authority: "stat" },
+				{ kind: "absent", side: "remote", requestedPath: "notes/a.md", authority: "stat" },
+				{ kind: "exact", side: "remote", requestedPath: "notes/b.md", entity: remoteB },
+			],
+			reported: [remoteRenameReport("notes/a.md", "notes/b.md")],
+			scopePaths: ["notes/a.md", "notes/b.md"],
+		});
+
+		expect(measurement.reportFamily).toBe("reported");
+		expect(measurement.aliasFolder).toBe("consulted_no_directory_alias_candidate");
+		expect(measurement.evidenceFill).toBe("filled_from_newPath_lookup");
+		expect(measurement.identityGuard).toBe("passed_current_identity_equals_filled_key");
+		expect(measurement.admittedRemoteRenameKeys).toEqual(["drive-1"]);
+		expect(measurement.trace).toEqual([
+			"notes/a.md=>notes/a.md", "notes/b.md=>notes/b.md",
+			"notes/a.md=>notes/b.md", "notes/a.md=>notes/b.md",
+		]);
+		expect(measurement.kind).toBe("authorized");
+		expect(measurement.actions).toEqual(["rename_local"]);
+	});
+
+	it("fixture 3: a remote object replaced at an address by a different id", () => {
+		const localDoc = entity("doc.md");
+		const remoteDoc = entity("doc.md", "drive-2");
+		const baseline = recordFor(entity("doc.md", "drive-1"));
+
+		const measurement = measure({
+			entries: [{ path: "doc.md", local: localDoc, remote: remoteDoc, prevSync: baseline }],
+			observations: [
+				{ kind: "exact", side: "local", requestedPath: "doc.md", entity: localDoc },
+				{ kind: "exact", side: "remote", requestedPath: "doc.md", entity: remoteDoc },
+				{ kind: "absent", side: "local", requestedPath: "old.md", authority: "stat" },
+				{ kind: "absent", side: "remote", requestedPath: "old.md", authority: "stat" },
+			],
+			reported: [remoteRenameReport("old.md", "doc.md")],
+			scopePaths: ["doc.md", "old.md"],
+		});
+
+		// The filled key is the *current* occupant's id, not the baseline's, so the
+		// guard compares "drive-2" against "drive-2" and passes even though the
+		// address now holds a different remote object than the record binds.
+		expect(measurement.evidenceFill).toBe("filled_from_newPath_lookup");
+		expect(measurement.admittedRemoteRenameKeys).toEqual(["drive-2"]);
+		expect(baseline.remoteIdentityKey).toBe("drive-1");
+		expect(measurement.reportFamily).toBe("reported");
+		expect(measurement.aliasFolder).toBe("consulted_no_directory_alias_candidate");
+		expect(measurement.identityGuard).toBe("passed_current_identity_equals_filled_key");
+		expect(measurement.trace).toEqual(["doc.md=>doc.md", "doc.md=>doc.md", "old.md=>doc.md"]);
+		expect(measurement.kind).toBe("authorized");
+		expect(measurement.actions).toEqual(["match"]);
+	});
+
+	it("fixture 4: a rename whose evidence carries no identity", () => {
+		const localStale = entity("stale.md");
+		const remoteFresh = entity("fresh.md");
+		const baseline = recordFor(entity("stale.md"));
+		expect(remoteFresh.identityKey).toBeUndefined();
+
+		const measurement = measure({
+			entries: [
+				{ path: "stale.md", local: localStale, prevSync: baseline },
+				{ path: "fresh.md", remote: remoteFresh },
+			],
+			observations: [
+				{ kind: "exact", side: "local", requestedPath: "stale.md", entity: localStale },
+				{ kind: "absent", side: "local", requestedPath: "fresh.md", authority: "stat" },
+				{ kind: "absent", side: "remote", requestedPath: "stale.md", authority: "stat" },
+				{ kind: "exact", side: "remote", requestedPath: "fresh.md", entity: remoteFresh },
+			],
+			reported: [remoteRenameReport("stale.md", "fresh.md")],
+			scopePaths: ["stale.md", "fresh.md"],
+		});
+
+		// The lookup runs and misses, so the claim stays unkeyed and line 106's
+		// `report.identityKey` guard condition is never evaluated.
+		expect(measurement.evidenceFill).toBe("newPath_lookup_missed");
+		expect(measurement.admittedRemoteRenameKeys).toEqual([undefined]);
+		expect(measurement.reportFamily).toBe("reported");
+		expect(measurement.aliasFolder).toBe("consulted_no_directory_alias_candidate");
+		expect(measurement.identityGuard).toBe("not_reached_evidence_carries_no_identity");
+		expect(measurement.trace).toEqual([
+			"stale.md=>stale.md", "fresh.md=>fresh.md",
+			"stale.md=>fresh.md", "stale.md=>fresh.md",
+		]);
+		expect(measurement.kind).toBe("authorized");
+		expect(measurement.actions).toEqual(["rename_local"]);
+	});
+
+	it("fixture 5: a folder rename whose descendants are not re-emitted", () => {
+		const localFolder = { ...entity("notes"), isDirectory: true, hash: "", size: 0, mtime: 0 };
+		const remoteFolder = { ...entity("Notes", "folder-1"), isDirectory: true, hash: "", size: 0, mtime: 0 };
+		const localChild = entity("notes/x.md");
+		const remoteChild = entity("Notes/x.md", "child-1");
+		const baseline = recordFor(entity("Notes/x.md", "child-1"));
+
+		const measurement = measure({
+			entries: [
+				{ path: "notes/x.md", local: localChild },
+				{ path: "Notes/x.md", remote: remoteChild, prevSync: baseline },
+			],
+			observations: [
+				{ kind: "exact", side: "local", requestedPath: "notes", entity: localFolder },
+				{
+					kind: "alias", side: "local", requestedPath: "Notes",
+					resolvedPath: "notes", entity: localFolder,
+				},
+				{ kind: "exact", side: "local", requestedPath: "notes/x.md", entity: localChild },
+				{ kind: "absent", side: "local", requestedPath: "Notes/x.md", authority: "stat" },
+				{ kind: "exact", side: "remote", requestedPath: "Notes", entity: remoteFolder },
+				{ kind: "absent", side: "remote", requestedPath: "notes", authority: "stat" },
+				{ kind: "exact", side: "remote", requestedPath: "Notes/x.md", entity: remoteChild },
+				{ kind: "absent", side: "remote", requestedPath: "notes/x.md", authority: "stat" },
+			],
+			// The folder moved; only the folder itself is re-observed. No descendant
+			// claim and no descendant alias is emitted for "x.md".
+			reported: [],
+			scopePaths: ["Notes", "notes", "Notes/x.md", "notes/x.md"],
+		});
+
+		expect(measurement.reportFamily).toBe("none");
+		expect(measurement.aliasFolder).toBe("consulted_relation_selected");
+		expect(measurement.evidenceFill).toBe("no_remote_rename_evidence");
+		expect(measurement.identityGuard).toBe("not_reached_family_not_reported");
+		expect(measurement.trace).toEqual([
+			"notes/x.md=>notes/x.md", "Notes/x.md=>Notes/x.md",
+			"Notes=>notes", "Notes=>notes", "Notes=>notes",
+			"Notes/x.md=>notes/x.md",
+		]);
+		expect(measurement.kind).toBe("authorized");
+		expect(measurement.actions).toEqual(["rename_remote"]);
+	});
+
+	it("probe: the guard fails only where the completion map and current.remote key differently", () => {
+		const localDoc = entity("doc.md");
+		const baseline = recordFor(entity("doc.md", "drive-1"));
+
+		// Divergence A — an entry addressed at one path carrying a remote endpoint
+		// resolved at another. `completeIdentityEvidence` keys the entry's identity by
+		// `entry.path` (identity-evidence.ts:39); `indexFacts` keys it by
+		// `entry.remote.path` (identity-component-decision.ts:349 via insert()).
+		const elsewhere = entity("elsewhere.md", "drive-2");
+		const byEntryAddress = measure({
+			entries: [{ path: "doc.md", local: localDoc, remote: elsewhere, prevSync: baseline }],
+			observations: [
+				{ kind: "exact", side: "local", requestedPath: "doc.md", entity: localDoc },
+				{ kind: "absent", side: "local", requestedPath: "old.md", authority: "stat" },
+				{ kind: "absent", side: "remote", requestedPath: "old.md", authority: "stat" },
+			],
+			reported: [remoteRenameReport("old.md", "doc.md")],
+			scopePaths: ["doc.md", "elsewhere.md", "old.md"],
+		});
+
+		expect(byEntryAddress.reportFamily).toBe("reported");
+		expect(byEntryAddress.aliasFolder).toBe("consulted_no_directory_alias_candidate");
+		expect(byEntryAddress.evidenceFill).toBe("filled_from_newPath_lookup");
+		expect(byEntryAddress.admittedRemoteRenameKeys).toEqual(["drive-2"]);
+		expect(byEntryAddress.identityGuard).toBe("failed_conflicting_identity");
+		expect(byEntryAddress.kind).toBe("failed");
+		expect(byEntryAddress.reasons).toEqual(["conflicting_identity"]);
+		expect(byEntryAddress.actions).toEqual([]);
+		expect(byEntryAddress.trace).toEqual([
+			"doc.md=>doc.md", "doc.md=>elsewhere.md", "old.md=>doc.md",
+		]);
+
+		// Divergence B — two remote observations at one address: the keyed one carries
+		// no hash, so insert() keeps the hashed, unkeyed prior
+		// (identity-component-decision.ts:329) while the completion map takes the last
+		// keyed writer (identity-evidence.ts:36).
+		const hashedUnkeyed = entity("doc.md");
+		const keyedUnhashed = { ...entity("doc.md", "drive-2"), hash: "" };
+		const byInsertPreference = measure({
+			entries: [{ path: "doc.md", local: localDoc, prevSync: baseline }],
+			observations: [
+				{ kind: "exact", side: "local", requestedPath: "doc.md", entity: localDoc },
+				{ kind: "exact", side: "remote", requestedPath: "doc.md", entity: hashedUnkeyed },
+				{ kind: "exact", side: "remote", requestedPath: "doc.md", entity: keyedUnhashed },
+				{ kind: "absent", side: "local", requestedPath: "old.md", authority: "stat" },
+				{ kind: "absent", side: "remote", requestedPath: "old.md", authority: "stat" },
+			],
+			reported: [remoteRenameReport("old.md", "doc.md")],
+			scopePaths: ["doc.md", "old.md"],
+		});
+
+		expect(byInsertPreference.evidenceFill).toBe("filled_from_newPath_lookup");
+		expect(byInsertPreference.admittedRemoteRenameKeys).toEqual(["drive-2"]);
+		expect(byInsertPreference.identityGuard).toBe("failed_conflicting_identity");
+		expect(byInsertPreference.kind).toBe("failed");
+		expect(byInsertPreference.reasons).toEqual(["conflicting_identity"]);
+		expect(byInsertPreference.trace).toEqual(["doc.md=>doc.md", "old.md=>doc.md"]);
 	});
 });
