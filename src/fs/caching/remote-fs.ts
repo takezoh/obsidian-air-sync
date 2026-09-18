@@ -11,6 +11,7 @@ import type {
 } from "../priority-observation";
 import { normalizeSyncPath } from "../../utils/path";
 import type { AbstractMetadataCache } from "./metadata-cache";
+import { projectedIdentityKey } from "./metadata-cache";
 import { observeDetachedPriority, readDetachedPriority } from "./detached-priority";
 
 /** A remote delta: paths added/modified, deleted, and renamed since the last cursor. */
@@ -413,7 +414,7 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 		const deleted: string[] = [];
 		const renamed: RenamePair[] = [];
 		const newIds = new Set<string>();
-		for (const [newPath] of this.cache.entries()) {
+		for (const [newPath, file] of this.cache.entries()) {
 			const id = this.cache.idAt(newPath);
 			if (id === undefined) continue;
 			newIds.add(id);
@@ -421,7 +422,14 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 			if (!oldPath) {
 				modified.push(newPath);
 			} else if (oldPath !== newPath) {
-				renamed.push({ oldPath, newPath, isFolder: this.cache.isFolder(newPath) || undefined });
+				// `id` is the cache's ADDRESS for this entry (it may be a synthetic
+				// fallback); the reported identity comes from the entity projection only.
+				renamed.push({
+					oldPath,
+					newPath,
+					isFolder: this.cache.isFolder(newPath) || undefined,
+					identityKey: projectedIdentityKey(this.cache, newPath, file),
+				});
 				modified.push(newPath);
 				deleted.push(oldPath);
 			}

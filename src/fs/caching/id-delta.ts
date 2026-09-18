@@ -1,5 +1,6 @@
 import type { RenamePair } from "../types";
 import type { AbstractMetadataCache } from "./metadata-cache";
+import { projectedIdentityKey } from "./metadata-cache";
 
 /**
  * One normalized entry from a backend delta page. Each id-addressed backend maps
@@ -117,7 +118,12 @@ function applyEntry<TFile>(
 	if (moved) {
 		acc.changedPaths.add(oldPath);
 		for (const d of oldDescendants) acc.changedPaths.add(d);
-		acc.renamedPaths.push({ oldPath, newPath, isFolder: wasFolder || undefined });
+		acc.renamedPaths.push({
+			oldPath,
+			newPath,
+			isFolder: wasFolder || undefined,
+			identityKey: projectedIdentityKey(cache, newPath),
+		});
 		// Folder move — also report the new descendant paths as updated.
 		if (wasFolder) {
 			for (const nd of cache.collectDescendants(newPath)) acc.changedPaths.add(nd);

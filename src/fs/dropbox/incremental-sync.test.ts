@@ -56,6 +56,16 @@ function page(entries: DropboxListFolderResponse["entries"], cursor = "next"): D
 	return { entries, cursor, has_more: false };
 }
 
+/**
+ * The identity a `list()`/`stat()` of `path` would report — the cache's own entity
+ * projection (`dropboxEntryToEntity`, whose `identityKey` is `entry.id` with NO
+ * fallback). Rename pairs are asserted against THIS, never against `extractId`/`idAt`,
+ * which fall back to `path_lower` and would agree only by coincidence.
+ */
+function projectedIdentity(cache: DropboxMetadataCache, path: string): string | undefined {
+	return cache.toEntity(path, cache.getFile(path)!).identityKey;
+}
+
 describe("applyDropboxDelta — official algorithm", () => {
 	it("upserts files/folders and removes deleted subtrees", async () => {
 		const cache = seededCache();
@@ -84,7 +94,27 @@ describe("applyDropboxDelta — official algorithm", () => {
 		expect(cache.hasFile("renamed.md")).toBe(true);
 		expect(cache.hasFile("a.md")).toBe(false);
 		expect(cache.getPathById("id:1")).toBe("renamed.md");
-		expect(result.renamedPaths).toEqual([{ oldPath: "a.md", newPath: "renamed.md", isFolder: undefined }]);
+		expect(result.renamedPaths).toEqual([
+			{ oldPath: "a.md", newPath: "renamed.md", isFolder: undefined, identityKey: projectedIdentity(cache, "renamed.md") },
+		]);
+		expect(result.renamedPaths[0]?.identityKey).toBe("id:1");
+	});
+
+	// The pair's identity comes from the entity projection (`entry.id`, no fallback),
+	// never from the cache's address function (`entry.id ?? entry.path_lower`). Here the
+	// entry HAS an id, so the two agree — `applyRename` is reached only for such entries
+	// (it is gated on `entry.id`). The id-less case, where they diverge, is only
+	// constructible on the full-scan route: see src/fs/caching/remote-fs.contract.test.ts.
+	it("carries the moved object's projected identity on an id-bearing delta rename", async () => {
+		const cache = seededCache();
+		const client = fakeClient([page([dbxFile("1", "/root/renamed.md"), dbxDeleted("/root/a.md")])]);
+		const result = await applyDropboxDelta({ cache, client }, "cur");
+		if (result.needsFullScan) throw new Error("unexpected reset");
+
+		const pair = result.renamedPaths[0];
+		expect(pair?.identityKey).toBe(projectedIdentity(cache, "renamed.md"));
+		expect(pair?.identityKey).toBe("id:1");
+		expect(cache.idAt("renamed.md")).toBe("id:1"); // agrees only because the id exists
 	});
 
 	it("rewrites child paths when a folder is renamed via the same id", async () => {
@@ -96,7 +126,10 @@ describe("applyDropboxDelta — official algorithm", () => {
 		expect(cache.hasFile("papers")).toBe(true);
 		expect(cache.hasFile("papers/b.md")).toBe(true);
 		expect(cache.hasFile("dir/b.md")).toBe(false);
-		expect(result.renamedPaths).toEqual([{ oldPath: "dir", newPath: "papers", isFolder: true }]);
+		expect(result.renamedPaths).toEqual([
+			{ oldPath: "dir", newPath: "papers", isFolder: true, identityKey: projectedIdentity(cache, "papers") },
+		]);
+		expect(result.renamedPaths[0]?.identityKey).toBe("id:2");
 	});
 
 	// ── Order-independence (ADR 0006): Dropbox does not guarantee the moved entry
@@ -114,7 +147,10 @@ describe("applyDropboxDelta — official algorithm", () => {
 		expect(cache.hasFile("renamed.md")).toBe(true);
 		expect(cache.hasFile("a.md")).toBe(false);
 		expect(cache.getPathById("id:1")).toBe("renamed.md");
-		expect(result.renamedPaths).toEqual([{ oldPath: "a.md", newPath: "renamed.md", isFolder: undefined }]);
+		expect(result.renamedPaths).toEqual([
+			{ oldPath: "a.md", newPath: "renamed.md", isFolder: undefined, identityKey: projectedIdentity(cache, "renamed.md") },
+		]);
+		expect(result.renamedPaths[0]?.identityKey).toBe("id:1");
 	});
 
 	it("coalesces a folder rename even when deleted(old) arrives BEFORE the moved folder", async () => {
@@ -129,7 +165,10 @@ describe("applyDropboxDelta — official algorithm", () => {
 		expect(cache.hasFile("dir")).toBe(false);
 		expect(cache.hasFile("dir/b.md")).toBe(false);
 		// One folder rename pair — NOT a per-file delete+add of the subtree.
-		expect(result.renamedPaths).toEqual([{ oldPath: "dir", newPath: "papers", isFolder: true }]);
+		expect(result.renamedPaths).toEqual([
+			{ oldPath: "dir", newPath: "papers", isFolder: true, identityKey: projectedIdentity(cache, "papers") },
+		]);
+		expect(result.renamedPaths[0]?.identityKey).toBe("id:2");
 	});
 
 	it("coalesces a folder rename when its child upsert is listed before the parent folder", async () => {
@@ -149,7 +188,10 @@ describe("applyDropboxDelta — official algorithm", () => {
 		expect(cache.hasFile("papers/b.md")).toBe(true);
 		expect(cache.hasFile("dir")).toBe(false);
 		// The folder rename is reported once; the child does not produce a second pair.
-		expect(result.renamedPaths).toEqual([{ oldPath: "dir", newPath: "papers", isFolder: true }]);
+		expect(result.renamedPaths).toEqual([
+			{ oldPath: "dir", newPath: "papers", isFolder: true, identityKey: projectedIdentity(cache, "papers") },
+		]);
+		expect(result.renamedPaths[0]?.identityKey).toBe("id:2");
 	});
 
 	it("does NOT coalesce delete-then-recreate at the same path with a DIFFERENT id", async () => {
@@ -216,7 +258,10 @@ describe("applyDropboxDelta — official algorithm", () => {
 		const result = await applyDropboxDelta({ cache, client }, "cur");
 		if (result.needsFullScan) throw new Error("unexpected reset");
 
-		expect(result.renamedPaths).toContainEqual({ oldPath: "A", newPath: "X", isFolder: true });
+		expect(result.renamedPaths).toContainEqual({
+			oldPath: "A", newPath: "X", isFolder: true, identityKey: projectedIdentity(cache, "X"),
+		});
+		expect(result.renamedPaths[0]?.identityKey).toBe("id:20");
 		expect(cache.getPathById("id:20")).toBe("X");
 		expect(cache.hasFile("X/c.md")).toBe(true);
 		expect(cache.hasFile("X/keep.md")).toBe(false);

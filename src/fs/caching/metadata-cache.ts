@@ -415,3 +415,31 @@ export abstract class AbstractMetadataCache<TFile> {
 		return path;
 	}
 }
+
+/**
+ * The identity a cache's own `FileEntity` projection gives whatever is cached at
+ * `path` — the single source every rename producer reads when it fills a
+ * `RenamePair.identityKey`.
+ *
+ * Total: exactly `cache.toEntity(path, file).identityKey` when an entry is cached at
+ * `path`, and `undefined` when none is. It never throws, holds no state, and keeps
+ * nothing that outlives the call.
+ *
+ * A free function over the already-public `toEntity`/`getFile` rather than a member,
+ * so no backend subclass gains an obligation and the value can only ever come from
+ * the projection. In particular it never reads `extractId`, `idAt`, `getPathById` or
+ * `snapshotPathsById`: those answer "how do I address this entry?" and are total by
+ * design (Dropbox's falls back to `path_lower`), whereas the projection answers "what
+ * is this object's provider identity?" and legitimately has none for an id-less entry.
+ * Mixing the two would leak a cache-internal address across the `IFileSystem` boundary.
+ *
+ * `file` defaults to the entry cached at `path`; a caller that already holds it (a
+ * `cache.entries()` walk) passes it to skip the re-lookup.
+ */
+export function projectedIdentityKey<TFile>(
+	cache: AbstractMetadataCache<TFile>,
+	path: string,
+	file: TFile | undefined = cache.getFile(path),
+): string | undefined {
+	return file === undefined ? undefined : cache.toEntity(path, file).identityKey;
+}

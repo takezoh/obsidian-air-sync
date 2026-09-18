@@ -311,7 +311,10 @@ export function runCachingRemoteFsContract<TFile>(
 
 			h.stageRemoteRename("note.md", "renamed.md");
 			const d = await fs.getChangedPaths();
-			expect(d?.renamed ?? []).toContainEqual({ oldPath: "note.md", newPath: "renamed.md", isFolder: undefined });
+			// The pair names the moved object by the identity a `stat` of the destination
+			// reports — read through the public surface only, never off the cache.
+			const identityKey = (await fs.stat("renamed.md"))?.identityKey;
+			expect(d?.renamed ?? []).toContainEqual({ oldPath: "note.md", newPath: "renamed.md", isFolder: undefined, identityKey });
 			expect(d?.modified).toContain("renamed.md");
 			expect(d?.deleted).toContain("note.md");
 			await store.close();
@@ -330,10 +333,11 @@ export function runCachingRemoteFsContract<TFile>(
 			const d = await fs.getChangedPaths();
 
 			// Exactly one pair — the folder — NOT a per-child rename and NOT a subtree delete+add.
-			expect(d?.renamed).toEqual([{ oldPath: "dir", newPath: "papers", isFolder: true }]);
+			const moved = await fs.stat("papers");
+			expect(d?.renamed).toEqual([{ oldPath: "dir", newPath: "papers", isFolder: true, identityKey: moved?.identityKey }]);
 			expect(d?.deleted).toContain("dir");
 			// The folder moved as a unit: the child now lives under the new path.
-			expect((await fs.stat("papers"))?.isDirectory).toBe(true);
+			expect(moved?.isDirectory).toBe(true);
 			expect(await fs.stat("papers/b.md")).not.toBeNull();
 			expect(await fs.stat("dir/b.md")).toBeNull();
 			await store.close();
@@ -348,13 +352,16 @@ export function runCachingRemoteFsContract<TFile>(
 			await fs.commitCheckpoint();
 
 			h.stageRemoteRename("dir", "papers", { isFolder: true });
-			expect((await fs.getChangedPaths())?.renamed).toEqual([
-				{ oldPath: "dir", newPath: "papers", isFolder: true },
+			const beforeAbort = (await fs.getChangedPaths())?.renamed;
+			const identityKey = (await fs.stat("papers"))?.identityKey;
+			expect(beforeAbort).toEqual([
+				{ oldPath: "dir", newPath: "papers", isFolder: true, identityKey },
 			]);
 			await fs.abortWorkingView();
 
+			// The replayed pair names the same object, identity included.
 			expect((await fs.getChangedPaths())?.renamed).toEqual([
-				{ oldPath: "dir", newPath: "papers", isFolder: true },
+				{ oldPath: "dir", newPath: "papers", isFolder: true, identityKey },
 			]);
 			expect(await fs.stat("papers/b.md")).not.toBeNull();
 			expect(await fs.stat("dir/b.md")).toBeNull();
@@ -371,8 +378,9 @@ export function runCachingRemoteFsContract<TFile>(
 
 			h.stageRemoteRename("dir", "papers", { isFolder: true });
 			const first = await fs.getChangedPaths();
+			const identityKey = (await fs.stat("papers"))?.identityKey;
 			expect(first?.renamed).toContainEqual({
-				oldPath: "dir", newPath: "papers", isFolder: true,
+				oldPath: "dir", newPath: "papers", isFolder: true, identityKey,
 			});
 
 			h.stageRemoteRename("papers", "archive", { isFolder: true });
@@ -383,6 +391,7 @@ export function runCachingRemoteFsContract<TFile>(
 			const second = await fs.getChangedPaths();
 			expect(second?.renamed).toContainEqual({
 				oldPath: "papers", newPath: "archive", isFolder: true,
+				identityKey: (await fs.stat("archive"))?.identityKey,
 			});
 			await store.close();
 		});
