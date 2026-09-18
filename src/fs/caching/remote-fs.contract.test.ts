@@ -4,8 +4,9 @@ import type { FileEntity } from "../types";
 import type { RenamePair } from "../types";
 import { MetadataStore } from "../../store/metadata-store";
 import { AbstractMetadataCache } from "./metadata-cache";
+import type { AddressDisplacement, WithheldClaim } from "./metadata-cache";
 import { CachingRemoteFs } from "./remote-fs";
-import type { IncrementalChangesResult } from "./remote-fs";
+import type { IncrementalChangesResult, RemoteDelta } from "./remote-fs";
 import { runCachingRemoteFsContract } from "../../../tests/fs/contracts/caching-remote-fs.contract";
 import type { CachingRemoteFsHarness } from "../../../tests/fs/contracts/caching-remote-fs.contract";
 import { resolveDetachedIdPath } from "../priority-observation";
@@ -68,6 +69,16 @@ class FakeRemote {
 			return parts.join("/");
 		};
 		return [...this.files.values()].filter((file) => resolve(file) === path);
+	}
+
+	/**
+	 * Baseline object with ids and parentage spelled out — part of the next full
+	 * list, no delta event. `seed`/`seedFolderWithChild` generate both for the
+	 * shared contract; a contention fixture has to name them, because WHICH id wins
+	 * a contended address is the thing under test.
+	 */
+	seedRaw(file: MockFile): void {
+		this.files.set(file.id, file);
 	}
 
 	/** Baseline file (no delta event) — part of the next full list. */
@@ -142,9 +153,29 @@ class FakeRemote {
 	}
 }
 
+/**
+ * Flatten one withheld claim the way `id-delta.ts` publishes it: the address the
+ * claimant vacated belongs with the descendants that went with it, because the
+ * absence rule has to subtract them together.
+ */
+function toContentionFact(claim: WithheldClaim): AddressDisplacement {
+	const absent = claim.vacatedPath === null
+		? [...claim.displacedPaths]
+		: [claim.vacatedPath, ...claim.displacedPaths].sort();
+	return {
+		path: claim.path,
+		admittedId: claim.admittedId,
+		withheldId: claim.withheldId,
+		displacedPaths: absent,
+		reason: claim.reason,
+		owesRemediation: claim.owesRemediation,
+	};
+}
+
 class MockRemoteFs extends CachingRemoteFs<MockFile> {
 	readonly name = "mock";
 	private failAfterFirstChange = false;
+	private expireCursorOnce = false;
 
 	constructor(private remote: FakeRemote, store: MetadataStore<MockFile>) {
 		super(remote.rootId, new MockCache(remote.rootId), store);
@@ -154,11 +185,18 @@ class MockRemoteFs extends CachingRemoteFs<MockFile> {
 	protected fullList(): Promise<MockFile[]> { return Promise.resolve(this.remote.list()); }
 	protected assertRootAlive(): Promise<void> { return Promise.resolve(); }
 	requestLaterPageFailure(): void { this.failAfterFirstChange = true; }
+	/** Answer the next delta the way an expired cursor does (Google Drive's 410). */
+	requestCursorExpiry(): void { this.expireCursorOnce = true; }
 
 	protected fetchChanges(cursor: string): Promise<IncrementalChangesResult> {
+		if (this.expireCursorOnce) {
+			this.expireCursorOnce = false;
+			return Promise.resolve({ needsFullScan: true, changedPaths: new Set<string>() });
+		}
 		const { changes, newCursor } = this.remote.changesSince(cursor);
 		const changedPaths = new Set<string>();
 		const renamedPaths: RenamePair[] = [];
+		const contended: AddressDisplacement[] = [];
 		for (const [index, ch] of changes.entries()) {
 			if (ch.kind === "delete") {
 				const path = this.cache.getPathById(ch.id);
@@ -168,7 +206,18 @@ class MockRemoteFs extends CachingRemoteFs<MockFile> {
 					this.cache.removeTree(path);
 				}
 			} else {
-				const { oldPath, newPath, wasFolder, oldDescendants } = this.cache.applyFileChangeDetectMove(ch.file);
+				const applied = this.cache.applyFileChangeDetectMove(ch.file);
+				const { oldPath, newPath, wasFolder, oldDescendants } = applied;
+				if (applied.withheld) {
+					// The cache refused this claim, so the claimant's own address was
+					// vacated. Report it changed and DECLARE why, exactly as the shared
+					// id-addressed applier does — an undeclared vacancy reads as a delete.
+					const fact = toContentionFact(applied.withheld);
+					for (const path of fact.displacedPaths) changedPaths.add(path);
+					contended.push(fact);
+					continue;
+				}
+				if (applied.displacement) contended.push(applied.displacement);
 				if (newPath) changedPaths.add(newPath);
 				if (oldPath && newPath && oldPath !== newPath) {
 					changedPaths.add(oldPath);
@@ -182,7 +231,7 @@ class MockRemoteFs extends CachingRemoteFs<MockFile> {
 				throw new Error("injected later page failure");
 			}
 		}
-		return Promise.resolve({ needsFullScan: false, newToken: newCursor, changedPaths, renamedPaths });
+		return Promise.resolve({ needsFullScan: false, newToken: newCursor, changedPaths, renamedPaths, contended });
 	}
 
 	protected fetchCurrentFile(fileId: string): Promise<MockFile | null> {
@@ -309,5 +358,244 @@ describe("MockRemoteFs incremental authority persistence", () => {
 
 		expect((await restarted.stat("Docs/a.md"))?.pathAuthority).toBe("actual_resolved");
 		await restarted.close();
+	});
+});
+
+/**
+ * The three producers of `RemoteDelta.deleted`, enumerated completely, and the one
+ * attribution rule all three obey.
+ *
+ *  1. `_applyIncrementalChanges`' `hasFile` split over a drain's changed paths.
+ *  2. `diffById`'s vanished-id sweep — the route a cursor expiry takes, and the one
+ *     measured to reach `delete_local`.
+ *  3. `id-delta.ts`'s "old path and no new path" branch, which decides its own half
+ *     (it separates a genuine move out of the tracked root from a displacement) and
+ *     feeds what is left into producer 1, so the carrier below is what closes it.
+ *
+ * A path whose absence is attributable to a contention decided this cycle is
+ * excluded at all three. An absence that cannot be attributed is classified exactly
+ * as it always was — which is a deletion.
+ */
+describe("the three producers of RemoteDelta.deleted", () => {
+	let dbSeq = 0;
+	function makeStore(): MetadataStore<MockFile> {
+		return new MetadataStore<MockFile>(`absence-authority-${++dbSeq}`, {
+			dbNamePrefix: "air-sync-mock", version: 1,
+		});
+	}
+
+	const mockFile = (id: string, name: string, parentId: string, isFolder?: boolean): MockFile =>
+		({ id, name, parentId, checksum: `v-${id}`, isFolder });
+
+	/**
+	 * Seed a committed checkpoint holding exactly `rows`, so the next cycle restores
+	 * it and replays rather than cold-scanning.
+	 */
+	async function seedCheckpoint(store: MetadataStore<MockFile>, rows: MockFile[], paths: string[]): Promise<void> {
+		await store.open();
+		await store.saveAll(
+			rows.map((file, index) => ({ path: paths[index]!, file, isFolder: !!file.isFolder })),
+			new Map([["changesStartPageToken", "c0"]]),
+		);
+	}
+
+	describe("producer 1 — _applyIncrementalChanges' hasFile split over the drain's changed paths", () => {
+		/**
+		 * Two folders claim `docs`; the cache admits one and withholds the other, whose
+		 * own address (`old`, with a child) is vacated as a result. The drain reports
+		 * those paths changed and declares the contention — producer 3's half — and this
+		 * is where the declaration has to stop them becoming deletions.
+		 */
+		async function runWithheldFolderDelta(): Promise<{ delta: RemoteDelta; fs: MockRemoteFs }> {
+			const remote = new FakeRemote();
+			remote.seedRaw(mockFile("a-docs", "docs", remote.rootId, true));
+			remote.seedRaw(mockFile("z-old", "old", remote.rootId, true));
+			remote.seedRaw(mockFile("z-child", "a.md", "z-old"));
+			const fs = new MockRemoteFs(remote, makeStore());
+			await fs.list();
+
+			// `z-old` is renamed to `docs`, which `a-docs` already holds.
+			remote.stageRename("old", "docs", { isFolder: true });
+			const delta = await fs.checkpoint.getChangedPaths();
+			if (!delta) throw new Error("expected a delta");
+			return { delta: delta as RemoteDelta, fs };
+		}
+
+		it("excludes the address a withheld claimant vacated, and its subtree, from deleted", async () => {
+			const { delta, fs } = await runWithheldFolderDelta();
+
+			expect(delta.deleted).toEqual([]);
+			await fs.close();
+		});
+
+		it("names the contention instead, with both ids and every absent address", async () => {
+			const { delta, fs } = await runWithheldFolderDelta();
+
+			expect(delta.contended).toEqual([{
+				path: "docs",
+				admittedId: "a-docs",
+				withheldId: "z-old",
+				displacedPaths: ["old", "old/a.md"],
+				reason: "lowest_stable_id",
+				owesRemediation: true,
+			}]);
+			await fs.close();
+		});
+
+		it("still reports a genuine remote deletion, which is what becomes checkpoint_deleted", async () => {
+			const remote = new FakeRemote();
+			remote.seed("keep.md");
+			remote.seed("gone.md");
+			const fs = new MockRemoteFs(remote, makeStore());
+			await fs.list();
+
+			remote.stageDelete("gone.md");
+			const delta = await fs.checkpoint.getChangedPaths();
+
+			expect(delta?.deleted).toEqual(["gone.md"]);
+			expect(delta?.contended).toEqual([]);
+			await fs.close();
+		});
+	});
+
+	describe("producer 2 — diffById's vanished-id sweep on the cursor-expiry route", () => {
+		/**
+		 * The measured snapshot fixture: `docs` and its two children are in the
+		 * committed checkpoint under one folder id, and the fresh scan finds a second
+		 * folder claiming `docs` that wins the address. Every one of the three paths
+		 * vanishes from the working view, and before this unit all three reached
+		 * `deleted` — the chain the issue measured all the way to `delete_local`.
+		 */
+		async function runFolderCollisionScan(): Promise<{ delta: RemoteDelta; fs: MockRemoteFs }> {
+			const remote = new FakeRemote();
+			const loser = mockFile("z-docs", "docs", remote.rootId, true);
+			const childA = mockFile("z-a", "a.md", "z-docs");
+			const childB = mockFile("z-b", "b.md", "z-docs");
+			for (const file of [loser, childA, childB]) remote.seedRaw(file);
+
+			const store = makeStore();
+			await seedCheckpoint(store, [loser, childA, childB], ["docs", "docs/a.md", "docs/b.md"]);
+
+			// A second `docs` folder appears remotely; its id sorts below the cached one.
+			remote.seedRaw(mockFile("a-docs", "docs", remote.rootId, true));
+
+			const fs = new MockRemoteFs(remote, store);
+			fs.requestCursorExpiry();
+			const delta = await fs.checkpoint.getChangedPaths();
+			if (!delta) throw new Error("expected a delta");
+			return { delta: delta as RemoteDelta, fs };
+		}
+
+		it("yields an empty deleted for docs, docs/a.md and docs/b.md", async () => {
+			const { delta, fs } = await runFolderCollisionScan();
+
+			expect(delta.deleted).toEqual([]);
+			await fs.close();
+		});
+
+		it("reports all three as displaced, naming the withheld folder id", async () => {
+			const { delta, fs } = await runFolderCollisionScan();
+
+			expect(delta.contended).toEqual([{
+				path: "docs",
+				admittedId: "a-docs",
+				withheldId: "z-docs",
+				displacedPaths: ["docs/a.md", "docs/b.md"],
+				reason: "lowest_stable_id",
+				owesRemediation: true,
+			}]);
+			expect(await fs.stat("docs")).toMatchObject({ identityKey: "a-docs" });
+			await fs.close();
+		});
+
+		it("leaves a bare-name-collapsed orphan's old path out of deleted after a forced 410", async () => {
+			const remote = new FakeRemote();
+			// Its parent folder is outside the listing, so the resolver falls back to the
+			// bare name and marks the spelling a request echo rather than provider topology.
+			const orphan = mockFile("orphan", "Notes.md", "detached-parent");
+			remote.seedRaw(orphan);
+
+			const store = makeStore();
+			await seedCheckpoint(store, [orphan], ["Notes.md"]);
+
+			// A real root-level `Notes.md` now exists; its spelling is provider-resolved,
+			// so the arbiter admits it and the orphan's guess is withheld.
+			remote.seedRaw(mockFile("keeper", "Notes.md", remote.rootId));
+
+			const fs = new MockRemoteFs(remote, store);
+			fs.requestCursorExpiry();
+			const delta = await fs.checkpoint.getChangedPaths();
+
+			expect(delta?.deleted).toEqual([]);
+			expect(delta?.contended).toEqual([{
+				path: "Notes.md",
+				admittedId: "keeper",
+				withheldId: "orphan",
+				displacedPaths: [],
+				reason: "path_authority",
+				// The guess addresses an object whose parent chain never reached the bound
+				// root, so there is nothing on the provider to rename.
+				owesRemediation: false,
+			}]);
+			await fs.close();
+		});
+
+		it("still sweeps an id the provider really dropped into deleted", async () => {
+			const remote = new FakeRemote();
+			const keep = mockFile("keep", "keep.md", remote.rootId);
+			const gone = mockFile("gone", "gone.md", remote.rootId);
+			remote.seedRaw(keep);
+
+			const store = makeStore();
+			await seedCheckpoint(store, [keep, gone], ["keep.md", "gone.md"]);
+
+			const fs = new MockRemoteFs(remote, store);
+			fs.requestCursorExpiry();
+			const delta = await fs.checkpoint.getChangedPaths();
+
+			expect(delta?.deleted).toEqual(["gone.md"]);
+			expect(delta?.contended).toEqual([]);
+			await fs.close();
+		});
+	});
+
+	describe("producer 3 — id-delta's old-path-and-no-new-path branch, which feeds producer 1", () => {
+		it("carries the drain's own contention facts through to the classification", async () => {
+			const { delta, fs } = await (async () => {
+				const remote = new FakeRemote();
+				remote.seedRaw(mockFile("a-docs", "docs", remote.rootId, true));
+				remote.seedRaw(mockFile("z-old", "old", remote.rootId, true));
+				remote.seedRaw(mockFile("z-child", "a.md", "z-old"));
+				const fs = new MockRemoteFs(remote, makeStore());
+				await fs.list();
+				remote.stageRename("old", "docs", { isFolder: true });
+				const delta = await fs.checkpoint.getChangedPaths();
+				if (!delta) throw new Error("expected a delta");
+				return { delta: delta as RemoteDelta, fs };
+			})();
+
+			// Without a declared carrier the two vacated addresses arrive at producer 1
+			// as ordinary changed paths that no longer resolve — indistinguishable from
+			// a deletion. `contended` is what tells them apart, and it survives the trip.
+			expect(delta.contended.flatMap((fact) => fact.displacedPaths)).toEqual(["old", "old/a.md"]);
+			expect(delta.deleted).toEqual([]);
+			expect(delta.modified).toEqual([]);
+			await fs.close();
+		});
+
+		it("keeps a move outside the tracked root a deletion, because nothing displaced it", async () => {
+			const remote = new FakeRemote();
+			remote.seedFolderWithChild("Docs", "a.md");
+			remote.seed("note.md");
+			const fs = new MockRemoteFs(remote, makeStore());
+			await fs.list();
+
+			remote.stageDelete("note.md");
+			const delta = await fs.checkpoint.getChangedPaths();
+
+			expect(delta?.deleted).toEqual(["note.md"]);
+			expect(delta?.contended).toEqual([]);
+			await fs.close();
+		});
 	});
 });

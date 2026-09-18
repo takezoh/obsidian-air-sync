@@ -1,6 +1,7 @@
 import type { FileEntity } from "./types";
 import type { RenamePair } from "./types";
 import type { PriorityObservationCapability } from "./priority-observation";
+import type { AddressDisplacement } from "./caching/claim-set-assignment";
 
 /**
  * Abstract filesystem interface for sync operations.
@@ -129,11 +130,20 @@ export interface IncrementalCheckpoint {
 	 * Return paths changed since the last sync, or null if unavailable.
 	 * Should be called before list() to allow the change-detector to skip
 	 * unchanged paths. Returns modified, deleted, and optionally renamed path lists.
+	 *
+	 * `contended` reports the derived addresses this cycle found claimed by two live
+	 * ids. It is a FACT ABOUT THIS CYCLE, not a deletion and not an instruction: the
+	 * backend has already subtracted those addresses from `deleted`, because an
+	 * object that lost an address is still on the provider. Nothing above the
+	 * filesystem decides an absence, so no caller may move a path from here into
+	 * `deleted`. Optional: a backend whose addresses are the provider's own keys
+	 * cannot produce one.
 	 */
 	getChangedPaths(): Promise<{
 		modified: string[];
 		deleted: string[];
 		renamed?: RenamePair[];
+		contended?: readonly AddressDisplacement[];
 	} | null>;
 
 	/**

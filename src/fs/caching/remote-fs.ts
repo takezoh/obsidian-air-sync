@@ -10,19 +10,42 @@ import type {
 	PriorityReadResult,
 } from "../priority-observation";
 import { normalizeSyncPath } from "../../utils/path";
-import type { AbstractMetadataCache } from "./metadata-cache";
+import type { AbstractMetadataCache, AddressDisplacement } from "./metadata-cache";
 import { observeDetachedPriority, readDetachedPriority } from "./detached-priority";
 
-/** A remote delta: paths added/modified, deleted, and renamed since the last cursor. */
+/**
+ * A remote delta: paths added/modified, deleted, and renamed since the last cursor,
+ * plus the addresses this cycle found claimed by two live ids.
+ *
+ * `contended` is what keeps `deleted` honest. A path can be absent from the working
+ * view for two completely different reasons — the provider deleted the object, or
+ * two objects claimed one derived address and the cache could only hold one — and
+ * only the first is a deletion. The second names an object that is still on the
+ * provider, so reporting it in `deleted` would authorize deleting a live file
+ * locally. Every producer of `deleted` subtracts these facts; nothing else may.
+ */
 export interface RemoteDelta {
 	modified: string[];
 	deleted: string[];
 	renamed: RenamePair[];
+	contended: readonly AddressDisplacement[];
 }
 
-/** Result of fetching one batch of incremental changes from a backend's delta API. */
+/**
+ * Result of fetching one batch of incremental changes from a backend's delta API.
+ *
+ * `contended` carries the drain's own contention facts (`IdDeltaResult`) through to
+ * the classification below. It is optional because a backend whose addresses ARE
+ * the provider's keys (Dropbox) can never produce one.
+ */
 export type IncrementalChangesResult =
-	| { needsFullScan: false; newToken: string; changedPaths: Set<string>; renamedPaths: RenamePair[] }
+	| {
+		needsFullScan: false;
+		newToken: string;
+		changedPaths: Set<string>;
+		renamedPaths: RenamePair[];
+		contended?: readonly AddressDisplacement[];
+	}
 	| { needsFullScan: true; changedPaths: Set<string> };
 
 /**
@@ -42,6 +65,26 @@ const CURSOR_META_KEY = "changesStartPageToken";
  * checkpoint) is read back as `null` by {@link CachingRemoteFs.getScopeFingerprint}.
  */
 const SCOPE_FINGERPRINT_META_KEY = "scopeFingerprint";
+
+/**
+ * The cache addresses that are absent because a contention stands, gathered from
+ * the facts the cycle's own producer handed over.
+ *
+ * There are exactly three producers of `RemoteDelta.deleted`, and this is the one
+ * rule all three subtract: the `hasFile` split over `changedPaths` (producer 1,
+ * below), `diffById`'s vanished-id sweep (producer 2, the cursor-expiry route), and
+ * `id-delta.ts`'s "old path and no new path" branch (producer 3), which decides its
+ * own half and feeds what is left into producer 1. An absence that cannot be
+ * attributed to a contention is classified exactly as it always was — attribution
+ * failure must neither upgrade an absence nor suppress one.
+ */
+function displacedAddresses(contended: readonly AddressDisplacement[]): ReadonlySet<string> {
+	const paths = new Set<string>();
+	for (const fact of contended) {
+		for (const path of fact.displacedPaths) paths.add(path);
+	}
+	return paths;
+}
 
 /**
  * Shared base for an id-addressed remote backend with an incremental delta cursor
@@ -182,8 +225,15 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 
 	// ── Lifecycle: full scan / restore / fresh ──
 
-	/** Full scan to build the metadata cache */
-	private async fullScan(): Promise<void> {
+	/**
+	 * Full scan to build the metadata cache.
+	 *
+	 * Returns the contentions `buildFromFiles` decided over the complete listing.
+	 * Handing them back is what gives the full-scan route a DECLARED producer for
+	 * the absence rule: `fullScanWithDelta` passes them to `diffById`, which would
+	 * otherwise read every withheld claimant as a vanished id and call it deleted.
+	 */
+	private async fullScan(): Promise<readonly AddressDisplacement[]> {
 		this.cache.clear();
 
 		// Get the starting cursor BEFORE listing so concurrent changes aren't missed.
@@ -195,10 +245,11 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 		if (allFiles.length === 0) {
 			await this.assertRootAlive();
 		}
-		this.cache.buildFromFiles(allFiles);
+		const contended = this.cache.buildFromFiles(allFiles);
 
 		this.initialized = true;
 		this.logger?.info("Full scan completed", { fileCount: this.cache.size });
+		return contended;
 	}
 
 	/**
@@ -371,6 +422,8 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 		}
 
 		this._changesPageToken = result.newToken;
+		const contended = result.contended ?? [];
+		const displaced = displacedAddresses(contended);
 		const modified: string[] = [];
 		const deleted: string[] = [];
 		for (const path of result.changedPaths) {
@@ -381,11 +434,15 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 			// unlikely in practice and does not cause data loss.
 			if (this.cache.hasFile(path)) {
 				modified.push(path);
-			} else {
+			} else if (!displaced.has(path)) {
+				// PRODUCER 1 of `deleted`. A path the drain vacated for a contention is
+				// absent from the working view but present on the provider, so it is a
+				// displacement, not an absence. An absence this cycle cannot attribute
+				// to one is classified exactly as it always was.
 				deleted.push(path);
 			}
 		}
-		return { modified, deleted, renamed: result.renamedPaths };
+		return { modified, deleted, renamed: result.renamedPaths, contended };
 	}
 
 	/**
@@ -397,9 +454,9 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 		// Snapshot before fullScan() overwrites the cache (only reached on cursor expiry,
 		// when the cache is already populated).
 		const oldPathById = this.cache.snapshotPathsById();
-		await this.fullScan();
+		const contended = await this.fullScan();
 		if (oldPathById.size === 0) return null; // initial sync — no delta
-		return this.diffById(oldPathById);
+		return this.diffById(oldPathById, contended);
 	}
 
 	/**
@@ -408,7 +465,12 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	 * NOT in-place content edits (same path+id); those are caught by the next incremental
 	 * sync or WARM mode's local-vs-record check.
 	 */
-	private diffById(oldPathById: Map<string, string>): RemoteDelta {
+	private diffById(
+		oldPathById: Map<string, string>,
+		contended: readonly AddressDisplacement[],
+	): RemoteDelta {
+		const displacedIds = new Set(contended.map((fact) => fact.withheldId));
+		const displaced = displacedAddresses(contended);
 		const modified: string[] = [];
 		const deleted: string[] = [];
 		const renamed: RenamePair[] = [];
@@ -426,8 +488,13 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 				deleted.push(oldPath);
 			}
 		}
+		// PRODUCER 2 of `deleted`: the vanished-id sweep, the route a cursor expiry
+		// takes and the one measured to reach `delete_local`. An id the scan withheld,
+		// and every path that went with it, vanished from the cache because another
+		// claimant took its address — not because the provider dropped it.
 		for (const [id, oldPath] of oldPathById) {
-			if (!newIds.has(id)) deleted.push(oldPath);
+			if (newIds.has(id) || displacedIds.has(id) || displaced.has(oldPath)) continue;
+			deleted.push(oldPath);
 		}
 		if (modified.length > 0 || deleted.length > 0 || renamed.length > 0) {
 			this.logger?.info("Full scan delta", {
@@ -436,14 +503,14 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 				renamed: renamed.length,
 			});
 		}
-		return { modified, deleted, renamed };
+		return { modified, deleted, renamed, contended };
 	}
 
 	/**
 	 * Return paths changed since the last committed cursor. Returns null on the initial
 	 * sync (a fresh full scan just captured "now", so there is no delta).
 	 */
-	async getChangedPaths(): Promise<{ modified: string[]; deleted: string[]; renamed?: RenamePair[] } | null> {
+	async getChangedPaths(): Promise<RemoteDelta | null> {
 		return this.cacheMutex.run(async () => {
 			const replay = await this.ensureInitialized();
 			return replay ? this._applyIncrementalChanges() : null;
