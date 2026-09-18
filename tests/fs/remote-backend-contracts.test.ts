@@ -15,6 +15,13 @@ import { registerOneDrivePriorityObservationContract } from "./onedrive/priority
 
 interface RequiredRemoteContractSet {
 	filesystem: () => void;
+	/**
+	 * The base crash-safety contract AND the cross-family conformance of the identity a
+	 * reported rename pair carries — one cell, because a family registers both through
+	 * `runRemoteFamilyCachingContract` over a single `RemoteFamilyCachingHarness`, whose
+	 * required members make an unstaged identity case a compile error rather than a
+	 * silently skipped one.
+	 */
 	caching: () => void;
 	changeDetection: () => void;
 	priorityObservation: () => void;

@@ -5,8 +5,8 @@ import type { OneDriveItem, OneDriveDeltaResponse } from "../../../src/fs/onedri
 import { MetadataStore } from "../../../src/store/metadata-store";
 import { OneDriveFs } from "../../../src/fs/onedrive";
 import { odFile, odFolder, odDeleted } from "../../../src/fs/onedrive/test-helpers";
-import { runCachingRemoteFsContract } from "../contracts/caching-remote-fs.contract";
-import type { CachingRemoteFsHarness } from "../contracts/caching-remote-fs.contract";
+import { runRemoteFamilyCachingContract } from "../contracts/caching-remote-fs.contract";
+import type { RemoteFamilyCachingHarness } from "../contracts/caching-remote-fs.contract";
 
 vi.mock("obsidian");
 
@@ -23,7 +23,7 @@ const OUTSIDE_ID = "outside";
  * OneDrive seams (getStartCursor / fullList / fetchDelta), including same-process
  * abort/reload.
  */
-function makeOneDriveHarness(): CachingRemoteFsHarness<OneDriveItem> {
+function makeOneDriveHarness(): RemoteFamilyCachingHarness<OneDriveItem> {
 	const baseline = new Map<string, { id: string; item: OneDriveItem }>(); // path → item
 	const events: OneDriveItem[] = []; // delta items (deletes / upserts), append-only
 	/** Folder path → its subtree, held outside the bound root until it is moved in. */
@@ -119,9 +119,39 @@ function makeOneDriveHarness(): CachingRemoteFsHarness<OneDriveItem> {
 			}
 			events.push({ ...entry.item, name: newPath.split("/").pop()! });
 		},
+		// The item at `path` is deleted and a NEW driveItem is created with the same
+		// name under the same parent: a `deleted`-facet tombstone for the old id, then
+		// the new item. Graph never reuses an item id, so the address is the only thing
+		// the two share — which is what would expose an identity read off stale cache
+		// state.
+		stageRemoteRecreateWithNewId: (path) => {
+			const entry = baseline.get(path);
+			if (!entry) throw new Error(`stageRemoteRecreateWithNewId: no such path "${path}"`);
+			baseline.delete(path);
+			events.push(odDeleted(entry.id));
+			const id = `f${++idSeq}`;
+			const item = odFile(id, path.split("/").pop()!, ROOT_ID);
+			baseline.set(path, { id, item });
+			events.push(item);
+		},
+		movedObjectIdentity: {
+			determinate: true,
+			reason:
+				"oneDriveItemToEntity sets identityKey: item.id for files and folders alike, " +
+				"and every driveItem carries an id, so the projection never yields none for " +
+				"anything this contract can move.",
+		},
+		renameOrderings: {
+			encoding: "single-entry",
+			reason:
+				"OneDrive is id-addressed: /delta reports a rename as ONE id-keyed item " +
+				"carrying the new name (its parentReference is unchanged), with no path-keyed " +
+				"tombstone to order it against (ADR 0006 — id-addressed detection is " +
+				"inherently order-independent), so there is no second faithful ordering to stage.",
+		},
 	};
 }
 
 export function registerOneDriveCachingContract(): void {
-	runCachingRemoteFsContract("OneDriveFs", makeOneDriveHarness);
+	runRemoteFamilyCachingContract("OneDriveFs", makeOneDriveHarness);
 }

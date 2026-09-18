@@ -1,6 +1,62 @@
 import { describe, it, expect, vi } from "vitest";
 import type { MetadataStore } from "../../../src/store/metadata-store";
+import type { FileEntity } from "../../../src/fs/types";
 import type { CachingRemoteFs } from "../../../src/fs/caching/remote-fs";
+
+/**
+ * What a backend family's OWN `FileEntity` projection makes of the identity of an
+ * object this contract moves — declared by the harness, never inferred by the case.
+ *
+ * `RenamePair.identityKey` is optional by contract (ADR 0008's third state: a missing
+ * key is no evidence), so an expectation built straight out of
+ * `(await fs.stat(newPath))?.identityKey` would still be satisfied if the family
+ * reported no identity AND the producer carried none — `toEqual` ignores an
+ * `undefined` expectation. The declaration closes that: a family whose projection
+ * names every moved object asserts a non-empty provider identity, and a family whose
+ * projection legitimately yields none asserts that ABSENCE explicitly, with its
+ * reason. There is no third answer and no way to leave the question unanswered.
+ */
+export interface MovedObjectIdentity {
+	/** True when the family's projection names every object this contract moves. */
+	determinate: boolean;
+	/**
+	 * Why — cited against the family's own projection, not the cache's address
+	 * functions. Asserted non-empty by the conformance cases, so it cannot decay
+	 * into decoration.
+	 */
+	reason: string;
+}
+
+/**
+ * The delta orderings a family's provider can faithfully emit for ONE rename.
+ *
+ * ADR 0006's order-independence, extended to the identity the pair now carries: an
+ * id-addressed family encodes a rename as a single id-keyed change and has no second
+ * ordering at all, while Dropbox encodes it as `deleted(old)` + `file/folder(new)`
+ * sharing an id and may window the two either way round.
+ */
+export type RenameOrderings =
+	| {
+		/**
+		 * The delta carries ONE entry per rename, so no ordering of it exists to vary.
+		 * A positive claim, not a bare absence: dropping to this from `orderable-pair`
+		 * is an explicit change of what the family says its provider does.
+		 */
+		encoding: "single-entry";
+		/** Why. Asserted non-empty, so the claim can never decay into decoration. */
+		reason: string;
+	}
+	| {
+		/** The delta carries a tombstone AND the moved entry, in either order. */
+		encoding: "orderable-pair";
+		/** Why. Asserted non-empty, so the claim can never decay into decoration. */
+		reason: string;
+		/**
+		 * Stage the same rename in the reverse of
+		 * {@link CachingRemoteFsHarness.stageRemoteRename}'s ordering.
+		 */
+		stageReversed: (oldPath: string, newPath: string, opts?: { isFolder?: boolean }) => void;
+	};
 
 /**
  * What a backend provides so the shared crash-safety contract can drive it without
@@ -41,6 +97,69 @@ export interface CachingRemoteFsHarness<TFile> {
 	 * deltas carry the folder plus every pre-existing descendant.
 	 */
 	stageMoveIntoRoot(folderPath: string): void;
+	/**
+	 * What this family's entity projection makes of a moved object's identity.
+	 *
+	 * Optional HERE because the base machinery's own driver
+	 * (`src/fs/caching/remote-fs.contract.test.ts`) is not a provider family and has no
+	 * family projection to declare; every registered backend family supplies it, because
+	 * {@link RemoteFamilyCachingHarness} re-declares it as required and each family's
+	 * harness factory is annotated with that type — a family that omits it is a compile
+	 * error, not a skipped case.
+	 */
+	movedObjectIdentity?: MovedObjectIdentity;
+}
+
+/**
+ * What a REGISTERED BACKEND FAMILY supplies on top of the base harness, so the carried
+ * rename identity can be asserted across every family in one shared place.
+ *
+ * The three members are required, so the cross-family cases cannot be silently skipped
+ * by a family that forgets to stage them. The base driver in
+ * `src/fs/caching/remote-fs.contract.test.ts` keeps implementing only
+ * {@link CachingRemoteFsHarness}: it drives the base machinery, and cross-family
+ * conformance is by construction a per-family obligation registered through the sole
+ * composition root (`tests/fs/remote-backend-contracts.test.ts`).
+ */
+export interface RemoteFamilyCachingHarness<TFile> extends CachingRemoteFsHarness<TFile> {
+	movedObjectIdentity: MovedObjectIdentity;
+	renameOrderings: RenameOrderings;
+	/**
+	 * Delete whatever the remote currently holds at `path` and create a DIFFERENT
+	 * provider object at that same address. The next delta reports it in the family's
+	 * own faithful shape, tombstone first — for Dropbox that is exactly the path-keyed
+	 * `upsertedPaths` reclaim shape ADR 0006 guards.
+	 *
+	 * This is what makes a stale-cache-keyed identity observable: the address outlives
+	 * the object that used to occupy it.
+	 */
+	stageRemoteRecreateWithNewId(path: string): void;
+}
+
+/**
+ * The identity a `stat` of `path` reports, checked against the family's declared
+ * disposition before any case uses it as an expectation.
+ *
+ * A determinate family must report a non-empty provider identity here, so a rename
+ * cell's `identityKey:` expectation can never be satisfied vacuously by two absent
+ * values; a family that declared no identity must report none, so nothing (least of all
+ * a cache-internal address) can quietly stand in for it. A base driver that declares
+ * nothing is still held to "the destination exists".
+ */
+function movedIdentityOf(
+	entity: FileEntity | null,
+	path: string,
+	declared: MovedObjectIdentity | undefined,
+): string | undefined {
+	expect(entity, `stat("${path}") reports nothing to name the moved object by`).not.toBeNull();
+	const identityKey = entity!.identityKey;
+	if (declared?.determinate) {
+		expect(typeof identityKey, declared.reason).toBe("string");
+		expect(identityKey, declared.reason).not.toBe("");
+	} else if (declared) {
+		expect(identityKey, declared.reason).toBeUndefined();
+	}
+	return identityKey;
 }
 
 /**
@@ -312,8 +431,9 @@ export function runCachingRemoteFsContract<TFile>(
 			h.stageRemoteRename("note.md", "renamed.md");
 			const d = await fs.getChangedPaths();
 			// The pair names the moved object by the identity a `stat` of the destination
-			// reports — read through the public surface only, never off the cache.
-			const identityKey = (await fs.stat("renamed.md"))?.identityKey;
+			// reports — read through the public surface only, never off the cache, and
+			// held to the family's declared disposition so the expectation is never vacuous.
+			const identityKey = movedIdentityOf(await fs.stat("renamed.md"), "renamed.md", h.movedObjectIdentity);
 			expect(d?.renamed ?? []).toContainEqual({ oldPath: "note.md", newPath: "renamed.md", isFolder: undefined, identityKey });
 			expect(d?.modified).toContain("renamed.md");
 			expect(d?.deleted).toContain("note.md");
@@ -334,7 +454,8 @@ export function runCachingRemoteFsContract<TFile>(
 
 			// Exactly one pair — the folder — NOT a per-child rename and NOT a subtree delete+add.
 			const moved = await fs.stat("papers");
-			expect(d?.renamed).toEqual([{ oldPath: "dir", newPath: "papers", isFolder: true, identityKey: moved?.identityKey }]);
+			const identityKey = movedIdentityOf(moved, "papers", h.movedObjectIdentity);
+			expect(d?.renamed).toEqual([{ oldPath: "dir", newPath: "papers", isFolder: true, identityKey }]);
 			expect(d?.deleted).toContain("dir");
 			// The folder moved as a unit: the child now lives under the new path.
 			expect(moved?.isDirectory).toBe(true);
@@ -353,7 +474,7 @@ export function runCachingRemoteFsContract<TFile>(
 
 			h.stageRemoteRename("dir", "papers", { isFolder: true });
 			const beforeAbort = (await fs.getChangedPaths())?.renamed;
-			const identityKey = (await fs.stat("papers"))?.identityKey;
+			const identityKey = movedIdentityOf(await fs.stat("papers"), "papers", h.movedObjectIdentity);
 			expect(beforeAbort).toEqual([
 				{ oldPath: "dir", newPath: "papers", isFolder: true, identityKey },
 			]);
@@ -378,7 +499,7 @@ export function runCachingRemoteFsContract<TFile>(
 
 			h.stageRemoteRename("dir", "papers", { isFolder: true });
 			const first = await fs.getChangedPaths();
-			const identityKey = (await fs.stat("papers"))?.identityKey;
+			const identityKey = movedIdentityOf(await fs.stat("papers"), "papers", h.movedObjectIdentity);
 			expect(first?.renamed).toContainEqual({
 				oldPath: "dir", newPath: "papers", isFolder: true, identityKey,
 			});
@@ -391,7 +512,7 @@ export function runCachingRemoteFsContract<TFile>(
 			const second = await fs.getChangedPaths();
 			expect(second?.renamed).toContainEqual({
 				oldPath: "papers", newPath: "archive", isFolder: true,
-				identityKey: (await fs.stat("archive"))?.identityKey,
+				identityKey: movedIdentityOf(await fs.stat("archive"), "archive", h.movedObjectIdentity),
 			});
 			await store.close();
 		});
@@ -439,4 +560,175 @@ export function runCachingRemoteFsContract<TFile>(
 			await store.close();
 		});
 	});
+}
+
+/**
+ * Everything {@link runCachingRemoteFsContract} pins, plus the cross-family conformance
+ * of the identity a `RenamePair` now carries. Every registered backend family runs this
+ * one; the base machinery's own driver runs only the base contract.
+ *
+ * The obligation is cross-family by nature — three families project identity from three
+ * different provider shapes, and Dropbox alone reports a rename as an orderable pair of
+ * entries — so it is stated once here, in the observable vocabulary the harnesses
+ * already use, and asserted through the public `IFileSystem` surface only. No case
+ * reads a cache, a private field, or a backend type.
+ */
+export function runRemoteFamilyCachingContract<TFile>(
+	name: string,
+	makeHarness: () => RemoteFamilyCachingHarness<TFile>,
+): void {
+	runCachingRemoteFsContract(name, makeHarness);
+
+	describe(`CachingRemoteFs carried rename identity — ${name}`, () => {
+		it("names the moved object by its own projection, or records that it has none", async () => {
+			const h = makeHarness();
+			h.seedFile("note.md");
+			const store = h.makeStore("contract-identity-disposition");
+			const fs = h.makeFs(store);
+			await fs.list();
+			await fs.commitCheckpoint();
+
+			// Every family answers here, and the answer is its own: none may leave the
+			// question open, because the declaration is required on the harness and its
+			// reason is asserted.
+			const declared = h.movedObjectIdentity;
+			expect(declared.reason, "cite why this family's projection does or does not name a moved object").not.toBe("");
+
+			h.stageRemoteRename("note.md", "renamed.md");
+			const pair = ((await fs.getChangedPaths())?.renamed ?? []).find((p) => p.newPath === "renamed.md");
+			expect(pair, "the rename must surface as a pair at all").toBeDefined();
+
+			const observed = await fs.stat("renamed.md");
+			expect(observed).not.toBeNull();
+			if (declared.determinate) {
+				// Determinate: a non-empty provider identity, equal to the one a `stat` of
+				// the destination reports.
+				expect(typeof observed!.identityKey, declared.reason).toBe("string");
+				expect(observed!.identityKey, declared.reason).not.toBe("");
+				expect(pair!.identityKey, declared.reason).toBe(observed!.identityKey);
+			} else {
+				// Unknown: an asserted ABSENCE with the reason cited, never a silent skip
+				// and never a substitute — no synthetic or cache-internal address may
+				// stand in for a provider identity the projection does not have.
+				expect(observed!.identityKey, declared.reason).toBeUndefined();
+				expect(pair!.identityKey, declared.reason).toBeUndefined();
+			}
+			await store.close();
+		});
+
+		it("carries one FILE's identity under either faithful provider ordering", async () => {
+			const h = makeHarness();
+			h.seedFile("note.md");
+			const store = h.makeStore("contract-identity-ordering-file");
+			const fs = h.makeFs(store);
+			await fs.list();
+			await fs.commitCheckpoint();
+
+			const identity = movedIdentityOf(await fs.stat("note.md"), "note.md", h.movedObjectIdentity);
+			expect(h.renameOrderings.reason, "cite the rename orderings this provider can emit").not.toBe("");
+
+			// Ordering A — the family's own default. Dropbox's harness lists the
+			// deleted(old) tombstone FIRST, the ordering ADR 0006 makes safe.
+			h.stageRemoteRename("note.md", "renamed.md");
+			expect((await fs.getChangedPaths())?.renamed ?? []).toContainEqual({
+				oldPath: "note.md", newPath: "renamed.md", isFolder: undefined, identityKey: identity,
+			});
+			expect(movedIdentityOf(await fs.stat("renamed.md"), "renamed.md", h.movedObjectIdentity)).toBe(identity);
+			await fs.commitCheckpoint();
+
+			// Ordering B — the SAME object moved back under the provider's other faithful
+			// ordering. An id-addressed family has none (ADR 0006: a single id-keyed
+			// change is inherently order-independent) and repeats its only one; the
+			// reason asserted above is what records that rather than hiding it.
+			stageOtherOrdering(h)("renamed.md", "note.md");
+			expect((await fs.getChangedPaths())?.renamed ?? []).toContainEqual({
+				oldPath: "renamed.md", newPath: "note.md", isFolder: undefined, identityKey: identity,
+			});
+			expect(movedIdentityOf(await fs.stat("note.md"), "note.md", h.movedObjectIdentity)).toBe(identity);
+			await store.close();
+		});
+
+		it("carries one FOLDER's identity under either faithful provider ordering", async () => {
+			const h = makeHarness();
+			h.seedFolderWithChild("dir", "b.md");
+			const store = h.makeStore("contract-identity-ordering-folder");
+			const fs = h.makeFs(store);
+			await fs.list();
+			await fs.commitCheckpoint();
+
+			const identity = movedIdentityOf(await fs.stat("dir"), "dir", h.movedObjectIdentity);
+
+			// The shape ADR 0006 was written about: for Dropbox the folder AND every
+			// descendant produce a tombstone and a moved entry, so the two orderings
+			// interleave differently — and the folder's carried identity must not care.
+			h.stageRemoteRename("dir", "papers", { isFolder: true });
+			expect((await fs.getChangedPaths())?.renamed).toEqual([
+				{ oldPath: "dir", newPath: "papers", isFolder: true, identityKey: identity },
+			]);
+			expect(await fs.stat("papers/b.md")).not.toBeNull();
+			await fs.commitCheckpoint();
+
+			stageOtherOrdering(h)("papers", "dir", { isFolder: true });
+			expect((await fs.getChangedPaths())?.renamed).toEqual([
+				{ oldPath: "papers", newPath: "dir", isFolder: true, identityKey: identity },
+			]);
+			expect(movedIdentityOf(await fs.stat("dir"), "dir", h.movedObjectIdentity)).toBe(identity);
+			expect(await fs.stat("dir/b.md")).not.toBeNull();
+			await store.close();
+		});
+
+		it("never carries the identity of a different object seen earlier at the old path", async () => {
+			const h = makeHarness();
+			h.seedFile("note.md");
+			const store = h.makeStore("contract-identity-reclaimed-address");
+			const fs = h.makeFs(store);
+			await fs.list();
+			await fs.commitCheckpoint();
+
+			// The object this FS has already observed at "note.md" — the one a producer
+			// that keyed the carried identity off cache state left over from an earlier
+			// observation would still be naming two deltas later.
+			const firstOccupant = movedIdentityOf(await fs.stat("note.md"), "note.md", h.movedObjectIdentity);
+
+			// The address is reclaimed by a DIFFERENT provider object: a tombstone and a
+			// new id at the same path, in one delta.
+			h.stageRemoteRecreateWithNewId("note.md");
+			await fs.getChangedPaths();
+			await fs.commitCheckpoint();
+			const secondOccupant = movedIdentityOf(await fs.stat("note.md"), "note.md", h.movedObjectIdentity);
+			if (h.movedObjectIdentity.determinate) {
+				expect(secondOccupant, "the recreate must install a genuinely different object").not.toBe(firstOccupant);
+			}
+
+			// Moving the CURRENT occupant names the current occupant. `oldPath` is an
+			// address the pair reports, never a place an identity is looked up from.
+			h.stageRemoteRename("note.md", "renamed.md");
+			const pair = ((await fs.getChangedPaths())?.renamed ?? []).find((p) => p.newPath === "renamed.md");
+			expect(pair, "the rename must surface as a pair at all").toBeDefined();
+			expect(pair!.identityKey)
+				.toBe(movedIdentityOf(await fs.stat("renamed.md"), "renamed.md", h.movedObjectIdentity));
+			expect(pair!.identityKey).toBe(secondOccupant);
+			if (h.movedObjectIdentity.determinate) {
+				expect(
+					pair!.identityKey,
+					"the pair carries the identity of the object that USED to hold this address",
+				).not.toBe(firstOccupant);
+			}
+			await store.close();
+		});
+	});
+}
+
+/**
+ * The provider's other faithful ordering for one rename, or its only one when its delta
+ * carries a single entry. Read from the harness per call, so the declared
+ * `stageReversed` is never captured at registration time.
+ */
+function stageOtherOrdering<TFile>(
+	h: RemoteFamilyCachingHarness<TFile>,
+): (oldPath: string, newPath: string, opts?: { isFolder?: boolean }) => void {
+	return (oldPath, newPath, opts) =>
+		h.renameOrderings.encoding === "orderable-pair"
+			? h.renameOrderings.stageReversed(oldPath, newPath, opts)
+			: h.stageRemoteRename(oldPath, newPath, opts);
 }
