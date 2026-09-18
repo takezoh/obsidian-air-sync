@@ -20,6 +20,24 @@ import {
 } from "./helpers/isolation";
 import { runRenameSafetyE2E } from "./helpers/rename-safety";
 import { runPriorityFidelityE2E } from "./helpers/priority-fidelity";
+import type { MovedObjectIdentity } from "../tests/fs/contracts/caching-remote-fs.contract";
+
+/**
+ * What Google Drive's own entity projection makes of a moved object's identity, against
+ * the LIVE API. Same disposition the family declares to the fake-backed unit contract
+ * (`tests/fs/googledrive/caching-remote-fs.contract-harness.ts`) — stated separately here
+ * because a fake that always hands over a complete resource cannot establish it for
+ * `changes.list`, which is the whole point of ADR 0003.
+ */
+const GOOGLE_DRIVE_MOVED_OBJECT_IDENTITY: MovedObjectIdentity = {
+	determinate: true,
+	reason:
+		"GoogleDriveMetadataCache.toEntity sets identityKey: googleDriveFile.id for files " +
+		"and folders alike, with no fallback, and every Drive resource carries an id — " +
+		"googledrive/types.ts declares `id: string`, not an optional. A live changes.list " +
+		"payload that omitted it would project no identity, so the pair would name nothing " +
+		"and buildSyncRecord would refuse the record it feeds.",
+};
 
 /** The subtree `F` carries across the bound-root boundary, in sorted path order. */
 const SCOPE_ENTRY_SUBTREE = ["F", "F/a.md", "F/sub", "F/sub/b.md"];
@@ -114,6 +132,7 @@ if (!creds) {
 
 	runRenameSafetyE2E("GoogleDriveFs", {
 		backendType: "googledrive",
+		movedObjectIdentity: GOOGLE_DRIVE_MOVED_OBJECT_IDENTITY,
 		makeBackend: async () => {
 			const childId = await makeGoogleDriveChild(client, parentId);
 			const store = new MetadataStore<GoogleDriveFile>(crypto.randomUUID(), {

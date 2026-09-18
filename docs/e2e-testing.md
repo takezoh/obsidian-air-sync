@@ -23,6 +23,19 @@ and changes on same-path replacement. Supplying the real `MetadataStore` in this
 is load-bearing: without it the scope fingerprint cannot commit, every cycle is COLD, and
 the fixture bypasses the WARM delta-evidence path used by the plugin.
 
+That same remote-origin leg also pins the identity the reported rename **carries**
+(Issue #95). `RenamePair.identityKey` is produced only on the delta route —
+`CachingRemoteFs.rename()` emits no pair at all, so the CRUD contract's "native identity
+survives rename" does not reach it — and it is asserted equal to the live `stat`
+projection of the moved object taken *before* the move, which is a genuinely different
+production of the same fact (for the id-addressed backends it is the very address the
+out-of-band rename mutated). Because a missing key is ADR 0008's third state and not a
+failure, each backend file **declares** its family's disposition as a
+`MovedObjectIdentity` (`determinate` + `reason`, the same type the unit contract takes),
+so an absent identity is asserted as an absence rather than passing a truthiness check.
+All three families declare `determinate: true` today; a family that legitimately projected
+none would say so there, once.
+
 Each backend also runs four live Priority scenarios using only public operations: current
 observe/read, overwrite invalidation (`target_changed`), missing after delete, and structural
 same-path replacement. Fake-only incomplete-evidence and changed-during-download injection stay
@@ -261,6 +274,22 @@ durability evidence.
   timestamp." mtime is not Dropbox's change-detection signal (that is the content-hash
   `remoteChecksum`), so nothing load-bearing is dropped. This is the documented divergence
   from ADR 0002, surfaced by this e2e.
+- **Dropbox raw-page id probe (Issue #95, `unknown-dropbox-entry-without-id`).**
+  `DropboxEntry.id` is declared optional, but the declared reason is narrow — the type also
+  covers `deleted` tombstones, which are never cached and which `buildFromFiles` skips —
+  while `googledrive/types.ts` and `onedrive/types.ts` declare `id: string` outright. The
+  Dropbox suite therefore drives real pages through the real client and **asserts** that
+  every non-`deleted` entry carries a non-empty `id`; a violation fails the run naming the
+  offending entry, because such an entry projects `identityKey: undefined` and so meets the
+  identity floor's refusal branch — a live user-facing outcome, not dead code. It covers
+  the initial `files/list_folder` page (plus any `has_more` pages, asserted by the same
+  helper) and at least one real `files/list_folder/continue` page. The continue page is
+  reached through the completed listing's cursor — the documented "what changed since"
+  continuation — **not** by paginating one oversized listing: `DropboxClient.listFolder`
+  exposes no `limit`, and staging the thousands of entries Dropbox needs to split a page is
+  not something to do to a live account. The case fails rather than passing if the continue
+  window carries no `file`/`folder` entry. Tombstones are counted and skipped by kind, never
+  by a truthiness test that would also swallow an id-less live entry.
 - **Dropbox case-only rename.** Dropbox documents that `move_v2` does not support
   case-only renaming, and casing-only changes are not returned by `list_folder/continue`.
   `DropboxFs.rename()` therefore uses a deterministic intermediate sibling path, resumes
