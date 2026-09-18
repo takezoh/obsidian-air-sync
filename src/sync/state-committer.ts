@@ -29,8 +29,20 @@ export async function commitExactCleanup(
 /**
  * Build a SyncRecord from a local and remote FileEntity.
  * Centralised record construction for the sync pipeline.
+ *
+ * The record layer's identity floor lives here and not in any caller, because every
+ * caller writes what it builds: an absent and an empty provider identity are one case
+ * and both are refused before any store write. "" is a valid IndexedDB key, so folding
+ * an absent identity to it would silently merge two distinct provider objects into one
+ * baseline; no site may perform that fold to satisfy the required field.
  */
 export function buildSyncRecord(local: FileEntity | undefined, remote: FileEntity | undefined, path: string): SyncRecord {
+	const remoteIdentityKey = remote?.identityKey;
+	if (!remoteIdentityKey) {
+		throw new Error(
+			`SyncRecord refused: remote entity carries no provider identity: ${remote?.path ?? "(no remote entity)"} at ${path}`,
+		);
+	}
 	return {
 		path,
 		hash: local?.hash || remote?.hash || "",
@@ -39,8 +51,7 @@ export function buildSyncRecord(local: FileEntity | undefined, remote: FileEntit
 		localSize: local?.size ?? 0,
 		remoteSize: remote?.size ?? 0,
 		remoteChecksum: remote?.remoteChecksum,
-		remoteIdentityKey: remote?.identityKey,
-		backendMeta: remote?.backendMeta,
+		remoteIdentityKey,
 		syncedAt: Date.now(),
 	};
 }

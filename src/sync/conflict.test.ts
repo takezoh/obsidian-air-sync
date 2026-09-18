@@ -81,6 +81,7 @@ describe("resolveConflict", () => {
 			remoteMtime: 1000,
 			localSize: content.length,
 			remoteSize: content.length,
+			remoteIdentityKey: "id:data.json",
 			syncedAt: 900,
 		});
 

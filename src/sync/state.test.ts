@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import "fake-indexeddb/auto";
 import { SyncStateStore } from "./state";
 import type { SyncRecord } from "./types";
+import type { FileEntity } from "../fs/types";
+import { commitAction } from "./state-committer";
 import { sanitizeDbName } from "../store/idb-helper";
 
 function makeRecord(path: string, overrides: Partial<SyncRecord> = {}): SyncRecord {
@@ -12,6 +14,7 @@ function makeRecord(path: string, overrides: Partial<SyncRecord> = {}): SyncReco
 		remoteMtime: 1000,
 		localSize: 100,
 		remoteSize: 100,
+		remoteIdentityKey: `id:${path}`,
 		syncedAt: 900,
 		...overrides,
 	};
@@ -103,6 +106,33 @@ describe("SyncStateStore", () => {
 		expect(await store.compareAndDelete(current.path, undefined)).toBe(false);
 		expect(await store.get(current.path)).toEqual(current);
 		expect(await store.getContent(current.path)).toEqual(bytes);
+	});
+
+	// The identity floor is inside the construction function, before any store write:
+	// an identity-less remote entity leaves both stores exactly as they were, and the
+	// action fails so the cycle cannot complete.
+	it("commitAction: an identity-less remote entity publishes nothing to either store", async () => {
+		await store.open();
+		const baseline = makeRecord("note.md", { remoteIdentityKey: "remote-1" });
+		const base = new Uint8Array([1, 2]).buffer;
+		await store.put(baseline);
+		await store.putContent(baseline.path, base);
+		const entity = (side: "local" | "remote"): FileEntity => ({
+			path: "note.md", isDirectory: false, size: 5, mtime: 2000, hash: `${side}-hash`,
+		});
+		const local = entity("local");
+		const remote = entity("remote");
+
+		await expect(commitAction(
+			{
+				path: "note.md", action: "pull", local, remote, baseline,
+				publication: { source: baseline, destination: baseline },
+			},
+			local, remote, { stateStore: store },
+		)).rejects.toThrow("SyncRecord refused: remote entity carries no provider identity");
+
+		expect(await store.get("note.md")).toEqual(baseline);
+		expect(await store.getContent("note.md")).toEqual(base);
 	});
 
 	it("get: returns undefined for nonexistent path", async () => {

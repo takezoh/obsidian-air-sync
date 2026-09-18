@@ -50,6 +50,8 @@ const K1_BODY = "k1 body";
 const K2_BODY = "k2 body";
 /** `conflict` + `duplicate` names the preserved sibling from the losing bytes. */
 const PRESERVED = "notes/p.conflict.md";
+/** The remote mock mints a provider identity for the preserved sibling it creates. */
+const PRESERVED_KEY = "id:notes/p.conflict.md";
 
 interface RemoteDelta {
 	modified?: string[];
@@ -67,7 +69,7 @@ interface Env {
 }
 
 function recordKey(record: Pick<SyncRecord, "path" | "remoteIdentityKey"> | undefined): string {
-	return record ? `${record.path}@${record.remoteIdentityKey ?? "no-identity"}` : "none";
+	return record ? `${record.path}@${record.remoteIdentityKey}` : "none";
 }
 
 /** Pass-through spies: the real store still writes; the route is recorded by name. */
@@ -400,16 +402,16 @@ describe("a different remote object at a path-keyed baseline, across the commit 
 		// Both are independent singletons (plan-executor.ts:148-155), so they settle
 		// in a pool and only the set of commit routes is ordered here.
 		expect([...cycle.commits].sort()).toEqual([
-			`compareAndPut(destination=none, terminal=${PRESERVED}@no-identity)=true`,
+			`compareAndPut(destination=none, terminal=${PRESERVED}@${PRESERVED_KEY})=true`,
 			`compareAndPut(destination=none, terminal=${Q}@${K1})=true`,
-			`compareAndPutContent(${PRESERVED}@no-identity, ${K2_BODY})=true`,
+			`compareAndPutContent(${PRESERVED}@${PRESERVED_KEY}, ${K2_BODY})=true`,
 			`compareAndPutContent(${Q}@${K1}, ${K1_BODY})=true`,
 		]);
 		// The durable end state is the SAME as the same-cycle shape. The lost baseline
 		// costs a re-keyed row, a re-downloaded object and one unbaselined cycle — it
 		// does not steer either side to a different result.
 		expect(await storeImage(env)).toEqual([
-			`${PRESERVED}@no-identity mergeBase=${K2_BODY}`,
+			`${PRESERVED}@${PRESERVED_KEY} mergeBase=${K2_BODY}`,
 			`${P}@${K2} mergeBase=${K1_BODY}`,
 			`${Q}@${K1} mergeBase=${K1_BODY}`,
 		]);

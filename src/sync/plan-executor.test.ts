@@ -198,7 +198,7 @@ describe("executePlan", () => {
 			hash: await sha256(await remoteFs.read("note.md")) };
 		const baseline: SyncRecord = {
 			path: "note.md", hash: await sha256(new TextEncoder().encode("base").buffer), localMtime: 1000, remoteMtime: 1000,
-			localSize: 4, remoteSize: 4, remoteIdentityKey: remote.identityKey, syncedAt: 1000,
+			localSize: 4, remoteSize: 4, remoteIdentityKey: "id:note.md", syncedAt: 1000,
 		};
 		stateStore.records.set("note.md", baseline);
 		const action: SyncAction = {
@@ -230,7 +230,7 @@ describe("executePlan", () => {
 		const remote = (await remoteFs.stat("note.md"))!;
 		const baseline: SyncRecord = {
 			path: "note.md", hash: "base", localMtime: 1000, remoteMtime: 1000,
-			localSize: 4, remoteSize: 4, syncedAt: 1000,
+			localSize: 4, remoteSize: 4, remoteIdentityKey: "id:note.md", syncedAt: 1000,
 		};
 		stateStore.records.set("note.md", baseline);
 		const action: SyncAction = {
@@ -930,7 +930,7 @@ describe("executePlan", () => {
 			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
 			stateStore.records.set("d.md", {
 				path: "d.md", hash: "", localMtime: 1000, remoteMtime: 1000,
-				localSize: 9, remoteSize: 9, syncedAt: 900,
+				localSize: 9, remoteSize: 9, remoteIdentityKey: "id:d.md", syncedAt: 900,
 			});
 
 			const plan = makePlan([{ path: "d.md", action: "delete_remote",
@@ -953,7 +953,7 @@ describe("executePlan", () => {
 			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
 			stateStore.records.set("e.md", {
 				path: "e.md", hash: "", localMtime: 1000, remoteMtime: 1000,
-				localSize: 9, remoteSize: 9, syncedAt: 900,
+				localSize: 9, remoteSize: 9, remoteIdentityKey: "id:e.md", syncedAt: 900,
 			});
 
 			const plan = makePlan([{ path: "e.md", action: "delete_local",
@@ -1120,7 +1120,7 @@ describe("executePlan", () => {
 			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
 			stateStore.records.set("old.md", {
 				path: "old.md", hash: "h1", localMtime: 1000, remoteMtime: 1000,
-				localSize: 7, remoteSize: 7, syncedAt: 900,
+				localSize: 7, remoteSize: 7, remoteIdentityKey: "id:old.md", syncedAt: 900,
 			});
 
 			const plan = makePlan([{
@@ -1199,7 +1199,7 @@ describe("executePlan", () => {
 			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
 			stateStore.records.set("f.md", {
 				path: "f.md", hash: "", localMtime: 1000, remoteMtime: 1000,
-				localSize: 0, remoteSize: 0, syncedAt: 900,
+				localSize: 0, remoteSize: 0, remoteIdentityKey: "id:f.md", syncedAt: 900,
 			});
 
 			const plan = makePlan([{ path: "f.md", action: "cleanup", baseline: stateStore.records.get("f.md") }]);
@@ -2274,11 +2274,11 @@ describe("executePlan", () => {
 			addFile(localFs, "dl.md", "y");
 			stateStore.records.set("dr.md", {
 				path: "dr.md", hash: "", localMtime: 1000, remoteMtime: 1000,
-				localSize: 1, remoteSize: 1, syncedAt: 900,
+				localSize: 1, remoteSize: 1, remoteIdentityKey: "id:dr.md", syncedAt: 900,
 			});
 			stateStore.records.set("dl.md", {
 				path: "dl.md", hash: "", localMtime: 1000, remoteMtime: 1000,
-				localSize: 1, remoteSize: 1, syncedAt: 900,
+				localSize: 1, remoteSize: 1, remoteIdentityKey: "id:dl.md", syncedAt: 900,
 			});
 
 			const plan = makePlan([

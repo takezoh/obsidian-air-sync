@@ -41,11 +41,14 @@ function freshEntity(path: string, hash: string, identityKey?: string): FileEnti
 	return { path, hash, identityKey, pathAuthority: "actual_resolved", isDirectory: false, size: 1, mtime: 1 };
 }
 
-function recordFor(current: FileEntity): SyncRecord {
+// The record layer's floor requires a non-empty identity, so a fixture entity that
+// deliberately carries none still yields a baseline keyed by an identity no current
+// entity holds. Nothing here folds an absent identity to the empty string.
+function recordFor(current: FileEntity, remoteIdentityKey = current.identityKey ?? `id:${current.path}`): SyncRecord {
 	return {
 		path: current.path, hash: current.hash, localMtime: current.mtime,
 		remoteMtime: current.mtime, localSize: current.size, remoteSize: current.size,
-		remoteIdentityKey: current.identityKey, syncedAt: 1,
+		remoteIdentityKey, syncedAt: 1,
 	};
 }
 
@@ -381,7 +384,7 @@ describe("admitBatchObservation", () => {
 	it("constructs and authorizes exact actions from a fact-only batch observation", () => {
 		const previous: SyncRecord = {
 			path: "conflict.md", hash: "base", localMtime: 1, remoteMtime: 1,
-			localSize: 1, remoteSize: 1, syncedAt: 1,
+			localSize: 1, remoteSize: 1, remoteIdentityKey: "id:conflict.md", syncedAt: 1,
 		};
 		const localOnly = entity("local.md");
 		const localChanged = freshEntity("conflict.md", "local");
@@ -893,7 +896,7 @@ describe("admitBatchObservation", () => {
 	});
 
 	it("shapes disconnected local and remote renames without disturbing ordinary order", () => {
-		const baseline = (path: string, remoteIdentityKey?: string) => ({
+		const baseline = (path: string, remoteIdentityKey: string) => ({
 			path, hash: "h", localMtime: 1, remoteMtime: 1,
 			localSize: 1, remoteSize: 1, syncedAt: 1, remoteIdentityKey,
 		});
@@ -1044,6 +1047,31 @@ describe("admitBatchObservation", () => {
 
 		expect(decision.component.actions).toEqual([]);
 		expect(decision.reasons).toEqual(["unknown_observation"]);
+	});
+
+	// A remote endpoint that carries no provider identity cannot be proven to be the
+	// object the local alias points at, and no address may stand in for that proof.
+	it("refuses a local case alias whose remote endpoint carries no provider identity", () => {
+		const local = freshEntity("case.md", "new");
+		const remote = freshEntity("Case.md", "new");
+		expect(remote.identityKey).toBeUndefined();
+		const decision = decideIdentityComponent({
+			paths: new Set(["Case.md", "case.md"]),
+			entries: [
+				{ path: "case.md", local },
+				{ path: "Case.md", remote },
+			],
+			evidence: [{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md" }],
+			observations: [
+				{ kind: "alias", side: "local", requestedPath: "Case.md", resolvedPath: "case.md", entity: local },
+				{ kind: "exact", side: "local", requestedPath: "case.md", entity: local },
+				{ kind: "exact", side: "remote", requestedPath: "Case.md", entity: remote },
+				{ kind: "absent", side: "remote", requestedPath: "case.md", authority: "stat" },
+			],
+		}, projection({ "Case.md": "included", "case.md": "included" }));
+
+		expect(decision.component.actions).toEqual([]);
+		expect(decision.reasons).toEqual(["remote_identity_missing"]);
 	});
 
 	it("does not let a later exact baseline rebind an alias-owned occurrence", () => {
@@ -1551,7 +1579,7 @@ describe("admitBatchObservation", () => {
 		const remote = entity("Case.md", "R");
 		const unrelated: SyncRecord = {
 			path: "unrelated.md", hash: "h", localMtime: 1, remoteMtime: 1,
-			localSize: 1, remoteSize: 1, syncedAt: 1,
+			localSize: 1, remoteSize: 1, remoteIdentityKey: "id:unrelated.md", syncedAt: 1,
 		};
 		const result = admit(
 			[
@@ -2583,14 +2611,14 @@ describe("admitBatchObservation", () => {
 	it("admits a local folder rename from its managed descendants", () => {
 		const localFolder = { ...entity("TemplateS"), isDirectory: true };
 		const remoteFolder = { ...entity("Templates", "folder-R"), isDirectory: true };
-		const previous = (path: string): SyncRecord => ({
+		const previous = (path: string, remoteIdentityKey: string): SyncRecord => ({
 			path, hash: "h", localMtime: 1, remoteMtime: 1,
-			localSize: 1, remoteSize: 1, syncedAt: 1,
+			localSize: 1, remoteSize: 1, remoteIdentityKey, syncedAt: 1,
 		});
 		const actions: FixtureAction[] = [
 			{
 				path: "Templates/a.md", action: "delete_remote",
-				remote: entity("Templates/a.md"), baseline: previous("Templates/a.md"),
+				remote: entity("Templates/a.md", "remote-a"), baseline: previous("Templates/a.md", "remote-a"),
 			},
 			{ path: "TemplateS/a.md", action: "push", local: entity("TemplateS/a.md") },
 		];
@@ -2658,12 +2686,12 @@ describe("admitBatchObservation", () => {
 	it("deduplicates replayed folder and child evidence before deciding actions", () => {
 		const previous: SyncRecord = {
 			path: "Templates/a.md", hash: "h", localMtime: 1, remoteMtime: 1,
-			localSize: 1, remoteSize: 1, syncedAt: 1,
+			localSize: 1, remoteSize: 1, remoteIdentityKey: "remote-a", syncedAt: 1,
 		};
 		const actions: FixtureAction[] = [
 			{
 				path: "Templates/a.md", action: "delete_remote",
-				remote: entity("Templates/a.md"), baseline: previous,
+				remote: entity("Templates/a.md", "remote-a"), baseline: previous,
 			},
 			{ path: "TemplateS/a.md", action: "push", local: entity("TemplateS/a.md") },
 		];
@@ -3323,7 +3351,7 @@ describe("admitBatchObservation", () => {
 	it("uses ordinary edit-versus-deletion conflict when both remote addresses are authoritatively absent", () => {
 		const baseline = {
 			path: "A.md", hash: "H0", localMtime: 1, remoteMtime: 1,
-			localSize: 1, remoteSize: 1, syncedAt: 1,
+			localSize: 1, remoteSize: 1, remoteIdentityKey: "id:A.md", syncedAt: 1,
 		};
 		const local = freshEntity("B.md", "H1");
 		const candidate = remoteRename({ side: "local", identityKey: undefined });
@@ -3641,39 +3669,13 @@ describe("positional identity binding: end-to-end site measurement", () => {
 		expect(measurement.actions).toEqual(["rename_local"]);
 	});
 
-	it("fixture 2: remote rename under an unchanged local file, baseline carrying no identity", () => {
-		const localA = entity("notes/a.md");
-		const remoteB = entity("notes/b.md", "drive-1");
-		const baseline = recordFor(entity("notes/a.md"));
-		expect(baseline.remoteIdentityKey).toBeUndefined();
-
-		const measurement = measure({
-			entries: [
-				{ path: "notes/a.md", local: localA, prevSync: baseline },
-				{ path: "notes/b.md", remote: remoteB },
-			],
-			observations: [
-				{ kind: "exact", side: "local", requestedPath: "notes/a.md", entity: localA },
-				{ kind: "absent", side: "local", requestedPath: "notes/b.md", authority: "stat" },
-				{ kind: "absent", side: "remote", requestedPath: "notes/a.md", authority: "stat" },
-				{ kind: "exact", side: "remote", requestedPath: "notes/b.md", entity: remoteB },
-			],
-			reported: [remoteRenameReport("notes/a.md", "notes/b.md")],
-			scopePaths: ["notes/a.md", "notes/b.md"],
-		});
-
-		expect(measurement.reportFamily).toBe("reported");
-		expect(measurement.aliasFolder).toBe("consulted_no_directory_alias_candidate");
-		expect(measurement.evidenceFill).toBe("filled_from_newPath_lookup");
-		expect(measurement.identityGuard).toBe("passed_current_identity_equals_filled_key");
-		expect(measurement.admittedRemoteRenameKeys).toEqual(["drive-1"]);
-		expect(measurement.trace).toEqual([
-			"notes/a.md=>notes/a.md", "notes/b.md=>notes/b.md",
-			"notes/a.md=>notes/b.md", "notes/a.md=>notes/b.md",
-		]);
-		expect(measurement.kind).toBe("authorized");
-		expect(measurement.actions).toEqual(["rename_local"]);
-	});
+	// Fixture 2 — "baseline carrying no identity" — is deleted, not repaired. It
+	// asserted `baseline.remoteIdentityKey` was undefined, and `SyncRecord` now
+	// declares that field required while `buildSyncRecord` refuses an absent or empty
+	// provider identity, so the fixture cannot be constructed at all. Its
+	// disappearance is the observable form of the positional arm's retirement: the
+	// arm existed only for this input, and nothing may fold the absence to "" to keep
+	// the case alive.
 
 	it("fixture 3: a remote object replaced at an address by a different id", () => {
 		const localDoc = entity("doc.md");
@@ -3734,12 +3736,17 @@ describe("positional identity binding: end-to-end site measurement", () => {
 		expect(measurement.reportFamily).toBe("reported");
 		expect(measurement.aliasFolder).toBe("consulted_no_directory_alias_candidate");
 		expect(measurement.identityGuard).toBe("not_reached_evidence_carries_no_identity");
+		// The baseline now carries an identity (it must), and no current remote entity
+		// carries it, so nothing binds the baseline to `fresh.md` — the report's address
+		// no longer does. The component is not admitted rather than being relocated
+		// positionally, which is the whole point of the retired arm.
 		expect(measurement.trace).toEqual([
 			"stale.md=>stale.md", "fresh.md=>fresh.md",
-			"stale.md=>fresh.md", "stale.md=>fresh.md",
+			"stale.md=>fresh.md", "stale.md=>stale.md",
 		]);
-		expect(measurement.kind).toBe("authorized");
-		expect(measurement.actions).toEqual(["rename_local"]);
+		expect(measurement.kind).toBe("failed");
+		expect(measurement.reasons).toEqual(["unknown_observation"]);
+		expect(measurement.actions).toEqual([]);
 	});
 
 	it("fixture 5: a folder rename whose descendants are not re-emitted", () => {

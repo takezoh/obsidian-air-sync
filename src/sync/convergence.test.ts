@@ -256,7 +256,7 @@ describe("sync converges to a fixed point", () => {
 				path, local, remote,
 				prevSync: {
 					path, hash: "base", localMtime: 1000, remoteMtime: 1000,
-					localSize: 4, remoteSize: 4, syncedAt: 1,
+					localSize: 4, remoteSize: 4, remoteIdentityKey: `id:${path}`, syncedAt: 1,
 				},
 			};
 		});

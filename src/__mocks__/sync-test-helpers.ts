@@ -19,12 +19,21 @@ import { normalizeSyncPath, validateRename } from "../utils/path";
  */
 export type MockFileSystem = IFileSystem & {
 	files: Map<string, { content: ArrayBuffer; entity: FileEntity }>;
+	/**
+	 * The provider identity a newly created object is born with. Remote mocks mint
+	 * one per created object and keep it across renames, as all three backends do;
+	 * the local mock mints none, because LocalFs never observes one.
+	 */
+	mintIdentity(path: string): string | undefined;
 };
 
 export function createMockFs(
 	name: string,
 	mutationPathAuthority: PathAuthority,
+	identityPrefix?: string,
 ): MockFileSystem {
+	const mintIdentity = (path: string) =>
+		identityPrefix === undefined ? undefined : `${identityPrefix}${path}`;
 	const files = new Map<
 		string,
 		{ content: ArrayBuffer; entity: FileEntity }
@@ -52,6 +61,7 @@ export function createMockFs(
 						size: 0,
 						mtime: 0,
 						hash: "",
+						identityKey: mintIdentity(current),
 					},
 				});
 			}
@@ -67,6 +77,7 @@ export function createMockFs(
 	return {
 		name,
 		files,
+		mintIdentity,
 		list() {
 			// Return fresh entities (real backends build a new FileEntity per call);
 			// a caller mutating a listing result must not corrupt stored state.
@@ -114,7 +125,7 @@ export function createMockFs(
 				size: content.byteLength,
 				mtime,
 				hash: "",
-				identityKey: existing?.identityKey,
+				identityKey: existing?.identityKey ?? mintIdentity(path),
 				backendMeta: existing?.backendMeta,
 			};
 			// Copy on store: real backends persist their own bytes, so a later
@@ -212,7 +223,7 @@ export function createMockLocalFs(): MockFileSystem {
 
 /** Remote mutations remain request echoes until a test models provider confirmation. */
 export function createMockRemoteFs(mutationPathAuthority: PathAuthority = "requested_echo"): MockFileSystem {
-	return createMockFs("remote", mutationPathAuthority);
+	return createMockFs("remote", mutationPathAuthority, "id:");
 }
 
 /** Model a provider observation that confirms one remote path and its descendants. */
@@ -355,6 +366,11 @@ export function makeFile(
 	path: string,
 	content: string,
 	mtime = 1000,
+	// A remote entity always arrives with a provider identity, and the record layer
+	// refuses to baseline one that does not. Pass "" for the empty-identity case;
+	// spread the entity and override `identityKey` to model an absent one, since an
+	// explicit `undefined` argument re-selects this default.
+	identityKey: string | undefined = `id:${path}`,
 ): { entity: FileEntity; content: ArrayBuffer } {
 	const buf = new TextEncoder().encode(content).buffer;
 	return {
@@ -364,6 +380,7 @@ export function makeFile(
 			size: buf.byteLength,
 			mtime,
 			hash: "",
+			identityKey,
 		},
 		content: buf,
 	};
@@ -395,6 +412,7 @@ export function addFile(
 					size: 0,
 					mtime: 0,
 					hash: "",
+					identityKey: fs.mintIdentity(current),
 				};
 				fs.files.set(current, {
 					content: new ArrayBuffer(0),
@@ -410,6 +428,7 @@ export function addFile(
 		size: buf.byteLength,
 		mtime,
 		hash: "",
+		identityKey: fs.mintIdentity(path),
 	};
 	fs.files.set(path, { content: buf, entity });
 	return entity;

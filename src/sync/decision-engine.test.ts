@@ -59,6 +59,7 @@ function baseline(overrides: Partial<SyncRecord> = {}): SyncRecord {
 		remoteMtime: 1000,
 		localSize: 100,
 		remoteSize: 100,
+		remoteIdentityKey: "id:f.md",
 		syncedAt: 900,
 		...overrides,
 	};

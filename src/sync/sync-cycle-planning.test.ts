@@ -23,7 +23,7 @@ void cannotMutateObservation;
 function baseline(path: string): SyncRecord {
 	return {
 		path, hash: "base", localMtime: 1, remoteMtime: 1,
-		localSize: 4, remoteSize: 4, syncedAt: 1,
+		localSize: 4, remoteSize: 4, remoteIdentityKey: `id:${path}`, syncedAt: 1,
 	};
 }
 

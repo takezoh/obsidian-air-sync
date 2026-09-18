@@ -54,7 +54,7 @@ export function completeIdentityEvidence(
 
 	const byIdentity = new Map<string, EntityOccurrence[]>();
 	for (const entry of entries) {
-		if (entry.prevSync?.remoteIdentityKey) {
+		if (entry.prevSync) {
 			appendOccurrence(byIdentity, entry.prevSync.remoteIdentityKey, {
 				side: "remote", phase: "baseline", path: entry.prevSync.path,
 				identityKey: entry.prevSync.remoteIdentityKey,

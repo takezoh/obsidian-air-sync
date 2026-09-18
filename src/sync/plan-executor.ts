@@ -553,7 +553,7 @@ async function proveFolderDescendants(action: RenameAction, ctx: ExecutionContex
 		const [local, remote] = await Promise.all([ctx.localFs.stat(child.newPath), ctx.remoteFs.stat(child.newPath)]);
 		if (!record || !isExactPath(local, child.newPath) || !isExactPath(remote, child.newPath) ||
 			local.isDirectory || remote.isDirectory ||
-			(record.remoteIdentityKey && remote.identityKey !== record.remoteIdentityKey) ||
+			remote.identityKey !== record.remoteIdentityKey ||
 			hasChanged(local, record) || hasRemoteChanged(remote, record) || !sameSynchronizedContent(local, remote, record)) {
 			throw new ContentProofError("proof_mismatch", `Folder descendant changed: ${child.newPath}`);
 		}
@@ -785,8 +785,8 @@ async function executeConflictAction(
 			localPath: action.local?.path,
 			remotePath: action.remote?.path,
 			baseline: action.baseline,
-			stateStore: action.baseline && (!action.baseline.remoteIdentityKey ||
-				action.remote?.identityKey === action.baseline.remoteIdentityKey) ? ctx.committer.stateStore : undefined,
+			stateStore: action.baseline &&
+				action.remote?.identityKey === action.baseline.remoteIdentityKey ? ctx.committer.stateStore : undefined,
 			logger: ctx.logger,
 			remoteIdentitySource: action.remoteIdentitySource,
 			additionalRemote: action.additionalRemote,

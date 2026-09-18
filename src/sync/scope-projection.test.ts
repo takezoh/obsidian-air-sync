@@ -198,7 +198,7 @@ describe("applyScope", () => {
 				remote: entity("included.md"),
 				prevSync: {
 					path: "desktop.ini", hash: "h", localMtime: 1, remoteMtime: 1,
-					localSize: 1, remoteSize: 1, syncedAt: 1,
+					localSize: 1, remoteSize: 1, remoteIdentityKey: "id:desktop.ini", syncedAt: 1,
 				},
 			}],
 		}), { ignorePatterns: ["/.*"], reservedPaths: ["desktop.ini"] });

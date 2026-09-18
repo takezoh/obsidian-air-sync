@@ -10,7 +10,9 @@ import {
 // detection contract as every real backend. It is NOT checksumBased (no
 // remoteChecksum), so the metadata-touch case does not apply.
 runRemoteChangeDetectionContract("createMockFs", () => {
-	const fs = createMockFs("remote-contract", "requested_echo");
+	// A remote-role double: every real backend mints a provider identity, and the
+	// record layer refuses to baseline an entity that carries none.
+	const fs = createMockFs("remote-contract", "requested_echo", "id:");
 	const path = "note.md";
 	return Promise.resolve({
 		async observeWritten() {

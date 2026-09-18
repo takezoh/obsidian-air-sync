@@ -60,7 +60,7 @@ export class PriorityBatchState {
 
 	supersede(action: SyncAction, terminalRecord: SyncRecord): boolean {
 		if (!this.admission.executable.components.some((component) => component.priorityPullAction === action) ||
-			terminalRecord.path !== action.path || !terminalRecord.remoteIdentityKey ||
+			terminalRecord.path !== action.path ||
 			terminalRecord.remoteIdentityKey !== action.remote?.identityKey) return false;
 		if (!this.pending.delete(action)) return false;
 		this.superseded.set(action, Object.freeze({ action, terminalRecord: Object.freeze({ ...terminalRecord }) }));

@@ -39,7 +39,7 @@ function hasLocalWinProof(action: ConflictAction): boolean {
 	const { local, remote, baseline, path } = action;
 	return !!local && !!remote && !local.isDirectory && !remote.isDirectory && !!baseline?.hash &&
 		baseline.path === path && local.path === path && remote.path === path &&
-		(!baseline.remoteIdentityKey || !remote.identityKey || baseline.remoteIdentityKey === remote.identityKey) &&
+		(!remote.identityKey || baseline.remoteIdentityKey === remote.identityKey) &&
 		!!local.hash && !!remote.hash && local.hash !== baseline.hash &&
 		remote.hash !== baseline.hash && local.hash !== remote.hash &&
 		!action.remoteIdentitySource && !action.additionalRemote && !action.additionalLocal &&
@@ -147,7 +147,7 @@ function isSyncRecord(value: unknown): value is SyncRecord {
 		isNonNegativeNumber(value.localMtime) && isNonNegativeNumber(value.remoteMtime) &&
 		isNonNegativeNumber(value.localSize) && isNonNegativeNumber(value.remoteSize) &&
 		isNonNegativeNumber(value.syncedAt) &&
-		(value.remoteIdentityKey === undefined || typeof value.remoteIdentityKey === "string");
+		isNonEmptyString(value.remoteIdentityKey);
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

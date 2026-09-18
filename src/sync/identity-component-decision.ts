@@ -405,9 +405,7 @@ function bindFiles(facts: CurrentFacts, reports: readonly RenameEvidence[]): Fil
 	for (const baseline of facts.records.values()) {
 		const remoteReport = reports.find((report) => report.side === "remote" &&
 			!report.isFolder && report.oldPath === baseline.path);
-		const trackedRemote = baseline.remoteIdentityKey
-			? currentByIdentity.get(baseline.remoteIdentityKey)
-			: facts.remote.get(remoteReport?.newPath ?? baseline.path);
+		const trackedRemote = currentByIdentity.get(baseline.remoteIdentityKey);
 		const localReport = reports.find((report) => report.side === "local" &&
 			!report.isFolder && report.oldPath === baseline.path);
 		const remote = trackedRemote ?? (localReport ? facts.remote.get(localReport.newPath) : undefined);
@@ -417,7 +415,7 @@ function bindFiles(facts: CurrentFacts, reports: readonly RenameEvidence[]): Fil
 		// Historical records at another identity's current destination are exact
 		// replacement expectations, not duplicate current-identity claims. Exclude
 		// them before exact binding can claim that other identity's occurrence.
-		if (!remote && baseline.remoteIdentityKey && facts.remote.get(baseline.path)?.identityKey &&
+		if (!remote && facts.remote.get(baseline.path)?.identityKey &&
 			facts.remote.get(baseline.path)?.identityKey !== baseline.remoteIdentityKey) continue;
 		const occurrenceClaimed = (local && claimedLocal.has(local.path)) ||
 			(remote && claimedRemote.has(remote.path));
@@ -456,7 +454,7 @@ function bindFiles(facts: CurrentFacts, reports: readonly RenameEvidence[]): Fil
 			remoteIdentitySource: trackedRemote, additionalRemote,
 			additionalLocal: recreated && destinationLocal && remote && !equal(destinationLocal, remote) ? destinationLocal : undefined,
 			replacement: (recreated && !!destinationLocal) || !!additionalRemote ||
-				(!!remote && !!baseline.remoteIdentityKey && remote.identityKey !== baseline.remoteIdentityKey),
+				(!!remote && remote.identityKey !== baseline.remoteIdentityKey),
 			publication: { source: baseline, destination: facts.records.get(path) } } });
 		if (destinationLocal) claimedLocal.add(destinationLocal.path);
 		if (remote) claimedRemote.add(remote.path);
