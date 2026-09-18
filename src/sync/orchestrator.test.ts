@@ -2330,8 +2330,13 @@ describe("SyncOrchestrator", () => {
 		 * also modelling a provider namespace for each.
 		 */
 		function contention(path: string): AddressDisplacement {
+			// `admittedId` is the claimant the CACHE seated, which is a working-view
+			// mechanism that cannot read sync state. Naming it "keeper" would write the
+			// assumption that it is also the claimant the address syncs into the fixture's
+			// own vocabulary — and that assumption is exactly what fails when a committed
+			// record names the other one.
 			return {
-				path, admittedId: "keeper-id", withheldId: "moved-id",
+				path, admittedId: "seated-id", withheldId: "moved-id",
 				displacedPaths: [], reason: "lowest_stable_id", owesRemediation: true,
 			};
 		}
@@ -2391,6 +2396,102 @@ describe("SyncOrchestrator", () => {
 			expect(cycle.renameById).not.toHaveBeenCalled();
 			expect(cycle.commitCheckpoint).toHaveBeenCalled();
 			expect(cycle.abortWorkingView).not.toHaveBeenCalled();
+		});
+	});
+
+	/**
+	 * The owner's rule for two live objects claiming one address has two verbs: sync the
+	 * object whose id matches the `SyncRecord`, rename the one that does not. The block
+	 * above drives only the case where those two answers agree, because its contended
+	 * path carries no record at all — so the claimant the cache seated is always also the
+	 * one the address syncs, and the rule that `chooseKeeper` exists to serve is never
+	 * exercised end to end.
+	 *
+	 * This block drives the disagreement, which is the only case that rule is FOR.
+	 */
+	describe("a contended address whose record names the withheld claimant", () => {
+		const CONTENDED = "docs/Note.md";
+		/** The mock mints `id:<path>`, so this is what the settling cycle records. */
+		const RECORD_HOLDER = `id:${CONTENDED}`;
+		const NEWCOMER = "seated-id";
+
+		/**
+		 * A settled vault, then a same-named sibling appears and wins the cache address.
+		 *
+		 * Cycle 1 syncs the user's file and commits its record. Between cycles the remote
+		 * entry at the contended path is REPLACED by the newcomer — which is exactly what
+		 * the working view looks like after the arbiter seats the lexicographically
+		 * smaller id and drops the other — and the delta announces both the change at that
+		 * address and the contention behind it.
+		 */
+		async function newcomerWinsTheAddress() {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			confirmRemoteWrites(remoteFs);
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`,
+				lastSyncedIdentity: "test:root",
+			});
+			const deps = createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			addFile(localFs, CONTENDED, "the user's file", 1000);
+			addFile(localFs, "elsewhere.md", "untouched by any contention", 1000);
+			await orchestrator.runSync();
+
+			// The newcomer now occupies the address in the working view. Different bytes
+			// and a later mtime, so the ordinary rules have something to do with it.
+			const seated = remoteFs.files.get(CONTENDED)!;
+			seated.content = new TextEncoder().encode("the newcomer's bytes").buffer;
+			seated.entity = { ...seated.entity, identityKey: NEWCOMER, mtime: 2000, size: 20 };
+
+			const renameById = vi.fn().mockResolvedValue(undefined);
+			remoteFs.identityRename = { renameById };
+			remoteFs.checkpoint!.getChangedPaths = vi.fn().mockResolvedValue({
+				modified: [CONTENDED], deleted: [], contended: [{
+					path: CONTENDED, admittedId: NEWCOMER, withheldId: RECORD_HOLDER,
+					displacedPaths: [], reason: "lowest_stable_id", owesRemediation: true,
+				}],
+			});
+			const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+			const abortWorkingView = vi.fn().mockResolvedValue(undefined);
+			remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
+			remoteFs.checkpoint!.abortWorkingView = abortWorkingView;
+
+			await orchestrator.runSync();
+			await orchestrator.close();
+			return { renameById, commitCheckpoint, abortWorkingView, localFs, remoteFs };
+		}
+
+		it("writes nothing at the address the record holder keeps", async () => {
+			const cycle = await newcomerWinsTheAddress();
+
+			// Without this, the cycle reads the newcomer against the record holder's
+			// baseline as a replaced destination and acts on it — overwriting the user's
+			// file, or duplicating it as a conflict — at the very address the repair below
+			// is about to move that same newcomer out of.
+			expect(readText(cycle.localFs, CONTENDED)).toBe("the user's file");
+			expect(readText(cycle.remoteFs, CONTENDED)).toBe("the newcomer's bytes");
+			expect([...cycle.localFs.files.keys()].filter((path) => path.includes(".conflict")))
+				.toEqual([]);
+		});
+
+		it("still moves the newcomer and still withholds the checkpoint", async () => {
+			const cycle = await newcomerWinsTheAddress();
+
+			expect(cycle.renameById).toHaveBeenCalledWith(
+				NEWCOMER, "docs/Note.conflict-id-seated-id.md");
+			expect(cycle.commitCheckpoint).not.toHaveBeenCalled();
+			expect(cycle.abortWorkingView).toHaveBeenCalled();
+		});
+
+		it("leaves every uncontended path in the same cycle alone", async () => {
+			const cycle = await newcomerWinsTheAddress();
+
+			// Withholding is address-local. A contention is not a reason to stop syncing
+			// the rest of the vault, and the settled file must not be disturbed.
+			expect(readText(cycle.remoteFs, "elsewhere.md")).toBe("untouched by any contention");
 		});
 	});
 
