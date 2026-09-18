@@ -1,4 +1,4 @@
-/* eslint max-lines: ["error", 970] -- the executor owns all fixed protocols, direction-specific transfer proof, immediate pre-effect observation, and proof-gated commit routing. */
+/* eslint max-lines: ["error", 1020] -- the executor owns all fixed protocols, direction-specific transfer proof, immediate pre-effect observation, and proof-gated commit routing. Re-pinned from 970 for the identity-addressed namespace repair: which addressing a rename uses, and the fact that the repair route runs none of the publication machinery, must be readable against the path-addressed protocol it deliberately bypasses. */
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
 import type {
@@ -314,9 +314,63 @@ async function publishObservedMatch(
 	return { localEntity, remoteEntity, terminalRecord };
 }
 
+/**
+ * The provider id a remote-only namespace repair is addressed by, or `undefined`
+ * for every other action — including an ordinary `rename_remote`, which keeps its
+ * admitted local/remote/baseline triple and its path addressing.
+ *
+ * This is the single test for the shape, so "identity-addressed or not" is decided
+ * once and cannot drift between the execution branch and the publication branch.
+ */
+function namespaceRepair(
+	action: SyncAction,
+): { readonly action: RenameAction; readonly identity: string } | undefined {
+	if (action.action !== "rename_remote") return undefined;
+	const identity = action.providerIdentity;
+	if (identity === undefined) return undefined;
+	// Both halves of the addressing invariant, stated where the shape is decided:
+	// an identity-addressed rename carries no resolvable local/remote/baseline
+	// triple, and an action that carries one is never renamed by identity.
+	if (action.local ?? action.remote ?? action.baseline ?? action.content ?? action.descendantRecords) {
+		throw new Error(`Rename action mixes provider-identity and path addressing: ${action.path}`);
+	}
+	return { action, identity };
+}
+
+/**
+ * Execute a remote-only namespace repair: rename one provider object, addressed by
+ * its own id, so two live objects stop claiming one address.
+ *
+ * It has no local counterpart, no baseline and no record to publish — the object
+ * has never been in the vault, and `RecordPublication` already excludes
+ * `rename_remote` — so this route deliberately runs none of the publication-input
+ * check, the terminal endpoint proof or the state commit those inputs feed.
+ *
+ * There is NO path-addressed fallback. The contended path resolves, in the cache
+ * and on the provider, to the claimant that KEEPS it; renaming by path would move
+ * exactly the object that must not move. A backend without the capability fails
+ * the action, which blocks its component suffix and leaves the next cycle to
+ * re-observe the same facts.
+ *
+ * Descendants of a renamed folder are not remapped locally, because none of them
+ * are synced; they arrive through the next cycle's re-listing.
+ */
+async function repairProviderNamespace(
+	repair: { readonly action: RenameAction; readonly identity: string }, ctx: ExecutionContext,
+): Promise<Omit<CompletedAction, "action">> {
+	const capability = ctx.remoteFs.identityRename;
+	if (!capability) {
+		throw new Error(`Remote filesystem cannot rename by provider identity: ${repair.action.path}`);
+	}
+	await capability.renameById(repair.identity, repair.action.path);
+	return {};
+}
+
 async function executeVerifiedAction(
 	action: SyncAction, ctx: ExecutionContext, completed: readonly CompletedAction[], onRateLimit?: () => void,
 ): Promise<Omit<CompletedAction, "action">> {
+	const repair = namespaceRepair(action);
+	if (repair) return repairProviderNamespace(repair, ctx);
 	await checkPublicationInputs(action, ctx, completed);
 	const io = () => runActionIO(action, ctx);
 	// Renames cannot replay safely after their source has already moved.

@@ -228,6 +228,17 @@ export type StandardSyncAction = NonConflictAction | ConflictAction;
 export interface RenameAction extends SyncActionBase {
 	action: "rename_remote" | "rename_local";
 	oldPath: string;
+	/**
+	 * Stable provider id of the object to move, for a remote-only namespace repair
+	 * whose subject has no cache path — two live provider objects claimed one
+	 * derived address and this is the claimant that did not get it.
+	 *
+	 * Its presence is what selects identity addressing in the executor: such an
+	 * action carries no local counterpart, no baseline and no record publication
+	 * (`RecordPublication` already excludes `rename_remote`), and it is never
+	 * executed by path, because the path resolves to the claimant that keeps it.
+	 */
+	providerIdentity?: string;
 	/** When true, oldPath/path are folder paths and descendants lists affected children */
 	isFolder?: boolean;
 	/** Descendant path mappings consumed by this folder rename */
