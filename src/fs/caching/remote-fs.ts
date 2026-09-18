@@ -88,6 +88,13 @@ function displacedAddresses(contended: readonly AddressDisplacement[]): Readonly
 }
 
 /**
+ * How many cached paths a completed full scan lists at debug level. Enough to
+ * identify a missing file in an ordinary vault without letting a large one turn
+ * a routine scan into an unbounded log write.
+ */
+const FULL_SCAN_PATH_LOG_CAP = 200;
+
+/**
  * Shared base for an id-addressed remote backend with an incremental delta cursor
  * and a crash-safe, co-located metadata checkpoint (ADR 0001).
  *
@@ -250,6 +257,20 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 
 		this.initialized = true;
 		this.logger?.info("Full scan completed", { fileCount: this.cache.size });
+		// "Full scan completed" only ever logged the count, which says whether this
+		// cache and change detection disagree but never where. Log the paths
+		// themselves so "why isn't this specific file syncing" is a direct answer
+		// rather than another layer to add a diagnostic for. Capped so a large vault
+		// can't turn a routine scan into an unbounded debug write, and built inside
+		// the level check so it costs nothing at all when logging is off.
+		if (this.logger?.enabled("debug")) {
+			const paths: string[] = [];
+			for (const [path] of this.cache.entries()) {
+				if (paths.length === FULL_SCAN_PATH_LOG_CAP) break;
+				paths.push(path);
+			}
+			this.logger.debug("Full scan paths", { paths, total: this.cache.size });
+		}
 		return contended;
 	}
 

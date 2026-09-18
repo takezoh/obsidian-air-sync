@@ -5,6 +5,7 @@ import {
 	prepareSyncCycleSnapshotForExecution,
 	type BatchObservation,
 } from "./sync-cycle-planning";
+import { logChangeDetection } from "./sync-cycle-diagnostics";
 import type { ChangeSet } from "./change-detector";
 import type { MixedEntity, ScopeDisposition, ScopeProjection, SyncRecord } from "./types";
 import { admitBatchObservation } from "./plan-admission";
@@ -501,6 +502,38 @@ describe("batch observation boundary", () => {
 		expect([...snapshot.baselinePaths]).toEqual(["small.md", "large.md"]);
 	});
 
+	it("logs each excluded path with why it was dropped, distinguishing applyScope's own exclusion from an unresolved scope disposition", () => {
+		const logger = { enabled: () => true, debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), flush: vi.fn() };
+		const largeRecord = baseline("large.md");
+		const changeSet: ChangeSet = {
+			entries: [
+				{
+					path: "large.md", prevSync: largeRecord,
+					local: { path: "large.md", size: 20, mtime: 2, hash: "large", isDirectory: false },
+				},
+				{
+					path: "ignored.md",
+					local: { path: "ignored.md", size: 4, mtime: 2, hash: "ignored", isDirectory: false },
+				},
+			],
+			observations: [], identityEvidence: [], temperature: "warm", candidateFacts: [],
+		};
+
+		prepareSyncCycleSnapshot(
+			changeSet, "backend\0root",
+			{ ignorePatterns: ["ignored.md"], mobileMaxBytes: 10 },
+			logger as never,
+		);
+
+		const call = logger.debug.mock.calls.find((call) => call[0] === "Excluded paths");
+		expect(call?.[1]).toEqual({
+			paths: [
+				{ path: "large.md", reason: "disposition:mobile_deferred" },
+				{ path: "ignored.md", reason: "excluded_from_scope" },
+			],
+		});
+	});
+
 	it.each([
 		{
 			name: "included to excluded as a deletion",
@@ -577,4 +610,73 @@ describe("batch observation boundary", () => {
 		]);
 	});
 
+});
+
+describe("logChangeDetection — unresolved observations", () => {
+	function makeChangeSet(observations: ChangeSet["observations"]): ChangeSet {
+		return { entries: [], observations, identityEvidence: [], temperature: "cold", candidateFacts: [] };
+	}
+
+	it("logs an alias/present_unresolved remote observation -- the object the provider returned but that never became a fact", () => {
+		const logger = { enabled: () => true, debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), flush: vi.fn() };
+		const changeSet = makeChangeSet([
+			{
+				kind: "present_unresolved", side: "remote", requestedPath: "orphan.md",
+				returnedPath: "orphan.md", source: "list",
+				entity: { path: "orphan.md", size: 1, mtime: 0, hash: "", isDirectory: false, pathAuthority: "requested_echo" },
+			},
+			{
+				kind: "alias", side: "remote", requestedPath: "Case.md", resolvedPath: "case.md",
+				entity: { path: "case.md", size: 1, mtime: 0, hash: "", isDirectory: false, pathAuthority: "actual_resolved" },
+			},
+		]);
+
+		logChangeDetection(changeSet, new Map(), logger as never);
+
+		const call = logger.debug.mock.calls.find((call) => call[0] === "Unresolved observations");
+		expect(call?.[1]).toEqual({
+			items: [
+				{
+					side: "remote", kind: "present_unresolved", requestedPath: "orphan.md",
+					returnedPath: "orphan.md", source: "list", pathAuthority: "requested_echo",
+				},
+				{ side: "remote", kind: "alias", requestedPath: "Case.md", resolvedPath: "case.md" },
+			],
+		});
+	});
+
+	it("does not log when every observation resolved exactly", () => {
+		const logger = { enabled: () => true, debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), flush: vi.fn() };
+		const changeSet = makeChangeSet([
+			{
+				kind: "exact", side: "remote", requestedPath: "note.md",
+				entity: { path: "note.md", size: 1, mtime: 0, hash: "", isDirectory: false, pathAuthority: "actual_resolved" },
+			},
+			{ kind: "absent", side: "local", requestedPath: "gone.md", authority: "stat" },
+		]);
+
+		logChangeDetection(changeSet, new Map(), logger as never);
+
+		expect(logger.debug.mock.calls.some((call) => call[0] === "Unresolved observations")).toBe(false);
+	});
+
+	it("does not touch the observations when debug is off, so the payload costs nothing", () => {
+		const logger = { enabled: () => false, debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), flush: vi.fn() };
+		const changeSet = makeChangeSet([
+			{
+				kind: "alias", side: "remote", requestedPath: "Case.md", resolvedPath: "case.md",
+				entity: { path: "case.md", size: 1, mtime: 0, hash: "", isDirectory: false, pathAuthority: "actual_resolved" },
+			},
+		]);
+		// The point of the guard is that the work is skipped, not just the write —
+		// so watch the collection itself rather than asserting on the logger. A
+		// diagnostic that still filters and maps every observation on a cold
+		// reconcile is what this is meant to prevent.
+		const filter = vi.spyOn(changeSet.observations, "filter");
+
+		logChangeDetection(changeSet, new Map(), logger as never);
+
+		expect(filter).not.toHaveBeenCalled();
+		expect(logger.debug).not.toHaveBeenCalled();
+	});
 });

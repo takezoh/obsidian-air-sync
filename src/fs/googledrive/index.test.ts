@@ -293,7 +293,7 @@ describe("GoogleDriveFs.write stale-cache guard for new paths", () => {
 
 		const { GoogleDriveFs } = await import("./index");
 		const { GoogleDriveClient } = await import("./client");
-		const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+		const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), enabled: () => true, debug: vi.fn() };
 
 		const client = new GoogleDriveClient(() => Promise.resolve("access"));
 		const fs = new GoogleDriveFs(
@@ -349,7 +349,7 @@ describe("GoogleDriveFs.rename stale-cache guard for the destination", () => {
 	it("does not clobber a concurrent re-key that occupied newPath during the move", async () => {
 		const { GoogleDriveFs } = await import("./index");
 		const { GoogleDriveClient } = await import("./client");
-		const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+		const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), enabled: () => true, debug: vi.fn() };
 
 		const client = new GoogleDriveClient(() => Promise.resolve("access"));
 		const fs = new GoogleDriveFs(
@@ -649,7 +649,7 @@ describe("GoogleDriveFs multi-parent resolution", () => {
 describe("GoogleDriveFs circular parent reference", () => {
 	it("handles mutual cycle (A→B→A) without infinite loop", async () => {
 		const { GoogleDriveFs } = await import("./index");
-		const mockLogger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() } as never;
+		const mockLogger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), enabled: () => true, debug: vi.fn() } as never;
 
 		const mockClient = {
 			listAllFiles: vi.fn().mockResolvedValue([
@@ -672,7 +672,7 @@ describe("GoogleDriveFs circular parent reference", () => {
 
 	it("handles self-referencing parent (X→X) without infinite loop", async () => {
 		const { GoogleDriveFs } = await import("./index");
-		const mockLogger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() } as never;
+		const mockLogger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), enabled: () => true, debug: vi.fn() } as never;
 
 		const mockClient = {
 			listAllFiles: vi.fn().mockResolvedValue([

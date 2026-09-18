@@ -179,6 +179,16 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 		if (file.mimeType !== FOLDER_MIME) {
 			throw new Error("Please select a folder, not a file.");
 		}
+		// Drive's normal single-click delete moves a folder to Trash rather than
+		// erasing it, so getFile() above still succeeds (200, not 404) for a folder
+		// the user can no longer see or add content to — the same ambiguity
+		// resolveLinked() (remote-vault.ts) guards for the cached-id rebind path.
+		// This path needs its own check because `id` above is not necessarily a
+		// Picker result: params.id is accepted as a fallback, so an arbitrary folder
+		// id can reach here without the Picker ever having offered it.
+		if (file.trashed) {
+			throw new Error("That folder is in Google Drive's Trash. Restore it, or pick a different folder.");
+		}
 
 		// Bind by id only — the id is the sole binding and the sync engine addresses
 		// everything by it, so a picked folder needs no name/metadata recorded.

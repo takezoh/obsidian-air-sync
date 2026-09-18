@@ -54,6 +54,22 @@ export class Logger {
 	get adapter(): RawFsAdapter { return this._adapter; }
 	get sanitizedDeviceName(): string { return this._deviceName; }
 
+	/**
+	 * Whether a log at this level would actually be written.
+	 *
+	 * `log()` decides this *after* the caller has already built its context
+	 * object, so a diagnostic whose payload costs something — a per-path array,
+	 * a set, a projection over every entry — pays that cost on every call even
+	 * when logging is off. Such a caller guards itself with this instead. It is
+	 * the same decision `log()` makes, read from the same settings, so the two
+	 * cannot disagree.
+	 */
+	enabled(level: LogLevel): boolean {
+		const settings = this.getSettings();
+		if (!settings.enableLogging) return false;
+		return LOG_LEVEL_ORDER[level] >= LOG_LEVEL_ORDER[settings.logLevel];
+	}
+
 	debug(message: string, context?: Record<string, unknown>): void {
 		this.log("debug", message, context);
 	}
@@ -71,9 +87,7 @@ export class Logger {
 	}
 
 	private log(level: LogLevel, message: string, context?: Record<string, unknown>): void {
-		const settings = this.getSettings();
-		if (!settings.enableLogging) return;
-		if (LOG_LEVEL_ORDER[level] < LOG_LEVEL_ORDER[settings.logLevel]) return;
+		if (!this.enabled(level)) return;
 
 		const timestamp = new Date().toISOString();
 		const tag = level.toUpperCase();

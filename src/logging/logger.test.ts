@@ -155,4 +155,37 @@ describe("Logger", () => {
 		// Match ISO timestamp pattern: [YYYY-MM-DDTHH:MM:SS.mmmZ]
 		expect(content).toMatch(/\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\]/);
 	});
+
+	describe("enabled()", () => {
+		it("answers the same question log() does, for every level", async () => {
+			settings = createSettings({ logLevel: "warn" });
+			for (const level of ["debug", "info", "warn", "error"] as const) {
+				logger[level](`${level} message`);
+			}
+			await logger.flush();
+			const content = Array.from(adapter.written.values())[0] ?? "";
+
+			// enabled() exists so a caller can skip building an expensive payload.
+			// If it ever disagreed with log(), such a caller would silently drop a
+			// line that logging is on for, so pin them to each other rather than to
+			// a hand-written expectation.
+			for (const level of ["debug", "info", "warn", "error"] as const) {
+				expect(logger.enabled(level)).toBe(content.includes(`${level} message`));
+			}
+		});
+
+		it("is false for every level when logging is disabled", () => {
+			settings = createSettings({ enableLogging: false, logLevel: "debug" });
+			for (const level of ["debug", "info", "warn", "error"] as const) {
+				expect(logger.enabled(level)).toBe(false);
+			}
+		});
+
+		it("re-reads settings rather than caching the first answer", () => {
+			settings = createSettings({ logLevel: "debug" });
+			expect(logger.enabled("debug")).toBe(true);
+			settings = createSettings({ logLevel: "error" });
+			expect(logger.enabled("debug")).toBe(false);
+		});
+	});
 });

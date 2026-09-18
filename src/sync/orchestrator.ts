@@ -20,8 +20,8 @@ import {
 	type SyncCycleResult,
 	type SyncStatusDetail,
 } from "./sync-notification";
+import { logChangeDetection } from "./sync-cycle-diagnostics";
 import {
-	logChangeDetection,
 	logSyncCyclePlan,
 	prepareSyncCycleSnapshotForExecution,
 } from "./sync-cycle-planning";

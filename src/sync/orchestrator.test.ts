@@ -120,7 +120,7 @@ describe("SyncOrchestrator", () => {
 			});
 			const deps = createDeps({
 				localFs: () => localFs, remoteFs: () => remoteFs, getSettings: () => settings,
-				logger: { debug: vi.fn(), info, warn: vi.fn(), error: vi.fn(), flush: vi.fn() } as unknown as Logger,
+				logger: { enabled: () => true, debug: vi.fn(), info, warn: vi.fn(), error: vi.fn(), flush: vi.fn() } as unknown as Logger,
 				saveSettings: async () => {
 					records.push(await orchestrator.state.get("note.md"));
 					if (timing === "after-publication") editAndQueue();
@@ -165,7 +165,7 @@ describe("SyncOrchestrator", () => {
 		const deps = createDeps({
 			getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
 			recordConflicts,
-			logger: { debug: vi.fn(), info, warn: vi.fn(), error: vi.fn(), flush: vi.fn() } as unknown as Logger,
+			logger: { enabled: () => true, debug: vi.fn(), info, warn: vi.fn(), error: vi.fn(), flush: vi.fn() } as unknown as Logger,
 		});
 		const orchestrator = new SyncOrchestrator(deps);
 		try {
@@ -271,7 +271,7 @@ describe("SyncOrchestrator", () => {
 				getSettings: () => settings,
 				localFs: () => localFs,
 				remoteFs: () => remoteFs,
-				logger: { debug: vi.fn(), info, warn: vi.fn(), error: vi.fn(), flush: vi.fn() } as unknown as Logger,
+				logger: { enabled: () => true, debug: vi.fn(), info, warn: vi.fn(), error: vi.fn(), flush: vi.fn() } as unknown as Logger,
 			});
 			const orchestrator = new SyncOrchestrator(deps);
 
@@ -302,7 +302,7 @@ describe("SyncOrchestrator", () => {
 			const deps = createDeps({
 				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
 				localTracker: tracker,
-				logger: { debug: vi.fn(), info, warn: vi.fn(), error: vi.fn(), flush: vi.fn() } as unknown as Logger,
+				logger: { enabled: () => true, debug: vi.fn(), info, warn: vi.fn(), error: vi.fn(), flush: vi.fn() } as unknown as Logger,
 			});
 			const orchestrator = new SyncOrchestrator(deps);
 
@@ -376,7 +376,7 @@ describe("SyncOrchestrator", () => {
 			const deps = createDeps({
 				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
 				localTracker: tracker,
-				logger: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn(), flush: vi.fn() } as unknown as Logger,
+				logger: { enabled: () => true, debug: vi.fn(), info: vi.fn(), warn, error: vi.fn(), flush: vi.fn() } as unknown as Logger,
 			});
 			const orchestrator = new SyncOrchestrator(deps);
 			await localFs.write("A/known.md", new TextEncoder().encode("kept").buffer, 1000);
@@ -557,7 +557,7 @@ describe("SyncOrchestrator", () => {
 			const deps = createDeps({
 				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
 				localTracker: tracker,
-				logger: { debug: vi.fn(), info, warn: vi.fn(), error: vi.fn(), flush: vi.fn() } as unknown as Logger,
+				logger: { enabled: () => true, debug: vi.fn(), info, warn: vi.fn(), error: vi.fn(), flush: vi.fn() } as unknown as Logger,
 			});
 			const orchestrator = new SyncOrchestrator(deps);
 			await localFs.write("A/known.md", new TextEncoder().encode("kept").buffer, 1000);
@@ -616,7 +616,7 @@ describe("SyncOrchestrator", () => {
 			const deps = createDeps({
 				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
 				localTracker: tracker,
-				logger: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn(), flush: vi.fn() } as unknown as Logger,
+				logger: { enabled: () => true, debug: vi.fn(), info: vi.fn(), warn, error: vi.fn(), flush: vi.fn() } as unknown as Logger,
 			});
 			const orchestrator = new SyncOrchestrator(deps);
 			await orchestrator.state.put({
@@ -919,7 +919,7 @@ describe("SyncOrchestrator", () => {
 				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
 				localTracker: tracker,
 				logger: {
-					debug: vi.fn(), info, warn, error, flush: vi.fn(),
+					enabled: () => true, debug: vi.fn(), info, warn, error, flush: vi.fn(),
 				} as unknown as Logger,
 			});
 			const orchestrator = new SyncOrchestrator(deps);
@@ -1280,6 +1280,7 @@ describe("SyncOrchestrator", () => {
 			const deps = createDeps({
 				remoteFs: () => null,
 				logger: {
+					enabled: () => true,
 					debug: debugFn,
 					info: vi.fn(),
 					warn: vi.fn(),
@@ -1634,6 +1635,7 @@ describe("SyncOrchestrator", () => {
 			const debug = vi.fn();
 			const deps = createDeps({
 				logger: {
+					enabled: () => true,
 					debug, info: vi.fn(), warn, error: vi.fn(), flush: vi.fn(),
 				} as unknown as Logger,
 			});
@@ -1820,7 +1822,7 @@ describe("SyncOrchestrator", () => {
 			const deps = createDeps({
 				isLayoutReady: () => false,
 				logger: {
-					debug: vi.fn(), info, warn, error: vi.fn(),
+					enabled: () => true, debug: vi.fn(), info, warn, error: vi.fn(),
 					flush: vi.fn().mockResolvedValue(undefined),
 				} as unknown as SyncOrchestratorDeps["logger"],
 			});
@@ -3332,7 +3334,7 @@ describe("SyncOrchestrator", () => {
 				remoteFs: () => remoteFs,
 				backendProvider: () => mockProvider({}),
 				logger: {
-					debug: vi.fn(),
+					enabled: () => true, debug: vi.fn(),
 					info: infoSpy,
 					warn: vi.fn(),
 					error: vi.fn(),

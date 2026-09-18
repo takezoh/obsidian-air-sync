@@ -358,8 +358,12 @@ export default defineConfig(
 		// backend-specific identity seams but not mutable cursor state. Keeping the
 		// capability assembly here makes that separation explicit; its algorithm is
 		// split out.
+		// Re-pinned from 380 for the full-scan path listing: the diagnostic belongs
+		// where the scan happens, and the sync layer's own diagnostics module is the
+		// wrong home for it — moving it there would mean handing the cache out past
+		// this class to log it.
 		files: ["src/fs/caching/remote-fs.ts"],
-		rules: { "max-lines": ["error", { max: 380, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 389, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Dropbox's detached identity/path seams belong beside its other API-addressing

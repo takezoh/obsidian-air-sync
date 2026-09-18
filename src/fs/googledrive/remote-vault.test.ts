@@ -60,6 +60,21 @@ describe("resolveGoogleDriveRemoteVault", () => {
 				resolveGoogleDriveRemoteVault(mock.client, "My Vault", "deleted-folder-id"),
 			).rejects.toThrow("Failed to access remote vault folder: Google Drive API getFile failed: File not found");
 		});
+
+		it("throws instead of silently keeping a cached folder that has been moved to Trash", async () => {
+			// Drive's normal single-click delete trashes rather than erases, so
+			// getFile still succeeds (HTTP 200) for a folder the user considers
+			// gone — without this check, every subsequent list()/stat() would
+			// keep operating against a folder invisible to the user in Drive's
+			// own UI, with no error and no way to add content to it.
+			mock.getFile.mockResolvedValueOnce({
+				id: "trashed-folder-id", name: "My Vault", mimeType: FOLDER_MIME, trashed: true,
+			});
+
+			await expect(
+				resolveGoogleDriveRemoteVault(mock.client, "My Vault", "trashed-folder-id"),
+			).rejects.toThrow("Failed to access remote vault folder: folder trashed-folder-id is in Trash");
+		});
 	});
 
 	describe("new binding by folder name", () => {

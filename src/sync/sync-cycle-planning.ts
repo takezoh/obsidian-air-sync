@@ -13,6 +13,7 @@ import type {
 	ScopeProjection,
 } from "./types";
 import { enrichHashesForPreferLocal } from "./change-hash-enrichment";
+import { logScopeExclusions } from "./sync-cycle-diagnostics";
 
 export type CycleEvidenceItem =
 	| { readonly role: "local_rename_candidate"; readonly evidence: LocalRenameEvidence }
@@ -141,42 +142,6 @@ function immutableSet<T>(values: readonly T[]): ReadonlySet<T> {
 	return Object.freeze(view);
 }
 
-export function logChangeDetection(
-	changeSet: ChangeSet,
-	renamePairs: ReadonlyMap<string, string>,
-	logger?: Logger,
-	visiblePaths?: ReadonlySet<string>,
-): void {
-	const entries = visiblePaths
-		? changeSet.entries.filter((entry) => visiblePaths.has(entry.path))
-		: changeSet.entries;
-	const remoteOnlyPaths = entries.filter((entry) => !entry.local && entry.remote)
-		.map((entry) => entry.path);
-	logger?.info("Change detection completed", {
-		temperature: changeSet.temperature,
-		entries: entries.length,
-		localOnly: entries.filter((entry) => entry.local && !entry.remote).length,
-		remoteOnly: remoteOnlyPaths.length,
-		both: entries.filter((entry) => entry.local && entry.remote).length,
-		enriched: entries.filter((entry) => entry.local?.hash && !entry.prevSync).length,
-		hashEnrichmentCandidates: changeSet.hashEnrichment?.candidates ?? 0,
-		hashEnrichmentMatches: changeSet.hashEnrichment?.matches ?? 0,
-		renamePairs: renamePairs.size,
-	});
-	if (remoteOnlyPaths.length > 0) logger?.debug("Remote-only paths", { paths: remoteOnlyPaths });
-	if (renamePairs.size === 0) return;
-
-	const paths = new Set([...renamePairs.keys(), ...renamePairs.values()]);
-	logger?.debug("Rename entry details", {
-		entries: changeSet.entries.filter((entry) => paths.has(entry.path)).map((entry) => ({
-			path: entry.path,
-			local: !!entry.local,
-			remote: !!entry.remote,
-			prevSync: !!entry.prevSync,
-			hash: (entry.local?.hash || entry.prevSync?.hash || "").substring(0, 8) || undefined,
-		})),
-	});
-}
 
 /** Pure batch observation plus structured diagnostics; no action construction or I/O. */
 export function prepareSyncCycleSnapshot(
@@ -224,13 +189,8 @@ function scopeSyncCycle(
 		entry.prevSync ? [entry.prevSync.path] : []);
 	const admittedEntries = scopedChangeSet.entries.filter((entry) =>
 		projection.byEndpoint.get(entry.path) === "included");
-	if (admittedEntries.length !== changeSet.entries.length) {
-		logger?.debug("Files filtered", {
-			total: changeSet.entries.length,
-			afterFilter: admittedEntries.length,
-			excluded: changeSet.entries.length - admittedEntries.length,
-		});
-	}
+	logScopeExclusions(
+		changeSet.entries, scopedChangeSet.entries, admittedEntries, projection, logger);
 	scopedChangeSet.entries = admittedEntries;
 	return { scopedChangeSet, projection, baselinePaths };
 }

@@ -36,12 +36,24 @@ async function resolveLinked(
 	client: GoogleDriveClient,
 	cachedFolderId: string,
 ): Promise<RemoteVaultResolution> {
-	// Verify the cached folder still exists and is accessible.
+	// Verify the cached folder still exists and is accessible. A folder moved to
+	// Trash still resolves via getFile (HTTP 200, not 404) — Drive's normal
+	// single-click delete trashes rather than erases — so without this check a
+	// stale link would silently keep operating against a folder the user can no
+	// longer see or add content to (every list() reflects that folder's own
+	// current children, whatever they are, without ever detecting anything
+	// changed on the "real" folder the user thinks they're using). Treat it the
+	// same as a folder that no longer exists, matching CachingRemoteFs's own
+	// trashed-root check for the same ambiguity (fullScan → assertRootAlive).
+	let file;
 	try {
-		await client.getFile(cachedFolderId);
+		file = await client.getFile(cachedFolderId);
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
 		throw new Error(`Failed to access remote vault folder: ${msg}`);
+	}
+	if (file.trashed) {
+		throw new Error(`Failed to access remote vault folder: folder ${cachedFolderId} is in Trash`);
 	}
 	return { backendUpdates: { remoteVaultFolderId: cachedFolderId } };
 }
