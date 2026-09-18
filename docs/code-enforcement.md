@@ -169,9 +169,9 @@ trips it, the question is "does a concept want to move to its own module?", not
 | | |
 |---|---|
 | **Prevents** | a module growing past ~300 code lines (comments/blanks excluded) *silently*, without anyone asking whether it should split |
-| **Where** | `max-lines` in `eslint.config.mts` |
+| **Where** | `max-lines` in `eslint.config.mts`, plus per-file `/* eslint max-lines */` header comments |
 | **How** | `max-lines` (error) on `src/**/*.ts`; tests, mocks, and `test-helpers.ts` are exempt |
-| **Exception** | If a clean responsibility split is natural, split. If it is not — the lines are one cohesive concern, or the split is its own task — **raise this file's threshold** with a `files`-scoped override and a justifying comment. Do **not** force the count down with churn |
+| **Exception** | If a clean responsibility split is natural, split. If it is not — the lines are one cohesive concern, or the split is its own task — **raise this file's threshold** with a `files`-scoped override or a file-header comment, and a justifying comment either way. Do **not** force the count down with churn |
 
 **Reducing the number is never the goal; keeping each module honestly sized is.**
 So do not inline single-use locals, merge imports, or otherwise contort code purely
@@ -182,14 +182,21 @@ the new size, with a comment saying why the split was deferred. The pin is a
 ratchet: it stops *silent* growth and flags the file as split-when-convenient — it
 is not a mandate to shrink the file by force.
 
-Seven modules currently carry such overrides as known debt: `fs/googledrive/auth.ts`
-(337), `sync/orchestrator.ts` (444), `sync/plan-executor.ts` (334),
-`fs/caching/remote-fs.ts` (364), `fs/dropbox/index.ts` (317),
+Seven modules currently carry such overrides as known debt in `eslint.config.mts`:
+`fs/googledrive/auth.ts` (337), `sync/orchestrator.ts` (444), `sync/plan-executor.ts`
+(334), `fs/caching/remote-fs.ts` (374), `fs/dropbox/index.ts` (317),
 `fs/backend-manager.ts` (341), and `fs/caching/metadata-cache.ts` (379).
 Ratchet them down when a natural responsibility split presents itself.
 (`fs/googledrive/index.ts` was here at 397; ADR 0001 lifted its cache/checkpoint
 machinery into `fs/caching/`, dropping it back under 300, so it is no longer
 overridden.)
+
+Four modules instead carry a **file-header `/* eslint max-lines */` comment**, which
+overrides the config entry for that file: `sync/scope-projection.ts` (340),
+`sync/conflict-resolver.ts` (350), `sync/identity-component-decision.ts` (785), and
+`sync/plan-executor.ts` (1020 — so its 334 config entry above is inert). Same ratchet,
+same obligation to justify the pin in the comment; the inline form keeps the reason
+next to the code it is about.
 
 ## 7. Vault-index read centralization
 

@@ -28,8 +28,16 @@ outcomes:
   objects, for every registered caching family or a cited non-producibility.
 scope:
 - src/fs/caching/address-arbitration.ts — new single owner for derived address assignment.
-- src/fs/caching/metadata-cache.ts — claim-set assignment, non-silent occupant eviction,
-  returned displacement facts.
+- src/fs/caching/claim-set-assignment.ts — new; the pure whole-claim-set pass (group by
+  resolved path, arbitrate, cascade the loss down the resolved parent-id chain) plus the
+  `AddressDisplacement` carrier. NOT in the design's file lists, which put this inside
+  metadata-cache.ts. It was split out during implementation because metadata-cache.ts was
+  at its line cap and the claim-set pass is a genuinely separable pure concept —
+  docs/code-enforcement.md §6's sanctioned route ("split a concept out if that's natural").
+  The split is what lets the cap there be re-pinned at 379 rather than higher, and it keeps
+  the arbiter's purity checkable from imports on both modules.
+- src/fs/caching/metadata-cache.ts — invokes claim-set assignment, non-silent occupant
+  eviction, returned displacement facts.
 - src/fs/caching/id-delta.ts — drain accumulation, unit-end settlement, separation of the
   two causes of an unresolvable entry.
 - src/fs/caching/remote-fs.ts — one attribution rule at all three producers of `deleted`,
@@ -182,8 +190,11 @@ relations:
 - {type: conformsTo, target: design-four-stage-sync-pipeline}
 - {type: conformsTo, target: design-remote-backend-implementation-contract}
 source_paths:
+- src/fs/caching/address-arbitration.ts
+- src/fs/caching/claim-set-assignment.ts
 - src/fs/caching/metadata-cache.ts
 - src/fs/caching/id-delta.ts
+- src/sync/plan-admission-address-contention.ts
 - src/fs/caching/remote-fs.ts
 - src/fs/interface.ts
 - src/sync/plan-executor.ts
