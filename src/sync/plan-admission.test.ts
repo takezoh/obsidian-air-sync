@@ -3469,12 +3469,24 @@ describe("admitBatchObservation", () => {
 });
 
 /**
- * Measurement, not a fix. Question: can the remote-rename identity guard at
- * `identity-component-decision.ts:106-107` — `current.remote.get(report.newPath)
- * ?.identityKey !== report.identityKey` — ever be true on `main`, given that
- * `report.identityKey` may have just been filled by `completeIdentityEvidence`
- * (`identity-evidence.ts:38-44`) out of a map built from the same observations and
- * entries `indexFacts` builds `current.remote` from?
+ * Measurement first, then the removal it authorized. The question was: can the
+ * remote-rename identity guard at `identity-component-decision.ts:106-107` —
+ * `current.remote.get(report.newPath)?.identityKey !== report.identityKey` — ever be
+ * true, given that `report.identityKey` may have just been filled by
+ * `completeIdentityEvidence` out of a map built from the same observations and entries
+ * `indexFacts` builds `current.remote` from?
+ *
+ * The recorded answer was no: on every shape the Observation layer emitted, either the
+ * `newPath` lookup hit and the filled key *was* the map it was compared against, or it
+ * missed and line 106's own `report.identityKey` precondition short-circuited the
+ * comparison. The only shapes that reached `conflicting_identity` were the probe's two
+ * map-keying divergences, where the reason rested on a key no producer supplied.
+ *
+ * On that measurement the destination-address fill was removed. These fixtures now
+ * record its absence: a rename claim whose producer carried no identity reaches
+ * Admission carrying none, and the probe's two divergences — which the fill
+ * manufactured — no longer reach the guard at all. Nothing else about them moved, which
+ * is what "the removal is lossless" looks like when it is written down.
  *
  * Every shape is driven through the production entry only: `captureBatchObservation`
  * → `admitBatchObservation`. `completeIdentityEvidence` is called exactly where
@@ -3500,12 +3512,15 @@ describe("positional identity binding: end-to-end site measurement", () => {
 	type EvidenceFillBranch =
 		| "no_remote_rename_evidence"
 		| "reported_identity_kept"
-		| "filled_from_newPath_lookup"
-		| "newPath_lookup_missed";
+		| "reached_admission_with_no_identity"
+		// No shape reaches this branch any more. It is kept named so that reinstating a
+		// destination-address fill is observable as a branch change rather than silently
+		// satisfying the "no identity" assertion of a fixture whose producer carried none.
+		| "identity_attached_after_the_report";
 	type IdentityGuardBranch =
 		| "not_reached_family_not_reported"
 		| "not_reached_evidence_carries_no_identity"
-		| "passed_current_identity_equals_filled_key"
+		| "passed_current_identity_equals_carried_key"
 		| "failed_conflicting_identity";
 
 	interface ObservedFacts {
@@ -3571,8 +3586,8 @@ describe("positional identity binding: end-to-end site measurement", () => {
 			: reportedRemote.some((claim) => claim.identityKey)
 				? "reported_identity_kept"
 				: admittedRemote.some((claim) => claim.identityKey)
-					? "filled_from_newPath_lookup"
-					: "newPath_lookup_missed";
+					? "identity_attached_after_the_report"
+					: "reached_admission_with_no_identity";
 
 		const keyed = admittedRemote.filter((claim) => claim.identityKey);
 		// Only line 107 returns `conflicting_identity` from inside the report loop:
@@ -3590,7 +3605,7 @@ describe("positional identity binding: end-to-end site measurement", () => {
 				? "not_reached_evidence_carries_no_identity"
 				: failedOnIdentity
 					? "failed_conflicting_identity"
-					: "passed_current_identity_equals_filled_key";
+					: "passed_current_identity_equals_carried_key";
 
 		const directoryAliases = facts.observations.filter((item) =>
 			item.kind === "alias" && item.entity.isDirectory);
@@ -3631,8 +3646,11 @@ describe("positional identity binding: end-to-end site measurement", () => {
 	}
 
 	function remoteRenameReport(oldPath: string, newPath: string, isFolder = false): IdentityEvidence {
-		// `collectRemoteRenameEvidence` builds exactly this: a RenamePair has no id,
-		// so a remote rename claim never carries an identityKey before completion.
+		// Exactly what `collectRemoteRenameEvidence` builds from a pair whose producer
+		// carried no identity — the shape every fixture here uses, so that what these
+		// cases measure is what happens to a claim that arrives with nothing to compare.
+		// A pair that does carry an identity is the cross-source check's witness, not this
+		// measurement's subject.
 		return { kind: "rename", side: "remote", oldPath, newPath, isFolder, authority: "reported" };
 	}
 
@@ -3658,9 +3676,13 @@ describe("positional identity binding: end-to-end site measurement", () => {
 
 		expect(measurement.reportFamily).toBe("reported");
 		expect(measurement.aliasFolder).toBe("consulted_no_directory_alias_candidate");
-		expect(measurement.evidenceFill).toBe("filled_from_newPath_lookup");
-		expect(measurement.identityGuard).toBe("passed_current_identity_equals_filled_key");
-		expect(measurement.admittedRemoteRenameKeys).toEqual(["drive-1"]);
+		// The claim reaches Admission with no identity. `drive-1` is still the current
+		// occupant of `notes/b.md` and is still what the guard would have been handed —
+		// which is why handing it back was never a check. The relation is bound the same
+		// way without it, positionally, and the action is unchanged.
+		expect(measurement.evidenceFill).toBe("reached_admission_with_no_identity");
+		expect(measurement.identityGuard).toBe("not_reached_evidence_carries_no_identity");
+		expect(measurement.admittedRemoteRenameKeys).toEqual([undefined]);
 		expect(measurement.trace).toEqual([
 			"notes/a.md=>notes/a.md", "notes/b.md=>notes/b.md",
 			"notes/a.md=>notes/b.md", "notes/a.md=>notes/b.md",
@@ -3694,15 +3716,18 @@ describe("positional identity binding: end-to-end site measurement", () => {
 			scopePaths: ["doc.md", "old.md"],
 		});
 
-		// The filled key is the *current* occupant's id, not the baseline's, so the
-		// guard compares "drive-2" against "drive-2" and passes even though the
-		// address now holds a different remote object than the record binds.
-		expect(measurement.evidenceFill).toBe("filled_from_newPath_lookup");
-		expect(measurement.admittedRemoteRenameKeys).toEqual(["drive-2"]);
+		// The fill used to supply the *current* occupant's id, so the guard compared
+		// "drive-2" against "drive-2" and passed while the address held a different
+		// remote object than the record binds. The claim now arrives with no identity and
+		// the guard is not reached — and the outcome is the same one, because what
+		// discriminates this shape is `indexFacts` and `bindFiles:420-421`, ahead of the
+		// guard, which is why nothing was lost by dropping the fill.
+		expect(measurement.evidenceFill).toBe("reached_admission_with_no_identity");
+		expect(measurement.admittedRemoteRenameKeys).toEqual([undefined]);
 		expect(baseline.remoteIdentityKey).toBe("drive-1");
 		expect(measurement.reportFamily).toBe("reported");
 		expect(measurement.aliasFolder).toBe("consulted_no_directory_alias_candidate");
-		expect(measurement.identityGuard).toBe("passed_current_identity_equals_filled_key");
+		expect(measurement.identityGuard).toBe("not_reached_evidence_carries_no_identity");
 		expect(measurement.trace).toEqual(["doc.md=>doc.md", "doc.md=>doc.md", "old.md=>doc.md"]);
 		expect(measurement.kind).toBe("authorized");
 		expect(measurement.actions).toEqual(["match"]);
@@ -3729,9 +3754,11 @@ describe("positional identity binding: end-to-end site measurement", () => {
 			scopePaths: ["stale.md", "fresh.md"],
 		});
 
-		// The lookup runs and misses, so the claim stays unkeyed and line 106's
-		// `report.identityKey` guard condition is never evaluated.
-		expect(measurement.evidenceFill).toBe("newPath_lookup_missed");
+		// Nothing is looked up and nothing is attached, so the claim stays unkeyed and
+		// line 106's `report.identityKey` precondition is never satisfied. This shape read
+		// the same on the pre-removal measurement, where the lookup ran and missed: it is
+		// the one fixture whose observable outcome the fill never touched.
+		expect(measurement.evidenceFill).toBe("reached_admission_with_no_identity");
 		expect(measurement.admittedRemoteRenameKeys).toEqual([undefined]);
 		expect(measurement.reportFamily).toBe("reported");
 		expect(measurement.aliasFolder).toBe("consulted_no_directory_alias_candidate");
@@ -3793,13 +3820,18 @@ describe("positional identity binding: end-to-end site measurement", () => {
 		expect(measurement.actions).toEqual(["rename_remote"]);
 	});
 
-	it("probe: the guard fails only where the completion map and current.remote key differently", () => {
+	it("probe: the two map-keying divergences no longer reach the guard at all", () => {
 		const localDoc = entity("doc.md");
 		const baseline = recordFor(entity("doc.md", "drive-1"));
 
+		// The boundary this case pins is a claim about a population, not about
+		// impossibility, so both divergences are constructed exactly as they were. Both
+		// still exist in the code: the completion map and `current.remote` still key one
+		// entity differently. Only the route from that difference to a failure is gone.
+		//
 		// Divergence A — an entry addressed at one path carrying a remote endpoint
 		// resolved at another. `completeIdentityEvidence` keys the entry's identity by
-		// `entry.path` (identity-evidence.ts:39); `indexFacts` keys it by
+		// `entry.path` (identity-evidence.ts:57); `indexFacts` keys it by
 		// `entry.remote.path` (identity-component-decision.ts:349 via insert()).
 		const elsewhere = entity("elsewhere.md", "drive-2");
 		const byEntryAddress = measure({
@@ -3815,20 +3847,30 @@ describe("positional identity binding: end-to-end site measurement", () => {
 
 		expect(byEntryAddress.reportFamily).toBe("reported");
 		expect(byEntryAddress.aliasFolder).toBe("consulted_no_directory_alias_candidate");
-		expect(byEntryAddress.evidenceFill).toBe("filled_from_newPath_lookup");
-		expect(byEntryAddress.admittedRemoteRenameKeys).toEqual(["drive-2"]);
-		expect(byEntryAddress.identityGuard).toBe("failed_conflicting_identity");
+		// The divergence is still here — the completion map still keys this entry by
+		// `entry.path` while `indexFacts` keys it by `entry.remote.path`. What is gone is
+		// the claim that used to pick the difference up: nothing writes `drive-2` onto the
+		// report, so the guard is not reached and the `conflicting_identity` it produced
+		// was a failure the enrichment manufactured, not one any fact supported.
+		expect(byEntryAddress.evidenceFill).toBe("reached_admission_with_no_identity");
+		expect(byEntryAddress.admittedRemoteRenameKeys).toEqual([undefined]);
+		expect(byEntryAddress.identityGuard).toBe("not_reached_evidence_carries_no_identity");
+		// The component is still not admitted and still produces no action. It now runs
+		// past the report loop — the trace's fourth entry is `bindFiles`' own compatibility
+		// check — and stops on the facts instead: nothing observed accounts for the
+		// baseline's remote endpoint, so materialization returns `unknown_observation`.
 		expect(byEntryAddress.kind).toBe("failed");
-		expect(byEntryAddress.reasons).toEqual(["conflicting_identity"]);
+		expect(byEntryAddress.reasons).toEqual(["unknown_observation"]);
 		expect(byEntryAddress.actions).toEqual([]);
 		expect(byEntryAddress.trace).toEqual([
-			"doc.md=>doc.md", "doc.md=>elsewhere.md", "old.md=>doc.md",
+			"doc.md=>doc.md", "doc.md=>elsewhere.md", "old.md=>doc.md", "doc.md=>doc.md",
 		]);
 
 		// Divergence B — two remote observations at one address: the keyed one carries
 		// no hash, so insert() keeps the hashed, unkeyed prior
 		// (identity-component-decision.ts:329) while the completion map takes the last
-		// keyed writer (identity-evidence.ts:36).
+		// keyed writer (identity-evidence.ts:54). That map now feeds only the occurrence
+		// index, so the disagreement has nowhere to surface as a rename identity.
 		const hashedUnkeyed = entity("doc.md");
 		const keyedUnhashed = { ...entity("doc.md", "drive-2"), hash: "" };
 		const byInsertPreference = measure({
@@ -3844,11 +3886,18 @@ describe("positional identity binding: end-to-end site measurement", () => {
 			scopePaths: ["doc.md", "old.md"],
 		});
 
-		expect(byInsertPreference.evidenceFill).toBe("filled_from_newPath_lookup");
-		expect(byInsertPreference.admittedRemoteRenameKeys).toEqual(["drive-2"]);
-		expect(byInsertPreference.identityGuard).toBe("failed_conflicting_identity");
+		expect(byInsertPreference.evidenceFill).toBe("reached_admission_with_no_identity");
+		expect(byInsertPreference.admittedRemoteRenameKeys).toEqual([undefined]);
+		expect(byInsertPreference.identityGuard).toBe("not_reached_evidence_carries_no_identity");
+		// As in divergence A: still not admitted, still no action, but now carried past the
+		// report loop into `bindFiles` (the third trace entry) and stopped on the facts —
+		// the baseline's identity has no current remote occurrence and its address is not
+		// observed absent — rather than by a guard comparing a key the report never carried.
 		expect(byInsertPreference.kind).toBe("failed");
-		expect(byInsertPreference.reasons).toEqual(["conflicting_identity"]);
-		expect(byInsertPreference.trace).toEqual(["doc.md=>doc.md", "old.md=>doc.md"]);
+		expect(byInsertPreference.reasons).toEqual(["unknown_observation"]);
+		expect(byInsertPreference.actions).toEqual([]);
+		expect(byInsertPreference.trace).toEqual([
+			"doc.md=>doc.md", "old.md=>doc.md", "doc.md=>doc.md",
+		]);
 	});
 });
