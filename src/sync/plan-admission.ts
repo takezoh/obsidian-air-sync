@@ -87,10 +87,16 @@ function authorizeComponents(
 	conflictStrategy: ConflictStrategy,
 	contention: AddressContentionFacts,
 ): AdmissionResult {
+	// Decided before the components, not after: the owner's rule for a contended address
+	// is "sync the object whose id matches the SyncRecord, rename the one that does not",
+	// so which object an address syncs is an input to every ordinary decision at that
+	// address — not a repair appended once they have all been made.
+	const remediation = planAddressContentionRemediation(contention);
 	const dispositions: AdmissionDisposition[] = [];
 	for (const observedComponent of components) {
 		const decision = decideIdentityComponent(
 			observedComponent, snapshot.scope, snapshot.baselinePaths, conflictStrategy,
+			remediation.unresolvedAddresses,
 		);
 		const decidedComponent = decision.component;
 		const shared = {
@@ -120,7 +126,6 @@ function authorizeComponents(
 	// a case-alias parent transition is: one existing-vocabulary `rename_remote` per
 	// contended address, in its own single-path component, with no evidence to carry
 	// and no record to publish.
-	const remediation = planAddressContentionRemediation(contention);
 	for (const action of remediation.actions) {
 		dispositions.push({ kind: "authorized", paths: [action.path], actions: [action], evidence: [] });
 	}

@@ -298,7 +298,19 @@ current-cycle facts rather than from a local rename, and it adds no `SyncActionT
   unique `path` index, so at most one record stands at an address and at most one claimant can
   hold one; the choice is a function of the unordered claim set plus committed state and is
   identical under COLD, WARM and HOT. This is what stops a file the user has been syncing for
-  months from being renamed to make room for a newly appeared duplicate.
+  months from being renamed to make room for a newly appeared duplicate. It is the *sole*
+  decider for the address: the cache's arbiter settles who occupies the working view, which is
+  a mechanism that cannot read sync state, and where the two answers differ this one holds.
+- **The address is withheld** whenever the keeper is not the claimant the cache seated. The
+  rule is "sync the object whose id matches the `SyncRecord`, rename the one that does not" —
+  two obligations. The object that should sync the address was dropped from the working view to
+  seat the other, so it is not observable this cycle; acting on the seated claimant instead
+  would sync the wrong object at the keeper's address *and* publish a record naming an object
+  the same plan is moving away. Admission therefore binds the address as `present_unresolved`
+  in `indexFacts` — something is there, and which object it denotes cannot be resolved from
+  these facts. It resolves with no special case next cycle, once the repair has vacated it.
+  Independent of the rename capability: a backend that cannot repair the namespace still must
+  not sync the wrong object there.
 - **The target** is `insertConflictSuffix(path, "id-" + <the renamed claimant's stable id>)` —
   the object's own identity, so the rename is idempotent across retries, needs no content
   fetch, and is meaningful for a folder. `i` is not a hex digit, so it can never match

@@ -1,4 +1,4 @@
-/* eslint max-lines: ["error", 800] -- relation abandonment, exact-path binding, preservation-cover authorization, and Prefer-local eligibility must stay under the sole identity-policy owner. Re-pinned from 785 for the two corrected publication expectations: a replacement continues no row, so the incumbent it names is the occupant of the claimed address and nothing else. Re-pinned from 789 for the rename guard's cross-source note, which follows the loop rather than preceding it so the guard keeps the line addresses this change's contracts cite; this directive counts comments. */
+/* eslint max-lines: ["error", 815] -- relation abandonment, exact-path binding, preservation-cover authorization, and Prefer-local eligibility must stay under the sole identity-policy owner. Re-pinned from 785 for the two corrected publication expectations: a replacement continues no row, so the incumbent it names is the occupant of the claimed address and nothing else. Re-pinned from 789 for the rename guard's cross-source note, which follows the loop rather than preceding it so the guard keeps the line addresses this change's contracts cite; this directive counts comments. Re-pinned from 800 for the contended-address precondition: which provider object an address denotes is current topology, bound here with the endpoint and record facts below rather than filtered out of the result afterwards, so every rule reads one `CurrentFacts` and no caller can re-decide an address this owner already refused. */
 import type { FileEntity } from "../fs/types";
 import type { IdentityComponent } from "./plan-admission-graph";
 import { selectReportFamily } from "./identity-component-report-family";
@@ -79,11 +79,12 @@ export function decideIdentityComponent(
 	scope: ScopeProjection,
 	baselinePaths?: ReadonlySet<string>,
 	conflictStrategy: ConflictStrategy = "auto_merge",
+	unresolvedAddresses?: ReadonlySet<string>,
 ): IdentityComponentDecision {
 	const fail = (reason: AdmissionFailureReason): IdentityComponentDecision => ({
 		component: { ...component, actions: [] }, reasons: [reason],
 	});
-	const current = indexFacts(component, scope);
+	const current = indexFacts(component, scope, unresolvedAddresses);
 	if (typeof current === "string") return fail(current);
 	for (const path of component.paths) {
 		if (baselinePaths?.has(path) && !current.records.has(path)) return fail("unknown_observation");
@@ -326,7 +327,19 @@ function compareUtf8(left: string, right: string): number {
 	return a.length - b.length;
 }
 
-function indexFacts(component: IdentityComponent, scope: ScopeProjection): CurrentFacts | AdmissionFailureReason {
+function indexFacts(
+	component: IdentityComponent,
+	scope: ScopeProjection,
+	unresolvedAddresses?: ReadonlySet<string>,
+): CurrentFacts | AdmissionFailureReason {
+	// Two live provider objects claim this address and the one it belongs to — the one
+	// the committed record names — is not the one the cache seated, so it is not in this
+	// cycle's view at all. Something IS there, and which object the address denotes
+	// cannot be resolved from these facts: `present_unresolved`, not an absence and not
+	// the seated claimant. It resolves without a special case once the repair lands.
+	for (const path of component.paths) {
+		if (unresolvedAddresses?.has(path)) return "present_unresolved";
+	}
 	const local = new Map<string, FileEntity>();
 	const remote = new Map<string, FileEntity>();
 	const records = new Map<string, SyncRecord>();
