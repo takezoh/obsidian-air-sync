@@ -128,9 +128,11 @@ export async function commitAction(
 			(source !== undefined && source.path !== path);
 		if (compound && proof?.action !== action) throw new Error(`Terminal publication proof missing: ${path}`);
 		const record = buildSyncRecord(localEntity, remoteEntity, path);
-		const committed = source && source.path !== path
-			? await stateStore.compareAndMove(source, record, destination)
-			: await stateStore.compareAndPut(destination, record);
+		// The two captured expectations are already separate facts: `source` is the row
+		// this publication continues and `destination` whatever holds the claimed
+		// address. A relocation of one row and a replacement of another are the same
+		// call; which one it is follows from the identities, not from a second method.
+		const committed = await stateStore.compareAndPut(source, record, destination);
 		if (!committed) throw new Error(`SyncRecord changed before terminal publication: ${path}`);
 		await maybeStoreMergeBase(ctx, record, localEntity,
 			proof?.action === action ? proof.intendedContent : undefined);

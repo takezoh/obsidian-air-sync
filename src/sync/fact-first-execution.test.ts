@@ -114,7 +114,7 @@ describe("fact-first Admission through terminal publication", () => {
 		addFile(remoteFs, "f.md", base, 1000).identityKey = "X";
 		const baseline = buildSyncRecord((await localFs.stat("f.md"))!, (await remoteFs.stat("f.md"))!, "f.md");
 		await stateStore.put(baseline);
-		stateStore.contents.set("f.md", new TextEncoder().encode(base).buffer);
+		stateStore.contents.set(baseline.remoteIdentityKey, new TextEncoder().encode(base).buffer);
 		addFile(localFs, "f.md", "one\nLOCAL\nthree\nfour\nfive\n", 2000);
 		addFile(remoteFs, "f.md", "one\ntwo\nthree\nfour\nREMOTE\n", 2000).identityKey = "X";
 		const observe = async () => admitBatchObservation(captureBatchObservation([{
@@ -279,7 +279,7 @@ describe("fact-first Admission through terminal publication", () => {
 			["B.md", target === "equal" ? "rename_remote" : "conflict"], ["A.md", "push"],
 		]);
 		const context = { localFs, remoteFs, committer: { stateStore } };
-		const publish = vi.spyOn(stateStore, "compareAndMove");
+		const publish = vi.spyOn(stateStore, "compareAndPut");
 		if (cut === "publication") publish.mockResolvedValueOnce(false);
 		const write = remoteFs.write.bind(remoteFs);
 		remoteFs.write = async (path, content, mtime) => {
@@ -399,9 +399,9 @@ describe("fact-first Admission through terminal publication", () => {
 			if (cut === "move" && from === ".A/y.md") throw new Error("interrupted move");
 			await rename(from, to);
 		});
-		const compareAndMove = stateStore.compareAndMove.bind(stateStore);
-		const publication = vi.spyOn(stateStore, "compareAndMove");
-		if (cut === "publication") publication.mockImplementationOnce(compareAndMove).mockResolvedValueOnce(false);
+		const compareAndPut = stateStore.compareAndPut.bind(stateStore);
+		const publication = vi.spyOn(stateStore, "compareAndPut");
+		if (cut === "publication") publication.mockImplementationOnce(compareAndPut).mockResolvedValueOnce(false);
 		const first = await observe();
 		expect(first.failures).toEqual([]);
 		expect(first.executable.actions.map(({ action, path }) => [action, path])).toEqual([
@@ -414,7 +414,7 @@ describe("fact-first Admission through terminal publication", () => {
 		expect(await stateStore.get(".A/x.md")).toBeUndefined();
 		expect(await stateStore.get("B/x.md")).toMatchObject({ remoteIdentityKey: "x" });
 		moves.mockImplementation(rename);
-		publication.mockImplementation(compareAndMove);
+		publication.mockImplementation(compareAndPut);
 		const next = await observe();
 		expect(next.failures).toEqual([]);
 		expect(next.executable.actions.map(({ action }) => action)).toEqual(
@@ -668,7 +668,7 @@ describe("fact-first Admission through terminal publication", () => {
 			confirmMockPath(fixture.remoteFs, result.path);
 			return result;
 		};
-		vi.spyOn(fixture.stateStore, "compareAndMove").mockResolvedValueOnce(false);
+		vi.spyOn(fixture.stateStore, "compareAndPut").mockResolvedValueOnce(false);
 		const started: string[] = [];
 		const first = await fixture.execute({ beginAction: (action) => { started.push(action.path); return "run"; } });
 		expect(first.failed).toHaveLength(1);
@@ -724,7 +724,7 @@ describe("fact-first Admission through terminal publication", () => {
 
 	it("re-observes a successful move with failed record publication without recovery state", async () => {
 		const fixture = await renamedFixture();
-		const compareAndMove = vi.spyOn(fixture.stateStore, "compareAndMove").mockResolvedValueOnce(false);
+		const compareAndPut = vi.spyOn(fixture.stateStore, "compareAndPut").mockResolvedValueOnce(false);
 		const rename = vi.spyOn(fixture.localFs, "rename");
 		const first = await fixture.execute();
 		expect(first.succeeded).toEqual([]);
@@ -739,7 +739,7 @@ describe("fact-first Admission through terminal publication", () => {
 		expect(second.failed).toEqual([]);
 		expect(second.blocked).toEqual([]);
 		expect(second.succeeded).toHaveLength(1);
-		expect(compareAndMove).toHaveBeenCalledTimes(2);
+		expect(compareAndPut).toHaveBeenCalledTimes(2);
 		expect(rename).toHaveBeenCalledOnce();
 		expect(await fixture.stateStore.get("A.md")).toBeUndefined();
 		expect((await fixture.observe()).executable.actions).toEqual([]);

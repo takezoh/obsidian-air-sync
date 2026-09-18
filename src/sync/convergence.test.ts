@@ -439,13 +439,14 @@ describe("sync converges to a fixed point", () => {
 		};
 		const compareAndPut = env.stateStore.compareAndPut.bind(env.stateStore);
 		let rejectedPath: string | undefined;
-		const compareSpy = vi.spyOn(env.stateStore, "compareAndPut").mockImplementation((expected, record) => {
-			if (!rejectedPath && candidatePaths.includes(record.path)) {
-				rejectedPath = record.path;
-				return Promise.resolve(false);
-			}
-			return compareAndPut(expected, record);
-		});
+		const compareSpy = vi.spyOn(env.stateStore, "compareAndPut")
+			.mockImplementation((expectedRow, record, expectedOccupant) => {
+				if (!rejectedPath && candidatePaths.includes(record.path)) {
+					rejectedPath = record.path;
+					return Promise.resolve(false);
+				}
+				return compareAndPut(expectedRow, record, expectedOccupant);
+			});
 
 		const first = await executeCold();
 		expect(first.result.failed).toHaveLength(1);

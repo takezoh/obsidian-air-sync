@@ -812,10 +812,11 @@ describe("executePlan", () => {
 			addFile(remoteFs, "permit.md", "x");
 			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
 			const compareAndPut = stateStore.compareAndPut.bind(stateStore);
-			const put = vi.spyOn(stateStore, "compareAndPut").mockImplementation((expected, record) => {
-				expect(released).toBe(false);
-				return compareAndPut(expected, record);
-			});
+			const put = vi.spyOn(stateStore, "compareAndPut")
+				.mockImplementation((expectedRow, record, expectedOccupant) => {
+					expect(released).toBe(false);
+					return compareAndPut(expectedRow, record, expectedOccupant);
+				});
 
 			const result = await executePlan(makePlan([{
 				path: "permit.md", action: "pull",
@@ -1098,7 +1099,7 @@ describe("executePlan", () => {
 					});
 					vi.spyOn(remoteFs, "read").mockRejectedValue(new Error("verify failed"));
 				} else {
-					vi.spyOn(stateStore, "compareAndMove").mockRejectedValue(new Error("commit failed"));
+					vi.spyOn(stateStore, "compareAndPut").mockRejectedValue(new Error("commit failed"));
 				}
 
 				const result = await executePlan(makePlan([action]), ctx);

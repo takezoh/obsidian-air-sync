@@ -1052,7 +1052,7 @@ describe("SyncOrchestrator", () => {
 				localSize: base.length, remoteSize: base.length,
 				remoteIdentityKey: "R", syncedAt: 900,
 			});
-			await orchestrator.state.putContent("old.md", baseBytes);
+			await orchestrator.state.putContent("R", baseBytes);
 
 			await orchestrator.runSync();
 

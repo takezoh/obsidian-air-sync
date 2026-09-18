@@ -104,7 +104,7 @@ describe("resolveConflict", () => {
 			const remote = addFile(remoteFs, "old.md", "remote changed", 1500);
 
 			const result = await resolveConflict({
-				path: "new.md", localPath: "new.md", remotePath: "old.md", baselinePath: "old.md",
+				path: "new.md", localPath: "new.md", remotePath: "old.md",
 				localFs, remoteFs, local, remote,
 			}, DUPLICATE_POLICY);
 
@@ -125,7 +125,7 @@ describe("resolveConflict", () => {
 
 			const result = await resolveConflict({
 				path: "new.md", localPath: "new.md", remotePath: "old.md",
-				remoteIdentitySource: source, additionalRemote: remote, baselinePath: "old.md",
+				remoteIdentitySource: source, additionalRemote: remote,
 				localFs, remoteFs, local, remote: source,
 			}, DUPLICATE_POLICY);
 
@@ -203,7 +203,7 @@ describe("resolveConflict", () => {
 
 			const prepared = await prepareConflict({
 				path: "new.md", localPath: "new.md", remotePath: "old.md",
-				remoteIdentitySource: source, baselinePath: "old.md",
+				remoteIdentitySource: source,
 				localFs, remoteFs, local, remote: source,
 			});
 
@@ -378,7 +378,7 @@ describe("resolveConflict", () => {
 			const occupant = addFile(remoteFs, "new.md", "foreign Y", 1400);
 			occupant.identityKey = "Y";
 			const stateStore = createMockStateStore();
-			stateStore.contents.set("old.md", new TextEncoder().encode(base).buffer.slice(0));
+			stateStore.contents.set("R", new TextEncoder().encode(base).buffer.slice(0));
 			const baseline: SyncRecord = {
 				path: "old.md", hash: "", localMtime: 1000, remoteMtime: 1000,
 				localSize: base.length, remoteSize: base.length,
@@ -386,7 +386,7 @@ describe("resolveConflict", () => {
 			};
 
 			const result = await resolveConflict({
-				path: "new.md", localPath: "new.md", remotePath: "old.md", baselinePath: "old.md",
+				path: "new.md", localPath: "new.md", remotePath: "old.md",
 				remoteIdentitySource: source, additionalRemote: occupant,
 				localFs, remoteFs, local, remote: source, baseline, stateStore,
 			}, AUTO_MERGE_POLICY);
@@ -410,7 +410,7 @@ describe("resolveConflict", () => {
 			const local = addFile(localFs, "new.md", localText, 2000);
 			const remote = addFile(remoteFs, "old.md", remoteText, 2000);
 			const stateStore = createMockStateStore();
-			stateStore.contents.set("old.md", new TextEncoder().encode(base).buffer.slice(0));
+			stateStore.contents.set("id:old.md", new TextEncoder().encode(base).buffer.slice(0));
 			const baseline: SyncRecord = {
 				path: "old.md", hash: "", localMtime: 1000, remoteMtime: 1000,
 				localSize: base.length, remoteSize: base.length,
@@ -418,7 +418,7 @@ describe("resolveConflict", () => {
 			};
 
 			const result = await resolveConflict({
-				path: "new.md", localPath: "new.md", remotePath: "old.md", baselinePath: "old.md",
+				path: "new.md", localPath: "new.md", remotePath: "old.md",
 				localFs, remoteFs, local, remote, baseline, stateStore,
 			}, AUTO_MERGE_POLICY);
 
@@ -439,7 +439,7 @@ describe("resolveConflict", () => {
 
 			const stateStore = createMockStateStore();
 			stateStore.contents.set(
-				"file.md",
+				"id:file.md",
 				new TextEncoder().encode(base).buffer.slice(0),
 			);
 
@@ -481,7 +481,7 @@ describe("resolveConflict", () => {
 
 			const stateStore = createMockStateStore();
 			stateStore.contents.set(
-				"file.md",
+				"id:file.md",
 				new TextEncoder().encode(base).buffer.slice(0),
 			);
 
@@ -564,7 +564,7 @@ describe("resolveConflict", () => {
 
 			const stateStore = createMockStateStore();
 			stateStore.contents.set(
-				"image.png",
+				"id:image.png",
 				new TextEncoder().encode("base").buffer.slice(0),
 			);
 

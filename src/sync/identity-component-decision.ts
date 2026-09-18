@@ -1,4 +1,4 @@
-/* eslint max-lines: ["error", 785] -- relation abandonment, exact-path binding, preservation-cover authorization, and Prefer-local eligibility must stay under the sole identity-policy owner. */
+/* eslint max-lines: ["error", 789] -- relation abandonment, exact-path binding, preservation-cover authorization, and Prefer-local eligibility must stay under the sole identity-policy owner. Re-pinned from 785 for the two corrected publication expectations: a replacement continues no row, so the incumbent it names is the occupant of the claimed address and nothing else. */
 import type { FileEntity } from "../fs/types";
 import type { IdentityComponent } from "./plan-admission-graph";
 import { selectReportFamily } from "./identity-component-report-family";
@@ -503,10 +503,13 @@ function bindFiles(facts: CurrentFacts, reports: readonly RenameEvidence[]): Fil
 		const expected = relocated.has(path) ? undefined : baseline;
 		const releasedRemote = !remote && claimedRemote.has(path) &&
 			bound.some((file) => file.kind === "structural" && file.binding.move?.side === "remote" && file.binding.move.from === path);
+		const replacement = relocated.has(path) || (!!baseline?.remoteIdentityKey && !!remote?.identityKey &&
+			baseline.remoteIdentityKey !== remote.identityKey);
 		bound.push({ kind: "structural", binding: { path, local, remote, baseline: releasedRemote ? undefined : baseline, releasedRemote,
-			publication: { source: expected, destination: expected },
-			replacement: relocated.has(path) || (!!baseline?.remoteIdentityKey && !!remote?.identityKey &&
-				baseline.remoteIdentityKey !== remote.identityKey) } });
+			// A replacement continues no row: the incumbent is only the occupant of the
+			// claimed address, never also the row this publication carries forward.
+			publication: { source: replacement ? undefined : expected, destination: expected },
+			replacement } });
 	}
 	return bound;
 }
@@ -542,11 +545,14 @@ function materializeExactPath(
 	const expected = facts.records.get(path);
 	const comparisonBaseline = capability.kind === "preserve_present_side" && (!local || !remote)
 		? undefined : expected;
+	const replacement = !!expected?.remoteIdentityKey && !!remote?.identityKey &&
+		expected.remoteIdentityKey !== remote.identityKey;
 	const binding: BoundFile = {
 		path, local, remote, baseline: comparisonBaseline,
-		publication: { source: expected, destination: expected },
-		replacement: !!expected?.remoteIdentityKey && !!remote?.identityKey &&
-			expected.remoteIdentityKey !== remote.identityKey,
+		// A replacement continues no row: the incumbent is only the occupant of the
+		// claimed address, never also the row this publication carries forward.
+		publication: { source: replacement ? undefined : expected, destination: expected },
+		replacement,
 	};
 	return materializeFile(binding, facts, conflictStrategy, allowPreferLocalWin);
 }

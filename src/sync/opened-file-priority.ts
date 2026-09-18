@@ -58,7 +58,10 @@ export async function syncOpenedFilePriority(
 
 		if (!hasRemoteChanged(observed.entity, expectedRecord)) {
 			const currentRecord = buildSyncRecord(localBefore, observed.entity, ctx.path);
-			if (!await ctx.stateStore.compareAndPut(expectedRecord, currentRecord)) {
+			// The captured row is both the correspondence this attempt continues and the
+			// occupant of its address; a remote identity that moved under it fails the
+			// first comparison and defers to the batch rather than replacing anything.
+			if (!await ctx.stateStore.compareAndPut(expectedRecord, currentRecord, expectedRecord)) {
 				invalidateTarget(ctx);
 				return "deferred_to_batch";
 			}
@@ -90,7 +93,7 @@ export async function syncOpenedFilePriority(
 			let nextRecord: SyncRecord | undefined;
 			try {
 				nextRecord = buildSyncRecord(localEntity, observed.entity, ctx.path);
-				if (!await ctx.stateStore.compareAndPut(expectedRecord, nextRecord)) nextRecord = undefined;
+				if (!await ctx.stateStore.compareAndPut(expectedRecord, nextRecord, expectedRecord)) nextRecord = undefined;
 			} catch (error) {
 				nextRecord = undefined;
 				ctx.logger?.warn("file-open priority baseline commit failed", {

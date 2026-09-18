@@ -190,8 +190,12 @@ describe("commitAction", () => {
 
 		await commitAction(withPublication({ path: "cas.md", action: "pull", baseline }), local, remote, makeCtx());
 
-		expect(compareAndPut).toHaveBeenCalledWith(baseline, expect.objectContaining({ path: "cas.md" }));
-		expect(compareAndPut.mock.calls[0]).toHaveLength(2);
+		// Both expectations are passed explicitly: the row this publication continues and
+		// the occupant of its address are separate arguments, neither defaulted.
+		expect(compareAndPut).toHaveBeenCalledWith(
+			baseline, expect.objectContaining({ path: "cas.md" }), baseline,
+		);
+		expect(compareAndPut.mock.calls[0]).toHaveLength(3);
 	});
 
 	it("content CAS mismatch preserves the winning record and fails the action", async () => {
@@ -224,12 +228,12 @@ describe("commitAction", () => {
 		const action: SyncAction = { path: "new.md", action: "match", baseline,
 			publication: { source: baseline, destination: undefined } };
 		const local = makeFile("new.md", "new", 2).entity;
-		const compareAndMove = vi.spyOn(stateStore, "compareAndMove");
+		const compareAndPut = vi.spyOn(stateStore, "compareAndPut");
 		await expect(commitAction(action, local, local, makeCtx()))
 			.rejects.toThrow("Terminal publication proof missing");
 		await expect(commitAction(action, local, local, makeCtx(), proofFor({ ...action })))
 			.rejects.toThrow("Terminal publication proof missing");
-		expect(compareAndMove).not.toHaveBeenCalled();
+		expect(compareAndPut).not.toHaveBeenCalled();
 		expect(stateStore.records.get("old.md")).toEqual(baseline);
 	});
 
@@ -291,7 +295,7 @@ describe("commitAction", () => {
 		expect(stateStore.records.get("new.md")!.remoteMtime).toBe(2000);
 	});
 
-	it("rename_remote with enableThreeWayMerge: stores content at new path", async () => {
+	it("rename_remote with enableThreeWayMerge: stores content under the terminal identity", async () => {
 		const buf = new TextEncoder().encode("content").buffer;
 		const localEntry = makeFile("new.md", "content", 1000);
 		localEntry.entity.hash = await sha256(buf);
@@ -302,7 +306,7 @@ describe("commitAction", () => {
 
 		await commitAction(withPublication(action), localEntry.entity, remote, makeCtx(true), proofFor(action));
 
-		expect(stateStore.contents.has("new.md")).toBe(true);
+		expect(stateStore.contents.has("id:new.md")).toBe(true);
 	});
 
 	it("cleanup: deletes SyncRecord", async () => {
@@ -330,7 +334,7 @@ describe("commitAction", () => {
 
 		await commitAction(withPublication(action), localEntry.entity, remote, makeCtx(true));
 
-		expect(stateStore.contents.has("h.md")).toBe(true);
+		expect(stateStore.contents.has("id:h.md")).toBe(true);
 	});
 
 	it("does not attach bytes edited after publication to the committed merge base", async () => {
@@ -343,7 +347,7 @@ describe("commitAction", () => {
 		await commitAction(withPublication({ path: "a.md", action: "push" }), local, remote, makeCtx(true));
 
 		expect(stateStore.records.get("a.md")?.hash).toBe(local.hash);
-		expect(stateStore.contents.has("a.md")).toBe(false);
+		expect(stateStore.contents.has("remote-a")).toBe(false);
 	});
 
 	it("stores the proved transfer bytes when a completed push source was renamed", async () => {
@@ -359,7 +363,7 @@ describe("commitAction", () => {
 			logger: { warn } as unknown as Logger,
 		}, { action, intendedContent: bytes, verifiedOutputs: [] } as unknown as TerminalActionProof);
 
-		expect(new Uint8Array(stateStore.contents.get("old.md")!)).toEqual(new Uint8Array(bytes));
+		expect(new Uint8Array(stateStore.contents.get("remote-old")!)).toEqual(new Uint8Array(bytes));
 		expect(warn).not.toHaveBeenCalled();
 	});
 
@@ -367,7 +371,7 @@ describe("commitAction", () => {
 		const entry = makeFile("a.md", "bytes", 1000);
 		localFs.files.set("a.md", entry);
 		await commitAction(withPublication({ path: "a.md", action: "match" }), entry.entity, entry.entity, makeCtx(true));
-		expect(stateStore.contents.has("a.md")).toBe(false);
+		expect(stateStore.contents.has("id:a.md")).toBe(false);
 	});
 
 	it("push with enableThreeWayMerge: logs warning and still upserts record when localFs.read throws", async () => {
@@ -391,7 +395,7 @@ describe("commitAction", () => {
 		});
 
 		expect(stateStore.records.has("h.md")).toBe(true);
-		expect(stateStore.contents.has("h.md")).toBe(false);
+		expect(stateStore.contents.has("id:h.md")).toBe(false);
 		expect(warnSpy).toHaveBeenCalledWith(
 			"Failed to store content for 3-way merge",
 			expect.objectContaining({ path: "h.md", error: "read failed" }),
@@ -408,7 +412,7 @@ describe("commitAction", () => {
 
 		await commitAction(withPublication(action), localEntry.entity, remote, makeCtx(true));
 
-		expect(stateStore.contents.has("image.png")).toBe(false);
+		expect(stateStore.contents.has("id:image.png")).toBe(false);
 	});
 
 	it("rename_remote with isFolder: atomically compares and rewrites all descendant records", async () => {

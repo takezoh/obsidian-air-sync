@@ -791,7 +791,6 @@ async function executeConflictAction(
 			remoteIdentitySource: action.remoteIdentitySource,
 			additionalRemote: action.additionalRemote,
 			additionalLocal: action.additionalLocal,
-			baselinePath: action.baseline?.path,
 		};
 
 		// No in-cycle retry: conflict resolution (the `duplicate` strategy) is NOT
