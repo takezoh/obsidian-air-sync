@@ -1,4 +1,5 @@
 import type { IFileSystem } from "../fs/interface";
+import type { AddressDisplacement } from "../fs/caching/claim-set-assignment";
 import type { FileEntity } from "../fs/types";
 import type { CandidateFact, IdentityEvidence, MixedEntity, PathObservation, SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
@@ -47,6 +48,12 @@ export interface ChangeDetectorDeps {
 	stateStore: SyncStateStore;
 	changes: TrackerSnapshot;
 	onRemoteIdentityEvidence?: (evidence: readonly IdentityEvidence[]) => void;
+	/**
+	 * The addresses this cycle's remote delta found claimed by two live ids. A
+	 * sibling of `onRemoteIdentityEvidence`: the facts travel to the caller without
+	 * `ChangeSet` acquiring a field, because they are not a change at any path.
+	 */
+	onRemoteContention?: (contended: readonly AddressDisplacement[]) => void;
 }
 
 export interface CollectChangesOptions {
@@ -77,7 +84,8 @@ export async function collectChanges(
 	// Determine temperature
 	if (!opts.forceFullScan && changes.initialized && changes.dirtyPaths.size > 0 &&
 		changes.folderRenamePairs.size === 0) {
-		const remoteChanges = await getRemoteChanges(deps.remoteFs, deps.onRemoteIdentityEvidence);
+		const remoteChanges = await getRemoteChanges(
+			deps.remoteFs, deps.onRemoteIdentityEvidence, deps.onRemoteContention);
 		if (hasFolderRename(remoteChanges)) {
 			changeSet = await collectCold(
 				deps,
@@ -219,7 +227,8 @@ async function collectWarm(
 
 	const [localFiles, remoteChanges] = await Promise.all([
 		localFs.list(),
-		prefetchedRemoteChanges ?? getRemoteChanges(remoteFs, deps.onRemoteIdentityEvidence),
+		prefetchedRemoteChanges ??
+			getRemoteChanges(remoteFs, deps.onRemoteIdentityEvidence, deps.onRemoteContention),
 	]);
 	if (hasFolderRename(remoteChanges)) {
 		return collectCold(

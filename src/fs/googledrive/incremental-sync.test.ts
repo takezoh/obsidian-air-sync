@@ -99,6 +99,9 @@ describe("applyIncrementalChanges", () => {
 			needsFullScan: false,
 			changedPaths: new Set(["/test.txt"]),
 			renamedPaths: [],
+			// The drain now declares its contention facts on every page, including
+			// the uncontended case, so the caller never has to infer their absence.
+			contended: [],
 		});
 		expect(loggerInfo).toHaveBeenCalledWith("Incremental changes applied", {
 			changeCount: 1,
@@ -568,5 +571,21 @@ describe("applyIncrementalChanges — entered-folder re-listing", () => {
 		expect(result.renamedPaths[0]?.identityKey).toBe("c");
 		expect(cache.hasFile("C.md")).toBe(false);
 		expect(cache.hasFile("F/C.md")).toBe(true);
+	});
+
+	it("carries the drain's standing contentions to the caller", async () => {
+		// The delta route is the only route on which a user actually meets this: a
+		// second same-named sibling created on drive.google.com. Without this carrier
+		// the contention is announced nowhere, so an absence it caused would read as a
+		// provider deletion and no repair could ever be planned.
+		seed(gdFile("A1", "Test.md", "root"));
+		stagePages([upsert(gdFile("B2", "Test.md", "root"))]);
+
+		const result = await drain();
+
+		expect(result.contended).toEqual([{
+			path: "Test.md", admittedId: "A1", withheldId: "B2",
+			displacedPaths: [], reason: "lowest_stable_id", owesRemediation: true,
+		}]);
 	});
 });

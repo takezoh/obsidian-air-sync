@@ -64,6 +64,7 @@ const PURE_TRANSFORMS = [
 	"src/sync/change-compare.ts",
 	"src/sync/merge.ts",
 	"src/sync/plan-admission.ts",
+	"src/sync/plan-admission-address-contention.ts",
 	"src/sync/plan-admission-case-alias.ts",
 	"src/sync/plan-admission-graph.ts",
 	"src/sync/identity-component-decision.ts",
@@ -81,6 +82,7 @@ const ADMISSION_INTERNAL_IMPORTS = {
 		"**/identity-component-report-family",
 		"**/identity-component-topology",
 		"**/plan-admission-graph",
+		"**/plan-admission-address-contention",
 		"**/plan-admission-case-alias",
 		"**/local-rename-admission",
 		"**/optimize-local-renames",
@@ -269,6 +271,7 @@ export default defineConfig(
 		ignores: [
 			"src/sync/**/*.test.ts",
 			"src/sync/plan-admission.ts",
+			"src/sync/plan-admission-address-contention.ts",
 			"src/sync/identity-component-decision.ts",
 			"src/sync/identity-component-report-family.ts",
 			"src/sync/identity-component-topology.ts",
@@ -341,11 +344,22 @@ export default defineConfig(
 		rules: { "max-lines": ["error", { max: 334, skipBlankLines: true, skipComments: true }] },
 	},
 	{
-		// Re-pinned from 326: cached lifecycle and detached priority observation share
-		// the backend-specific identity seams but not mutable cursor state. Keeping the
-		// capability assembly here makes that separation explicit; its algorithm is split out.
+		// Re-pinned from 374 when `diffById`'s single loop gained the second half of its
+		// job: the same sweep that subtracts a displaced address also reports the moved
+		// object's projected identity on the pair it produces. Both facts are read off
+		// the one cache entry the loop already holds, so neither can move out without
+		// re-walking the cache. Earlier re-pin from 364, when the three producers of
+		// `RemoteDelta.deleted` got one attribution rule: two of them live here (the
+		// `hasFile` split over a drain's changed paths, and `diffById`'s vanished-id
+		// sweep) and the third feeds the first, so the rule they share has to sit where
+		// all three can be read against each other; moving either producer out would
+		// hide which absences the cycle is allowed to call deletions. Earlier re-pin
+		// from 326: cached lifecycle and detached priority observation share the
+		// backend-specific identity seams but not mutable cursor state. Keeping the
+		// capability assembly here makes that separation explicit; its algorithm is
+		// split out.
 		files: ["src/fs/caching/remote-fs.ts"],
-		rules: { "max-lines": ["error", { max: 364, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 380, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Dropbox's detached identity/path seams belong beside its other API-addressing
@@ -361,6 +375,24 @@ export default defineConfig(
 		// remain coordinated with every other bind/connect path owned here.
 		files: ["src/fs/backend-manager.ts"],
 		rules: { "max-lines": ["error", { max: 341, skipBlankLines: true, skipComments: true }] },
+	},
+	{
+		// Re-pinned from 379 for `projectedIdentityKey`, the free function every rename
+		// producer reads a moved object's identity through. It is deliberately a free
+		// function over the already-public `toEntity`/`getFile` rather than a member —
+		// it must not become a subclass obligation, and it must not be able to reach
+		// the address functions — so it belongs beside the projection it wraps and
+		// nowhere else. Earlier pin at 379, when the cache became the single owner of
+		// "which cache path does this provider object get?". The pure part of that
+		// answer IS split out
+		// (claim-set-assignment.ts, alongside path-authority.ts); what stays here is
+		// index mutation — evicting an occupant, vacating a withheld claimant and
+		// announcing either — which cannot leave the class that owns the five maps
+		// without exporting them. Ratchet down if the id-chain path resolver
+		// (resolvePathFromCache/resolveFilePathCached/findRelevantParentId) later
+		// moves out to its own module; that is its own task, with public callers.
+		files: ["src/fs/caching/metadata-cache.ts"],
+		rules: { "max-lines": ["error", { max: 386, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Lint manifest.json for the words the Obsidian submission validator

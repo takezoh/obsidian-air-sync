@@ -90,6 +90,19 @@ function makeDropboxHarness(): RemoteFamilyCachingHarness<DropboxEntry> {
 	};
 
 	return {
+		// Dropbox's namespace IS the address space: `extractId` is
+		// `entry.id ?? entry.path_lower` (`dropbox/metadata-cache.ts:51`) and every
+		// cache path comes from relativizing `path_display`, so one path can only ever
+		// be held by one entry and two live ids cannot compose the same address through
+		// this family's own enumeration. The folder-replacement contract that would
+		// settle whether Dropbox's eviction behaviour is correct is unresolved in both
+		// directions in this repository's own documents, so the gap carries it rather
+		// than a fabricated fixture.
+		collision: {
+			kind: "cannot",
+			reason: "path-keyed namespace: extractId is entry.id ?? entry.path_lower, so one path has one entry",
+			unknown: "unknown-dropbox-folder-replacement-contract",
+		},
 		makeStore: (id) => new MetadataStore<DropboxEntry>(id, { dbNamePrefix: "air-sync-dropbox-contract", version: 1 }),
 		makeFs: (store) => new DropboxFs(client, ROOT_ID, undefined, store),
 		seedFile: (path) => {

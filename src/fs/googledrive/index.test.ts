@@ -1340,3 +1340,66 @@ describe("GoogleDriveFs ignores .airsync/metadata.json (backend-internal)", () =
 		expect(children).toContain(".airsync/logs");
 	});
 });
+
+describe("GoogleDriveFs.identityRename (identity-addressed namespace repair)", () => {
+	it("renames the withheld claimant by id and leaves the keeper at the contended path", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const { GoogleDriveClient } = await import("./client");
+
+		const client = new GoogleDriveClient(() => Promise.resolve("access"));
+		const fs = new GoogleDriveFs(client, "root");
+		(fs as unknown as GoogleDriveFsInternal).initialized = true;
+
+		const cache = (fs as unknown as {
+			cache: {
+				setFile(p: string, f: GoogleDriveFile, authority?: string): void;
+				getFile(p: string): GoogleDriveFile | undefined;
+				getPathById(id: string): string | undefined;
+			};
+		}).cache;
+		// Only the keeper is cached. The withheld claimant has no cache path at all —
+		// that is exactly why it cannot be addressed by one.
+		cache.setFile("Test.md", {
+			id: "keeper", name: "Test.md", mimeType: "text/plain", parents: ["root"],
+		}, "actual_resolved");
+
+		const requests: { url: string; body: unknown }[] = [];
+		const mockRequestUrl = (await spyRequestUrl()).mockImplementation((opts) => {
+			const url = typeof opts === "string" ? opts : opts.url;
+			const body = typeof opts === "string" ? undefined : opts.body;
+			requests.push({ url, body });
+			return Promise.resolve(mockRes({
+				id: "loser", name: "Test.conflict-id-loser.md",
+				mimeType: "text/plain", parents: ["root"],
+			}));
+		});
+
+		await fs.identityRename.renameById("loser", "Test.conflict-id-loser.md");
+
+		expect(requests).toHaveLength(1);
+		expect(requests[0]?.url).toContain("/files/loser");
+		expect(requests[0]?.body).toBe(JSON.stringify({ name: "Test.conflict-id-loser.md" }));
+		// The keeper never moved, and the disambiguated address entered the cache only
+		// from the provider's own answer to the rename.
+		expect(cache.getFile("Test.md")?.id).toBe("keeper");
+		expect(cache.getPathById("keeper")).toBe("Test.md");
+		expect(cache.getPathById("loser")).toBe("Test.conflict-id-loser.md");
+
+		mockRequestUrl.mockRestore();
+	});
+
+	it("rejects a target with no final segment before issuing a provider request", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const { GoogleDriveClient } = await import("./client");
+
+		const fs = new GoogleDriveFs(new GoogleDriveClient(() => Promise.resolve("access")), "root");
+		(fs as unknown as GoogleDriveFsInternal).initialized = true;
+		const mockRequestUrl = (await spyRequestUrl()).mockResolvedValue(mockRes({}));
+
+		await expect(fs.identityRename.renameById("loser", "/"))
+			.rejects.toThrow("Invalid identity-addressed rename target");
+		expect(mockRequestUrl).not.toHaveBeenCalled();
+
+		mockRequestUrl.mockRestore();
+	});
+});

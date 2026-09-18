@@ -701,15 +701,32 @@ describe("applyFileChange", () => {
 		expect(cache.getPathById("c1")).toBeUndefined();
 	});
 
-	it("clears the displaced id when a file is replaced by a different file at the same path", () => {
-		const cache = makeCache();
-		// Google Drive allows two files with the same name (path) but different ids; a delta
-		// for the second displaces the first in the cache.
+	it("announces the displacement when a file is replaced by a different file at the same path", () => {
+		const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+		const cache = new GoogleDriveMetadataCache(ROOT, logger as never);
+		// Google Drive allows two files with the same name (path) but different ids; a
+		// delta for the second displaces the first in the cache. The stored spelling is
+		// a request echo and the delta is provider-resolved, so the authority tier admits
+		// the delta in either arrival order — and the loss is now a returned fact and a
+		// warn line, not a silent removeTree.
 		cache.setFile("a.txt", makeGoogleDriveFile({ id: "old", name: "a.txt", parents: [ROOT] }));
 
 		const replacement = makeGoogleDriveFile({ id: "new", name: "a.txt", parents: [ROOT] });
-		cache.applyFileChange(replacement);
+		const applied = cache.applyFileChange(replacement);
 
+		expect(applied?.path).toBe("a.txt");
+		expect(applied?.displacement).toEqual({
+			path: "a.txt",
+			admittedId: "new",
+			withheldId: "old",
+			displacedPaths: [],
+			reason: "path_authority",
+			owesRemediation: false,
+		});
+		expect(logger.warn).toHaveBeenCalledWith(
+			"Contended cache address",
+			expect.objectContaining({ path: "a.txt", admittedId: "new", withheldId: "old" }),
+		);
 		expect(cache.getFile("a.txt")).toBe(replacement);
 		expect(cache.getPathById("new")).toBe("a.txt");
 		// The displaced id is no longer mapped to the path.

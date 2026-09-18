@@ -2,7 +2,7 @@ import type { FileEntity, PathAuthority } from "../types";
 import type { DropboxEntry } from "./types";
 import { dropboxEntryToEntity } from "./types";
 import type { Logger } from "../../logging/logger";
-import { AbstractMetadataCache } from "../caching/metadata-cache";
+import { AbstractMetadataCache, type AddressDisplacement } from "../caching/metadata-cache";
 
 /** Split a path into its non-empty segments. */
 export function segments(path: string): string[] {
@@ -143,13 +143,19 @@ export class DropboxMetadataCache extends AbstractMetadataCache<DropboxEntry> {
 	 * outside the root, the root itself, or `deleted` tombstones are skipped. The
 	 * caller ({@link AbstractMetadataCache} consumers / `CachingRemoteFs.fullScan`)
 	 * clears first, so this only upserts.
+	 *
+	 * Displaces nothing by the shared arbiter's reckoning: a Dropbox address IS the
+	 * provider key ({@link extractId} is `entry.id ?? entry.path_lower`), so a second
+	 * id at one address is provider topology and {@link setEntry}'s path-keyed
+	 * eviction is the correct reading of it — not a contended derived address.
 	 */
-	buildFromFiles(entries: DropboxEntry[]): void {
+	buildFromFiles(entries: DropboxEntry[]): readonly AddressDisplacement[] {
 		for (const entry of entries) {
 			if (entry[".tag"] === "deleted") continue;
 			const path = this.relativize(entry);
 			if (path === null || path === "") continue;
 			this.setEntry(path, entry, "actual_resolved");
 		}
+		return [];
 	}
 }

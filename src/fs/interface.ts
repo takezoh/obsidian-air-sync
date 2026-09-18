@@ -1,6 +1,7 @@
 import type { FileEntity } from "./types";
 import type { RenamePair } from "./types";
 import type { PriorityObservationCapability } from "./priority-observation";
+import type { AddressDisplacement } from "./caching/claim-set-assignment";
 
 /**
  * Abstract filesystem interface for sync operations.
@@ -102,10 +103,49 @@ export interface IFileSystem {
 	checkpoint?: IncrementalCheckpoint;
 
 	/**
+	 * Rename a provider object addressed by its own stable id (see
+	 * {@link IdentityAddressedRename}), or `undefined` for a backend that cannot
+	 * produce the condition it repairs. Consulted for presence exactly like
+	 * {@link checkpoint} — `fs.identityRename` once, never a test on `fs.name`.
+	 */
+	identityRename?: IdentityAddressedRename;
+
+	/**
 	 * Release resources (e.g. close IndexedDB connections).
 	 * Called on plugin unload. Optional — not all backends need cleanup.
 	 */
 	close?(): Promise<void>;
+}
+
+/**
+ * Renaming a provider object the cache is deliberately not holding.
+ *
+ * {@link IFileSystem.rename} is path-addressed, and the object a namespace repair
+ * has to move is precisely the one with no cache path — that is what losing a
+ * contended address means. Renaming the *addressable* claimant instead would move
+ * the wrong object, so the addressing input is the provider's own id.
+ *
+ * Optional, in the shape {@link IFileSystem.checkpoint} already uses: a backend
+ * either offers the capability or does not, and its absence means no repair is
+ * planned — never a silent path-addressed fallback. Only Google Drive implements
+ * it today, because only Google Drive can produce two live objects at one derived
+ * address.
+ */
+export interface IdentityAddressedRename {
+	/**
+	 * Rename the object with `identityKey` so it is addressed by `newPath`.
+	 *
+	 * Only the final segment moves: the object keeps the provider parent it
+	 * already has, which is exactly what disambiguating two claimants of one
+	 * address needs. `newPath`'s parent segments are the caller's statement of
+	 * where the object already is; they are not used to re-parent it.
+	 *
+	 * The cache is updated from the provider's answer to this call and from
+	 * nothing else — the target address is never written in advance.
+	 *
+	 * @throws if the provider refuses the rename or the object no longer exists.
+	 */
+	renameById(identityKey: string, newPath: string): Promise<void>;
 }
 
 /**
@@ -129,11 +169,20 @@ export interface IncrementalCheckpoint {
 	 * Return paths changed since the last sync, or null if unavailable.
 	 * Should be called before list() to allow the change-detector to skip
 	 * unchanged paths. Returns modified, deleted, and optionally renamed path lists.
+	 *
+	 * `contended` reports the derived addresses this cycle found claimed by two live
+	 * ids. It is a FACT ABOUT THIS CYCLE, not a deletion and not an instruction: the
+	 * backend has already subtracted those addresses from `deleted`, because an
+	 * object that lost an address is still on the provider. Nothing above the
+	 * filesystem decides an absence, so no caller may move a path from here into
+	 * `deleted`. Optional: a backend whose addresses are the provider's own keys
+	 * cannot produce one.
 	 */
 	getChangedPaths(): Promise<{
 		modified: string[];
 		deleted: string[];
 		renamed?: RenamePair[];
+		contended?: readonly AddressDisplacement[];
 	} | null>;
 
 	/**

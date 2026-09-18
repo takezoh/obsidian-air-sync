@@ -439,8 +439,32 @@ committed `SyncRecord` is an Admission-level input and is read there), and a pro
 
 ### unit-2 — claim-set assignment in `AbstractMetadataCache`
 
-Touches: `src/fs/caching/metadata-cache.ts`, new `src/fs/caching/metadata-cache.test.ts`,
-`src/fs/googledrive/metadata-cache.test.ts`.
+Touches: `src/fs/caching/metadata-cache.ts`, **new `src/fs/caching/claim-set-assignment.ts`**,
+new `src/fs/caching/metadata-cache.test.ts`, `src/fs/googledrive/metadata-cache.test.ts`.
+
+**Deviation from the plan — the claim-set pass is its own module.** The design placed the
+grouping/arbitration/cascade pass inside `metadata-cache.ts`. As built it is
+`src/fs/caching/claim-set-assignment.ts`: `assignClaimSet(claims)` over
+`ResolvedClaim<TFile>`, exporting `AddressDisplacement` (re-exported from
+`metadata-cache.ts` for existing importers) and consumed by `buildFromFiles`. Two reasons,
+both `docs/code-enforcement.md` §6's sanctioned route rather than a cap workaround:
+
+1. `metadata-cache.ts` was already at its `max-lines` override, and §6 says to split a
+   concept out when that is natural before raising the pin. The pass *is* natural to split:
+   it is pure, holds no state, touches none of the five index maps, and its output is a
+   value. What stays in the cache is index mutation — evicting an occupant, vacating a
+   withheld claimant, announcing either — which cannot leave the class that owns the maps
+   without exporting them. The cap there is re-pinned 300 → 379 with that reasoning; without
+   the split it would have needed a materially higher pin for lines that are not about index
+   ownership at all.
+2. Purity becomes checkable from imports on *both* modules, which is the property
+   `contract-derived-address-arbitration` relies on. `address-arbitration.ts` decides one
+   contended address; `claim-set-assignment.ts` decides a whole set with the same inputs and
+   nothing more. Neither imports a backend type, a sync-state type, a client or a logger.
+
+`AddressDisplacement`, `AddressDisplacementReason` and `ResolvedClaim` live there;
+`WithheldClaim` (which adds `vacatedPath`) stays in `metadata-cache.ts`, because vacating is
+an index mutation and only the cache can report it.
 
 - `setFile` (`:99`) returns the displacement when its occupant branch (`:110-116`) evicts a
   different id, instead of returning `void`. Its behaviour is otherwise unchanged, so the
@@ -565,10 +589,41 @@ A sibling of `plan-admission-case-alias.ts`, which is the existing precedent for
 originating a `rename_remote` from complete current-cycle facts rather than from a local rename
 (`:105`, `:157`).
 
+- **Deviation from the plan — there is a fourth input: the vault's exclusion scope.**
+  `contract-no-loss-remediation` names three (standing contentions, committed record, capability
+  presence). As built there is a fourth, applied by the orchestrator immediately before the
+  Admission call: `contentions.filter((fact) => !this.isExcluded(fact.path))`.
+
+  It is not optional. The remote metadata cache holds **every** object under the bound root,
+  including the paths `isExcluded()` filters out — ignore patterns, un-opted-in dot paths, OS junk,
+  the reserved metadata path. Remediation is a *provider mutation*, so without the filter a
+  contention under an ignored folder would issue a rename into data the user told this plugin to
+  leave alone, and — because the repair is checkpoint-blocking — would block the cursor every cycle
+  while doing it, for an address no cycle is allowed to touch in the first place. Nothing would ever
+  clear it.
+
+  The filter sits at the **orchestrator**, deliberately *not* upstream in `src/fs/`, and the two
+  halves are not interchangeable: the absence rules of `contract-absence-authority` must still
+  subtract a displaced **excluded** path from `deleted` at all three producers. Filtering in the
+  filesystem would restore exactly the `delete_local` route this change exists to remove. So the
+  filesystem announces every contention it observed; only the *repair* is scope-bounded. The
+  user-facing count likewise stays un-filtered — it reports what the cycle saw, and the user who
+  excluded the path is the one person who can act on it.
+
+  Scope is a legitimate Admission-level input for the same reason the committed `SyncRecord` is: it
+  is a current fact of this cycle's configuration, captured with the rest of the cycle's evidence,
+  and identical under COLD, WARM and HOT. It is refused inside the cache for the same reason the
+  record is — `AbstractMetadataCache` owns no sync policy (`RB-FS-004`).
+
+  Regression-tested with a mutation witness: `orchestrator.test.ts` →
+  *"contention remediation reaches only the synced scope"* drives one fixture at `docs/Note.md`
+  and at `private/Note.md` under `ignorePatterns: ["private/**"]`, asserting rename + no commit for
+  the first and no provider call + commit for the second. Dropping the filter turns the second red.
+
 - **Remediable** only when both claims are provider-resolved *and* the rename capability is
-  present. A contention involving a `requested_echo` claim is not remediable: the guessed claimant
-  is outside the bound sync root, Air Sync's working area does not reach it, and nothing there is
-  at risk.
+  present *and* the contended path is inside the synced scope. A contention involving a
+  `requested_echo` claim is not remediable: the guessed claimant is outside the bound sync root,
+  Air Sync's working area does not reach it, and nothing there is at risk.
 - **The keeper** is the claimant holding a committed `SyncRecord` at the contended path; if neither
   holds one, the claimant the arbiter admitted. At most one claimant can hold that record because
   records are path-keyed, so the choice is a function of the unordered claim set plus committed
@@ -625,7 +680,9 @@ files. See the verification member for the case list and the per-family obligati
   which is also how "a backend without the capability receives no such action" is asserted.
 - **The Admission stage** is a pure function of `(contentions, committed records, capability
   presence)`; the keeper rule is driven from a seeded `SyncStateStore` rather than from arrival
-  order.
+  order. The fourth input — the exclusion scope — is applied by the orchestrator *before* the
+  call, so the stage itself stays a three-input pure function and the scope rule is driven
+  through `SyncOrchestrator` instead (see unit-6).
 - **Per-family collision staging** goes on `CachingRemoteFsHarness`
   (`caching-remote-fs.contract.ts:10-44`) alongside the existing `seedFolderWithChild`,
   `stageRemoteDelete`, `failNextDeltaAfterFirstPage` and `stageMoveIntoRoot` seams — test

@@ -122,7 +122,9 @@ Folder renames are captured separately at the event boundary: a `TFolder` routes
 
 ### Remote changes
 
-`IFileSystem.checkpoint.getChangedPaths()` returns `{ modified, deleted, renamed? }` or `null`. `null` means no incremental data is available — fall back to warm/cold detection. The `renamed` array carries `{ oldPath, newPath, isFolder? }` as authoritative reported evidence. The acquisition owner captures that evidence before later detection work, so a retry cannot consume the live cursor and lose the constraint.
+`IFileSystem.checkpoint.getChangedPaths()` returns `{ modified, deleted, renamed?, contended? }` or `null`. `null` means no incremental data is available — fall back to warm/cold detection. The `renamed` array carries `{ oldPath, newPath, isFolder? }` as authoritative reported evidence. The acquisition owner captures that evidence before later detection work, so a retry cannot consume the live cursor and lose the constraint.
+
+`contended` names the derived cache addresses this cycle found claimed by two live stable ids (a Google Drive folder can hold two same-named children; the vault cannot). It is not a change at any path, so it never enters `ChangeSet`: `getRemoteChanges()` hands it straight to the orchestrator through an `onRemoteContention` callback, the sibling of `onRemoteIdentityEvidence`. The filesystem has already subtracted every displaced address from `deleted` — the object that lost the address is still on the provider — and no layer above `fs/` may reclassify one as an absence. The orchestrator drops contentions at paths `isExcluded()` filters out, then hands the rest to Admission (see [Address-contention remediation](#address-contention-remediation)). Nothing about a contention is persisted; the next cycle re-observes whatever still stands.
 
 ### Comparison functions
 
@@ -170,7 +172,9 @@ There is no volume-based abort gate. Deletion safety rests on four independent l
 2. **layoutReady gate** -- sync does not run before the Obsidian vault index is loaded. `SyncScheduler` defers its event wiring, and `runSync()` is gated on `app.workspace.layoutReady`, so a `list()` that under-reports during startup cannot be mistaken for mass local deletions.
 3. **Authoritative observation** -- listing absence is re-`stat()`'d before it can authorize deletion. `actual_resolved` proves an exact/alias path; `requested_echo` proves presence only; `null` proves absence; a thrown stat aborts the cycle. HOT checkpoint tombstones remain authoritative remote absence (Issue #44).
 
-   The two sides get their authority from different places, and the re-`stat()` is only a second opinion on one of them. `LocalFs.stat()` falls back to the vault adapter on an index miss, so it can contradict a listing the index under-reported — that is a genuine independent check. `CachingRemoteFs.stat()` instead reads the same metadata cache the listing came from, so it returns the same answer by construction; on the remote side the authority is the cache itself, which is a complete projection of a wholly clean scan (ADR 0001), not the re-read. A path dropped from that cache — a duplicate id collapsing a sibling, say — is therefore not caught here, and the layers that do catch it are (1) and (4).
+   The two sides get their authority from different places, and the re-`stat()` is only a second opinion on one of them. `LocalFs.stat()` falls back to the vault adapter on an index miss, so it can contradict a listing the index under-reported — that is a genuine independent check. `CachingRemoteFs.stat()` instead reads the same metadata cache the listing came from, so it returns the same answer by construction; on the remote side the authority is the cache itself, which is a complete projection of a wholly clean scan (ADR 0001), not the re-read. A path dropped from that cache is therefore not caught here, and the layers that do catch it are (1) and (4) — plus, for the one cause the cache itself knows about, the attribution rule below.
+
+   That cause is a **contended derived address**: two live stable ids resolving to one cache path (two same-named Drive siblings, or a bare-name orphan colliding with a real path). The cache no longer resolves it by evicting the occupant silently. It arbitrates, returns the displacement as a fact, and every producer of `RemoteDelta.deleted` — `_applyIncrementalChanges`' `hasFile` split, `diffById`'s vanished-id sweep, and `id-delta.ts`'s old-path-with-no-new-path branch — excludes a path whose absence that displacement explains. A genuine provider deletion and an out-of-root move still reach `deleted`. The displaced object is then repaired upstream; see [Address-contention remediation](#address-contention-remediation).
 4. **Whole-component admission** -- rename, alias, unresolved-presence, and stable-ID edges connect related managed paths. Paths excluded by system-junk rules, user ignore patterns, dot-path scope, Config Sync policy, or reserved-path policy are absent from the Admission snapshot. An included-to-included folder rename is one opaque folder operation; excluded physical entries are not identity nodes and do not participate in mapping completeness. If the component decision cannot prove that every managed resource survives, `admitDestructivePlan()` fails it before execution. Deletions are additionally soft (trash), but recoverability is not used as authorization.
 
 ## Identity-component action shaping
@@ -264,6 +268,52 @@ count. Their detailed reason remains diagnostic only. A later ordinary sync may 
 facts, but the failure is neither pending work nor a convergence guarantee.
 Private shaping helpers expose typed skip reasons to focused tests, but do not form an
 observable pipeline stage.
+
+## Address-contention remediation
+
+A Google Drive folder can hold two same-named children; a vault path, a Dropbox path and a
+OneDrive path cannot. The remote metadata cache resolves that by arbitration — one claimant
+holds the derived address and the other is *withheld*, named in a returned displacement fact
+rather than silently evicted (see [Google Drive backend → Cache invalidation](google-drive-backend.md#cache-invalidation)).
+Nothing is lost by that alone, but nothing converges either, so the condition is repaired at
+its source.
+
+`plan-admission-address-contention.ts` is a sibling Admission stage to
+`plan-admission-case-alias.ts`: like it, it originates a `rename_remote` from complete
+current-cycle facts rather than from a local rename, and it adds no `SyncActionType`.
+
+- **Inputs.** The contentions the cycle's delta announced, each contended path's committed
+  `SyncRecord`, whether `remoteFs.identityRename` is present — and, applied by the
+  orchestrator *before* Admission, the vault's exclusion scope. The cache holds every object
+  under the bound root, excluded paths included; a repair writes to the provider, so it may
+  only ever reach a path the user actually syncs. The filter sits at the orchestrator and
+  deliberately not upstream, because the absence rules in `fs/` must still subtract a
+  displaced *excluded* path from `deleted`.
+- **Remediable** only when both claims are provider-resolved (`actual_resolved`) and the
+  rename capability is present. A contention involving a `requested_echo` claim is an
+  out-of-root guess — there is nothing in the working area to rename — and is announced but
+  not repaired.
+- **The keeper** is the claimant holding a committed `SyncRecord` at the contended path, else
+  the claimant the arbiter admitted. Records are path-keyed, so at most one claimant can hold
+  one; the choice is a function of the unordered claim set plus committed state and is
+  identical under COLD, WARM and HOT. This is what stops a file the user has been syncing for
+  months from being renamed to make room for a newly appeared duplicate.
+- **The target** is `insertConflictSuffix(path, "id-" + <the renamed claimant's stable id>)` —
+  the object's own identity, so the rename is idempotent across retries, needs no content
+  fetch, and is meaningful for a folder. `i` is not a hex digit, so it can never match
+  `directConflictCandidateHint`'s `[0-9a-f]{64}` preservation form.
+- **Execution** goes through `IFileSystem.identityRename`, never `rename()`: the contended path
+  resolves, in the cache and on the provider, to the claimant that *keeps* it. There is no
+  path-addressed fallback. The action carries no local counterpart, no baseline and no record
+  publication (`RecordPublication` already excludes `rename_remote`).
+- **The commit gate.** A cycle owing a repair is checkpoint-blocked through the existing
+  `checkpointBlocked` input to cleanliness, so no cursor advances past a withheld claimant and
+  the next cycle replays the same evidence. Every uncontested action still executes and still
+  publishes its own `SyncRecord`. A non-remediable contention owes nothing and does not block.
+
+Nothing here is persisted — not the contention, not the disposition, not a repair queue. The
+count reaches the user as a non-error clause in the status bar and the cycle summary; the paths
+and both stable ids stay in the log.
 
 ## Execution phases (lane/tier scheduling)
 

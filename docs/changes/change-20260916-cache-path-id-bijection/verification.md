@@ -180,6 +180,37 @@ before the fix, because they are the measured defects:
 - The cursor-expiry route to `delete_local` (`remote-fs.ts:429-431`).
 - Shared contract case 2, both provider orderings, which must fail on PR #83's branch.
 
+### Known limit — a cold-start contention is never announced, so it is never repaired
+
+Determined, not unknown, and not covered by any case above.
+
+`CachingRemoteFs.ensureInitialized()` returns `false` after a fresh full scan and **discards
+`fullScan()`'s returned contentions**; `getChangedPaths()` then returns `null` for that cycle
+(there is no delta after a scan that just captured "now"), so `onRemoteContention` is never
+called. `list()` drops them the same way — it returns entities only, and the contention carrier
+exists solely on `getChangedPaths`.
+
+So a vault whose **first** scan meets two same-named Drive siblings gets no contention fact on
+cycle 1. Cycle 2 replays from the cursor and reports only objects that *changed*, and neither
+sibling did — so the repair never fires. A manual Rescan does not help: it resets the checkpoint
+and takes the same discarding path. Only a 410 cursor expiry (which routes through
+`fullScanWithDelta` → `fullScan` → `diffById`, the one full-scan route that *does* carry the facts)
+or a later provider change touching either object surfaces it.
+
+**No data is lost.** The absence rules still subtract the displaced address from `deleted` on every
+route, the withheld object is simply not in the cache, and on a first sync there is no local
+counterpart to delete. FR-ADDR-007 holds. What is delayed, potentially indefinitely, is FR-ADDR-008
+(the repair) and FR-ADDR-011 (telling the user) for exactly this entry shape — the cold-start
+window is silent about it.
+
+**What would close it:** give the cold-start route the same declared carrier the cursor-expiry route
+already has. `ensureInitialized()` would return the fresh scan's contentions alongside its replay
+verdict (or hold them for one read), and `getChangedPaths()` would return
+`{ modified: [], deleted: [], contended }` instead of `null` when a fresh scan decided any — `null`
+must keep meaning "no delta available" for every other caller, so the two cases have to stay
+distinguishable. Verified by a contract case that stages a collision, forces a cold start, and
+asserts the first cycle both announces and repairs it.
+
 ### Non-producible and unmeasured, recorded rather than stubbed
 
 - OneDrive's duplicate-name behaviour — `unknown-onedrive-duplicate-names`.

@@ -200,7 +200,12 @@ provider-resolved contend for one cache address, the plugin shall rename on the 
 claimant that is not to keep that address, to the address produced by `insertConflictSuffix`
 (`conflict.ts:60-67`) with a discriminator derived from that claimant's own stable id, as an action
 of the existing `rename_remote` kind authorized by Admission from current-cycle facts. Where a
-contending claim is not provider-resolved, no rename shall be performed for it.
+contending claim is not provider-resolved, no rename shall be performed for it. **Nor shall any
+rename be performed at a path the vault excludes** (`SyncOrchestrator.isExcluded()` — ignore
+patterns, un-opted-in dot paths, OS junk, the reserved metadata path): the remote cache holds every
+object under the bound root, and a repair there would mutate data the user told this plugin to
+leave alone. Such a contention is still announced and counted; it simply owes nothing, and
+therefore also does not block the checkpoint under FR-ADDR-009.
 
 **FR-ADDR-009 — nothing is committed while a claimant is withheld.** When a cycle observes a
 contention for which a remediation is owed, that cycle shall be checkpoint-blocked: the remote

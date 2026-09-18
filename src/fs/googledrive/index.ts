@@ -1,4 +1,5 @@
 import type { FileEntity } from "../types";
+import type { IdentityAddressedRename } from "../interface";
 import { FOLDER_MIME, toRemoteChecksum } from "./types";
 import type { GoogleDriveFile } from "./types";
 import type { GoogleDriveClient } from "./client";
@@ -269,6 +270,42 @@ export class GoogleDriveFs extends CachingRemoteFs<GoogleDriveFile> {
 				if (r.wasFolder) {
 					this.cache.rewriteChildPaths(oldPath, newPath);
 				}
+			},
+		});
+	}
+
+	/**
+	 * Identity-addressed rename (see {@link IdentityAddressedRename}). Google Drive
+	 * is the only backend that implements it, because it is the only one whose
+	 * namespace can hold two live objects at one derived address.
+	 *
+	 * The subject is addressed by its Drive file id, so it works for an object the
+	 * cache is deliberately not holding — which is the whole point. Nothing is
+	 * written to the cache in advance: the `update` phase applies the file Drive
+	 * returns, with provider authority, and writes nothing at all if Drive's answer
+	 * does not resolve to a cache path.
+	 */
+	readonly identityRename: IdentityAddressedRename = {
+		renameById: (identityKey, newPath) => this.renameById(identityKey, newPath),
+	};
+
+	private async renameById(identityKey: string, newPath: string): Promise<void> {
+		const target = normalizeSyncPath(newPath);
+		const newName = target.split("/").pop() ?? "";
+		if (!identityKey || newName === "" || newName === "." || newName === "..") {
+			throw new Error(`Invalid identity-addressed rename target: "${newPath}"`);
+		}
+		await this.withCacheMutex({
+			operationName: "renameById",
+			// Nothing is resolved through the cache: the id IS the address.
+			resolve: () => ({ identityKey, newName, target }),
+			execute: (r) => this.client.updateFileMetadata(r.identityKey, { name: r.newName }),
+			// The subject has no cache path, so the only thing a concurrent writer
+			// could have taken is the destination. `expectedId: undefined` skips the
+			// cache write when the target address is occupied by then.
+			staleGuard: (r) => ({ path: r.target, expectedId: undefined }),
+			update: (_r, result) => {
+				this.cache.applyFileChange(result);
 			},
 		});
 	}

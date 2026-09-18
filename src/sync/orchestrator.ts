@@ -7,13 +7,19 @@ import { captureScopePolicy, isExcludedFromScope } from "./scope-projection";
 import { SyncStateStore } from "./state";
 import { LocalChangeTracker, type TrackerSnapshot } from "./local-tracker";
 import { collectChanges, type ChangeSet } from "./change-detector";
+import type { AddressDisplacement } from "../fs/caching/claim-set-assignment";
 import { computeScopeFingerprint } from "./scope-fingerprint";
 import { executePlan, toConflictRecords, DESKTOP_TRANSFER_POOL, MOBILE_TRANSFER_POOL } from "./plan-executor";
 import type { ExecutionContext } from "./plan-executor";
 import { classifyHttpError } from "../fs/errors";
 import { decideRetry, sleep } from "./error";
 import type { ConflictRecord, ConflictStrategy, SyncStatus } from "./types";
-import { CycleSummary, type SyncCycleOutcome, type SyncCycleResult } from "./sync-notification";
+import {
+	CycleSummary,
+	type SyncCycleOutcome,
+	type SyncCycleResult,
+	type SyncStatusDetail,
+} from "./sync-notification";
 import {
 	logChangeDetection,
 	logSyncCyclePlan,
@@ -38,7 +44,11 @@ export interface SyncOrchestratorDeps {
 	localFs: () => IFileSystem | null;
 	remoteFs: () => IFileSystem | null;
 	backendProvider: () => IBackendProvider | null;
-	onStatusChange: (status: SyncStatus) => void;
+	/**
+	 * Report the sync status, plus — only for a cycle that has one — the cycle
+	 * detail the status bar states. Every other call stays one-argument.
+	 */
+	onStatusChange: (status: SyncStatus, detail?: SyncStatusDetail) => void;
 	onProgress: (text: string) => void;
 	notify: (message: string, durationMs?: number) => void;
 	/** Returns true when running on mobile (used for mobile sync restrictions) */
@@ -106,6 +116,12 @@ export class SyncOrchestrator {
 			this.deps.logger?.debug("shouldSync: skipped", { hasRemote, isLocked, isConnecting, isLayoutReady });
 		}
 		return hasRemote && !isLocked && !isConnecting && isLayoutReady;
+	}
+
+	/** A cycle with nothing extra to say keeps the plain one-argument status call. */
+	private notifyStatus(status: SyncStatus, detail: SyncStatusDetail | undefined): void {
+		if (detail) this.deps.onStatusChange(status, detail);
+		else this.deps.onStatusChange(status);
 	}
 
 	isExcluded(path: string): boolean {
@@ -188,13 +204,18 @@ export class SyncOrchestrator {
 				if (!result) return; // Fatal error already handled
 
 				const { succeeded, failed, blocked, conflicts } = result;
+				// A contention never changes the STATUS — it is not an error and does not
+				// make one — it only travels alongside it to the status bar, the one
+				// per-cycle surface no setting gates.
+				const contended = result.outcome.contended;
+				const detail = contended > 0 ? { contended, errors: failed } : undefined;
 				if (result.outcome.completion.kind !== "clean") {
-					this.deps.onStatusChange("partial_error");
+					this.notifyStatus("partial_error", detail);
 					this.deps.logger?.warn("Sync completed with errors", {
 						succeeded, conflicts, failed, blocked,
 					});
 				} else {
-					this.deps.onStatusChange("idle");
+					this.notifyStatus("idle", detail);
 					this.deps.logger?.info("Sync completed", {
 						succeeded, conflicts, failed, blocked,
 					});
@@ -365,11 +386,16 @@ export class SyncOrchestrator {
 		const namespace = (provider?.getIdentity?.(settings) ?? settings.lastSyncedIdentity) ||
 			`${settings.backendType}:${settings.vaultId}`;
 
+		// Cycle-local: the contended addresses this cycle's remote delta announced.
+		// Discarded with the cycle — nothing about a contention is persisted, and the
+		// next cycle re-observes whatever still stands.
+		const contentions: AddressDisplacement[] = [];
 		const changeSet: ChangeSet = await collectChanges({
 				localFs,
 				remoteFs,
 				stateStore: this.stateStore,
 				changes: snapshot,
+				onRemoteContention: (announced) => contentions.push(...announced),
 			}, {
 				forceFullScan,
 			});
@@ -387,9 +413,30 @@ export class SyncOrchestrator {
 		const visiblePaths = new Set(planning.snapshot.scope.byEndpoint.keys());
 		logChangeDetection(changeSet, renamePairs, this.deps.logger, visiblePaths);
 
+		// The remote metadata cache holds every object under the bound root, including
+		// paths this vault excludes. Remediation writes to the provider, so it may only
+		// ever reach a path the user actually syncs: an excluded address is not Air
+		// Sync's working area, and renaming an object there would mutate data the user
+		// told this plugin to leave alone — and block the checkpoint every cycle while
+		// doing it. Announced and then dropped here, not filtered upstream, because the
+		// absence rules in fs/ must still subtract a displaced excluded path from
+		// `deleted`.
+		const remediable = contentions.filter((fact) => !this.isExcluded(fact.path));
+
+		// `AGENTS.md` permits a decision to depend on a component's committed
+		// SyncRecord; this is the one input that keeps a user's established file from
+		// being renamed to make room for a newly appeared duplicate. Acquired before
+		// the cut point below, with the rest of the cycle's evidence.
+		const contendedRecords = await this.stateStore
+			.getMany([...new Set(remediable.map((fact) => fact.path))]);
+
 		// This call is the authorization cut point. Exceptions from this line onward
 		// are not reclassified as evidence-acquisition recovery.
-		const admission = admitBatchObservation(planning.snapshot, conflictStrategy);
+		const admission = admitBatchObservation(planning.snapshot, conflictStrategy, {
+			contentions: remediable,
+			records: contendedRecords,
+			renameByIdentity: remoteFs.identityRename !== undefined,
+		});
 		logSyncCyclePlan(this.deps.logger, admission);
 		const { folderRenamePairs } = snapshot;
 
@@ -400,12 +447,24 @@ export class SyncOrchestrator {
 			});
 		}
 		this.activeBatch = new PriorityBatchState(admission);
-		return { settings, provider, admission };
+		// A cycle that owes a provider repair must not publish a cursor past the
+		// claimant it is still withholding: the checkpoint stays uncommitted and the
+		// working view aborts, so the next cycle replays the same evidence. Every
+		// uncontested action in this cycle still executes and still publishes its own
+		// SyncRecord — only the cycle-level checkpoint is withheld.
+		if (admission.checkpointBlocked) this.activeBatch.blockCheckpoint();
+		// What the cycle SAW, not what it may repair: an address the vault excludes is
+		// still an address two objects are claiming, and the user who excluded it is
+		// the one person who can act on it. The count is the cycle's own contention
+		// report and nothing else, distinct-by-address so a displaced folder counts
+		// once however many descendants went with it.
+		const contended = new Set(contentions.map((fact) => fact.path)).size;
+		return { settings, provider, admission, contended };
 		} finally {
 			preparationPermit.release();
 		}
 		})();
-		const { settings, provider, admission } = prepared;
+		const { settings, provider, admission, contended } = prepared;
 		const total = admission.executable.actions.length;
 
 		const classifyError = (err: unknown) => provider?.classifyError?.(err) ?? classifyHttpError(err);
@@ -432,7 +491,7 @@ export class SyncOrchestrator {
 		};
 
 				const execution = await executePlan(admission.executable, ctx);
-				return { settings, provider, admission, execution };
+				return { settings, provider, admission, execution, contended };
 			}, (close) => this.priorityCoordinator.finalize(close), ({ admission, execution }) => {
 				this.activeBatch?.setPhase("finalizing");
 				return { admission, result: execution, scopeFingerprint,
@@ -444,7 +503,8 @@ export class SyncOrchestrator {
 				settings.backendData = { ...settings.backendData, ...provider.readBackendState() };
 			}
 			await this.deps.saveSettings();
-			return { execution, admissionFailures: admission.failures, completion: closed.completion };
+			return { execution, admissionFailures: admission.failures, completion: closed.completion,
+				contended: closed.value.contended };
 		} finally {
 			this.activeBatch = null;
 		}
