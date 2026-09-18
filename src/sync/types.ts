@@ -2,7 +2,7 @@ import type { FileEntity, RemoteChecksum, RenamePair } from "../fs/types";
 
 /** A stored record of the last-known synced state for a file */
 export interface SyncRecord {
-	/** Relative path (primary key) */
+	/** Relative path of the local file this record is the correspondence for (unique index) */
 	path: string;
 	/** Content hash at last successful sync */
 	hash: string;
