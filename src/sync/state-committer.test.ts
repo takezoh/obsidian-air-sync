@@ -22,7 +22,9 @@ describe("buildSyncRecord", () => {
 		expect(record.remoteMtime).toBe(2000);
 		expect(record.localSize).toBe(local.size);
 		expect(record.remoteSize).toBe(remote.size);
-		expect(record.backendMeta).toEqual({ id: "drive-id" });
+		// The entity keeps its backendMeta; the record no longer carries the field.
+		expect(remote.backendMeta).toEqual({ id: "drive-id" });
+		expect(Object.keys(record)).not.toContain("backendMeta");
 		expect(record.remoteIdentityKey).toBe("native-id");
 		expect(record.syncedAt).toBeGreaterThan(0);
 	});
@@ -37,13 +39,28 @@ describe("buildSyncRecord", () => {
 		expect(record.hash).toBe("remote-hash");
 	});
 
-	it("handles missing remote (push local only)", () => {
+	it("refuses a remote entity that carries no provider identity", () => {
 		const local = makeFile("a.md", "hello", 1000).entity;
-		local.hash = "abc123";
-		const record = buildSyncRecord(local, undefined, "a.md");
+		const remote = { ...makeFile("a.md", "hello", 2000).entity, identityKey: undefined };
 
-		expect(record.remoteMtime).toBe(0);
-		expect(record.hash).toBe("abc123");
+		expect(() => buildSyncRecord(local, remote, "a.md"))
+			.toThrow("SyncRecord refused: remote entity carries no provider identity: a.md at a.md");
+		// A push whose I/O produced no remote entity at all takes the same branch.
+		expect(() => buildSyncRecord(local, undefined, "a.md"))
+			.toThrow("SyncRecord refused: remote entity carries no provider identity: (no remote entity) at a.md");
+	});
+
+	it("refuses an empty provider identity through the same branch as an absent one", () => {
+		const local = makeFile("a.md", "hello", 1000).entity;
+		const empty = makeFile("a.md", "hello", 2000, "").entity;
+		const absent = { ...makeFile("a.md", "hello", 2000).entity, identityKey: undefined };
+
+		// "" is a valid IndexedDB key, so storing it verbatim would let a second
+		// identity-less entity silently replace the first.
+		expect(() => buildSyncRecord(local, empty, "a.md"))
+			.toThrow("SyncRecord refused: remote entity carries no provider identity: a.md at a.md");
+		expect(() => buildSyncRecord(local, absent, "a.md"))
+			.toThrow("SyncRecord refused: remote entity carries no provider identity: a.md at a.md");
 	});
 });
 
@@ -164,7 +181,7 @@ describe("commitAction", () => {
 	it("content replacement uses the existing whole-record CAS", async () => {
 		const baseline = {
 			path: "cas.md", hash: "old", localMtime: 1, remoteMtime: 1,
-			localSize: 3, remoteSize: 3, syncedAt: 1,
+			localSize: 3, remoteSize: 3, remoteIdentityKey: "id:cas.md", syncedAt: 1,
 		};
 		stateStore.records.set("cas.md", baseline);
 		const compareAndPut = vi.spyOn(stateStore, "compareAndPut");
@@ -173,14 +190,18 @@ describe("commitAction", () => {
 
 		await commitAction(withPublication({ path: "cas.md", action: "pull", baseline }), local, remote, makeCtx());
 
-		expect(compareAndPut).toHaveBeenCalledWith(baseline, expect.objectContaining({ path: "cas.md" }));
-		expect(compareAndPut.mock.calls[0]).toHaveLength(2);
+		// Both expectations are passed explicitly: the row this publication continues and
+		// the occupant of its address are separate arguments, neither defaulted.
+		expect(compareAndPut).toHaveBeenCalledWith(
+			baseline, expect.objectContaining({ path: "cas.md" }), baseline,
+		);
+		expect(compareAndPut.mock.calls[0]).toHaveLength(3);
 	});
 
 	it("content CAS mismatch preserves the winning record and fails the action", async () => {
 		const baseline = {
 			path: "cas-race.md", hash: "old", localMtime: 1, remoteMtime: 1,
-			localSize: 3, remoteSize: 3, syncedAt: 1,
+			localSize: 3, remoteSize: 3, remoteIdentityKey: "id:cas-race.md", syncedAt: 1,
 		};
 		const winner = { ...baseline, hash: "winner", syncedAt: 2 };
 		stateStore.records.set("cas-race.md", winner);
@@ -202,22 +223,22 @@ describe("commitAction", () => {
 	});
 
 	it("relocation requires a proof for the exact admitted action", async () => {
-		const baseline = buildSyncRecord(undefined, undefined, "old.md");
+		const baseline = buildSyncRecord(undefined, makeFile("old.md", "old", 1).entity, "old.md");
 		stateStore.records.set("old.md", baseline);
 		const action: SyncAction = { path: "new.md", action: "match", baseline,
 			publication: { source: baseline, destination: undefined } };
 		const local = makeFile("new.md", "new", 2).entity;
-		const compareAndMove = vi.spyOn(stateStore, "compareAndMove");
+		const compareAndPut = vi.spyOn(stateStore, "compareAndPut");
 		await expect(commitAction(action, local, local, makeCtx()))
 			.rejects.toThrow("Terminal publication proof missing");
 		await expect(commitAction(action, local, local, makeCtx(), proofFor({ ...action })))
 			.rejects.toThrow("Terminal publication proof missing");
-		expect(compareAndMove).not.toHaveBeenCalled();
+		expect(compareAndPut).not.toHaveBeenCalled();
 		expect(stateStore.records.get("old.md")).toEqual(baseline);
 	});
 
 	it("relocation CAS mismatch preserves the winning baseline", async () => {
-		const baseline = buildSyncRecord(undefined, undefined, "old.md");
+		const baseline = buildSyncRecord(undefined, makeFile("old.md", "old", 1).entity, "old.md");
 		const winner = { ...baseline, hash: "winner" };
 		stateStore.records.set("old.md", winner);
 		const action: SyncAction = { path: "new.md", action: "match", baseline,
@@ -232,7 +253,7 @@ describe("commitAction", () => {
 	it("delete_local: deletes SyncRecord", async () => {
 		stateStore.records.set("e.md", {
 			path: "e.md", hash: "", localMtime: 1000, remoteMtime: 1000,
-			localSize: 4, remoteSize: 4, syncedAt: 900,
+			localSize: 4, remoteSize: 4, remoteIdentityKey: "id:e.md", syncedAt: 900,
 		});
 		const expected = stateStore.records.get("e.md");
 		const action: SyncAction = { path: "e.md", action: "delete_local",
@@ -246,7 +267,7 @@ describe("commitAction", () => {
 	it("delete_remote: deletes SyncRecord", async () => {
 		stateStore.records.set("f.md", {
 			path: "f.md", hash: "", localMtime: 1000, remoteMtime: 1000,
-			localSize: 4, remoteSize: 4, syncedAt: 900,
+			localSize: 4, remoteSize: 4, remoteIdentityKey: "id:f.md", syncedAt: 900,
 		});
 		const expected = stateStore.records.get("f.md");
 		const action: SyncAction = { path: "f.md", action: "delete_remote",
@@ -260,7 +281,7 @@ describe("commitAction", () => {
 	it("rename_remote: deletes old path and upserts new path", async () => {
 		stateStore.records.set("old.md", {
 			path: "old.md", hash: "h1", localMtime: 1000, remoteMtime: 1000,
-			localSize: 7, remoteSize: 7, syncedAt: 900,
+			localSize: 7, remoteSize: 7, remoteIdentityKey: "id:old.md", syncedAt: 900,
 		});
 		const { entity: local } = makeFile("new.md", "content", 1000);
 		const { entity: remote } = makeFile("new.md", "content", 2000);
@@ -274,7 +295,7 @@ describe("commitAction", () => {
 		expect(stateStore.records.get("new.md")!.remoteMtime).toBe(2000);
 	});
 
-	it("rename_remote with enableThreeWayMerge: stores content at new path", async () => {
+	it("rename_remote with enableThreeWayMerge: stores content under the terminal identity", async () => {
 		const buf = new TextEncoder().encode("content").buffer;
 		const localEntry = makeFile("new.md", "content", 1000);
 		localEntry.entity.hash = await sha256(buf);
@@ -285,13 +306,13 @@ describe("commitAction", () => {
 
 		await commitAction(withPublication(action), localEntry.entity, remote, makeCtx(true), proofFor(action));
 
-		expect(stateStore.contents.has("new.md")).toBe(true);
+		expect(stateStore.contents.has("id:new.md")).toBe(true);
 	});
 
 	it("cleanup: deletes SyncRecord", async () => {
 		stateStore.records.set("g.md", {
 			path: "g.md", hash: "", localMtime: 1000, remoteMtime: 1000,
-			localSize: 4, remoteSize: 4, syncedAt: 900,
+			localSize: 4, remoteSize: 4, remoteIdentityKey: "id:g.md", syncedAt: 900,
 		});
 		const expected = stateStore.records.get("g.md");
 		const action: SyncAction = { path: "g.md", action: "cleanup",
@@ -313,7 +334,7 @@ describe("commitAction", () => {
 
 		await commitAction(withPublication(action), localEntry.entity, remote, makeCtx(true));
 
-		expect(stateStore.contents.has("h.md")).toBe(true);
+		expect(stateStore.contents.has("id:h.md")).toBe(true);
 	});
 
 	it("does not attach bytes edited after publication to the committed merge base", async () => {
@@ -326,7 +347,7 @@ describe("commitAction", () => {
 		await commitAction(withPublication({ path: "a.md", action: "push" }), local, remote, makeCtx(true));
 
 		expect(stateStore.records.get("a.md")?.hash).toBe(local.hash);
-		expect(stateStore.contents.has("a.md")).toBe(false);
+		expect(stateStore.contents.has("remote-a")).toBe(false);
 	});
 
 	it("stores the proved transfer bytes when a completed push source was renamed", async () => {
@@ -342,7 +363,7 @@ describe("commitAction", () => {
 			logger: { warn } as unknown as Logger,
 		}, { action, intendedContent: bytes, verifiedOutputs: [] } as unknown as TerminalActionProof);
 
-		expect(new Uint8Array(stateStore.contents.get("old.md")!)).toEqual(new Uint8Array(bytes));
+		expect(new Uint8Array(stateStore.contents.get("remote-old")!)).toEqual(new Uint8Array(bytes));
 		expect(warn).not.toHaveBeenCalled();
 	});
 
@@ -350,7 +371,7 @@ describe("commitAction", () => {
 		const entry = makeFile("a.md", "bytes", 1000);
 		localFs.files.set("a.md", entry);
 		await commitAction(withPublication({ path: "a.md", action: "match" }), entry.entity, entry.entity, makeCtx(true));
-		expect(stateStore.contents.has("a.md")).toBe(false);
+		expect(stateStore.contents.has("id:a.md")).toBe(false);
 	});
 
 	it("push with enableThreeWayMerge: logs warning and still upserts record when localFs.read throws", async () => {
@@ -374,7 +395,7 @@ describe("commitAction", () => {
 		});
 
 		expect(stateStore.records.has("h.md")).toBe(true);
-		expect(stateStore.contents.has("h.md")).toBe(false);
+		expect(stateStore.contents.has("id:h.md")).toBe(false);
 		expect(warnSpy).toHaveBeenCalledWith(
 			"Failed to store content for 3-way merge",
 			expect.objectContaining({ path: "h.md", error: "read failed" }),
@@ -391,17 +412,17 @@ describe("commitAction", () => {
 
 		await commitAction(withPublication(action), localEntry.entity, remote, makeCtx(true));
 
-		expect(stateStore.contents.has("image.png")).toBe(false);
+		expect(stateStore.contents.has("id:image.png")).toBe(false);
 	});
 
 	it("rename_remote with isFolder: atomically compares and rewrites all descendant records", async () => {
 		stateStore.records.set("A/f1.md", {
 			path: "A/f1.md", hash: "h1", localMtime: 1000, remoteMtime: 1000,
-			localSize: 7, remoteSize: 7, syncedAt: 900,
+			localSize: 7, remoteSize: 7, remoteIdentityKey: "id:A/f1.md", syncedAt: 900,
 		});
 		stateStore.records.set("A/f2.md", {
 			path: "A/f2.md", hash: "h2", localMtime: 1000, remoteMtime: 1000,
-			localSize: 5, remoteSize: 5, syncedAt: 900,
+			localSize: 5, remoteSize: 5, remoteIdentityKey: "id:A/f2.md", syncedAt: 900,
 		});
 		const action: SyncAction = {
 			path: "B",
@@ -430,7 +451,7 @@ describe("commitAction", () => {
 	it("rename_local with isFolder: rewrites descendant sync records", async () => {
 		stateStore.records.set("A/f1.md", {
 			path: "A/f1.md", hash: "h1", localMtime: 1000, remoteMtime: 1000,
-			localSize: 7, remoteSize: 7, syncedAt: 900,
+			localSize: 7, remoteSize: 7, remoteIdentityKey: "id:A/f1.md", syncedAt: 900,
 		});
 		const action: SyncAction = {
 			path: "B",

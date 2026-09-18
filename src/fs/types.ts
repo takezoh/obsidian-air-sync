@@ -76,4 +76,22 @@ export interface RenamePair {
 	newPath: string;
 	/** When true, this pair represents a folder rename (not a file rename) */
 	isFolder?: boolean;
+	/**
+	 * The producing filesystem's own `FileEntity` projection for `newPath` — i.e. the
+	 * `identityKey` a `stat`/`list` of the moved object reports, and nothing else.
+	 *
+	 * Optional by contract, not by accident: a producer that has no projected identity
+	 * for `newPath` omits the field, and a missing key is *no evidence* (ADR 0008's
+	 * third state) rather than a failure. Nothing infers, defaults, or substitutes a
+	 * value for an absent one.
+	 *
+	 * Forbidden sources for anything that crosses the `IFileSystem` boundary:
+	 * `AbstractMetadataCache.extractId`, `idAt`, `getPathById` and `snapshotPathsById`.
+	 * Those are cache-internal *address* functions and are deliberately total — Dropbox's
+	 * `extractId` is `entry.id ?? entry.path_lower`, where the fallback is a real download
+	 * address — while the entity projection carries the provider's object id with no
+	 * fallback. The two are not defined to agree, so a synthetic address must never
+	 * escape the cache dressed as an identity.
+	 */
+	identityKey?: string;
 }

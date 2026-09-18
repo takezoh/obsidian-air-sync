@@ -7,7 +7,7 @@ const ts = await import("typescript");
 const ROOT = process.cwd();
 const SOURCE_ROOT = join(ROOT, "src");
 const MUTATING_SYNC_STATE_METHODS = new Set([
-	"put", "putContent", "delete", "clear", "rewritePaths", "compareAndPut", "compareAndMove",
+	"put", "putContent", "delete", "clear", "compareAndPut",
 	"compareAndDelete", "compareAndRewritePaths", "compareAndPutContent",
 ]);
 
@@ -317,7 +317,7 @@ test("guard rejects aliased and bracketed SyncStateStore mutations", () => {
 	assert.throws(() => assert.deepEqual(sourceState.SyncStateStore.mutations, false));
 });
 
-for (const method of ["compareAndPut", "compareAndMove", "compareAndDelete", "compareAndRewritePaths", "compareAndPutContent"]) {
+for (const method of ["compareAndPut", "compareAndDelete", "compareAndRewritePaths", "compareAndPutContent"]) {
 	for (const access of [`records.${method}`, `records["${method}"]`]) {
 		test(`guard recognizes destructured store mutation ${access}`, () => {
 			const source = parseSource(`import type { SyncStateStore } from "./state";

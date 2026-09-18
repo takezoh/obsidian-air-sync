@@ -72,6 +72,16 @@ authoritative state and over-engineering its persistence**:
 1. **The metadata cache is non-authoritative.** The only authoritative durable sync
    states are **A** (the clean-cycle cursor) and **B** (the per-file `SyncRecord`).
    Google Drive remains remote truth; never reason about sync correctness from the cache.
+   How **B** is *keyed* is storage mechanism subordinate to that commit-last rule and never
+   a second identity authority: `sync-records` (and the identically keyed `sync-content`)
+   is keyed by `remoteIdentityKey` and carries a **unique index over `path`**, so one remote
+   object holds at most one record by construction and a publication that would put two
+   records at one address is refused by the store rather than arbitrated by it. That index
+   **guards the path-uniqueness guarantee the filesystem layer already owes**; it decides
+   nothing about identity, and its abort means that guarantee is broken, not that this layer
+   has a claimant to choose between. Identity policy stays where Admission owns it
+   (`identity-component-decision.ts`), which is why the record store's key can change without
+   any change to the admission-authority fixture.
 
 2. **Every checkpoint-capable attempt must close its live working view.** A clean attempt
    commits; every other returned outcome aborts; an exception aborts before classification

@@ -581,7 +581,15 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.close();
 		});
 
-		it("abandons an unprovable local rename and replans from current facts", async () => {
+		// This input used to be abandoned as `remote_identity_missing`, but only because
+		// a baseline carrying no identity could be bound to a remote address
+		// positionally. The record layer's identity floor removes that input class and
+		// the arm with it, so the record and the remote object at "A.md" are now one
+		// identity and the tracker's case-only rename is provable from current facts:
+		// the diverged sides converge in a single cycle through the ordinary conflict
+		// route. `remote_identity_missing` is still pinned where it remains reachable —
+		// see plan-admission.test.ts's local case-alias case.
+		it("converges a diverged case-only local rename from current facts", async () => {
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();
 			confirmRemoteWrites(remoteFs);
@@ -609,28 +617,20 @@ describe("SyncOrchestrator", () => {
 			const orchestrator = new SyncOrchestrator(deps);
 			await orchestrator.state.put({
 				path: "A.md", hash: "different-baseline-hash", localMtime: 1000, remoteMtime: 1000,
-				localSize: 3, remoteSize: 3, syncedAt: 900,
+				localSize: 3, remoteSize: 3, remoteIdentityKey: "id:A.md", syncedAt: 900,
 			});
 			await orchestrator.runSync();
 
-			expect(remoteWrite).not.toHaveBeenCalled();
-			expect(remoteDelete).not.toHaveBeenCalled();
-			expect(commitCheckpoint).not.toHaveBeenCalled();
-			expect(deps.onStatusChange).toHaveBeenLastCalledWith("partial_error");
-			expect(deps.notify).toHaveBeenCalledWith("Sync: 1 error");
-			expect(warn).toHaveBeenCalledWith("Sync completed with errors", expect.objectContaining({
-				failed: 1,
-			}));
-			expect(warn).toHaveBeenCalledWith("Sync plan component failed Admission", expect.objectContaining({
-				reasons: ["remote_identity_missing"],
-			}));
-			expect(tracker.getRenamePairs()).toEqual(new Map());
-
-			await orchestrator.runSync();
-			expect(deps.onStatusChange).toHaveBeenLastCalledWith("idle");
+			// Both versions survive: the object is renamed to the local spelling and the
+			// losing remote bytes are preserved beside it. Nothing is deleted.
+			expect([...remoteFs.files.keys()].sort()).toEqual(["a.conflict.md", "a.md"]);
 			expect(remoteWrite).toHaveBeenCalled();
+			expect(remoteDelete).not.toHaveBeenCalled();
+			expect(warn).not.toHaveBeenCalled();
+			expect(deps.onStatusChange).toHaveBeenLastCalledWith("idle");
 			expect(commitCheckpoint).toHaveBeenCalledOnce();
-			expect(abortWorkingView).toHaveBeenCalledOnce();
+			expect(abortWorkingView).not.toHaveBeenCalled();
+			expect(tracker.getRenamePairs()).toEqual(new Map());
 			await orchestrator.close();
 		});
 
@@ -639,7 +639,9 @@ describe("SyncOrchestrator", () => {
 			const localFs = createMockLocalFs();
 			const remoteFs = createMockRemoteFs();
 			addFile(localFs, "C.md", "same", 1000);
-			addFile(remoteFs, "c.md", "same", 1000);
+			// One remote object: the record was committed at "C.md" and the provider
+			// then renamed it to "c.md" without changing its identity.
+			addFile(remoteFs, "c.md", "same", 1000).identityKey = "remote-c";
 			confirmMockPath(remoteFs, "c.md");
 			const settings = baseMockSettings({ backendType: "test", vaultId: `test-${Math.random()}` });
 			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
@@ -661,7 +663,7 @@ describe("SyncOrchestrator", () => {
 			const orchestrator = new SyncOrchestrator(deps);
 			await orchestrator.state.put({
 				path: "C.md", hash: "baseline", localMtime: 1000, remoteMtime: 1000,
-				localSize: 4, remoteSize: 4, syncedAt: 900,
+				localSize: 4, remoteSize: 4, remoteIdentityKey: "remote-c", syncedAt: 900,
 			});
 			const localRename = vi.spyOn(localFs, "rename");
 			const localDelete = vi.spyOn(localFs, "delete");
@@ -708,7 +710,7 @@ describe("SyncOrchestrator", () => {
 			const content = new TextEncoder().encode("same").buffer;
 			await orchestrator.state.put({
 				path: "a.md", hash: await sha256(content), localMtime: 1000, remoteMtime: 1000,
-				localSize: 4, remoteSize: 4, syncedAt: 900,
+				localSize: 4, remoteSize: 4, remoteIdentityKey: "id:a.md", syncedAt: 900,
 			});
 			const localWrite = vi.spyOn(localFs, "write");
 			const remoteWrite = vi.spyOn(remoteFs, "write");
@@ -1050,7 +1052,7 @@ describe("SyncOrchestrator", () => {
 				localSize: base.length, remoteSize: base.length,
 				remoteIdentityKey: "R", syncedAt: 900,
 			});
-			await orchestrator.state.putContent("old.md", baseBytes);
+			await orchestrator.state.putContent("R", baseBytes);
 
 			await orchestrator.runSync();
 
@@ -1556,6 +1558,7 @@ describe("SyncOrchestrator", () => {
 				remoteMtime: 1000,
 				localSize: 7,
 				remoteSize: 7,
+				remoteIdentityKey: "id:old.md",
 				syncedAt: 900,
 			});
 
@@ -1609,6 +1612,7 @@ describe("SyncOrchestrator", () => {
 				remoteMtime: 1000,
 				localSize: 7,
 				remoteSize: 7,
+				remoteIdentityKey: "id:PRUEBA.md",
 				syncedAt: 900,
 			});
 
@@ -1670,6 +1674,7 @@ describe("SyncOrchestrator", () => {
 					remoteMtime: 1000,
 					localSize: 7,
 					remoteSize: 7,
+					remoteIdentityKey: `id:Templates/${name}`,
 					syncedAt: 900,
 				});
 			}
@@ -2427,6 +2432,7 @@ describe("SyncOrchestrator", () => {
 				remoteMtime: 1000,
 				localSize: 4,
 				remoteSize: 4,
+				remoteIdentityKey: "id:synced.md",
 				syncedAt: 900,
 			});
 
@@ -2465,7 +2471,7 @@ describe("SyncOrchestrator", () => {
 			const orchestrator = new SyncOrchestrator(deps);
 			await orchestrator.state.put({
 				path: "synced.md", hash: "", localMtime: 1000, remoteMtime: 1000,
-				localSize: 4, remoteSize: 4, syncedAt: 900,
+				localSize: 4, remoteSize: 4, remoteIdentityKey: "id:synced.md", syncedAt: 900,
 			});
 
 			await orchestrator.rescan();
@@ -2519,6 +2525,7 @@ describe("SyncOrchestrator", () => {
 				remoteMtime: 1000,
 				localSize: 4,
 				remoteSize: 4,
+				remoteIdentityKey: "id:synced.md",
 				syncedAt: 900,
 			});
 
@@ -2609,7 +2616,7 @@ describe("SyncOrchestrator", () => {
 			const orchestrator = new SyncOrchestrator(deps);
 			await orchestrator.state.put({
 				path: "synced.md", hash: "", localMtime: 1000, remoteMtime: 1000,
-				localSize: 4, remoteSize: 4, syncedAt: 900,
+				localSize: 4, remoteSize: 4, remoteIdentityKey: "id:synced.md", syncedAt: 900,
 			});
 
 			await orchestrator.runSync();
@@ -2687,6 +2694,7 @@ describe("SyncOrchestrator", () => {
 				remoteMtime: 1000,
 				localSize: 4,
 				remoteSize: 4,
+				remoteIdentityKey: "id:synced.md",
 				syncedAt: 900,
 			});
 
@@ -2899,6 +2907,7 @@ describe("SyncOrchestrator", () => {
 				remoteMtime: 1000,
 				localSize: 4,
 				remoteSize: 4,
+				remoteIdentityKey: "id:synced.md",
 				syncedAt: 900,
 			});
 
@@ -2945,7 +2954,7 @@ describe("SyncOrchestrator", () => {
 			const orchestrator = new SyncOrchestrator(deps);
 			await orchestrator.state.put({
 				path: "synced.md", hash: "", localMtime: 1000, remoteMtime: 1000,
-				localSize: 4, remoteSize: 4, syncedAt: 900,
+				localSize: 4, remoteSize: 4, remoteIdentityKey: "id:synced.md", syncedAt: 900,
 			});
 
 			await orchestrator.runSync();
@@ -3233,6 +3242,7 @@ describe("SyncOrchestrator", () => {
 				remoteMtime: 1000,
 				localSize: 5,
 				remoteSize: 5,
+				remoteIdentityKey: "id:a.md",
 				syncedAt: 900,
 			});
 

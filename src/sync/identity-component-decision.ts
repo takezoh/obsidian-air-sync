@@ -1,4 +1,4 @@
-/* eslint max-lines: ["error", 785] -- relation abandonment, exact-path binding, preservation-cover authorization, and Prefer-local eligibility must stay under the sole identity-policy owner. */
+/* eslint max-lines: ["error", 800] -- relation abandonment, exact-path binding, preservation-cover authorization, and Prefer-local eligibility must stay under the sole identity-policy owner. Re-pinned from 785 for the two corrected publication expectations: a replacement continues no row, so the incumbent it names is the occupant of the claimed address and nothing else. Re-pinned from 789 for the rename guard's cross-source note, which follows the loop rather than preceding it so the guard keeps the line addresses this change's contracts cite; this directive counts comments. */
 import type { FileEntity } from "../fs/types";
 import type { IdentityComponent } from "./plan-admission-graph";
 import { selectReportFamily } from "./identity-component-report-family";
@@ -106,6 +106,17 @@ export function decideIdentityComponent(
 		if (report.side === "remote" && report.identityKey &&
 			current.remote.get(report.newPath)?.identityKey !== report.identityKey) return fail("conflicting_identity");
 	}
+	// The identity comparison above is cross-source, and deliberately sits here rather
+	// than above the loop so that its four lines keep the addresses every contract in
+	// this change cites. `report.identityKey` is the producing filesystem's own
+	// projection for `newPath`, carried intact from the `RenamePair`; `current.remote` is
+	// this cycle's own observation of that address. Two sources, so a disagreement is a
+	// fact about the world: it fails the component, blocks cycle completeness, leaves the
+	// checkpoint uncommitted and persists nothing. A report carrying no key is not
+	// checked at all — absence is no evidence (ADR 0008) and no component fails for a
+	// missing key. Remote only, permanently: a local endpoint has no provider identity to
+	// compare and nothing here reads one as evidence; `src/fs/local/local-fs.test.ts`
+	// pins that boundary and the two local cases this change does not improve.
 	for (const claim of component.evidence) {
 		if (claim.kind !== "alias") continue;
 		if (!compatible(current, claim.requestedPath, claim.resolvedPath)) return fail("unknown_scope");
@@ -405,9 +416,7 @@ function bindFiles(facts: CurrentFacts, reports: readonly RenameEvidence[]): Fil
 	for (const baseline of facts.records.values()) {
 		const remoteReport = reports.find((report) => report.side === "remote" &&
 			!report.isFolder && report.oldPath === baseline.path);
-		const trackedRemote = baseline.remoteIdentityKey
-			? currentByIdentity.get(baseline.remoteIdentityKey)
-			: facts.remote.get(remoteReport?.newPath ?? baseline.path);
+		const trackedRemote = currentByIdentity.get(baseline.remoteIdentityKey);
 		const localReport = reports.find((report) => report.side === "local" &&
 			!report.isFolder && report.oldPath === baseline.path);
 		const remote = trackedRemote ?? (localReport ? facts.remote.get(localReport.newPath) : undefined);
@@ -417,7 +426,7 @@ function bindFiles(facts: CurrentFacts, reports: readonly RenameEvidence[]): Fil
 		// Historical records at another identity's current destination are exact
 		// replacement expectations, not duplicate current-identity claims. Exclude
 		// them before exact binding can claim that other identity's occurrence.
-		if (!remote && baseline.remoteIdentityKey && facts.remote.get(baseline.path)?.identityKey &&
+		if (!remote && facts.remote.get(baseline.path)?.identityKey &&
 			facts.remote.get(baseline.path)?.identityKey !== baseline.remoteIdentityKey) continue;
 		const occurrenceClaimed = (local && claimedLocal.has(local.path)) ||
 			(remote && claimedRemote.has(remote.path));
@@ -456,7 +465,7 @@ function bindFiles(facts: CurrentFacts, reports: readonly RenameEvidence[]): Fil
 			remoteIdentitySource: trackedRemote, additionalRemote,
 			additionalLocal: recreated && destinationLocal && remote && !equal(destinationLocal, remote) ? destinationLocal : undefined,
 			replacement: (recreated && !!destinationLocal) || !!additionalRemote ||
-				(!!remote && !!baseline.remoteIdentityKey && remote.identityKey !== baseline.remoteIdentityKey),
+				(!!remote && remote.identityKey !== baseline.remoteIdentityKey),
 			publication: { source: baseline, destination: facts.records.get(path) } } });
 		if (destinationLocal) claimedLocal.add(destinationLocal.path);
 		if (remote) claimedRemote.add(remote.path);
@@ -505,10 +514,13 @@ function bindFiles(facts: CurrentFacts, reports: readonly RenameEvidence[]): Fil
 		const expected = relocated.has(path) ? undefined : baseline;
 		const releasedRemote = !remote && claimedRemote.has(path) &&
 			bound.some((file) => file.kind === "structural" && file.binding.move?.side === "remote" && file.binding.move.from === path);
+		const replacement = relocated.has(path) || (!!baseline?.remoteIdentityKey && !!remote?.identityKey &&
+			baseline.remoteIdentityKey !== remote.identityKey);
 		bound.push({ kind: "structural", binding: { path, local, remote, baseline: releasedRemote ? undefined : baseline, releasedRemote,
-			publication: { source: expected, destination: expected },
-			replacement: relocated.has(path) || (!!baseline?.remoteIdentityKey && !!remote?.identityKey &&
-				baseline.remoteIdentityKey !== remote.identityKey) } });
+			// A replacement continues no row: the incumbent is only the occupant of the
+			// claimed address, never also the row this publication carries forward.
+			publication: { source: replacement ? undefined : expected, destination: expected },
+			replacement } });
 	}
 	return bound;
 }
@@ -544,11 +556,14 @@ function materializeExactPath(
 	const expected = facts.records.get(path);
 	const comparisonBaseline = capability.kind === "preserve_present_side" && (!local || !remote)
 		? undefined : expected;
+	const replacement = !!expected?.remoteIdentityKey && !!remote?.identityKey &&
+		expected.remoteIdentityKey !== remote.identityKey;
 	const binding: BoundFile = {
 		path, local, remote, baseline: comparisonBaseline,
-		publication: { source: expected, destination: expected },
-		replacement: !!expected?.remoteIdentityKey && !!remote?.identityKey &&
-			expected.remoteIdentityKey !== remote.identityKey,
+		// A replacement continues no row: the incumbent is only the occupant of the
+		// claimed address, never also the row this publication carries forward.
+		publication: { source: replacement ? undefined : expected, destination: expected },
+		replacement,
 	};
 	return materializeFile(binding, facts, conflictStrategy, allowPreferLocalWin);
 }

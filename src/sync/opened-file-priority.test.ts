@@ -7,8 +7,10 @@ import { admitBatchObservation } from "./plan-admission";
 import { captureBatchObservation } from "./sync-cycle-planning";
 import { PriorityBatchState } from "./priority-batch-state";
 import { executePlan } from "./plan-executor";
+import type { Logger } from "../logging/logger";
+import type { SyncAction } from "./types";
 
-async function arrange(options: { tracked?: boolean; remoteIdentity?: boolean } = {}) {
+async function arrange(options: { tracked?: boolean } = {}) {
 	const localFs = createMockLocalFs();
 	const remoteFs = createMockRemoteFs();
 	const stateStore = createMockStateStore();
@@ -29,8 +31,7 @@ async function arrange(options: { tracked?: boolean; remoteIdentity?: boolean } 
 	if (options.tracked ?? true) {
 		await stateStore.put({
 			path: "note.md", hash: local.hash, localMtime: local.mtime, remoteMtime: 1,
-			localSize: local.size, remoteSize: local.size, syncedAt: 1,
-			...(options.remoteIdentity ?? true ? { remoteIdentityKey: "remote-id" } : {}),
+			localSize: local.size, remoteSize: local.size, remoteIdentityKey: "remote-id", syncedAt: 1,
 		});
 	}
 	const requestNormalLifecycle = vi.fn();
@@ -68,9 +69,12 @@ describe("syncOpenedFilePriority", () => {
 		},
 	);
 
-	it.each(["no_capability", "active_batch", "record_without_identity"] as const)(
+	// "record_without_identity" is gone with the branch it drove: a stored record
+	// carries a non-empty provider identity by construction, so the case it named
+	// cannot be arranged any more.
+	it.each(["no_capability", "active_batch"] as const)(
 		"immediately defers a tracked %s path", async (condition) => {
-			const ctx = await arrange({ remoteIdentity: condition !== "record_without_identity" });
+			const ctx = await arrange();
 			if (condition !== "no_capability") {
 				ctx.remoteFs.priority = { observe: vi.fn(), read: vi.fn() };
 			}
@@ -144,6 +148,48 @@ describe("syncOpenedFilePriority", () => {
 		expect(ctx.localTracker.getDirtyPaths().has("note.md")).toBe(true);
 		expect(ctx.invalidateCycle).toHaveBeenCalledOnce();
 		expect(ctx.requestNormalLifecycle).toHaveBeenCalledOnce();
+	});
+
+	// The record layer refuses a remote entity with no provider identity. This is not
+	// a cycle action, so the attempt takes the baseline commit's own established
+	// route: nothing is persisted, the target is invalidated and the work defers to
+	// the batch cycle, where commitAction's disposition applies.
+	it("takes no baseline and defers when the observed entity carries no provider identity", async () => {
+		const ctx = await arrange();
+		const warnings: unknown[][] = [];
+		const logger = {
+			debug: vi.fn(), info: vi.fn(), error: vi.fn(), flush: vi.fn(),
+			warn: (...args: unknown[]) => { warnings.push(args); },
+		};
+		const action: SyncAction = { path: "note.md", action: "pull" };
+		const before = await ctx.stateStore.get("note.md");
+		ctx.remoteFs.priority = {
+			observe: vi.fn().mockResolvedValue({
+				...ctx.observation,
+				entity: { ...ctx.observation.entity, identityKey: undefined },
+			}),
+			read: vi.fn().mockResolvedValue({
+				kind: "content", content: new TextEncoder().encode("new").buffer,
+			}),
+		};
+		const compareAndPut = vi.spyOn(ctx.stateStore, "compareAndPut");
+
+		expect(await syncOpenedFilePriority({
+			...ctx.base, target: { kind: "superseding", action },
+			logger: logger as unknown as Logger,
+		})).toBe("deferred_to_batch");
+
+		expect(compareAndPut).not.toHaveBeenCalled();
+		expect(await ctx.stateStore.get("note.md")).toEqual(before);
+		expect(ctx.localTracker.getDirtyPaths().has("note.md")).toBe(true);
+		expect(ctx.invalidate).toHaveBeenCalledWith(action);
+		expect(ctx.invalidateCycle).toHaveBeenCalledOnce();
+		expect(ctx.requestNormalLifecycle).toHaveBeenCalledOnce();
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]?.[0]).toBe("file-open priority baseline commit failed");
+		const details = warnings[0]?.[1] as { path: string; message: string };
+		expect(details.path).toBe("note.md");
+		expect(details.message).toContain("SyncRecord refused: remote entity carries no provider identity");
 	});
 
 	it("invalidates the exact admitted pull after CAS loss so normal I/O cannot follow", async () => {

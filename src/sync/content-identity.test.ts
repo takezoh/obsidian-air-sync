@@ -88,7 +88,7 @@ describe("sameContent", () => {
 describe("sameSynchronizedContent", () => {
 	const baseline: SyncRecord = {
 		path: "old.md", hash: "local-sha", localMtime: 1000, remoteMtime: 1000,
-		localSize: 100, remoteSize: 100, syncedAt: 1000,
+		localSize: 100, remoteSize: 100, remoteIdentityKey: "id:old.md", syncedAt: 1000,
 		remoteChecksum: { algo: "md5", value: "provider-md5" },
 	};
 	const local = entity({ path: "new.md", hash: "local-sha" });

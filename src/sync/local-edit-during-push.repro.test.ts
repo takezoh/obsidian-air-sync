@@ -22,8 +22,9 @@ async function fixture(md5Only: boolean) {
 			} } : null;
 		};
 	}
-	await stateStore.put(buildSyncRecord((await localFs.stat(path))!, (await remoteFs.stat(path))!, path));
-	stateStore.contents.set(path, new TextEncoder().encode("original\n").buffer);
+	const baseline = buildSyncRecord((await localFs.stat(path))!, (await remoteFs.stat(path))!, path);
+	await stateStore.put(baseline);
+	stateStore.contents.set(baseline.remoteIdentityKey, new TextEncoder().encode("original\n").buffer);
 	const observe = async () => admitBatchObservation(captureBatchObservation([{
 		path, local: (await localFs.stat(path))!, remote: (await remoteFs.stat(path))!,
 		prevSync: await stateStore.get(path),
@@ -70,7 +71,8 @@ describe("local-only edits while a captured push is in flight", () => {
 		expect(readText(f.localFs, f.path)).toBe(latest);
 		expect.soft(result.blocked.map((item) => item.reason)).toEqual([]);
 		expect.soft((await f.stateStore.get(f.path))?.hash).toBe(capturedLocal.hash);
-		expect.soft(new TextDecoder().decode(await f.stateStore.getContent(f.path))).toBe(uploaded);
+		expect.soft(new TextDecoder().decode(await f.stateStore.getContent(
+			(await f.stateStore.get(f.path))!.remoteIdentityKey))).toBe(uploaded);
 		const next = await f.observe();
 		expect.soft(next.executable.actions.map((action) => action.action)).toEqual(["push"]);
 		const replay = await executePlan(next.executable, f.context);

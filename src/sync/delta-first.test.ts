@@ -27,6 +27,7 @@ function baseline(path: string): SyncRecord {
 		remoteMtime: 1000,
 		localSize: 5,
 		remoteSize: 5,
+		remoteIdentityKey: `id:${path}`,
 		syncedAt: 900,
 	};
 }

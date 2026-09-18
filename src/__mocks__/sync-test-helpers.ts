@@ -1,6 +1,6 @@
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity, PathAuthority } from "../fs/types";
-import type { RecordRelocation, RenamePair, SyncRecord } from "../sync/types";
+import type { RecordRelocation, SyncRecord } from "../sync/types";
 import type { SyncStateStore } from "../sync/state";
 import type { AirSyncSettings } from "../settings";
 import { sha256 } from "../utils/hash";
@@ -19,12 +19,21 @@ import { normalizeSyncPath, validateRename } from "../utils/path";
  */
 export type MockFileSystem = IFileSystem & {
 	files: Map<string, { content: ArrayBuffer; entity: FileEntity }>;
+	/**
+	 * The provider identity a newly created object is born with. Remote mocks mint
+	 * one per created object and keep it across renames, as all three backends do;
+	 * the local mock mints none, because LocalFs never observes one.
+	 */
+	mintIdentity(path: string): string | undefined;
 };
 
 export function createMockFs(
 	name: string,
 	mutationPathAuthority: PathAuthority,
+	identityPrefix?: string,
 ): MockFileSystem {
+	const mintIdentity = (path: string) =>
+		identityPrefix === undefined ? undefined : `${identityPrefix}${path}`;
 	const files = new Map<
 		string,
 		{ content: ArrayBuffer; entity: FileEntity }
@@ -52,6 +61,7 @@ export function createMockFs(
 						size: 0,
 						mtime: 0,
 						hash: "",
+						identityKey: mintIdentity(current),
 					},
 				});
 			}
@@ -67,6 +77,7 @@ export function createMockFs(
 	return {
 		name,
 		files,
+		mintIdentity,
 		list() {
 			// Return fresh entities (real backends build a new FileEntity per call);
 			// a caller mutating a listing result must not corrupt stored state.
@@ -114,7 +125,7 @@ export function createMockFs(
 				size: content.byteLength,
 				mtime,
 				hash: "",
-				identityKey: existing?.identityKey,
+				identityKey: existing?.identityKey ?? mintIdentity(path),
 				backendMeta: existing?.backendMeta,
 			};
 			// Copy on store: real backends persist their own bytes, so a later
@@ -212,7 +223,7 @@ export function createMockLocalFs(): MockFileSystem {
 
 /** Remote mutations remain request echoes until a test models provider confirmation. */
 export function createMockRemoteFs(mutationPathAuthority: PathAuthority = "requested_echo"): MockFileSystem {
-	return createMockFs("remote", mutationPathAuthority);
+	return createMockFs("remote", mutationPathAuthority, "id:");
 }
 
 /** Model a provider observation that confirms one remote path and its descendants. */
@@ -231,8 +242,29 @@ export function createMockStateStore(): {
 	records: Map<string, SyncRecord>;
 	contents: Map<string, ArrayBuffer>;
 } & SyncStateStore {
+	// `records` stays the address index the real store's unique `path` index is, and
+	// `contents` is keyed by remote identity as `sync-content` now is. The row a
+	// publication continues is found by identity, exactly as `keyPath` finds it.
 	const records = new Map<string, SyncRecord>();
 	const contents = new Map<string, ArrayBuffer>();
+	const rowFor = (remoteIdentityKey: string): SyncRecord | undefined =>
+		[...records.values()].find((record) => record.remoteIdentityKey === remoteIdentityKey);
+	/** The two operations: a replacement ends the compared incumbent, a rename moves no row. */
+	const publish = (expectedRow: SyncRecord | undefined, record: SyncRecord,
+		expectedOccupant: SyncRecord | undefined): void => {
+		for (const ended of [expectedOccupant, expectedRow]) {
+			if (!ended || ended.remoteIdentityKey === record.remoteIdentityKey) continue;
+			records.delete(ended.path);
+			contents.delete(ended.remoteIdentityKey);
+		}
+		if (expectedRow && expectedRow.path !== record.path) records.delete(expectedRow.path);
+		records.set(record.path, record);
+		if (!expectedRow || !record.hash || expectedRow.hash !== record.hash ||
+			expectedRow.localSize !== record.localSize ||
+			expectedRow.remoteIdentityKey !== record.remoteIdentityKey) {
+			contents.delete(record.remoteIdentityKey);
+		}
+	};
 	return {
 		records,
 		contents,
@@ -256,73 +288,46 @@ export function createMockStateStore(): {
 			records.set(record.path, record);
 			return Promise.resolve();
 		},
-		compareAndPut(expected: SyncRecord | undefined, record: SyncRecord) {
-			if (JSON.stringify(records.get(record.path)) !== JSON.stringify(expected)) {
+		compareAndPut(expectedRow: SyncRecord | undefined, record: SyncRecord,
+			expectedOccupant: SyncRecord | undefined) {
+			const ended = expectedRow && expectedRow.remoteIdentityKey !== record.remoteIdentityKey
+				? expectedRow : undefined;
+			if (JSON.stringify(rowFor(record.remoteIdentityKey)) !==
+					JSON.stringify(ended ? undefined : expectedRow) ||
+				JSON.stringify(ended && rowFor(ended.remoteIdentityKey)) !== JSON.stringify(ended) ||
+				JSON.stringify(records.get(record.path)) !== JSON.stringify(expectedOccupant)) {
 				return Promise.resolve(false);
 			}
-			records.set(record.path, record);
-			if (!expected || !record.hash || expected.hash !== record.hash ||
-				expected.localSize !== record.localSize || expected.remoteIdentityKey !== record.remoteIdentityKey) {
-				contents.delete(record.path);
-			}
-			return Promise.resolve(true);
-		},
-		compareAndMove(expected: SyncRecord, record: SyncRecord,
-			destination: SyncRecord | undefined = expected.path === record.path ? expected : undefined) {
-			if (JSON.stringify(records.get(expected.path)) !== JSON.stringify(expected) ||
-				JSON.stringify(records.get(record.path)) !== JSON.stringify(destination)) {
-				return Promise.resolve(false);
-			}
-			if (expected.path !== record.path) records.delete(expected.path);
-			records.set(record.path, record);
-			contents.delete(expected.path);
-			contents.delete(record.path);
+			publish(expectedRow, record, expectedOccupant);
 			return Promise.resolve(true);
 		},
 		compareAndRewritePaths(relocations: readonly RecordRelocation[]) {
-			if (new Set(relocations.map((item) => item.source.path)).size !== relocations.length ||
+			const sources = new Set(relocations.map((item) => item.source.path));
+			if (sources.size !== relocations.length ||
 				new Set(relocations.map((item) => item.terminal.path)).size !== relocations.length ||
+				relocations.some((item) => item.source.path !== item.terminal.path &&
+					sources.has(item.terminal.path)) ||
 				relocations.some((item) =>
-					JSON.stringify(records.get(item.source.path)) !== JSON.stringify(item.source) ||
+					JSON.stringify(rowFor(item.source.remoteIdentityKey)) !== JSON.stringify(item.source) ||
 					JSON.stringify(records.get(item.terminal.path)) !== JSON.stringify(item.destination))) {
 				return Promise.resolve(false);
 			}
-			for (const item of relocations) {
-				if (item.source.path !== item.terminal.path) records.delete(item.source.path);
-				contents.delete(item.source.path);
-				contents.delete(item.terminal.path);
-			}
-			for (const item of relocations) records.set(item.terminal.path, item.terminal);
+			for (const item of relocations) publish(item.source, item.terminal, item.destination);
 			return Promise.resolve(true);
 		},
 		compareAndDelete(path: string, expected: SyncRecord | undefined) {
-			if (JSON.stringify(records.get(path)) !== JSON.stringify(expected)) return Promise.resolve(false);
-			records.delete(path);
-			contents.delete(path);
+			if (JSON.stringify(expected && rowFor(expected.remoteIdentityKey)) !== JSON.stringify(expected) ||
+				JSON.stringify(records.get(path)) !== JSON.stringify(expected)) return Promise.resolve(false);
+			if (expected) {
+				records.delete(expected.path);
+				contents.delete(expected.remoteIdentityKey);
+			}
 			return Promise.resolve(true);
 		},
 		delete(path: string) {
+			const record = records.get(path);
 			records.delete(path);
-			contents.delete(path);
-			return Promise.resolve();
-		},
-		rewritePaths(renames: RenamePair[]) {
-			for (const { oldPath, newPath } of renames) {
-				const record = records.get(oldPath);
-				if (record) {
-					records.delete(oldPath);
-					records.set(newPath, {
-						...record,
-						path: newPath,
-						syncedAt: Date.now(),
-					});
-				}
-				const content = contents.get(oldPath);
-				if (content) {
-					contents.delete(oldPath);
-					contents.set(newPath, content);
-				}
-			}
+			if (record) contents.delete(record.remoteIdentityKey);
 			return Promise.resolve();
 		},
 		clear() {
@@ -330,19 +335,19 @@ export function createMockStateStore(): {
 			contents.clear();
 			return Promise.resolve();
 		},
-		putContent(path: string, content: ArrayBuffer) {
-			contents.set(path, content);
+		putContent(remoteIdentityKey: string, content: ArrayBuffer) {
+			contents.set(remoteIdentityKey, content);
 			return Promise.resolve();
 		},
 		compareAndPutContent(expected: SyncRecord, content: ArrayBuffer) {
-			if (JSON.stringify(records.get(expected.path)) !== JSON.stringify(expected)) {
+			if (JSON.stringify(rowFor(expected.remoteIdentityKey)) !== JSON.stringify(expected)) {
 				return Promise.resolve(false);
 			}
-			contents.set(expected.path, content);
+			contents.set(expected.remoteIdentityKey, content);
 			return Promise.resolve(true);
 		},
-		getContent(path: string) {
-			return Promise.resolve(contents.get(path));
+		getContent(remoteIdentityKey: string) {
+			return Promise.resolve(contents.get(remoteIdentityKey));
 		},
 	} as unknown as {
 		records: Map<string, SyncRecord>;
@@ -355,6 +360,11 @@ export function makeFile(
 	path: string,
 	content: string,
 	mtime = 1000,
+	// A remote entity always arrives with a provider identity, and the record layer
+	// refuses to baseline one that does not. Pass "" for the empty-identity case;
+	// spread the entity and override `identityKey` to model an absent one, since an
+	// explicit `undefined` argument re-selects this default.
+	identityKey: string | undefined = `id:${path}`,
 ): { entity: FileEntity; content: ArrayBuffer } {
 	const buf = new TextEncoder().encode(content).buffer;
 	return {
@@ -364,6 +374,7 @@ export function makeFile(
 			size: buf.byteLength,
 			mtime,
 			hash: "",
+			identityKey,
 		},
 		content: buf,
 	};
@@ -395,6 +406,7 @@ export function addFile(
 					size: 0,
 					mtime: 0,
 					hash: "",
+					identityKey: fs.mintIdentity(current),
 				};
 				fs.files.set(current, {
 					content: new ArrayBuffer(0),
@@ -410,6 +422,7 @@ export function addFile(
 		size: buf.byteLength,
 		mtime,
 		hash: "",
+		identityKey: fs.mintIdentity(path),
 	};
 	fs.files.set(path, { content: buf, entity });
 	return entity;

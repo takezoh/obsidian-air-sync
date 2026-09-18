@@ -40,6 +40,7 @@ function baselineRecord(path: string, hash = "h"): SyncRecord {
 		remoteMtime: 1000,
 		localSize: CONTENT.length,
 		remoteSize: CONTENT.length,
+		remoteIdentityKey: `id:${path}`,
 		syncedAt: 900,
 	};
 }

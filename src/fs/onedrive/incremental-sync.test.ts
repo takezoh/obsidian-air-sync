@@ -48,6 +48,15 @@ function ctx(cache: OneDriveMetadataCache, client: OneDriveClient) {
 	return { cache, client, rootId: ROOT };
 }
 
+/**
+ * The identity a `list()`/`stat()` of `path` would report — the cache's own entity
+ * projection. Rename pairs are asserted against THIS, not against the raw delta id,
+ * so a projection that stopped agreeing with the id would fail the case.
+ */
+function projectedIdentity(cache: OneDriveMetadataCache, path: string): string | undefined {
+	return cache.toEntity(path, cache.getFile(path)!).identityKey;
+}
+
 describe("applyOneDriveDelta", () => {
 	it("upserts items, removes deleted subtrees, and returns the new cursor token", async () => {
 		const cache = seededCache();
@@ -87,7 +96,11 @@ describe("applyOneDriveDelta", () => {
 		expect(cache.hasFile("renamed.md")).toBe(true);
 		expect(cache.hasFile("a.md")).toBe(false);
 		expect(cache.getPathById("f1")).toBe("renamed.md");
-		expect(result.renamedPaths).toEqual([{ oldPath: "a.md", newPath: "renamed.md", isFolder: undefined }]);
+		expect(result.renamedPaths).toEqual([
+			{ oldPath: "a.md", newPath: "renamed.md", isFolder: undefined, identityKey: projectedIdentity(cache, "renamed.md") },
+		]);
+		// …and that projection is the id the delta entry carried.
+		expect(result.renamedPaths[0]?.identityKey).toBe("f1");
 	});
 
 	it("emits a rename edge for a same-id casing-only rename", async () => {
@@ -99,8 +112,9 @@ describe("applyOneDriveDelta", () => {
 		if (result.needsFullScan) throw new Error("unexpected resync");
 
 		expect(result.renamedPaths).toEqual([
-			{ oldPath: "A.md", newPath: "a.md", isFolder: undefined },
+			{ oldPath: "A.md", newPath: "a.md", isFolder: undefined, identityKey: projectedIdentity(cache, "a.md") },
 		]);
+		expect(result.renamedPaths[0]?.identityKey).toBe("f1");
 		expect(cache.getPathById("f1")).toBe("a.md");
 	});
 
@@ -154,7 +168,10 @@ describe("applyOneDriveDelta", () => {
 		expect(cache.hasFile("papers")).toBe(true);
 		expect(cache.hasFile("papers/b.md")).toBe(true);
 		expect(cache.hasFile("dir/b.md")).toBe(false);
-		expect(result.renamedPaths).toEqual([{ oldPath: "dir", newPath: "papers", isFolder: true }]);
+		expect(result.renamedPaths).toEqual([
+			{ oldPath: "dir", newPath: "papers", isFolder: true, identityKey: projectedIdentity(cache, "papers") },
+		]);
+		expect(result.renamedPaths[0]?.identityKey).toBe("d1");
 	});
 
 	it("signals needsFullScan on a 410 resync (cursor expired)", async () => {

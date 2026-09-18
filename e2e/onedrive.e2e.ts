@@ -14,6 +14,24 @@ import {
 } from "./helpers/isolation";
 import { runRenameSafetyE2E } from "./helpers/rename-safety";
 import { runPriorityFidelityE2E } from "./helpers/priority-fidelity";
+import type { MovedObjectIdentity } from "../tests/fs/contracts/caching-remote-fs.contract";
+
+/**
+ * What OneDrive's own entity projection makes of a moved object's identity, against the
+ * LIVE API. Same disposition the family declares to the fake-backed unit contract
+ * (`tests/fs/onedrive/caching-remote-fs.contract-harness.ts`) — stated separately here
+ * because a fake that always hands over a complete driveItem cannot establish it for
+ * `/delta`, which is the whole point of ADR 0003.
+ */
+const ONEDRIVE_MOVED_OBJECT_IDENTITY: MovedObjectIdentity = {
+	determinate: true,
+	reason:
+		"oneDriveItemToEntity sets identityKey: item.id for files and folders alike, with " +
+		"no fallback, and every driveItem carries an id — onedrive/types.ts declares " +
+		"`id: string`, not an optional. A live /delta item that omitted it would project " +
+		"no identity, so the pair would name nothing and buildSyncRecord would refuse the " +
+		"record it feeds.",
+};
 
 /**
  * Opt-in real-cloud e2e (ADR 0003): runs the SAME `runIFileSystemContract` the
@@ -88,6 +106,7 @@ if (!creds || !clientId) {
 
 	runRenameSafetyE2E("OneDriveFs", {
 		backendType: "onedrive",
+		movedObjectIdentity: ONEDRIVE_MOVED_OBJECT_IDENTITY,
 		makeBackend: async () => {
 			const childId = await makeOneDriveChild(client, parentId);
 			const store = new MetadataStore<OneDriveItem>(crypto.randomUUID(), {

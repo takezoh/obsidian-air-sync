@@ -5,8 +5,8 @@ import type { DropboxEntry, DropboxListFolderResponse } from "../../../src/fs/dr
 import { MetadataStore } from "../../../src/store/metadata-store";
 import { DropboxFs } from "../../../src/fs/dropbox";
 import { dbxFile, dbxFolder, dbxDeleted } from "../../../src/fs/dropbox/test-helpers";
-import { runCachingRemoteFsContract } from "../contracts/caching-remote-fs.contract";
-import type { CachingRemoteFsHarness } from "../contracts/caching-remote-fs.contract";
+import { runRemoteFamilyCachingContract } from "../contracts/caching-remote-fs.contract";
+import type { RemoteFamilyCachingHarness } from "../contracts/caching-remote-fs.contract";
 
 vi.mock("obsidian");
 
@@ -22,7 +22,7 @@ const OUTSIDE_PATH = "/outside";
  * behavior intact through the Dropbox seams (getStartCursor / fullList / fetchChanges
  * plus the refreshRootPath re-anchor), including same-process abort/reload.
  */
-function makeDropboxHarness(): CachingRemoteFsHarness<DropboxEntry> {
+function makeDropboxHarness(): RemoteFamilyCachingHarness<DropboxEntry> {
 	const baseline = new Map<string, DropboxEntry>(); // absolute path → entry
 	const events: DropboxEntry[] = []; // delta entries (deletes / upserts), append-only
 	/** Folder path → its subtree, held outside the bound root until it is moved in. */
@@ -56,6 +56,38 @@ function makeDropboxHarness(): CachingRemoteFsHarness<DropboxEntry> {
 
 	const abs = (path: string): string => `${ROOT_PATH}/${path}`;
 	const outsideAbs = (path: string): string => `${OUTSIDE_PATH}/${path}`;
+
+	/**
+	 * Dropbox is path-addressed: a move re-keys the entry (and every descendant) to a
+	 * new absolute path, reported as deleted(old)+file/folder(new) sharing the id.
+	 * `list_folder/continue` does NOT guarantee which half of a pair lands first, so
+	 * both windowings are faithful and the harness can emit either (ADR 0006).
+	 */
+	const stageRename = (
+		oldPath: string,
+		newPath: string,
+		opts: { isFolder?: boolean } | undefined,
+		deletedFirst: boolean,
+	): void => {
+		const absOld = abs(oldPath);
+		if (!baseline.has(absOld)) throw new Error(`stageRemoteRename: no such path "${oldPath}"`);
+		const oldPrefix = absOld + "/";
+		const moved: DropboxEntry[] = [];
+		const deletes: DropboxEntry[] = [];
+		for (const [p, e] of [...baseline.entries()]) {
+			const isSelf = p === absOld;
+			if (!isSelf && !(opts?.isFolder && p.startsWith(oldPrefix))) continue;
+			baseline.delete(p);
+			const np = isSelf ? abs(newPath) : abs(newPath) + "/" + p.substring(oldPrefix.length);
+			const movedEntry: DropboxEntry = { ...e, name: np.split("/").pop()!, path_lower: np.toLowerCase(), path_display: np };
+			baseline.set(np, movedEntry);
+			moved.push(movedEntry);
+			deletes.push(dbxDeleted(p));
+		}
+		const [first, second] = deletedFirst ? [deletes, moved] : [moved, deletes];
+		for (const e of first) events.push(e);
+		for (const e of second) events.push(e);
+	};
 
 	return {
 		makeStore: (id) => new MetadataStore<DropboxEntry>(id, { dbNamePrefix: "air-sync-dropbox-contract", version: 1 }),
@@ -99,31 +131,48 @@ function makeDropboxHarness(): CachingRemoteFsHarness<DropboxEntry> {
 			events.push(dbxDeleted(abs(path)));
 		},
 		failNextDeltaAfterFirstPage: () => { failAfterFirstPage = true; },
-		// Dropbox is path-addressed: a move re-keys the entry (and every descendant) to a
-		// new absolute path, reported as deleted(old)+file/folder(new) sharing the id. We
-		// list the DELETES FIRST — the adversarial ordering ADR 0006 makes safe.
-		stageRemoteRename: (oldPath, newPath, opts) => {
-			const absOld = abs(oldPath);
-			if (!baseline.has(absOld)) throw new Error(`stageRemoteRename: no such path "${oldPath}"`);
-			const oldPrefix = absOld + "/";
-			const moved: DropboxEntry[] = [];
-			const deletes: DropboxEntry[] = [];
-			for (const [p, e] of [...baseline.entries()]) {
-				const isSelf = p === absOld;
-				if (!isSelf && !(opts?.isFolder && p.startsWith(oldPrefix))) continue;
-				baseline.delete(p);
-				const np = isSelf ? abs(newPath) : abs(newPath) + "/" + p.substring(oldPrefix.length);
-				const movedEntry: DropboxEntry = { ...e, name: np.split("/").pop()!, path_lower: np.toLowerCase(), path_display: np };
-				baseline.set(np, movedEntry);
-				moved.push(movedEntry);
-				deletes.push(dbxDeleted(p));
-			}
-			for (const d of deletes) events.push(d); // deletes first (adversarial)
-			for (const m of moved) events.push(m);
+		// The default lists the DELETES FIRST — the adversarial ordering ADR 0006 makes
+		// safe, and the one that previously degraded a folder rename to a file-by-file
+		// delete+pull.
+		stageRemoteRename: (oldPath, newPath, opts) => stageRename(oldPath, newPath, opts, true),
+		// The path is emptied by a tombstone and immediately reclaimed by a file with a
+		// DIFFERENT `id:` — a real Dropbox history (ids are never reused) and exactly the
+		// path-keyed `upsertedPaths` reclaim shape ADR 0006 guards: the tombstone and the
+		// upsert name the same path, so the upsert is authoritative and the tombstone is
+		// skipped. Tombstone first, matching this harness's adversarial default.
+		stageRemoteRecreateWithNewId: (path) => {
+			const absPath = abs(path);
+			if (!baseline.delete(absPath)) throw new Error(`stageRemoteRecreateWithNewId: no such path "${path}"`);
+			events.push(dbxDeleted(absPath));
+			const created = dbxFile(`f${++idSeq}`, absPath);
+			baseline.set(absPath, created);
+			events.push(created);
+		},
+		movedObjectIdentity: {
+			determinate: true,
+			reason:
+				"dropboxEntryToEntity sets identityKey: entry.id with NO fallback (never " +
+				"extractId's path_lower address), and every entry this contract moves carries " +
+				"one. An id-less entry cannot reach a pair on this route at all: " +
+				"incremental-sync.ts applyUpsertEntry resolves the moved-from path only when " +
+				"`entry.id` is present, so an id-less upsert surfaces as delete+add. The " +
+				"absent-identity shape is reachable only on the full-scan route — a case-only " +
+				"rename whose path_lower surrogate key survives — and is witnessed there by " +
+				"src/fs/caching/remote-fs.contract.test.ts, which asserts the pair carries no " +
+				"identity and that this differs from cache.idAt's path_lower.",
+		},
+		renameOrderings: {
+			encoding: "orderable-pair",
+			reason:
+				"Dropbox is path-addressed: list_folder/continue reports a move as " +
+				"deleted(old) + file/folder(new) sharing a stable id, and does NOT guarantee " +
+				"the add precedes the delete — so both windowings are faithful and both are " +
+				"staged here (ADR 0006).",
+			stageReversed: (oldPath, newPath, opts) => stageRename(oldPath, newPath, opts, false),
 		},
 	};
 }
 
 export function registerDropboxCachingContract(): void {
-	runCachingRemoteFsContract("DropboxFs", makeDropboxHarness);
+	runRemoteFamilyCachingContract("DropboxFs", makeDropboxHarness);
 }

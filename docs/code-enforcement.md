@@ -296,7 +296,7 @@ these green when touching the pipeline:
 
 | Principle | Pinned by |
 |---|---|
-| **Two-authority durable sync state** — only the clean-cycle remote cursor and per-file successful `SyncRecord` are authoritative; the complete remote cache is a derived co-commit | `sync-state-ownership-guard.test.mjs` (run by `npm run lint:bot-repro`) |
+| **Two-authority durable sync state** — only the clean-cycle remote cursor and per-file successful `SyncRecord` are authoritative; the complete remote cache is a derived co-commit. The guard's mutating-method set is exactly `SyncStateStore`'s write surface: `put`, `putContent`, `delete`, `clear`, `compareAndPut`, `compareAndDelete`, `compareAndRewritePaths`, `compareAndPutContent` | `sync-state-ownership-guard.test.mjs` (run by `npm run lint:bot-repro`) |
 | **Single Admission identity authority** — bind current component facts before content comparison; no action-first APIs, foreign policy imports, action-bearing observations, or retained proof | `sync-admission-authority-guard.test.mjs`, `sync/plan-admission.test.ts` |
 | **Remote backend completeness** — every registered provider resolves to an exact catalogued filesystem family, and every family runs all four shared contracts | `fs/registry.test.ts`, `tests/fs/remote-backend-contracts.test.ts` |
 | **#3 delta-first** — the hot path stats only dirty paths and never calls `list()` (full scans are cold-start only) | `sync/delta-first.test.ts` |
@@ -316,11 +316,24 @@ constructor-parameter fields), every production property/element access to
 references, constructors, and mutating calls for `SyncStateStore`, `MetadataStore`, and
 `IDBHelper`. It also inventories direct `indexedDB.open` accesses. Its receiver tracking
 covers direct, aliased, destructured, and bracket-notation `SyncStateStore` calls,
-including exact record/content CAS and atomic path rewrites. The negative fixtures
-exercise each CAS method through a destructured store reference; adding a method
-must not silently remove its existing writer from the inventory. This makes a new
-durable owner, persistent-store owner, or in-memory recovery owner a deliberate review
-event rather than an incidental field or write. The cache checkpoint must serialize the
+including exact record/content CAS and the atomic compare-and-swap relocation of a
+record set. The mutating-method set has **two** consumers in that file: the call-site
+detector that decides each file's per-file booleans, and a hardcoded list that generates
+two negative fixtures — `records.<method>` and `records["<method>"]` — for every
+compare-and-swap method; both are edited together, so every CAS method keeps both of its
+fixtures and adding a method must not silently remove its existing writer from the
+inventory. A method leaving `SyncStateStore` reduces the set at both sites, and that is
+detector hygiene: what the fixture proves about ownership is the four per-file
+inventories (`imports`, `references`, `constructors`, `mutationCallers`), so only a change
+in one of those — not a fixture edit that follows a removal — is evidence of a new writer
+or owner. This makes a new durable owner, persistent-store owner, or in-memory recovery
+owner a deliberate review event rather than an incidental field or write.
+The record store's key shape is subordinate storage mechanism, not an authority:
+`sync-records` and `sync-content` are keyed by `remoteIdentityKey`, and the unique `path`
+index guards the filesystem layer's path-uniqueness guarantee rather than arbitrating
+between claimants — which is why re-keying the store changes no inventory here and needs
+no edit to `sync-admission-authority-guard.test.mjs`'s fixture (see
+[ADR 0001](adr/0001-metadata-cache-is-subordinate-to-commit-last.md)). The cache checkpoint must serialize the
 complete final live cache under its mutex with the cursor; do not add touched-path,
 pending-flush, receipt, journal, or other intermediate correctness state.
 The unified conflict resolver removes the former `conflict.ts` Store reader/import;

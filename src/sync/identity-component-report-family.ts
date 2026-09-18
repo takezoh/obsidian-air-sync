@@ -9,15 +9,26 @@ type ReportSelection =
 	| { readonly kind: "none" }
 	| { readonly kind: "conflicting" };
 
+/** Two claims on one edge that name different objects are two claims, not one, so the
+ * identity tags the key rather than folding into it: `absent` is a token no carried
+ * value can spell, because a carried value always appears behind `present`. This is
+ * the same injective encoding `renameEvidenceKey` uses one layer up, and it is here
+ * for the same reason — `Map.set` must not drop one of a conflicting pair before the
+ * rules below can see both. Whether an empty key is a usable *identity* is a separate
+ * question that the identity sets below still answer "no"; only the *distinctness* of
+ * an absent and an empty key is settled here. */
+function dedupeKey(report: RenameEvidence): string {
+	return [
+		report.side, report.oldPath, report.newPath,
+		report.isFolder ? "folder" : "file",
+		report.identityKey === undefined ? "absent" : `present\0${report.identityKey}`,
+	].join("\0");
+}
+
 /** Classify raw reports without shaping actions or authorizing a result. */
 export function selectReportFamily(reports: readonly RenameEvidence[]): ReportSelection {
 	const unique = new Map<string, RenameEvidence>();
-	for (const report of reports) {
-		unique.set([
-			report.side, report.oldPath, report.newPath,
-			report.isFolder ? "folder" : "file", report.identityKey ?? "",
-		].join("\0"), report);
-	}
+	for (const report of reports) unique.set(dedupeKey(report), report);
 	const selected = [...unique.values()];
 	const governingReports: RenameEvidence[] = [];
 	for (const side of ["local", "remote"] as const) {

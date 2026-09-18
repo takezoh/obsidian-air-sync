@@ -25,6 +25,7 @@ function makeRecord(path: string, overrides: Partial<SyncRecord> = {}): SyncReco
 		remoteMtime: 1000,
 		localSize: 10,
 		remoteSize: 10,
+		remoteIdentityKey: `id:${path}`,
 		syncedAt: 900,
 		...overrides,
 	};

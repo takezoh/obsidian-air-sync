@@ -122,7 +122,6 @@ function priorityPullAction(component: IdentityComponent & { actions: readonly S
 	if (action.action !== "pull" || action.path !== [...component.paths][0] ||
 		!action.baseline || !action.local || action.local.isDirectory ||
 		!action.remote || action.remote.isDirectory ||
-		!action.baseline.remoteIdentityKey ||
 		action.remote.identityKey !== action.baseline.remoteIdentityKey) return undefined;
 	if (component.observations.some((observation) =>
 		observation.kind !== "exact" || observation.requestedPath !== action.path ||

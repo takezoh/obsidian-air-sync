@@ -149,8 +149,7 @@ export function reconstructCaseAliasChildRenames(
 			item.requestedPath === candidate.newPath);
 		if (!source?.prevSync || !source.local || !alias || !remoteSource || !remoteTarget ||
 			!source.prevSync.hash || source.local.hash !== source.prevSync.hash ||
-			(source.prevSync.remoteIdentityKey !== undefined &&
-				remoteSource.entity.identityKey !== source.prevSync.remoteIdentityKey) ||
+			remoteSource.entity.identityKey !== source.prevSync.remoteIdentityKey ||
 			hasRemoteChanged(remoteSource.entity, source.prevSync)) continue;
 
 		actions.push({

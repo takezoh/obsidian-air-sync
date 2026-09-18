@@ -81,6 +81,7 @@ describe("resolveConflict", () => {
 			remoteMtime: 1000,
 			localSize: content.length,
 			remoteSize: content.length,
+			remoteIdentityKey: "id:data.json",
 			syncedAt: 900,
 		});
 
@@ -92,7 +93,7 @@ describe("resolveConflict", () => {
 			const local = addFile(localFs, "data.json", localText, 2000);
 			const remote = addFile(remoteFs, "data.json", remoteText, 2000);
 			const stateStore = createMockStateStore();
-			stateStore.contents.set("data.json", encode(base));
+			stateStore.contents.set("id:data.json", encode(base));
 			return resolveConflict(
 				{
 					path: "data.json",

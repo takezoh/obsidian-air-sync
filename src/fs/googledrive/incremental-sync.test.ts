@@ -55,6 +55,13 @@ describe("applyIncrementalChanges", () => {
 			applyFileChangeDetectMove,
 			isFolder,
 			getFile,
+			// The projection seam a rename producer reads for the pair's identityKey.
+			// Scripted `getFile` returns undefined by default, so these cases report no
+			// identity — which is what a cache with nothing at that path must report.
+			toEntity: (path: string, file: GoogleDriveFile) => ({
+				path, pathAuthority: "actual_resolved", identityKey: file.id,
+				isDirectory: file.mimeType === FOLDER_MIME, size: 0, mtime: 0, hash: "",
+			}),
 		} as unknown as GoogleDriveMetadataCache;
 
 		ctx = {
@@ -301,6 +308,15 @@ function trashedChange(file: GoogleDriveFile): GoogleDriveChange {
 	return { type: "file", fileId: file.id, removed: false, file: { ...file, trashed: true } };
 }
 
+/**
+ * The identity a `list()`/`stat()` of `path` would report — the cache's own entity
+ * projection. Rename pairs are asserted against THIS, not against the raw delta id,
+ * so a projection that stopped agreeing with the id would fail the case.
+ */
+function projectedIdentity(cache: GoogleDriveMetadataCache, path: string): string | undefined {
+	return cache.toEntity(path, cache.getFile(path)!).identityKey;
+}
+
 describe("applyIncrementalChanges — entered-folder re-listing", () => {
 	let cache: GoogleDriveMetadataCache;
 	let listChanges: Mock<ListChangesFn>;
@@ -488,7 +504,10 @@ describe("applyIncrementalChanges — entered-folder re-listing", () => {
 		const result = await drain();
 
 		expect(listAllFiles).not.toHaveBeenCalled();
-		expect(result.renamedPaths).toEqual([{ oldPath: "D", newPath: "E", isFolder: true }]);
+		expect(result.renamedPaths).toEqual([
+			{ oldPath: "D", newPath: "E", isFolder: true, identityKey: projectedIdentity(cache, "E") },
+		]);
+		expect(result.renamedPaths[0]?.identityKey).toBe("D");
 		expect(cache.hasFile("E/x.md")).toBe(true);
 	});
 
@@ -543,7 +562,10 @@ describe("applyIncrementalChanges — entered-folder re-listing", () => {
 
 		const result = await drain();
 
-		expect(result.renamedPaths).toEqual([{ oldPath: "C.md", newPath: "F/C.md", isFolder: undefined }]);
+		expect(result.renamedPaths).toEqual([
+			{ oldPath: "C.md", newPath: "F/C.md", isFolder: undefined, identityKey: projectedIdentity(cache, "F/C.md") },
+		]);
+		expect(result.renamedPaths[0]?.identityKey).toBe("c");
 		expect(cache.hasFile("C.md")).toBe(false);
 		expect(cache.hasFile("F/C.md")).toBe(true);
 	});

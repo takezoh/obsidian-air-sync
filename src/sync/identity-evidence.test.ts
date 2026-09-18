@@ -41,7 +41,63 @@ describe("identity evidence", () => {
 		}]);
 	});
 
-	it("attaches native identity and relates cross-path baseline/current occurrences", () => {
+	it("keeps the producer's identity on a remote rename claim and adds none where the pair carries none", () => {
+		const [keyed, unkeyed] = collectRemoteRenameEvidence([
+			{ oldPath: "x.md", newPath: "y.md", identityKey: "drive-1" },
+			{ oldPath: "p.md", newPath: "q.md" },
+		]);
+
+		expect(keyed).toStrictEqual({
+			kind: "rename", side: "remote", oldPath: "x.md", newPath: "y.md",
+			isFolder: false, authority: "reported", identityKey: "drive-1",
+		});
+		expect(unkeyed).toStrictEqual({
+			kind: "rename", side: "remote", oldPath: "p.md", newPath: "q.md",
+			isFolder: false, authority: "reported",
+		});
+		// Absent, not present-and-undefined: nothing is added for a pair that carried none.
+		expect("identityKey" in unkeyed!).toBe(false);
+	});
+
+	it("counts a carried, an absent and an empty identity as three claims on one edge", () => {
+		const evidence = collectRemoteRenameEvidence([
+			{ oldPath: "x.md", newPath: "y.md", identityKey: "drive-1" },
+			{ oldPath: "x.md", newPath: "y.md", identityKey: "drive-1" },
+			{ oldPath: "x.md", newPath: "y.md", identityKey: "drive-2" },
+			{ oldPath: "x.md", newPath: "y.md" },
+			{ oldPath: "x.md", newPath: "y.md", identityKey: "" },
+		]);
+
+		// Two claims naming different objects on one edge both survive collection, so the
+		// report family gets to classify the conflict instead of `Map.set` hiding it. Only
+		// the genuinely identical repeat collapses. Absent and empty are two of the three
+		// states here — this module's encoding rule, not the record layer's admissibility
+		// rule, where an absent and an empty provider identity are one inadmissible case.
+		expect(evidence.map((item) => "identityKey" in item ? `present:${item.identityKey}` : "absent"))
+			.toEqual(["present:drive-1", "present:drive-2", "absent", "present:"]);
+	});
+
+	it("infers no identity for a local rename claim whose destination is a known remote object", () => {
+		const remote: FileEntity = {
+			path: "b.md", pathAuthority: "actual_resolved", identityKey: "id-1",
+			isDirectory: false, size: 1, mtime: 1, hash: "",
+		};
+		const completed = completeIdentityEvidence(
+			collectLocalRenameEvidence({
+				dirtyPaths: new Set(), renamePairs: new Map([["b.md", "a.md"]]),
+				folderRenamePairs: new Map(), initialized: true,
+			}),
+			[{ kind: "exact", side: "remote", requestedPath: "b.md", entity: remote }],
+			[{ path: "b.md", remote }],
+		);
+
+		expect(completed).toStrictEqual([{
+			kind: "rename", side: "local", oldPath: "a.md", newPath: "b.md",
+			isFolder: false, authority: "reported",
+		}]);
+	});
+
+	it("hands a remote rename claim to Admission unkeyed and still relates cross-path occurrences", () => {
 		const remote: FileEntity = {
 			path: "b.md", pathAuthority: "actual_resolved", identityKey: "id-1",
 			isDirectory: false, size: 1, mtime: 1, hash: "",
@@ -62,7 +118,15 @@ describe("identity evidence", () => {
 			entries,
 		);
 
-		expect(completed[0]).toMatchObject({ kind: "rename", identityKey: "id-1" });
+		// The pair carried no identity, so the claim reaches Admission with none. The
+		// destination's own key is not attached here: it is the same value Admission's
+		// remote-rename check reads back out of `current.remote`, so filling it would make
+		// that check compare a value to its own source.
+		expect(completed[0]).toStrictEqual({
+			kind: "rename", side: "remote", oldPath: "a.md", newPath: "b.md",
+			isFolder: false, authority: "reported",
+		});
+		// The occurrence index is a separate pass over the same map and is unchanged.
 		expect(completed).toContainEqual({
 			kind: "stable_identity", side: "remote", identityKey: "id-1",
 			occurrences: [

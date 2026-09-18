@@ -7,6 +7,7 @@ import type { DropboxClient } from "./client";
 import type { RenamePair } from "../types";
 import type { Logger } from "../../logging/logger";
 import type { IncrementalChangesResult } from "../caching/remote-fs";
+import { projectedIdentityKey } from "../caching/metadata-cache";
 import { INTERNAL_METADATA_PATH } from "../remote-vault-contract";
 
 /**
@@ -219,7 +220,12 @@ function applyRename(
 	cache.setEntry(newPath, entry, "actual_resolved");
 	if (wasFolder) cache.rewriteChildPaths(oldPath, newPath);
 
-	acc.renamedPaths.push({ oldPath, newPath, isFolder: wasFolder || undefined });
+	acc.renamedPaths.push({
+		oldPath,
+		newPath,
+		isFolder: wasFolder || undefined,
+		identityKey: projectedIdentityKey(cache, newPath),
+	});
 	acc.changedPaths.add(newPath);
 	acc.changedPaths.add(oldPath);
 	for (const d of oldDescendants) {

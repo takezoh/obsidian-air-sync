@@ -41,7 +41,7 @@ function isComplete(input: Omit<SyncCycleFinalizationInput, "checkpoint">): bool
 		return (succeeded.has(action) && (!needsProof ||
 			succeeded.get(action)?.terminalProof?.action === action)) ||
 			(disposition.kind === "authorized" && disposition.priorityPullAction === action &&
-				replacement?.path === action.path && !!replacement.remoteIdentityKey &&
+				replacement?.path === action.path &&
 				replacement.remoteIdentityKey === action.remote?.identityKey);
 	};
 	return !input.checkpointBlocked && input.result.failed.length === 0 && input.result.blocked.length === 0 &&

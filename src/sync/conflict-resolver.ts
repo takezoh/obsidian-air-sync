@@ -24,7 +24,6 @@ export interface ConflictResolverContext {
 	remoteIdentitySource?: FileEntity;
 	additionalRemote?: FileEntity;
 	additionalLocal?: FileEntity;
-	baselinePath?: string;
 	stateStore?: SyncStateStore;
 	logger?: Logger;
 }
@@ -131,8 +130,11 @@ async function resolvePreparedWithPolicy(
 			targetMtime: primary.entity.mtime,
 		};
 	}
+	// The merge base belongs to the baseline record's remote object, so it is read by
+	// the identity that record already names — no address, and nothing to re-derive
+	// when that object is answering at a different endpoint this cycle.
 	const base = ctx.baseline && ctx.stateStore
-		? await ctx.stateStore.getContent(ctx.baselinePath ?? ctx.path)
+		? await ctx.stateStore.getContent(ctx.baseline.remoteIdentityKey)
 		: undefined;
 	if (base && isMergeEligible(ctx.path, Math.max(ctx.local.size, primary.entity.size))) {
 		const decoder = new TextDecoder();

@@ -2,7 +2,7 @@ import type { FileEntity, RemoteChecksum, RenamePair } from "../fs/types";
 
 /** A stored record of the last-known synced state for a file */
 export interface SyncRecord {
-	/** Relative path (primary key) */
+	/** Relative path of the local file this record is the correspondence for (unique index) */
 	path: string;
 	/** Content hash at last successful sync */
 	hash: string;
@@ -16,10 +16,12 @@ export interface SyncRecord {
 	remoteSize: number;
 	/** Remote-provided content checksum at last successful sync (for change detection) */
 	remoteChecksum?: RemoteChecksum;
-	/** Opaque remote identity observed at last sync; comparable only within one configured remote root */
-	remoteIdentityKey?: string;
-	/** Backend-specific metadata snapshot the sync engine does not interpret (e.g. Google Drive/pCloud file ID) */
-	backendMeta?: Record<string, unknown>;
+	/**
+	 * Opaque remote identity observed at last sync; comparable only within one configured
+	 * remote root. Required and non-empty: a record without a provider identity cannot be
+	 * constructed (see buildSyncRecord), so no stored record has to be tested for one.
+	 */
+	remoteIdentityKey: string;
 	/** Timestamp when this sync completed (Unix epoch ms) */
 	syncedAt: number;
 }

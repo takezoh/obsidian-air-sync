@@ -38,7 +38,6 @@ export async function syncOpenedFilePriority(
 		const expectedRecord = await ctx.stateStore.get(ctx.path);
 		if (!expectedRecord) return "untracked";
 		if (ctx.target.kind === "defer" || !ctx.remoteFs.priority) return deferToBatch(ctx);
-		if (!expectedRecord.remoteIdentityKey) return deferToBatch(ctx);
 		const expectedGeneration = ctx.localTracker.generation(ctx.path);
 
 		const [localBefore, observed] = await Promise.all([
@@ -59,7 +58,10 @@ export async function syncOpenedFilePriority(
 
 		if (!hasRemoteChanged(observed.entity, expectedRecord)) {
 			const currentRecord = buildSyncRecord(localBefore, observed.entity, ctx.path);
-			if (!await ctx.stateStore.compareAndPut(expectedRecord, currentRecord)) {
+			// The captured row is both the correspondence this attempt continues and the
+			// occupant of its address; a remote identity that moved under it fails the
+			// first comparison and defers to the batch rather than replacing anything.
+			if (!await ctx.stateStore.compareAndPut(expectedRecord, currentRecord, expectedRecord)) {
 				invalidateTarget(ctx);
 				return "deferred_to_batch";
 			}
@@ -85,17 +87,21 @@ export async function syncOpenedFilePriority(
 			}
 
 			const localEntity = await ctx.localFs.write(ctx.path, read.content, observed.entity.mtime);
-			const nextRecord = buildSyncRecord(localEntity, observed.entity, ctx.path);
-			let baselined = false;
+			// Construction shares the commit's existing failure route: a remote entity the
+			// record layer's identity floor refuses is a baseline this attempt cannot take,
+			// not a cycle this attempt is not part of failing.
+			let nextRecord: SyncRecord | undefined;
 			try {
-				baselined = await ctx.stateStore.compareAndPut(expectedRecord, nextRecord);
+				nextRecord = buildSyncRecord(localEntity, observed.entity, ctx.path);
+				if (!await ctx.stateStore.compareAndPut(expectedRecord, nextRecord, expectedRecord)) nextRecord = undefined;
 			} catch (error) {
+				nextRecord = undefined;
 				ctx.logger?.warn("file-open priority baseline commit failed", {
 					path: ctx.path,
 					message: error instanceof Error ? error.message : String(error),
 				});
 			}
-			if (!baselined) {
+			if (!nextRecord) {
 				ctx.localTracker.markDirty(ctx.path);
 				invalidateTarget(ctx);
 				return "deferred_to_batch";

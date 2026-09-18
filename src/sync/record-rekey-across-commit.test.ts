@@ -16,13 +16,21 @@ import {
 import type { RenamePair, SyncRecord } from "./types";
 
 /**
- * Measurement, not a fix. Question: a committed `SyncRecord` at path `P` binds
- * remote identity `K1`; a *different* remote object `K2` then occupies `P` while
- * `K1` is alive at another address `Q`. The durable store is path-keyed
- * (`state.ts:35`, `keyPath: "path"`) and Admission's own record index is
- * path-keyed too (`identity-component-decision.ts:353`). Within one cycle
- * Admission does distinguish the substitution (`:550-551` sets `replacement`).
- * What survives the commit?
+ * What the correspondence does across the commit boundary. A committed
+ * `SyncRecord` at path `P` binds remote identity `K1`; a *different* remote
+ * object `K2` then occupies `P` while `K1` is alive at another address `Q`.
+ * The durable store is keyed by remote identity (`state.ts`,
+ * `keyPath: "remoteIdentityKey"` with a unique index over `path`), and every
+ * publication is one of exactly two operations: a **rename**, which moves no
+ * row and issues no delete, or a **replacement**, which ends the incumbent
+ * correspondence with an explicit delete inside the claiming transaction.
+ *
+ * The split-cycle cases below record the model working rather than a defect:
+ * when no fact in a cycle places `K1` anywhere, the correspondence whose
+ * address now belongs to another object has ended, the claiming publication
+ * observes that end directly, and `K1` is re-acquired whole on the cycle that
+ * finally observes `Q`. That cost — a re-keyed row, a re-downloaded object and
+ * one unbaselined cycle — is asserted here deliberately.
  *
  * Unlike the Admission-only measurement in `plan-admission.test.ts`, this one
  * crosses the publication boundary, so it uses the real `SyncStateStore` over
@@ -37,9 +45,12 @@ import type { RenamePair, SyncRecord } from "./types";
  *
  * Instrument: the durable publication routes on the real store are wrapped with
  * pass-through spies, so each cycle yields the commit route *by name*
- * (`compareAndPut` / `compareAndMove` / `compareAndDelete` /
- * `compareAndRewritePaths` / `compareAndPutContent`) together with the record
- * keys and identities it compared. The store itself still performs every write.
+ * (`compareAndPut` / `compareAndDelete` / `compareAndRewritePaths` /
+ * `compareAndPutContent`) together with the two record expectations it
+ * compared; and every object-store `delete` the transactions actually issue is
+ * recorded, so a rename and a replacement are told apart by the store's calls
+ * and not only by the image they leave. The store itself still performs every
+ * write.
  */
 
 const P = "notes/p.md";
@@ -50,6 +61,8 @@ const K1_BODY = "k1 body";
 const K2_BODY = "k2 body";
 /** `conflict` + `duplicate` names the preserved sibling from the losing bytes. */
 const PRESERVED = "notes/p.conflict.md";
+/** The remote mock mints a provider identity for the preserved sibling it creates. */
+const PRESERVED_KEY = "id:notes/p.conflict.md";
 
 interface RemoteDelta {
 	modified?: string[];
@@ -67,22 +80,30 @@ interface Env {
 }
 
 function recordKey(record: Pick<SyncRecord, "path" | "remoteIdentityKey"> | undefined): string {
-	return record ? `${record.path}@${record.remoteIdentityKey ?? "no-identity"}` : "none";
+	return record ? `${record.path}@${record.remoteIdentityKey}` : "none";
+}
+
+/**
+ * Every object-store delete the real transactions issue. The spy calls through,
+ * so the store still performs every write; only the calls are recorded, and the
+ * record is cleared at the start of each cycle, which runs to completion before
+ * any other env's does.
+ */
+const deleteSpy = vi.spyOn(IDBObjectStore.prototype, "delete");
+function issuedDeletes(): string[] {
+	return deleteSpy.mock.contexts.map((context, index) => {
+		const key = deleteSpy.mock.calls[index]?.[0];
+		return `${(context as IDBObjectStore).name}:${typeof key === "string" ? key : JSON.stringify(key)}`;
+	});
 }
 
 /** Pass-through spies: the real store still writes; the route is recorded by name. */
 function traceCommits(store: SyncStateStore, commits: string[]): void {
 	const put = store.compareAndPut.bind(store);
-	vi.spyOn(store, "compareAndPut").mockImplementation(async (expected, record) => {
-		const ok = await put(expected, record);
-		commits.push(`compareAndPut(destination=${recordKey(expected)}, terminal=${recordKey(record)})=${ok}`);
-		return ok;
-	});
-	const move = store.compareAndMove.bind(store);
-	vi.spyOn(store, "compareAndMove").mockImplementation(async (expected, record, destination) => {
-		const ok = await move(expected, record, destination);
-		commits.push(`compareAndMove(source=${recordKey(expected)}, terminal=${recordKey(record)}, ` +
-			`destination=${recordKey(destination)})=${ok}`);
+	vi.spyOn(store, "compareAndPut").mockImplementation(async (expectedRow, record, expectedOccupant) => {
+		const ok = await put(expectedRow, record, expectedOccupant);
+		commits.push(`compareAndPut(row=${recordKey(expectedRow)}, terminal=${recordKey(record)}, ` +
+			`occupant=${recordKey(expectedOccupant)})=${ok}`);
 		return ok;
 	});
 	const remove = store.compareAndDelete.bind(store);
@@ -135,6 +156,8 @@ interface CycleReport {
 	/** Admitted action kind, address, and the two durable publication keys. */
 	actions: string[];
 	commits: string[];
+	/** The store's calls, not its image: which rows a transaction actually removed. */
+	deletes: string[];
 	outcomes: { succeeded: string[]; failed: string[]; blocked: number };
 }
 
@@ -144,6 +167,7 @@ async function runCycle(
 	opts: { forceFullScan?: boolean; enableThreeWayMerge?: boolean } = {},
 ): Promise<CycleReport> {
 	env.commits.length = 0;
+	deleteSpy.mockClear();
 	const snapshot = env.localTracker.snapshot();
 	const changeSet = await collectChanges({
 		localFs: env.localFs,
@@ -174,6 +198,7 @@ async function runCycle(
 			`publication(source=${recordKey(action.publication?.source)}, ` +
 			`destination=${recordKey(action.publication?.destination)})`),
 		commits: [...env.commits],
+		deletes: issuedDeletes(),
 		outcomes: {
 			succeeded: result.succeeded.map((item) => `${item.action.action} ${item.action.path}`),
 			failed: result.failed.map((item) => `${item.action.action} ${item.action.path}`),
@@ -187,15 +212,15 @@ async function storeImage(env: Env): Promise<string[]> {
 	const records = await env.stateStore.getAll();
 	const lines: string[] = [];
 	for (const record of [...records].sort((a, b) => (a.path < b.path ? -1 : 1))) {
-		const base = await env.stateStore.getContent(record.path);
+		const base = await env.stateStore.getContent(record.remoteIdentityKey);
 		lines.push(`${recordKey(record)} mergeBase=${base === undefined ? "absent" : new TextDecoder().decode(base)}`);
 	}
 	return lines;
 }
 
-/** Merge base at addresses that may hold one with no record of their own. */
-async function mergeBaseAt(env: Env, path: string): Promise<string> {
-	const base = await env.stateStore.getContent(path);
+/** Merge base for one remote identity, which may hold one with no record of its own. */
+async function mergeBaseFor(env: Env, remoteIdentityKey: string): Promise<string> {
+	const base = await env.stateStore.getContent(remoteIdentityKey);
 	return base === undefined ? "absent" : new TextDecoder().decode(base);
 }
 
@@ -222,7 +247,7 @@ async function baselineAtP(name: string): Promise<Env> {
 		`match ${P} publication(source=none, destination=none)`,
 	]);
 	expect(first.commits).toEqual([
-		`compareAndPut(destination=none, terminal=${P}@${K1})=true`,
+		`compareAndPut(row=none, terminal=${P}@${K1}, occupant=none)=true`,
 		`compareAndPutContent(${P}@${K1}, ${K1_BODY})=true`,
 	]);
 	expect(await storeImage(env)).toEqual([`${P}@${K1} mergeBase=${K1_BODY}`]);
@@ -236,7 +261,7 @@ async function moveK1AndCreateK2(env: Env): Promise<void> {
 }
 
 
-describe("a different remote object at a path-keyed baseline, across the commit boundary", () => {
+describe("a different remote object at a baselined address, across the commit boundary", () => {
 	it("control: K1 alone moves P→Q — the record relocates and the local file is renamed", async () => {
 		const env = await baselineAtP("control");
 		await env.remoteFs.rename(P, Q);
@@ -251,16 +276,18 @@ describe("a different remote object at a path-keyed baseline, across the commit 
 		expect(cycle.actions).toEqual([
 			`rename_local ${P}->${Q} publication(source=${P}@${K1}, destination=none)`,
 		]);
+		// A rename: one put, no delete at all, and the identically keyed base stays put.
 		expect(cycle.commits).toEqual([
-			`compareAndMove(source=${P}@${K1}, terminal=${Q}@${K1}, destination=none)=true`,
+			`compareAndPut(row=${P}@${K1}, terminal=${Q}@${K1}, occupant=none)=true`,
 			`compareAndPutContent(${Q}@${K1}, ${K1_BODY})=true`,
 		]);
+		expect(cycle.deletes).toEqual([]);
 		expect(cycle.outcomes).toEqual({ succeeded: [`rename_local ${Q}`], failed: [], blocked: 0 });
 		expect(await storeImage(env)).toEqual([`${Q}@${K1} mergeBase=${K1_BODY}`]);
 		expect(texts(env.localFs)).toEqual([`${Q}=${K1_BODY}`]);
 	});
 
-	it("shape 1, same cycle: K1's baseline is NOT lost — it relocates P→Q via compareAndMove", async () => {
+	it("shape 1, same cycle: K1's baseline is NOT lost — its row relocates P→Q as one put", async () => {
 		const env = await baselineAtP("shape1-reported");
 		await moveK1AndCreateK2(env);
 		expect(await storeImage(env)).toEqual([`${P}@${K1} mergeBase=${K1_BODY}`]);
@@ -287,14 +314,17 @@ describe("a different remote object at a path-keyed baseline, across the commit 
 			`pull ${Q} publication(source=${P}@${K1}, destination=none)`,
 			`conflict ${P} publication(source=none, destination=none)`,
 		]);
-		// `state-committer.ts:116-122`: a publication whose source key differs from the
-		// action path is compound, so the record MOVES rather than being put.
+		// K1's publication carries its own row to a new address, so it is one put; K2's
+		// claims a now-vacant address, so it is another. Neither is a replacement: no
+		// record row is deleted, and the single delete is the invalidation predicate
+		// clearing K2's (empty) base slot because its publication continues no row.
 		expect(cycle.commits).toEqual([
-			`compareAndMove(source=${P}@${K1}, terminal=${Q}@${K1}, destination=none)=true`,
+			`compareAndPut(row=${P}@${K1}, terminal=${Q}@${K1}, occupant=none)=true`,
 			`compareAndPutContent(${Q}@${K1}, ${K1_BODY})=true`,
-			`compareAndPut(destination=none, terminal=${P}@${K2})=true`,
+			`compareAndPut(row=none, terminal=${P}@${K2}, occupant=none)=true`,
 			`compareAndPutContent(${P}@${K2}, ${K1_BODY})=true`,
 		]);
+		expect(cycle.deletes).toEqual([`sync-content:${K2}`]);
 		expect(cycle.outcomes).toEqual({
 			succeeded: [`pull ${Q}`, `conflict ${P}`], failed: [], blocked: 0,
 		});
@@ -332,18 +362,19 @@ describe("a different remote object at a path-keyed baseline, across the commit 
 			`conflict ${P} publication(source=none, destination=none)`,
 		]);
 		expect(cycle.commits).toEqual([
-			`compareAndMove(source=${P}@${K1}, terminal=${Q}@${K1}, destination=none)=true`,
+			`compareAndPut(row=${P}@${K1}, terminal=${Q}@${K1}, occupant=none)=true`,
 			`compareAndPutContent(${Q}@${K1}, ${K1_BODY})=true`,
-			`compareAndPut(destination=none, terminal=${P}@${K2})=true`,
+			`compareAndPut(row=none, terminal=${P}@${K2}, occupant=none)=true`,
 			`compareAndPutContent(${P}@${K2}, ${K1_BODY})=true`,
 		]);
+		expect(cycle.deletes).toEqual([`sync-content:${K2}`]);
 		expect(await storeImage(env)).toEqual([
 			`${P}@${K2} mergeBase=${K1_BODY}`,
 			`${Q}@${K1} mergeBase=${K1_BODY}`,
 		]);
 	});
 
-	it("shape 2, split across cycles: cycle 1 overwrites K1's baseline at P", async () => {
+	it("shape 2, split across cycles: cycle 1 ends K1's correspondence with an explicit delete", async () => {
 		const env = await baselineAtP("shape2-cycle1");
 		await moveK1AndCreateK2(env);
 		expect(await storeImage(env)).toEqual([`${P}@${K1} mergeBase=${K1_BODY}`]);
@@ -358,22 +389,27 @@ describe("a different remote object at a path-keyed baseline, across the commit 
 		expect(cycle.failures).toEqual([]);
 		// With no current occurrence of K1, the baseline falls through to the
 		// exact-path owner, which decides P with `expected` = K1's record and
-		// `replacement = true` (identity-component-decision.ts:541-555) and publishes
-		// `{source: expected, destination: expected}` — a same-key replacement.
+		// `replacement = true`. A replacement continues no row, so it publishes
+		// `{source: undefined, destination: expected}`: the incumbent is the occupant of
+		// the claimed address and nothing else.
 		expect(cycle.actions).toEqual([
-			`conflict ${P} publication(source=${P}@${K1}, destination=${P}@${K1})`,
+			`conflict ${P} publication(source=none, destination=${P}@${K1})`,
 		]);
-		// One durable record write, and it is a same-key `compareAndPut`: K1's row is
-		// the CAS expectation and K2's record is what lands on it.
 		expect(cycle.commits).toEqual([
-			`compareAndPut(destination=${P}@${K1}, terminal=${P}@${K2})=true`,
+			`compareAndPut(row=none, terminal=${P}@${K2}, occupant=${P}@${K1})=true`,
 			`compareAndPutContent(${P}@${K2}, ${K1_BODY})=true`,
 		]);
+		// The incumbent's removal is an explicit delete inside the transaction that
+		// claims the address — the operation, not a side effect of the put. K2's own
+		// base row is cleared by the invalidation predicate before it is rewritten.
+		expect(cycle.deletes).toEqual([
+			`sync-records:${K1}`, `sync-content:${K1}`, `sync-content:${K2}`,
+		]);
 		expect(cycle.outcomes).toEqual({ succeeded: [`conflict ${P}`], failed: [], blocked: 0 });
-		// K1's baseline no longer exists anywhere in the store: no row binds K1, and Q
-		// has neither a record nor a merge base.
+		// K1's correspondence has ended: no row binds K1 and no merge base survives for
+		// it. Exactly one row holds P, and it is K2's.
 		expect(await storeImage(env)).toEqual([`${P}@${K2} mergeBase=${K1_BODY}`]);
-		expect(await mergeBaseAt(env, Q)).toBe("absent");
+		expect(await mergeBaseFor(env, K1)).toBe("absent");
 		expect((await env.stateStore.getAll()).map((record) => record.remoteIdentityKey))
 			.toEqual([K2]);
 	});
@@ -400,16 +436,16 @@ describe("a different remote object at a path-keyed baseline, across the commit 
 		// Both are independent singletons (plan-executor.ts:148-155), so they settle
 		// in a pool and only the set of commit routes is ordered here.
 		expect([...cycle.commits].sort()).toEqual([
-			`compareAndPut(destination=none, terminal=${PRESERVED}@no-identity)=true`,
-			`compareAndPut(destination=none, terminal=${Q}@${K1})=true`,
-			`compareAndPutContent(${PRESERVED}@no-identity, ${K2_BODY})=true`,
+			`compareAndPut(row=none, terminal=${PRESERVED}@${PRESERVED_KEY}, occupant=none)=true`,
+			`compareAndPut(row=none, terminal=${Q}@${K1}, occupant=none)=true`,
+			`compareAndPutContent(${PRESERVED}@${PRESERVED_KEY}, ${K2_BODY})=true`,
 			`compareAndPutContent(${Q}@${K1}, ${K1_BODY})=true`,
 		]);
-		// The durable end state is the SAME as the same-cycle shape. The lost baseline
-		// costs a re-keyed row, a re-downloaded object and one unbaselined cycle — it
-		// does not steer either side to a different result.
+		// The durable end state is the SAME as the same-cycle shape. The ended
+		// correspondence costs a re-keyed row, a re-downloaded object and one
+		// unbaselined cycle — it does not steer either side to a different result.
 		expect(await storeImage(env)).toEqual([
-			`${PRESERVED}@no-identity mergeBase=${K2_BODY}`,
+			`${PRESERVED}@${PRESERVED_KEY} mergeBase=${K2_BODY}`,
 			`${P}@${K2} mergeBase=${K1_BODY}`,
 			`${Q}@${K1} mergeBase=${K1_BODY}`,
 		]);
@@ -418,30 +454,32 @@ describe("a different remote object at a path-keyed baseline, across the commit 
 		]);
 	});
 
-	it("merge base: K1's base at P is dropped by both publication routes, never carried", async () => {
+	it("merge base: a replacement ends K1's base with its row; a rename keeps it", async () => {
 		// `maybeStoreMergeBase` re-derives a base for every record it commits, which
 		// would mask the store's own predicates. Running the measured cycle with
 		// three-way merge off (a setting the user can toggle between cycles) leaves
 		// only `state.ts`'s delete behaviour observable.
 		const split = await baselineAtP("mergebase-split");
-		expect(await mergeBaseAt(split, P)).toBe(K1_BODY);
+		expect(await mergeBaseFor(split, K1)).toBe(K1_BODY);
 		await moveK1AndCreateK2(split);
 		split.setDelta({ modified: [P], deleted: [] });
 
 		const first = await runCycle(split, { enableThreeWayMerge: false });
 
-		// `state.ts:104-108`: the identity clause of `compareAndPut`'s predicate fires
-		// (K1 ≠ K2) even though hash and localSize are unchanged, so K1's merge base
-		// at P is deleted rather than inherited by K2's record.
+		// The replacement ends K1's correspondence outright — its row and the base keyed
+		// with it go together — and K2's own base is invalidated because this
+		// publication continues no row (`!expectedRow`). Nothing is inherited.
 		expect(first.commits).toEqual([
-			`compareAndPut(destination=${P}@${K1}, terminal=${P}@${K2})=true`,
+			`compareAndPut(row=none, terminal=${P}@${K2}, occupant=${P}@${K1})=true`,
+		]);
+		expect(first.deletes).toEqual([
+			`sync-records:${K1}`, `sync-content:${K1}`, `sync-content:${K2}`,
 		]);
 		expect(await storeImage(split)).toEqual([`${P}@${K2} mergeBase=absent`]);
 
-		// `compareAndMove` deletes the base at BOTH keys unconditionally
-		// (`state.ts:132-133`). The control isolates that: the record relocates P→Q
-		// with nothing else writing at P, and K1's base is gone from both keys even
-		// though the bytes never changed.
+		// A rename does not move the row, so it does not move the base either: the
+		// record relocates P→Q with nothing else writing at P, the bytes never change,
+		// and the invalidation predicate therefore leaves K1's base exactly where it is.
 		const relocation = await baselineAtP("mergebase-relocation");
 		await relocation.remoteFs.rename(P, Q);
 		relocation.setDelta({ modified: [], deleted: [], renamed: [{ oldPath: P, newPath: Q }] });
@@ -449,12 +487,14 @@ describe("a different remote object at a path-keyed baseline, across the commit 
 		const moved = await runCycle(relocation, { enableThreeWayMerge: false });
 
 		expect(moved.commits).toEqual([
-			`compareAndMove(source=${P}@${K1}, terminal=${Q}@${K1}, destination=none)=true`,
+			`compareAndPut(row=${P}@${K1}, terminal=${Q}@${K1}, occupant=none)=true`,
 		]);
-		expect(await mergeBaseAt(relocation, P)).toBe("absent");
-		expect(await storeImage(relocation)).toEqual([`${Q}@${K1} mergeBase=absent`]);
+		expect(moved.deletes).toEqual([]);
+		expect(await mergeBaseFor(relocation, K1)).toBe(K1_BODY);
+		expect(await storeImage(relocation)).toEqual([`${Q}@${K1} mergeBase=${K1_BODY}`]);
 
-		// Same cycle with the substitution: neither route carries K1's base to Q.
+		// Same cycle with the substitution: K1's row relocates and keeps its base, while
+		// K2 arrives at a vacant address with none of its own.
 		const same = await baselineAtP("mergebase-same");
 		await moveK1AndCreateK2(same);
 		same.setDelta({ modified: [P, Q], deleted: [] });
@@ -462,12 +502,13 @@ describe("a different remote object at a path-keyed baseline, across the commit 
 		const cycle = await runCycle(same, { enableThreeWayMerge: false });
 
 		expect(cycle.commits).toEqual([
-			`compareAndMove(source=${P}@${K1}, terminal=${Q}@${K1}, destination=none)=true`,
-			`compareAndPut(destination=none, terminal=${P}@${K2})=true`,
+			`compareAndPut(row=${P}@${K1}, terminal=${Q}@${K1}, occupant=none)=true`,
+			`compareAndPut(row=none, terminal=${P}@${K2}, occupant=none)=true`,
 		]);
+		expect(cycle.deletes).toEqual([`sync-content:${K2}`]);
 		expect(await storeImage(same)).toEqual([
 			`${P}@${K2} mergeBase=absent`,
-			`${Q}@${K1} mergeBase=absent`,
+			`${Q}@${K1} mergeBase=${K1_BODY}`,
 		]);
 	});
 
@@ -486,11 +527,14 @@ describe("a different remote object at a path-keyed baseline, across the commit 
 		// record, so the local absence yields `conflict`, not `delete_remote`. K2's
 		// object is preserved and materialized locally instead of being deleted.
 		expect(cycle.actions).toEqual([
-			`conflict ${P} publication(source=${P}@${K1}, destination=${P}@${K1})`,
+			`conflict ${P} publication(source=none, destination=${P}@${K1})`,
 		]);
 		expect(cycle.commits).toEqual([
-			`compareAndPut(destination=${P}@${K1}, terminal=${P}@${K2})=true`,
+			`compareAndPut(row=none, terminal=${P}@${K2}, occupant=${P}@${K1})=true`,
 			`compareAndPutContent(${P}@${K2}, ${K2_BODY})=true`,
+		]);
+		expect(cycle.deletes).toEqual([
+			`sync-records:${K1}`, `sync-content:${K1}`, `sync-content:${K2}`,
 		]);
 		expect(texts(env.remoteFs)).toEqual([`${P}=${K2_BODY}`, `${Q}=${K1_BODY}`]);
 		expect(texts(env.localFs)).toEqual([`${P}=${K2_BODY}`]);

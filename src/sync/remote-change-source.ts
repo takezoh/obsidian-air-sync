@@ -28,6 +28,10 @@ export async function getRemoteChanges(
 	if (!remoteFs.checkpoint) return emptyRemoteChanges();
 	const result = await remoteFs.checkpoint.getChangedPaths();
 	if (!result) return emptyRemoteChanges();
+	// The checkpoint's pairs reach evidence untouched, identity included. Two claims on
+	// one edge naming different objects now both survive collection, so the flattened
+	// endpoints below can repeat an edge; every consumer folds `paths` into a Set, and
+	// the conflict itself is the report family's to classify, not this seam's to hide.
 	const renameEvidence = collectRemoteRenameEvidence(result.renamed ?? []);
 	onIdentityEvidence?.(renameEvidence);
 	return {

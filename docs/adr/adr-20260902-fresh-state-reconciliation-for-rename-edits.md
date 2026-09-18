@@ -41,7 +41,7 @@ consequences:
   - SyncState v6 is not migrated; existing debt becomes candidate endpoint evidence only.
 confirmation: Exhaustive fresh-state, partial-effect restart, existing conflict-adapter,
   retryable-no-row, exact legacy release, and full project gate tests.
-updated: '2026-09-04'
+updated: '2026-09-18'
 ---
 
 # Reconcile local rename edits from fresh state
@@ -79,7 +79,7 @@ through the existing structural phase and rewrites the successful descendant rec
 
 The executor uses existing rename/write operations and commits the admitted record only after terminal verification. Failure or crash never commits the remote checkpoint; already successful per-file records retain their ordinary post-I/O semantics. The next ordinary sync uses the last committed checkpoint/baseline and current observations to classify again. No raw rename retry and no rollback rename are allowed.
 
-Conflict adaptation is transient. It supplies old merge-base path, new local path, current remote path, and target path to existing resolver behavior. Each fresh invocation delegates at most once to configured existing resolver semantics. Content equality does not establish ownership of a prior conflict output, and this ADR adds no exactly-once conflict-artifact guarantee or durable conflict-result state.
+Conflict adaptation is transient. It supplies the baseline record — whose remote identity, not any path, is what keys the stored merge base, so no old path is carried for it — plus new local path, current remote path, and target path to existing resolver behavior. Each fresh invocation delegates at most once to configured existing resolver semantics. Content equality does not establish ownership of a prior conflict output, and this ADR adds no exactly-once conflict-artifact guarantee or durable conflict-result state.
 
 Existing v6 `RenameDebt` does not authorize replay. It may keep old/new endpoints in COLD acquisition, after which fresh observations alone authorize. It remains physically unchanged and is exact-released only through existing successful consequence plus clean checkpoint finalization. No migration, quarantine store, marker, or special rollback workflow is added.
 

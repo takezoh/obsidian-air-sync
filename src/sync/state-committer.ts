@@ -29,8 +29,20 @@ export async function commitExactCleanup(
 /**
  * Build a SyncRecord from a local and remote FileEntity.
  * Centralised record construction for the sync pipeline.
+ *
+ * The record layer's identity floor lives here and not in any caller, because every
+ * caller writes what it builds: an absent and an empty provider identity are one case
+ * and both are refused before any store write. "" is a valid IndexedDB key, so folding
+ * an absent identity to it would silently merge two distinct provider objects into one
+ * baseline; no site may perform that fold to satisfy the required field.
  */
 export function buildSyncRecord(local: FileEntity | undefined, remote: FileEntity | undefined, path: string): SyncRecord {
+	const remoteIdentityKey = remote?.identityKey;
+	if (!remoteIdentityKey) {
+		throw new Error(
+			`SyncRecord refused: remote entity carries no provider identity: ${remote?.path ?? "(no remote entity)"} at ${path}`,
+		);
+	}
 	return {
 		path,
 		hash: local?.hash || remote?.hash || "",
@@ -39,8 +51,7 @@ export function buildSyncRecord(local: FileEntity | undefined, remote: FileEntit
 		localSize: local?.size ?? 0,
 		remoteSize: remote?.size ?? 0,
 		remoteChecksum: remote?.remoteChecksum,
-		remoteIdentityKey: remote?.identityKey,
-		backendMeta: remote?.backendMeta,
+		remoteIdentityKey,
 		syncedAt: Date.now(),
 	};
 }
@@ -117,9 +128,11 @@ export async function commitAction(
 			(source !== undefined && source.path !== path);
 		if (compound && proof?.action !== action) throw new Error(`Terminal publication proof missing: ${path}`);
 		const record = buildSyncRecord(localEntity, remoteEntity, path);
-		const committed = source && source.path !== path
-			? await stateStore.compareAndMove(source, record, destination)
-			: await stateStore.compareAndPut(destination, record);
+		// The two captured expectations are already separate facts: `source` is the row
+		// this publication continues and `destination` whatever holds the claimed
+		// address. A relocation of one row and a replacement of another are the same
+		// call; which one it is follows from the identities, not from a second method.
+		const committed = await stateStore.compareAndPut(source, record, destination);
 		if (!committed) throw new Error(`SyncRecord changed before terminal publication: ${path}`);
 		await maybeStoreMergeBase(ctx, record, localEntity,
 			proof?.action === action ? proof.intendedContent : undefined);

@@ -5,8 +5,8 @@ import type { GoogleDriveFile, GoogleDriveChange } from "../../../src/fs/googled
 import { FOLDER_MIME } from "../../../src/fs/googledrive/types";
 import { MetadataStore } from "../../../src/store/metadata-store";
 import { GoogleDriveFs } from "../../../src/fs/googledrive";
-import { runCachingRemoteFsContract } from "../contracts/caching-remote-fs.contract";
-import type { CachingRemoteFsHarness } from "../contracts/caching-remote-fs.contract";
+import { runRemoteFamilyCachingContract } from "../contracts/caching-remote-fs.contract";
+import type { RemoteFamilyCachingHarness } from "../contracts/caching-remote-fs.contract";
 
 vi.mock("obsidian");
 
@@ -30,7 +30,7 @@ function gdFolder(id: string, name: string, parentId: string): GoogleDriveFile {
 // Google Drive's ADR 0001 path-1 behaviour intact through the new seams, and answers
 // "the contract is only ever run by the mock". The same shared lifecycle covers
 // restart and same-process abort/reload.
-function makeGoogleDriveHarness(): CachingRemoteFsHarness<GoogleDriveFile> {
+function makeGoogleDriveHarness(): RemoteFamilyCachingHarness<GoogleDriveFile> {
 	const baseline = new Map<string, GoogleDriveFile>();
 	const events: GoogleDriveChange[] = [];
 	/** Folder path → id, for folders seeded outside the bound root. */
@@ -141,9 +141,39 @@ function makeGoogleDriveHarness(): CachingRemoteFsHarness<GoogleDriveFile> {
 			baseline.set(entry.id, renamed);
 			events.push({ type: "file", fileId: entry.id, removed: false, file: renamed });
 		},
+		// A Drive file is deleted and a NEW file is created under the same name: two
+		// changes — the removal, then the create — carrying two different file ids.
+		// Names are not unique in Drive and ids are never reused, so this is ordinary
+		// account history; the address outliving its object is what would expose an
+		// identity read off stale cache state.
+		stageRemoteRecreateWithNewId: (path) => {
+			const entry = [...baseline.values()].find((f) => f.name === path);
+			if (!entry) throw new Error(`stageRemoteRecreateWithNewId: no such path "${path}"`);
+			baseline.delete(entry.id);
+			events.push({ type: "file", fileId: entry.id, removed: true });
+			const id = `f${++idSeq}`;
+			const created = gdFile(id, path, "root");
+			baseline.set(id, created);
+			events.push({ type: "file", fileId: id, removed: false, file: created });
+		},
+		movedObjectIdentity: {
+			determinate: true,
+			reason:
+				"GoogleDriveMetadataCache.toEntity sets identityKey: googleDriveFile.id for " +
+				"files and folders alike, and every Drive resource carries an id, so the " +
+				"projection never yields none for anything this contract can move.",
+		},
+		renameOrderings: {
+			encoding: "single-entry",
+			reason:
+				"Google Drive is id-addressed: changes.list reports a rename as ONE id-keyed " +
+				"change carrying the new name, with no path-keyed tombstone to order it " +
+				"against (ADR 0006 — id-addressed detection is inherently order-independent), " +
+				"so there is no second faithful ordering to stage.",
+		},
 	};
 }
 
 export function registerGoogleDriveCachingContract(): void {
-	runCachingRemoteFsContract("GoogleDriveFs", makeGoogleDriveHarness);
+	runRemoteFamilyCachingContract("GoogleDriveFs", makeGoogleDriveHarness);
 }

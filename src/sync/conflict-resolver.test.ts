@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { prepareConflict, resolveConflict } from "./conflict-resolver";
+import { hasRemoteChanged } from "./change-compare";
+import { buildSyncRecord } from "./state-committer";
 import type { ConflictExecutionPolicy, SyncRecord } from "./types";
 import { AuthError } from "../fs/errors";
 import {
@@ -102,7 +104,7 @@ describe("resolveConflict", () => {
 			const remote = addFile(remoteFs, "old.md", "remote changed", 1500);
 
 			const result = await resolveConflict({
-				path: "new.md", localPath: "new.md", remotePath: "old.md", baselinePath: "old.md",
+				path: "new.md", localPath: "new.md", remotePath: "old.md",
 				localFs, remoteFs, local, remote,
 			}, DUPLICATE_POLICY);
 
@@ -123,7 +125,7 @@ describe("resolveConflict", () => {
 
 			const result = await resolveConflict({
 				path: "new.md", localPath: "new.md", remotePath: "old.md",
-				remoteIdentitySource: source, additionalRemote: remote, baselinePath: "old.md",
+				remoteIdentitySource: source, additionalRemote: remote,
 				localFs, remoteFs, local, remote: source,
 			}, DUPLICATE_POLICY);
 
@@ -201,7 +203,7 @@ describe("resolveConflict", () => {
 
 			const prepared = await prepareConflict({
 				path: "new.md", localPath: "new.md", remotePath: "old.md",
-				remoteIdentitySource: source, baselinePath: "old.md",
+				remoteIdentitySource: source,
 				localFs, remoteFs, local, remote: source,
 			});
 
@@ -376,7 +378,7 @@ describe("resolveConflict", () => {
 			const occupant = addFile(remoteFs, "new.md", "foreign Y", 1400);
 			occupant.identityKey = "Y";
 			const stateStore = createMockStateStore();
-			stateStore.contents.set("old.md", new TextEncoder().encode(base).buffer.slice(0));
+			stateStore.contents.set("R", new TextEncoder().encode(base).buffer.slice(0));
 			const baseline: SyncRecord = {
 				path: "old.md", hash: "", localMtime: 1000, remoteMtime: 1000,
 				localSize: base.length, remoteSize: base.length,
@@ -384,7 +386,7 @@ describe("resolveConflict", () => {
 			};
 
 			const result = await resolveConflict({
-				path: "new.md", localPath: "new.md", remotePath: "old.md", baselinePath: "old.md",
+				path: "new.md", localPath: "new.md", remotePath: "old.md",
 				remoteIdentitySource: source, additionalRemote: occupant,
 				localFs, remoteFs, local, remote: source, baseline, stateStore,
 			}, AUTO_MERGE_POLICY);
@@ -408,14 +410,15 @@ describe("resolveConflict", () => {
 			const local = addFile(localFs, "new.md", localText, 2000);
 			const remote = addFile(remoteFs, "old.md", remoteText, 2000);
 			const stateStore = createMockStateStore();
-			stateStore.contents.set("old.md", new TextEncoder().encode(base).buffer.slice(0));
+			stateStore.contents.set("id:old.md", new TextEncoder().encode(base).buffer.slice(0));
 			const baseline: SyncRecord = {
 				path: "old.md", hash: "", localMtime: 1000, remoteMtime: 1000,
-				localSize: base.length, remoteSize: base.length, syncedAt: 900,
+				localSize: base.length, remoteSize: base.length,
+				remoteIdentityKey: "id:old.md", syncedAt: 900,
 			};
 
 			const result = await resolveConflict({
-				path: "new.md", localPath: "new.md", remotePath: "old.md", baselinePath: "old.md",
+				path: "new.md", localPath: "new.md", remotePath: "old.md",
 				localFs, remoteFs, local, remote, baseline, stateStore,
 			}, AUTO_MERGE_POLICY);
 
@@ -436,7 +439,7 @@ describe("resolveConflict", () => {
 
 			const stateStore = createMockStateStore();
 			stateStore.contents.set(
-				"file.md",
+				"id:file.md",
 				new TextEncoder().encode(base).buffer.slice(0),
 			);
 
@@ -447,6 +450,7 @@ describe("resolveConflict", () => {
 				remoteMtime: 1000,
 				localSize: base.length,
 				remoteSize: base.length,
+				remoteIdentityKey: "id:file.md",
 				syncedAt: 900,
 			};
 
@@ -477,7 +481,7 @@ describe("resolveConflict", () => {
 
 			const stateStore = createMockStateStore();
 			stateStore.contents.set(
-				"file.md",
+				"id:file.md",
 				new TextEncoder().encode(base).buffer.slice(0),
 			);
 
@@ -488,6 +492,7 @@ describe("resolveConflict", () => {
 				remoteMtime: 1000,
 				localSize: base.length,
 				remoteSize: base.length,
+				remoteIdentityKey: "id:file.md",
 				syncedAt: 900,
 			};
 
@@ -535,6 +540,7 @@ describe("resolveConflict", () => {
 				remoteMtime: 1000,
 				localSize: 10,
 				remoteSize: 10,
+				remoteIdentityKey: "id:file.md",
 				syncedAt: 900,
 			};
 
@@ -558,7 +564,7 @@ describe("resolveConflict", () => {
 
 			const stateStore = createMockStateStore();
 			stateStore.contents.set(
-				"image.png",
+				"id:image.png",
 				new TextEncoder().encode("base").buffer.slice(0),
 			);
 
@@ -569,6 +575,7 @@ describe("resolveConflict", () => {
 				remoteMtime: 1000,
 				localSize: 4,
 				remoteSize: 4,
+				remoteIdentityKey: "id:image.png",
 				syncedAt: 900,
 			};
 
@@ -616,6 +623,7 @@ describe("resolveConflict", () => {
 				remoteMtime: 1000,
 				localSize: 10,
 				remoteSize: 10,
+				remoteIdentityKey: "id:file.md",
 				syncedAt: 900,
 			};
 
@@ -634,6 +642,34 @@ describe("resolveConflict", () => {
 
 			// stateStore has no content → falls back to newer-wins → local is newer
 			expect(result.action).toBe("kept_local");
+		});
+	});
+
+	// The record layer's identity floor is at the baseline, not at the backend
+	// boundary and not at the listing: an entity a provider cannot identify is still
+	// listed, still compared and still conflict-resolvable. Only the durable baseline
+	// it would acquire is refused, by buildSyncRecord.
+	describe("an entity carrying no provider identity", () => {
+		it("is still listed, still compared and still conflict-resolvable", async () => {
+			const local = addFile(localFs, "file.md", "local text", 3000);
+			const remote = addFile(remoteFs, "file.md", "remote text", 2000);
+			remote.identityKey = undefined;
+			const baseline: SyncRecord = {
+				path: "file.md", hash: "base", localMtime: 1000, remoteMtime: 1000,
+				localSize: 4, remoteSize: 4, remoteIdentityKey: "remote-1", syncedAt: 900,
+			};
+
+			expect((await remoteFs.list()).map((entity) => entity.path)).toContain("file.md");
+			expect(hasRemoteChanged((await remoteFs.stat("file.md"))!, baseline)).toBe(true);
+
+			const result = await resolveConflict(
+				{ path: "file.md", localFs, remoteFs, local, remote, baseline },
+				DUPLICATE_POLICY,
+			);
+
+			expect(result.action).toBe("duplicated");
+			expect(() => buildSyncRecord(local, remote, "file.md"))
+				.toThrow("SyncRecord refused: remote entity carries no provider identity");
 		});
 	});
 });

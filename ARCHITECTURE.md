@@ -129,19 +129,23 @@ Invariant: mtime/hash comparisons must treat sentinels as "no data" — mtime 0 
 
 ### SyncRecord (sync/types.ts)
 
-The baseline snapshot stored per path after each successful sync.
+The baseline snapshot stored after each successful sync. It is keyed by the remote
+object's own provider identity, with a unique index over `path`: one remote object holds
+at most one record by construction, and at most one record claims a vault address. Both
+fields are mandatory — a record is written only after the remote side has settled, so
+`buildSyncRecord` refuses an entity that carries no provider identity rather than folding
+it to an empty string.
 
 ```typescript
 interface SyncRecord {
-  path: string;            // primary key
+  remoteIdentityKey: string;  // primary key — the provider's own object id
+  path: string;               // unique index — which local file this record is for
   hash: string;            // content hash at last sync
   localMtime: number;      // local mtime at last sync
   remoteMtime: number;     // remote mtime at last sync
   localSize: number;
   remoteSize: number;
   remoteChecksum?: RemoteChecksum;  // remote checksum at last sync (for change detection)
-  remoteIdentityKey?: string;       // last observed same-root native identity
-  backendMeta?: Record<string, unknown>;
   syncedAt: number;        // when this sync completed
 }
 ```

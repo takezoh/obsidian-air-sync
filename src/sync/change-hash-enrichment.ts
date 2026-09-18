@@ -30,7 +30,7 @@ export async function enrichHashesForPreferLocal(
 	const candidates = entries.filter((entry) => entry.prevSync?.hash && entry.local && entry.remote &&
 		!entry.local.isDirectory && !entry.remote.isDirectory &&
 		entry.prevSync.path === entry.path && entry.local.path === entry.path && entry.remote.path === entry.path &&
-		(!entry.prevSync.remoteIdentityKey || !entry.remote.identityKey ||
+		(!entry.remote.identityKey ||
 			entry.prevSync.remoteIdentityKey === entry.remote.identityKey) &&
 		!touchesTopology(entry.path, entry.remote.identityKey, identityEvidence, observations, repeatedRemoteIdentities) &&
 		hasChanged(entry.local, entry.prevSync) && hasRemoteChanged(entry.remote, entry.prevSync));

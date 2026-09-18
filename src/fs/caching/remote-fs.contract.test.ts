@@ -3,12 +3,14 @@ import { describe, expect, it } from "vitest";
 import type { FileEntity } from "../types";
 import type { RenamePair } from "../types";
 import { MetadataStore } from "../../store/metadata-store";
-import { AbstractMetadataCache } from "./metadata-cache";
+import { AbstractMetadataCache, projectedIdentityKey } from "./metadata-cache";
 import { CachingRemoteFs } from "./remote-fs";
 import type { IncrementalChangesResult } from "./remote-fs";
 import { runCachingRemoteFsContract } from "../../../tests/fs/contracts/caching-remote-fs.contract";
 import type { CachingRemoteFsHarness } from "../../../tests/fs/contracts/caching-remote-fs.contract";
 import { resolveDetachedIdPath } from "../priority-observation";
+import { DropboxMetadataCache } from "../dropbox/metadata-cache";
+import type { DropboxEntry } from "../dropbox/types";
 
 // A minimal id-addressed backend over an in-memory remote. It exists only to drive
 // the shared crash-safety contract against the base machinery — proving the base is
@@ -173,7 +175,12 @@ class MockRemoteFs extends CachingRemoteFs<MockFile> {
 				if (oldPath && newPath && oldPath !== newPath) {
 					changedPaths.add(oldPath);
 					for (const d of oldDescendants) changedPaths.add(d);
-					renamedPaths.push({ oldPath, newPath, isFolder: wasFolder || undefined });
+					// Faithful to a real backend's producer: the reported identity is the
+					// cache's own entity projection for newPath, never an address.
+					renamedPaths.push({
+						oldPath, newPath, isFolder: wasFolder || undefined,
+						identityKey: projectedIdentityKey(this.cache, newPath),
+					});
 					if (wasFolder) for (const nd of this.cache.collectDescendants(newPath)) changedPaths.add(nd);
 				}
 			}
@@ -309,5 +316,113 @@ describe("MockRemoteFs incremental authority persistence", () => {
 
 		expect((await restarted.stat("Docs/a.md"))?.pathAuthority).toBe("actual_resolved");
 		await restarted.close();
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The identity a rename pair carries is the ENTITY PROJECTION's, never the cache's
+// internal address. The two are defined differently and are not required to agree:
+// `DropboxMetadataCache.extractId` (behind `idAt`/`snapshotPathsById`) is
+// `entry.id ?? entry.path_lower` — deliberately total, because a lowercased absolute
+// path is a real Dropbox download/delete address — while `dropboxEntryToEntity` sets
+// `identityKey: entry.id` with NO fallback. An id-less entry therefore HAS an address
+// and HAS NO identity, and only the latter may cross the IFileSystem boundary.
+//
+// This is the one shape in which an id-less entry can produce a rename pair at all.
+// The delta route cannot: `dropbox/incremental-sync.ts` reaches `applyRename` only for
+// an entry whose `id` is truthy. The full-scan route cannot either for a PATH-CHANGING
+// rename, because `diffById` keys on `entry.id ?? entry.path_lower`, so an id-less
+// entry's surrogate key moves with its path and it surfaces as delete+add. A CASE-ONLY
+// rename is the exception: `path_lower` is stable while the cached display path changes,
+// so the surrogate key still hits and a pair is produced.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** A minimal full-scan-only Dropbox FS: every delta expires, forcing diffById. */
+class DropboxFullScanFs extends CachingRemoteFs<DropboxEntry> {
+	readonly name = "dropbox-full-scan";
+	private staged: DropboxEntry[] = [];
+
+	constructor(rootPath: string) {
+		super("", new DropboxMetadataCache(rootPath));
+	}
+
+	/** Replace what the next full list returns. */
+	stage(entries: DropboxEntry[]): void { this.staged = entries; }
+	/** The cache, for the address-vs-identity comparison the witness makes. */
+	get dropboxCache(): DropboxMetadataCache { return this.cache as DropboxMetadataCache; }
+
+	protected getStartCursor(): Promise<string> { return Promise.resolve("cursor"); }
+	protected fullList(): Promise<DropboxEntry[]> { return Promise.resolve(this.staged); }
+	protected assertRootAlive(): Promise<void> { return Promise.resolve(); }
+	/** Always expired ⇒ the cursor-expiry fallback (full scan + diffById) runs. */
+	protected fetchChanges(): Promise<IncrementalChangesResult> {
+		return Promise.resolve({ needsFullScan: true, changedPaths: new Set<string>() });
+	}
+
+	protected downloadFile(): Promise<ArrayBuffer> { throw new Error("not implemented"); }
+	protected deleteRemote(): Promise<void> { throw new Error("not implemented"); }
+	protected fetchCurrentFile(): Promise<DropboxEntry | null> { throw new Error("not implemented"); }
+	protected fetchCurrentPath(): Promise<DropboxEntry[] | null> { throw new Error("not implemented"); }
+	protected resolveDetachedPath(): Promise<string | null> { throw new Error("not implemented"); }
+	protected toDetachedEntity(): FileEntity { throw new Error("not implemented"); }
+	protected detachedVersionToken(): string | null { throw new Error("not implemented"); }
+	write(): Promise<FileEntity> { throw new Error("not implemented"); }
+	mkdir(): Promise<FileEntity> { throw new Error("not implemented"); }
+	rename(): Promise<void> { throw new Error("not implemented"); }
+}
+
+/** A Dropbox entry that carries NO provider id (only `path_lower` addresses it). */
+function idlessEntry(path: string): DropboxEntry {
+	return {
+		".tag": "file",
+		name: path.split("/").pop()!,
+		path_lower: path.toLowerCase(),
+		path_display: path,
+		rev: "rev1",
+		size: 10,
+		server_modified: "2024-01-01T00:00:00Z",
+		content_hash: "hash1",
+	};
+}
+
+describe("diffById identity source", () => {
+	it("omits the identity for a case-only rename of an id-less entry, and does not substitute the address", async () => {
+		const fs = new DropboxFullScanFs("/root");
+		fs.stage([idlessEntry("/root/Note.md")]);
+		expect(await fs.getChangedPaths()).toBeNull(); // initial full scan captures "now"
+
+		// Case-only rename: path_display changes, path_lower (the surrogate key) does not.
+		fs.stage([idlessEntry("/root/note.md")]);
+		const delta = await fs.getChangedPaths();
+
+		expect(delta?.renamed).toEqual([
+			{ oldPath: "Note.md", newPath: "note.md", isFolder: undefined, identityKey: undefined },
+		]);
+
+		const pair = delta?.renamed?.[0];
+		const address = fs.dropboxCache.idAt("note.md");
+		// The cache CAN address this entry — it just has no identity to report.
+		expect(address).toBe("/root/note.md");
+		expect(pair?.identityKey).toBeUndefined();
+		// The load-bearing assertion: what the pair carries is NOT what extractId/idAt
+		// returns. A refactor that re-routed the producer through the address function
+		// would make these equal and fail here.
+		expect(pair?.identityKey).not.toBe(address);
+		// …and it matches the entity projection the public surface reports.
+		expect(pair?.identityKey).toBe((await fs.stat("note.md"))?.identityKey);
+	});
+
+	it("carries the projected identity for a case-only rename of an ID-BEARING entry", async () => {
+		const fs = new DropboxFullScanFs("/root");
+		fs.stage([{ ...idlessEntry("/root/Note.md"), id: "id:7" }]);
+		expect(await fs.getChangedPaths()).toBeNull();
+
+		fs.stage([{ ...idlessEntry("/root/note.md"), id: "id:7" }]);
+		const delta = await fs.getChangedPaths();
+
+		expect(delta?.renamed).toEqual([
+			{ oldPath: "Note.md", newPath: "note.md", isFolder: undefined, identityKey: "id:7" },
+		]);
+		expect(delta?.renamed?.[0]?.identityKey).toBe((await fs.stat("note.md"))?.identityKey);
 	});
 });
