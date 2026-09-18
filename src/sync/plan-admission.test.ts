@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
-import type { FileEntity } from "../fs/types";
+import type { FileEntity, RenamePair } from "../fs/types";
 import {
 	admitBatchObservation,
 	type AdmissionDisposition,
 	type AuthorizedSyncPlan,
 } from "./plan-admission";
 import { captureBatchObservation } from "./sync-cycle-planning";
-import { completeIdentityEvidence } from "./identity-evidence";
+import { collectRemoteRenameEvidence, completeIdentityEvidence } from "./identity-evidence";
 import { decideIdentityComponent } from "./identity-component-decision";
+import { selectReportFamily } from "./identity-component-report-family";
 import { compileSamePathConflictContract } from "./conflict-policy-admission";
 import { insertConflictSuffix } from "./conflict";
 import type { IdentityComponent } from "./plan-admission-graph";
@@ -3899,5 +3900,321 @@ describe("positional identity binding: end-to-end site measurement", () => {
 		expect(byInsertPreference.trace).toEqual([
 			"doc.md=>doc.md", "old.md=>doc.md", "doc.md=>doc.md",
 		]);
+	});
+});
+
+/**
+ * The same remote-rename check, now a genuine cross-source comparison.
+ *
+ * `identity-component-decision.ts:105-107` keeps exactly the shape it always had: a
+ * remote rename report that carries an identity must agree with the identity this cycle
+ * observes at `newPath`, and a report that carries none is not checked at all. What
+ * changed underneath it is where the carried key comes from. It used to be attached by
+ * `completeIdentityEvidence` out of the very map the guard compares it against — the
+ * measurement above records that this made the comparison unfailable — and it now
+ * arrives from the producing filesystem's own `RenamePair`, which is a second source.
+ *
+ * What that is worth, stated without inflation: this puts a real check where there was a
+ * tautology, and it removes the two failures the old enrichment manufactured. It repairs
+ * no live wrong operation. The measurement established that the guard cannot fail on any
+ * fact shape today's Observation layer emits, and that the replaced-destination shape is
+ * admitted as a `match` rather than a wrong rename because `indexFacts` and
+ * `bindFiles:420-421` discriminate it ahead of the guard.
+ *
+ * Every case here is staged at the **producer**: the input is a `RenamePair`, turned into
+ * evidence by `collectRemoteRenameEvidence` and completed by `completeIdentityEvidence`
+ * exactly where `change-detector.ts:151` calls it, then driven through
+ * `captureBatchObservation` → `admitBatchObservation`. That staging is what makes the
+ * mismatch case a RED witness: on main `RenamePair` carries no identity, so this same
+ * input reaches Admission keyless, is filled with the destination's own id, passes the
+ * guard and is admitted with `rename_local`. A fixture that hand-keys the *report*
+ * instead proves nothing — the old fill was guarded by `!item.identityKey` and left such
+ * a report alone, so it already failed on main.
+ */
+describe("cross-source remote rename validation", () => {
+	interface ObservedShape {
+		readonly entries: readonly MixedEntity[];
+		readonly observations: readonly PathObservation[];
+		readonly scopePaths: readonly string[];
+	}
+
+	interface ShapedAction {
+		readonly action: SyncActionType;
+		readonly path: string;
+		readonly oldPath?: string;
+	}
+
+	function shapeAction(action: SyncAction): ShapedAction {
+		return {
+			action: action.action, path: action.path,
+			...("oldPath" in action ? { oldPath: action.oldPath } : {}),
+		};
+	}
+
+	/** Producer → Observation → Admission, through production entries only. The pair is
+	 * the input under test; nothing here writes an identity onto a report by hand. */
+	function admitProducedRenames(pairs: readonly RenamePair[], shape: ObservedShape) {
+		const reported = collectRemoteRenameEvidence(pairs);
+		const completed = completeIdentityEvidence(reported, shape.observations, shape.entries);
+		const trace: string[] = [];
+		const admission = admitBatchObservation(captureBatchObservation(
+			[...shape.entries], completed, [...shape.observations],
+			{
+				byEndpoint: new Map<string, ScopeDisposition>(
+					shape.scopePaths.map((path) => [path, "included"])),
+				isConfiguredScopeCompatible: (from, to) => {
+					trace.push(`${from}=>${to}`);
+					return true;
+				},
+			},
+			"backend\0root",
+		));
+		return {
+			// The classifier's own verdict on the evidence the producer emitted.
+			family: selectReportFamily(reported).kind,
+			carried: reported.map((report) => report.identityKey),
+			// Every remote rename claim's key as Admission received it: the producer's,
+			// or nothing. A destination-address fill would show up here as an invention.
+			admitted: admission.dispositions.flatMap((disposition) => disposition.evidence.flatMap(
+				(item) => item.kind === "rename" && item.side === "remote" ? [item.identityKey] : [])),
+			kinds: admission.dispositions.map((disposition) => disposition.kind),
+			reasons: admission.failures.flatMap((failure) => failure.reasons),
+			actions: admission.executable.actions.map(shapeAction),
+			trace,
+		};
+	}
+
+	/** One remote rename `notes/a.md → notes/b.md` as the cycle observes it: the local
+	 * file is still at the old address, the baseline binds `occupant` to it, and
+	 * `occupant` is the identity the remote object now at `notes/b.md` reports. */
+	function renamedAway(occupant: string): ObservedShape {
+		const localA = entity("notes/a.md");
+		const remoteB = entity("notes/b.md", occupant);
+		return {
+			entries: [
+				{ path: "notes/a.md", local: localA, prevSync: recordFor(entity("notes/a.md", occupant)) },
+				{ path: "notes/b.md", remote: remoteB },
+			],
+			observations: [
+				{ kind: "exact", side: "local", requestedPath: "notes/a.md", entity: localA },
+				{ kind: "absent", side: "local", requestedPath: "notes/b.md", authority: "stat" },
+				{ kind: "absent", side: "remote", requestedPath: "notes/a.md", authority: "stat" },
+				{ kind: "exact", side: "remote", requestedPath: "notes/b.md", entity: remoteB },
+			],
+			scopePaths: ["notes/a.md", "notes/b.md"],
+		};
+	}
+
+	/** The same shape with a third, wholly vacant address, so a fan-out claim has an
+	 * observed endpoint to name. */
+	function renamedAwayWithVacantC(occupant: string): ObservedShape {
+		const base = renamedAway(occupant);
+		return {
+			entries: base.entries,
+			observations: [
+				...base.observations,
+				{ kind: "absent", side: "local", requestedPath: "notes/c.md", authority: "stat" },
+				{ kind: "absent", side: "remote", requestedPath: "notes/c.md", authority: "stat" },
+			],
+			scopePaths: [...base.scopePaths, "notes/c.md"],
+		};
+	}
+
+	/** A remote folder rename `A → B` whose child has no far-side endpoint: `B/x.md` is
+	 * not observed at all, so the relation's suffix coverage cannot be completed. */
+	function unmappedFolderRename(): ObservedShape {
+		const localFolder = { ...entity("A"), isDirectory: true, hash: "", size: 0, mtime: 0 };
+		const remoteFolder = { ...entity("B", "folder-1"), isDirectory: true, hash: "", size: 0, mtime: 0 };
+		const localChild = entity("A/x.md");
+		return {
+			entries: [
+				{ path: "A", local: localFolder },
+				{ path: "B", remote: remoteFolder },
+				{ path: "A/x.md", local: localChild, prevSync: recordFor(entity("A/x.md", "child-1")) },
+			],
+			observations: [
+				{ kind: "exact", side: "local", requestedPath: "A", entity: localFolder },
+				{ kind: "absent", side: "remote", requestedPath: "A", authority: "stat" },
+				{ kind: "exact", side: "remote", requestedPath: "B", entity: remoteFolder },
+				{ kind: "absent", side: "local", requestedPath: "B", authority: "stat" },
+				{ kind: "exact", side: "local", requestedPath: "A/x.md", entity: localChild },
+				{ kind: "absent", side: "remote", requestedPath: "A/x.md", authority: "stat" },
+			],
+			scopePaths: ["A", "B", "A/x.md", "B/x.md"],
+		};
+	}
+
+	/** The baseline at `notes/a.md` names an object no current remote fact carries, while
+	 * a different object occupies `notes/b.md`. */
+	function strandedBaseline(): ObservedShape {
+		const shape = renamedAway("drive-1");
+		return {
+			...shape,
+			entries: [
+				{ ...shape.entries[0]!, prevSync: recordFor(entity("notes/a.md", "drive-5")) },
+				shape.entries[1]!,
+			],
+		};
+	}
+
+	function pair(identityKey?: string, newPath = "notes/b.md"): RenamePair {
+		return {
+			oldPath: "notes/a.md", newPath,
+			...(identityKey === undefined ? {} : { identityKey }),
+		};
+	}
+
+	const renameLocal: ShapedAction = {
+		action: "rename_local", path: "notes/b.md", oldPath: "notes/a.md",
+	};
+
+	/** What the component degrades to once the relation is abandoned: each address
+	 * reconciled on its own current facts, with neither claim bound. */
+	const ordinaryAfterAbandonment: readonly ShapedAction[] = [
+		{ action: "push", path: "notes/a.md" },
+		{ action: "pull", path: "notes/b.md" },
+	];
+
+	it("admits the relation when the carried identity is the one observed at newPath", () => {
+		const shape = renamedAway("drive-1");
+		const carried = admitProducedRenames([pair("drive-1")], shape);
+		const keyless = admitProducedRenames([pair()], shape);
+
+		expect(carried.carried).toEqual(["drive-1"]);
+		expect(carried.admitted).toEqual(["drive-1"]);
+		expect(carried.family).toBe("reported");
+		expect(carried.kinds).toEqual(["authorized"]);
+		expect(carried.reasons).toEqual([]);
+		expect(carried.actions).toEqual([renameLocal]);
+		// "The same actions main produces today" is asserted against main's own input for
+		// these facts — the keyless claim — rather than against a remembered list.
+		expect(carried.actions).toEqual(keyless.actions);
+		expect(carried.trace).toEqual(keyless.trace);
+	});
+
+	it("checks nothing, and fails nothing, when the producer carried no identity", () => {
+		const keyless = admitProducedRenames([pair()], renamedAway("drive-1"));
+
+		// ADR 0008's third state: a missing key is no evidence. It is not folded to "",
+		// not filled from the destination, and not a reason to fail a component.
+		expect(keyless.carried).toEqual([undefined]);
+		expect(keyless.admitted).toEqual([undefined]);
+		expect(keyless.family).toBe("reported");
+		expect(keyless.kinds).toEqual(["authorized"]);
+		expect(keyless.reasons).toEqual([]);
+		expect(keyless.actions).toEqual([renameLocal]);
+	});
+
+	it("fails the component when the carried identity is not the object at newPath", () => {
+		const shape = renamedAway("drive-1");
+		const mismatch = admitProducedRenames([pair("drive-9")], shape);
+
+		// The producer says the object that moved to `notes/b.md` is `drive-9`; the cycle
+		// observes `drive-1` there. Two sources, one disagreement, no action.
+		expect(mismatch.carried).toEqual(["drive-9"]);
+		expect(mismatch.admitted).toEqual(["drive-9"]);
+		expect(mismatch.family).toBe("reported");
+		expect(mismatch.kinds).toEqual(["failed"]);
+		expect(mismatch.reasons).toEqual(["conflicting_identity"]);
+		expect(mismatch.actions).toEqual([]);
+		// The RED half, in the same test. The facts are identical to the admitted case
+		// above; only the producer's claim differs. On main `RenamePair` has no
+		// `identityKey` field, so main's input for these facts is the keyless one below,
+		// and main's `completeIdentityEvidence` then fills it with `drive-1` from
+		// `newPath` — the guard compares `drive-1` to `drive-1`, passes, and the component
+		// is authorized. Measured against main's evidence layer, this exact input yields
+		// `authorized`, `admitted: ["drive-1"]`, `rename_local`. The rename below is that
+		// outcome; this fixture refuses it.
+		expect(admitProducedRenames([pair()], shape).actions).toEqual([renameLocal]);
+	});
+
+	it("abandons the relation when two claims on one edge name different objects", () => {
+		const shape = renamedAway("drive-1");
+		const split = admitProducedRenames([pair("drive-1"), pair("drive-9")], shape);
+
+		// Neither claim is dropped by the dedupe and neither is bound: one edge cannot
+		// belong to two objects, and the component falls back to per-address reconciliation.
+		expect(split.carried).toEqual(["drive-1", "drive-9"]);
+		expect(split.family).toBe("conflicting");
+		expect(split.kinds).toEqual(["authorized"]);
+		expect(split.reasons).toEqual([]);
+		expect(split.actions).toEqual(ordinaryAfterAbandonment);
+		// A conflicting family selects no reports, so the report loop never records this
+		// edge's compatibility pair — the guard is not reached and nothing is bound by it.
+		expect(split.trace).not.toContain("notes/a.md=>notes/b.md");
+	});
+
+	// ——— The obligation that is not to widen. ———
+	//
+	// Each case below runs one fact shape twice: once with the pair keyed, once with the
+	// same pair keyless, which is the input main has for those facts. A carried identity
+	// may narrow what Admission admits and may never broaden it, so the two runs must
+	// reach the same non-admitting outcome. A rule that let an agreeing identity settle a
+	// relation the positional rules reject would show up here as the keyed run producing
+	// a rename the keyless run does not.
+
+	it("does not let one shared identity rescue a report family the positional rules reject", () => {
+		const shape = renamedAwayWithVacantC("drive-1");
+		// One source, two targets. Both claims name the same object, which is precisely
+		// the shape an identity could be mistaken for evidence of a single coherent move.
+		const keyed = admitProducedRenames(
+			[pair("drive-1"), pair("drive-1", "notes/c.md")], shape);
+		const keyless = admitProducedRenames([pair(), pair(undefined, "notes/c.md")], shape);
+
+		expect(keyed.family).toBe("conflicting");
+		expect(keyless.family).toBe("conflicting");
+		expect(keyed.actions).toEqual(keyless.actions);
+		expect(keyed.actions).toEqual(ordinaryAfterAbandonment);
+		expect(keyed.reasons).toEqual(keyless.reasons);
+	});
+
+	it("does not let an agreeing identity settle an unmapped folder relation", () => {
+		const shape = unmappedFolderRename();
+		const keyed = admitProducedRenames(
+			[{ oldPath: "A", newPath: "B", isFolder: true, identityKey: "folder-1" }], shape);
+		const keyless = admitProducedRenames([{ oldPath: "A", newPath: "B", isFolder: true }], shape);
+
+		// `folder-1` is exactly what the cycle observes at `B`, so the guard passes — and
+		// the relation is still not settled, because the child has no far-side endpoint.
+		expect(keyed.family).toBe("reported");
+		expect(keyed.admitted).toEqual(["folder-1"]);
+		expect(keyed.kinds).toEqual(["failed"]);
+		expect(keyed.reasons).toEqual(["unknown_observation"]);
+		expect(keyed.actions).toEqual([]);
+		expect(keyed.kinds).toEqual(keyless.kinds);
+		expect(keyed.reasons).toEqual(keyless.reasons);
+		expect(keyed.actions).toEqual(keyless.actions);
+	});
+
+	it("does not let an agreeing identity bind a baseline no current fact accounts for", () => {
+		const shape = strandedBaseline();
+		const keyed = admitProducedRenames([pair("drive-1")], shape);
+		const keyless = admitProducedRenames([pair()], shape);
+
+		// The carried key is the current occupant of `notes/b.md`, so the cross-source
+		// check is satisfied. It authorizes nothing: the baseline names `drive-5`, which
+		// no current remote fact carries, and the binding rules refuse it either way.
+		expect(keyed.family).toBe("reported");
+		expect(keyed.admitted).toEqual(["drive-1"]);
+		expect(keyed.kinds).toEqual(["failed"]);
+		expect(keyed.reasons).toEqual(["unknown_observation"]);
+		expect(keyed.actions).toEqual([]);
+		expect(keyed.kinds).toEqual(keyless.kinds);
+		expect(keyed.reasons).toEqual(keyless.reasons);
+		expect(keyed.actions).toEqual(keyless.actions);
+	});
+
+	it("keeps an absent and an empty carried key distinct in the report family", () => {
+		// `RenamePair`'s contract forbids a producer emitting an empty identity — an
+		// absent key is the "no evidence" state and an empty string is not an identity —
+		// but the type permits one, and the classifier must not silently drop a claim if
+		// one ever arrives. Folding absent to "" here would collapse these two claims into
+		// one and hand Admission a single bindable relation built from two disagreeing
+		// reports; keeping them distinct is what lets the conflict rules see both.
+		const split = admitProducedRenames([pair(), pair("")], renamedAway("drive-1"));
+
+		expect(split.carried).toEqual([undefined, ""]);
+		expect(split.family).toBe("conflicting");
+		expect(split.actions).toEqual(ordinaryAfterAbandonment);
 	});
 });

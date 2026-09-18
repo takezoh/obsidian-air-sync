@@ -1,4 +1,4 @@
-/* eslint max-lines: ["error", 789] -- relation abandonment, exact-path binding, preservation-cover authorization, and Prefer-local eligibility must stay under the sole identity-policy owner. Re-pinned from 785 for the two corrected publication expectations: a replacement continues no row, so the incumbent it names is the occupant of the claimed address and nothing else. */
+/* eslint max-lines: ["error", 800] -- relation abandonment, exact-path binding, preservation-cover authorization, and Prefer-local eligibility must stay under the sole identity-policy owner. Re-pinned from 785 for the two corrected publication expectations: a replacement continues no row, so the incumbent it names is the occupant of the claimed address and nothing else. Re-pinned from 789 for the rename guard's cross-source note, which follows the loop rather than preceding it so the guard keeps the line addresses this change's contracts cite; this directive counts comments. */
 import type { FileEntity } from "../fs/types";
 import type { IdentityComponent } from "./plan-admission-graph";
 import { selectReportFamily } from "./identity-component-report-family";
@@ -106,6 +106,17 @@ export function decideIdentityComponent(
 		if (report.side === "remote" && report.identityKey &&
 			current.remote.get(report.newPath)?.identityKey !== report.identityKey) return fail("conflicting_identity");
 	}
+	// The identity comparison above is cross-source, and deliberately sits here rather
+	// than above the loop so that its four lines keep the addresses every contract in
+	// this change cites. `report.identityKey` is the producing filesystem's own
+	// projection for `newPath`, carried intact from the `RenamePair`; `current.remote` is
+	// this cycle's own observation of that address. Two sources, so a disagreement is a
+	// fact about the world: it fails the component, blocks cycle completeness, leaves the
+	// checkpoint uncommitted and persists nothing. A report carrying no key is not
+	// checked at all — absence is no evidence (ADR 0008) and no component fails for a
+	// missing key. Remote only, permanently: a local endpoint has no provider identity to
+	// compare and nothing here reads one as evidence; `src/fs/local/local-fs.test.ts`
+	// pins that boundary and the two local cases this change does not improve.
 	for (const claim of component.evidence) {
 		if (claim.kind !== "alias") continue;
 		if (!compatible(current, claim.requestedPath, claim.resolvedPath)) return fail("unknown_scope");

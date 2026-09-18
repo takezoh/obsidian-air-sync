@@ -424,6 +424,45 @@ describe("LocalFs", () => {
 		});
 	});
 
+	describe("provider identity boundary", () => {
+		// The local endpoint of every correspondence is positional, permanently and by
+		// construction: a vault has no provider object id to project, so `LocalFs` reports
+		// `identityKey` undefined from every surface and every routing regime, and no
+		// Admission branch reads a local entity's `identityKey` as evidence. A local
+		// rename is bound by the live vault event plus vacancy and terminal proofs.
+		//
+		// Carrying the remote object's identity across the filesystem seam therefore does
+		// NOT improve either local case it might be mistaken for, and both are stated here
+		// rather than left as an omission:
+		//
+		//   * a *missed* local rename event stays unrecoverable — once the notification is
+		//     gone there is no local identity to re-find the file by, so the move reads as
+		//     a delete plus a create;
+		//   * a *cross-scope* local rename still degrades to a `markDirty` on the in-scope
+		//     side only, because the out-of-scope endpoint is never observed at all.
+		//
+		// A change here that began synthesizing a local key — from a path, an inode, or a
+		// vault handle — would be inventing an identity, which ADR 0008 forbids.
+		it("projects no identityKey from stat or list, in either routing regime", async () => {
+			const { vault, fs } = createLocalFs([".airsync"]);
+			await vault.createFolder("notes");
+			await vault.createBinary("notes/a.md", new TextEncoder().encode("x").buffer, { mtime: 1 });
+			await vault.adapter.mkdir(".airsync");
+			await vault.adapter.writeBinary(".airsync/state.json", new TextEncoder().encode("{}").buffer);
+
+			const indexed = await fs.stat("notes/a.md");
+			const viaAdapter = await fs.stat(".airsync/state.json");
+			const listed = await fs.list();
+
+			expect(indexed).not.toBeNull();
+			expect(indexed!.identityKey).toBeUndefined();
+			expect(viaAdapter).not.toBeNull();
+			expect(viaAdapter!.identityKey).toBeUndefined();
+			expect(listed.map((entity) => entity.path)).toContain("notes/a.md");
+			expect(listed.map((entity) => entity.identityKey)).toEqual(listed.map(() => undefined));
+		});
+	});
+
 	describe("rename across the hidden/normal boundary", () => {
 		// A cross-regime rename must keep the indexed (normal) side coherent — it is
 		// decomposed into regime-aware read/write/delete rather than a single
