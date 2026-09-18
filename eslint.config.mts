@@ -64,6 +64,7 @@ const PURE_TRANSFORMS = [
 	"src/sync/change-compare.ts",
 	"src/sync/merge.ts",
 	"src/sync/plan-admission.ts",
+	"src/sync/plan-admission-address-contention.ts",
 	"src/sync/plan-admission-case-alias.ts",
 	"src/sync/plan-admission-graph.ts",
 	"src/sync/identity-component-decision.ts",
@@ -81,6 +82,7 @@ const ADMISSION_INTERNAL_IMPORTS = {
 		"**/identity-component-report-family",
 		"**/identity-component-topology",
 		"**/plan-admission-graph",
+		"**/plan-admission-address-contention",
 		"**/plan-admission-case-alias",
 		"**/local-rename-admission",
 		"**/optimize-local-renames",
@@ -269,6 +271,7 @@ export default defineConfig(
 		ignores: [
 			"src/sync/**/*.test.ts",
 			"src/sync/plan-admission.ts",
+			"src/sync/plan-admission-address-contention.ts",
 			"src/sync/identity-component-decision.ts",
 			"src/sync/identity-component-report-family.ts",
 			"src/sync/identity-component-topology.ts",

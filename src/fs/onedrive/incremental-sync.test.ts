@@ -186,4 +186,20 @@ describe("applyOneDriveDelta", () => {
 		expect(result.changedPaths.size).toBe(0);
 		expect(cache.size).toBe(3); // unchanged
 	});
+
+	it("carries the drain's standing contentions to the caller", async () => {
+		// Without this the delta route announces no contention at all, so an absence a
+		// contention caused would read as a provider deletion and no repair could ever
+		// be planned.
+		const cache = seededCache();
+		const client = fakeClient([deltaPage([odFile("f9", "a.md", ROOT)], "tok2")]);
+
+		const result = await applyOneDriveDelta(ctx(cache, client), "tok1");
+		if (result.needsFullScan) throw new Error("unexpected resync");
+
+		expect(result.contended).toEqual([{
+			path: "a.md", admittedId: "f1", withheldId: "f9",
+			displacedPaths: [], reason: "lowest_stable_id", owesRemediation: true,
+		}]);
+	});
 });

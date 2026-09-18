@@ -242,11 +242,54 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 
 			cache.buildFromFiles([file("f1", "Test.md", ROOT), file("f2", "Test.md", ROOT)]);
 
+			// The disposition of the address, in one line: the path, which id holds it,
+			// which does not, and the rule that settled it.
+			expect(warn).toHaveBeenCalledTimes(1);
 			expect(warn).toHaveBeenCalledWith("Contended cache address", expect.objectContaining({
 				path: "Test.md",
 				admittedId: "f1",
 				withheldId: "f2",
+				reason: "lowest_stable_id",
 			}));
+		});
+
+		it("emits one line for a displaced folder with 500 descendants, not 501", () => {
+			const { logger, warn } = fakeLogger();
+			const cache = makeCache(logger);
+			const descendants = Array.from({ length: 500 },
+				(_, index) => file(`c${index}`, `note-${index}.md`, "d2"));
+
+			const displacements = cache.buildFromFiles([
+				folder("d1", "docs", ROOT), folder("d2", "docs", ROOT), ...descendants,
+			]);
+
+			// Emission is a function of contended ADDRESSES, never of how much went
+			// with the loser. One address lost, so one line — carrying all 500 paths.
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(displacements).toHaveLength(1);
+			expect(displacements[0]?.displacedPaths).toHaveLength(500);
+			expect(warn.mock.calls[0]?.[1]).toMatchObject({
+				path: "docs", admittedId: "d1", withheldId: "d2",
+			});
+		});
+
+		it("behaves identically with no logger, and still returns the count", () => {
+			const { logger, warn } = fakeLogger();
+			const files = [
+				folder("d1", "docs", ROOT), folder("d2", "docs", ROOT), file("c1", "x.md", "d2"),
+			];
+			const logged = makeCache(logger);
+			const silent = makeCache();
+
+			const loggedFacts = logged.buildFromFiles(files);
+			const silentFacts = silent.buildFromFiles(files);
+
+			// The log is a surface, not a decision input: dropping it changes neither
+			// the cache contents nor the cycle-level facts the caller counts.
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(silentFacts).toEqual(loggedFacts);
+			expect(silentFacts).toHaveLength(1);
+			expect(silent.exportRecords()).toEqual(logged.exportRecords());
 		});
 	});
 

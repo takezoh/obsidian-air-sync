@@ -83,7 +83,12 @@ export async function applyIncrementalChanges(
 		}
 		// The in-memory cache now reflects the changes; persistence to IndexedDB is
 		// the caller's job at checkpoint commit (see GoogleDriveFs.commitCheckpoint).
-		return { newToken: currentToken, needsFullScan: false, changedPaths: acc.changedPaths, renamedPaths: acc.renamedPaths };
+		// The drain settled its contentions at the last page close, so these are the
+		// losses that still stand. Carrying them is what gives the delta route a
+		// declared producer for `RemoteDelta.contended`: without it every absence a
+		// contention caused would read as a provider deletion, and no contention
+		// could ever reach the remediation stage.
+		return { newToken: currentToken, needsFullScan: false, changedPaths: acc.changedPaths, renamedPaths: acc.renamedPaths, contended: acc.displacements };
 	} catch (err) {
 		if (isHttpError(err, 410)) {
 			// Token expired, fall back to full scan

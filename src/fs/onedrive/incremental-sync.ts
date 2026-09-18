@@ -61,7 +61,10 @@ export async function applyOneDriveDelta(ctx: OneDriveSyncContext, cursor: strin
 	if (acc.count > 0) {
 		ctx.logger?.info("OneDrive delta applied", { changeCount: acc.count });
 	}
-	return { needsFullScan: false, newToken, changedPaths: acc.changedPaths, renamedPaths: acc.renamedPaths };
+	// Same declared producer as the Google Drive drain: the contentions that still
+	// stand at the last page close travel with the delta, so nothing above the
+	// filesystem has to guess why an address is absent.
+	return { needsFullScan: false, newToken, changedPaths: acc.changedPaths, renamedPaths: acc.renamedPaths, contended: acc.displacements };
 }
 
 /** Map a Graph delta page to normalized entries (a `deleted` facet ⇒ tombstone). */

@@ -1,12 +1,75 @@
 import type { ExecutionResult } from "./plan-executor";
 import type { AdmissionFailureComponent } from "./plan-admission";
 import type { SyncCycleCompletion } from "./sync-cycle-finalization";
+import type { SyncStatus } from "./types";
 
 /** One complete cycle outcome across the Admission and execution boundaries. */
 export interface SyncCycleOutcome {
 	execution: ExecutionResult;
 	admissionFailures: AdmissionFailureComponent[];
 	completion: SyncCycleCompletion;
+	/**
+	 * How many distinct addresses this cycle observed claimed by two live ids.
+	 *
+	 * A fact about the cycle, not a failure: it is stated beside the error count and
+	 * never inside it, and it is derived from the cycle's own contention report and
+	 * from nothing else. Zero for a cycle that observed no delta at all, which is
+	 * the only case in which nothing is said.
+	 */
+	contended: number;
+}
+
+/**
+ * What the status bar needs about a cycle beyond the status itself.
+ *
+ * Cycle-local like everything else about a contention: handed to `onStatusChange`,
+ * rendered, and discarded. `errors` travels with it so the contended clause can
+ * stand aside for a real failure without asking anyone else what happened.
+ */
+export interface SyncStatusDetail {
+	/** Distinct contended addresses this cycle observed. Never an error count. */
+	readonly contended: number;
+	/** This cycle's errors, which a contended clause must never displace. */
+	readonly errors: number;
+}
+
+/**
+ * The contended count in the counts-only idiom the summary already speaks.
+ *
+ * "Contended" names what happened to the *address* — two objects claimed it and
+ * only one could hold it. Both objects are still on the provider, so the wording
+ * must not suggest anything was removed; the path and the two ids stay in the log.
+ */
+function contendedClause(contended: number): string {
+	return `${contended} contended address${contended === 1 ? "" : "es"}`;
+}
+
+/** The status bar's text for every status, before any cycle detail is considered. */
+const STATUS_BAR_TEXT: Readonly<Record<SyncStatus, string>> = {
+	idle: "Synced",
+	syncing: "Syncing...",
+	error: "Sync error",
+	partial_error: "Synced (with errors)",
+	not_connected: "Not connected",
+};
+
+/**
+ * The status bar line for a status and the cycle that produced it.
+ *
+ * The status bar is the only per-cycle surface no setting gates — `enableLogging`
+ * and `showSyncNotifications` are both false by default — so it is where a user
+ * who changed nothing can see that an address was contended. With no errors to
+ * report, the contended clause takes the line ahead of the generic partial-cycle
+ * text, because it names the reason the cycle is incomplete instead of leaving the
+ * user with "with errors" for something that is not an error. A cycle with errors
+ * keeps its error text: a contention never displaces a failure.
+ */
+export function buildStatusBarText(status: SyncStatus, detail?: SyncStatusDetail): string {
+	const stateable = status === "idle" || status === "partial_error";
+	if (detail && detail.contended > 0 && detail.errors === 0 && stateable) {
+		return `Synced (${contendedClause(detail.contended)})`;
+	}
+	return STATUS_BAR_TEXT[status];
 }
 
 /** Outcome counts for one completed sync cycle. */
@@ -38,10 +101,16 @@ export function buildNotificationMessage(outcome: SyncCycleOutcome): string {
 	if (counts.deleted > 0) parts.push(`${counts.deleted} deleted`);
 	if (counts.renamed > 0) parts.push(`${counts.renamed} renamed`);
 	if (execution.conflicts.length > 0) parts.push(`${execution.conflicts.length} conflicts`);
+	// Its own clause, before the errors it is not part of: a contended address is
+	// counted here and never added to `errors` below.
+	if (outcome.contended > 0) parts.push(contendedClause(outcome.contended));
 	const errors = execution.failed.length + outcome.admissionFailures.length;
 	if (errors > 0) parts.push(`${errors} ${errors === 1 ? "error" : "errors"}`);
 	if (execution.blocked.length > 0) parts.push(`${execution.blocked.length} blocked`);
-	if (outcome.completion.kind === "incomplete" && errors === 0 && execution.blocked.length === 0) parts.push("incomplete");
+	// "incomplete" is the clause for an incompleteness with no stated reason. A
+	// contention is a stated reason, so it replaces it rather than doubling it.
+	if (outcome.completion.kind === "incomplete" && errors === 0 &&
+		execution.blocked.length === 0 && outcome.contended === 0) parts.push("incomplete");
 	return parts.length === 0 ? "Everything up to date" : `Sync: ${parts.join(", ")}`;
 }
 
@@ -57,10 +126,15 @@ export class CycleSummary {
 		execution: { succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [] },
 		admissionFailures: [],
 		completion: { kind: "clean" },
+		contended: 0,
 	};
 
 	add(cycle: SyncCycleOutcome): void {
 		if (cycle.completion.kind === "incomplete") this.merged.completion = cycle.completion;
+		// The largest count any cycle in the burst saw, not their sum: a contention
+		// stands until it is repaired, so every cycle of a burst re-observes the same
+		// addresses and adding them up would multiply one standing condition.
+		this.merged.contended = Math.max(this.merged.contended, cycle.contended);
 		// Append element-by-element, not `push(...arr)`: a cold full-scan cycle can
 		// carry tens of thousands of actions, and spreading that many arguments can
 		// overflow the engine's argument limit (RangeError) on mobile.
