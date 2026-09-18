@@ -109,6 +109,10 @@ export class SyncStateStore {
 
 	/** Get multiple sync records by paths, returning only found entries */
 	async getMany(paths: string[]): Promise<Map<string, SyncRecord>> {
+		// Every cycle asks for the records at its contended addresses, and almost every
+		// cycle has none. Opening a transaction to issue zero requests costs a database
+		// round trip for a result that is already known.
+		if (paths.length === 0) return new Map();
 		return this.helper.runTransaction(STORE_NAME, "readonly", (tx) => {
 			const index = tx.objectStore(STORE_NAME).index(PATH_INDEX);
 			const reqs = paths.map((p) => ({ path: p, req: index.get(p) }));

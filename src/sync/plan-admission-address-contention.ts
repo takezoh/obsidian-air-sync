@@ -16,9 +16,11 @@ export interface AddressContentionFacts {
 	/** This cycle's contended addresses, as the filesystem announced them. */
 	readonly contentions: readonly AddressDisplacement[];
 	/**
-	 * The committed `SyncRecord` at each contended path, keyed by path. Records are
-	 * path-keyed, so at most one claimant can hold the one at a contended address —
-	 * which is what makes the keeper a function of the unordered claim set.
+	 * The committed `SyncRecord` at each contended path, keyed by path. The record
+	 * store is keyed by `remoteIdentityKey` under a UNIQUE `path` index, so at most
+	 * one record can stand at an address and therefore at most one claimant can hold
+	 * the one at a contended address — which is what makes the keeper a function of
+	 * the unordered claim set.
 	 */
 	readonly records: ReadonlyMap<string, SyncRecord | undefined>;
 	/** Whether the remote filesystem can rename a provider object by its stable id. */

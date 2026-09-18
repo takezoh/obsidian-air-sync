@@ -294,8 +294,9 @@ current-cycle facts rather than from a local rename, and it adds no `SyncActionT
   out-of-root guess — there is nothing in the working area to rename — and is announced but
   not repaired.
 - **The keeper** is the claimant holding a committed `SyncRecord` at the contended path, else
-  the claimant the arbiter admitted. Records are path-keyed, so at most one claimant can hold
-  one; the choice is a function of the unordered claim set plus committed state and is
+  the claimant the arbiter admitted. The record store is keyed by `remoteIdentityKey` under a
+  unique `path` index, so at most one record stands at an address and at most one claimant can
+  hold one; the choice is a function of the unordered claim set plus committed state and is
   identical under COLD, WARM and HOT. This is what stops a file the user has been syncing for
   months from being renamed to make room for a newly appeared duplicate.
 - **The target** is `insertConflictSuffix(path, "id-" + <the renamed claimant's stable id>)` —
