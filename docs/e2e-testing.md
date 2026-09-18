@@ -301,6 +301,43 @@ durability evidence.
     change is reported exactly once. The result in which `F` first appears is therefore the
     only one that can carry the rest of the subtree; a later read would show the change
     gone rather than incomplete, which would turn a real regression green.
+- **Google Drive contended derived address (Issue #90).** The Google Drive suite runs three more
+  live cases, each in its own fresh root, for the class of bug where one derived cache address is
+  claimed by two live stable ids.
+  - **The premise.** Two objects with the **same name** are created under one parent through the
+    real API and must come back as two distinct ids that Drive's own enumeration still reports
+    under that one name. A refusal, a returned duplicate id, a silent rename, or an enumeration
+    that reports only one is raised as an `ISSUE #90 PREMISE FALSIFIED` error naming which of
+    those happened — that result matters more than a green run, because the arbiter, the
+    displacement facts, the absence attribution and the identity-addressed repair all rest on it.
+  - **The contention, then the repair.** Through `GoogleDriveFs`'s own surface: exactly one
+    claimant is addressable by `stat`, the delta's `contended` names both ids, and **`deleted` is
+    empty in every drain of the window** — the displaced address is absent from the working view
+    but present on the provider, so reporting it would authorise deleting a live file. The repair
+    then runs the real `renameById` → `files.update {name}` (the change's new provider mutation,
+    which no other e2e exercises) at the address the production planner asks for, and both objects
+    must end up reachable at distinct addresses with their own bytes, the keeper's id unchanged.
+    `files.update` sends no `addParents`/`removeParents`, so the renamed object's **parent is
+    re-read from Drive and must be unchanged** — a fake cannot give that, and it is also what
+    keeps the renamed object inside the tree `afterAll` trashes.
+  - **Why a committed empty baseline first.** A contention is announced only on the delta route.
+    A fresh full scan decides its contentions and discards them (`getChangedPaths` returns `null`
+    after one), so the case commits an empty checkpoint before staging anything, exactly as the
+    scope-entry case does, and reuses the same `pollForChange` bound — a hard failure naming
+    `changes.list` propagation, never a skip.
+  - **Orphan collapse is not stageable here, and the suite pins why.** A cached claim that falls
+    back to its **bare name** with `requested_echo` authority can only be produced by
+    `resolveFilePathCached` inside `buildFromFiles`, and `fullList()` is
+    `listAllFiles(rootFolderId)` — a parent-driven walk — so every file in that claim set carries
+    its own resolved parent chain in the same claim set. Rather than fabricate one, the suite
+    asserts the fact that makes it unreachable: an out-of-root namesake created inside the delta
+    window reaches the account-wide `changes.list`, and must produce no claim, no contention, no
+    deletion and no provider mutation, with the in-root object resolving `actual_resolved`. The
+    day it produces a claim, that case goes red.
+  - **Slash-in-a-name is a premise probe only.** One create plus one read by id assert that Drive
+    stores a name containing `/` verbatim. Air Sync composes names from vault path segments, which
+    cannot contain `/`, so the collision itself is unreachable from the plugin; observing it would
+    need its own root, folder and delta poll, so only the provider premise is probed.
 - **Leftover folders.** Cleanup runs in `afterAll` but is **best-effort** — it warns instead
   of failing the run (Google Drive's `drive.file` scope can't hard-delete and may 403 on trash under
   load). Folders are uniquely named, so delete any stray `airsync-e2e-*` from the test account

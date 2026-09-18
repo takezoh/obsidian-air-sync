@@ -6,8 +6,10 @@ import { GoogleDriveClient } from "../src/fs/googledrive/client";
 import { GoogleDriveFs } from "../src/fs/googledrive/index";
 import type { GoogleDriveFile } from "../src/fs/googledrive/types";
 import type { IncrementalCheckpoint } from "../src/fs/interface";
-import { bytes, runIFileSystemContract } from "../tests/fs/contracts/ifilesystem.contract";
+import { bytes, decode, runIFileSystemContract } from "../tests/fs/contracts/ifilesystem.contract";
 import { MetadataStore } from "../src/store/metadata-store";
+import { insertConflictSuffix } from "../src/sync/conflict";
+import { planAddressContentionRemediation } from "../src/sync/plan-admission-address-contention";
 import {
 	createGoogleE2EAuth,
 	GOOGLE_E2E_REFRESH_TOKEN_ENV,
@@ -25,6 +27,24 @@ import { runPriorityFidelityE2E } from "./helpers/priority-fidelity";
 const SCOPE_ENTRY_SUBTREE = ["F", "F/a.md", "F/sub", "F/sub/b.md"];
 const SCOPE_ENTRY_POLL_ATTEMPTS = 20;
 const SCOPE_ENTRY_POLL_INTERVAL_MS = 1500;
+
+/** One name, two Drive objects — the provider fact issue #90's whole change rests on. */
+const CONTENDED_NAME = "Contended.md";
+/** Which sibling carries which bytes, so the no-loss check can't be satisfied by a swap. */
+const FIRST_CONTENT = "first-upload";
+const SECOND_CONTENT = "second-upload";
+
+/**
+ * Prefix for the failures that mean the CHANGE's justification is wrong rather than
+ * its code. A premise failure is the most valuable result this file can produce, so
+ * it is raised as a named, self-explaining error — never as an assertion that would
+ * read the same whichever way the real API answered.
+ */
+const PREMISE = "ISSUE #90 PREMISE FALSIFIED:";
+
+function describeError(err: unknown): string {
+	return err instanceof Error ? err.message : String(err);
+}
 
 type RemoteDelta = NonNullable<Awaited<ReturnType<IncrementalCheckpoint["getChangedPaths"]>>>;
 
@@ -181,6 +201,233 @@ if (!creds) {
 				expect(await fs.stat("F/sub/b.md")).not.toBeNull();
 			} finally {
 				await fs.close();
+			}
+		});
+	});
+
+	// Live backstop for issue #90 (the cache path↔id bijection). Every part of that
+	// change — the arbiter, the displacement facts, the absence attribution, the
+	// identity-addressed repair — rests on ONE provider fact no test had ever checked
+	// against the real API: Google Drive lets two objects with the SAME NAME live under
+	// ONE parent, so the cache derives one address for two live stable ids. It also
+	// adds a real provider mutation (`renameById` → `files.update {name}`) that no e2e
+	// exercised. Each case runs in its own fresh root under the per-run parent, which
+	// `afterAll` trashes recursively — the renamed object included, because it keeps
+	// the parent it started with (which is case 4's own assertion).
+	describe("GoogleDriveFs contended derived address (real)", () => {
+		it("holds one address for two live ids, calls neither a deletion, and repairs it by id", async () => {
+			const rootId = await makeGoogleDriveChild(client, parentId);
+			const store = new MetadataStore<GoogleDriveFile>(crypto.randomUUID(), {
+				dbNamePrefix: "air-sync-googledrive-e2e-contention",
+				version: 1,
+			});
+			const fs = new GoogleDriveFs(client, rootId, undefined, store);
+			const checkpoint = fs.checkpoint;
+			try {
+				// The committed empty baseline is what makes every later read a WARM delta
+				// from a real persisted cursor. It is also the ONLY route on which a
+				// contention is announced at all: a fresh full scan decides its contentions
+				// and discards them (`getChangedPaths` returns null after one), so a
+				// cold-start staging could not observe this through any public surface.
+				expect((await fs.list()).map((entry) => entry.path)).toEqual([]);
+				await checkpoint.commitCheckpoint();
+
+				// ── 1. The premise: two same-named siblings, two distinct stable ids ──
+				const first = await client.uploadFile(CONTENDED_NAME, rootId, bytes(FIRST_CONTENT));
+				let second: GoogleDriveFile;
+				try {
+					second = await client.uploadFile(CONTENDED_NAME, rootId, bytes(SECOND_CONTENT));
+				} catch (err) {
+					throw new Error(
+						`${PREMISE} Drive REFUSED a second child named "${CONTENDED_NAME}" under one ` +
+							`parent (${describeError(err)}). Two live ids could then never claim one ` +
+							"derived cache address on this backend, and the arbiter, the displacement " +
+							"facts and the identity-addressed repair would have no condition to repair.",
+					);
+				}
+				if (second.id === first.id || first.name !== CONTENDED_NAME || second.name !== CONTENDED_NAME) {
+					throw new Error(
+						`${PREMISE} Drive did not create two distinct same-named siblings: ` +
+							`first=${first.id} "${first.name}", second=${second.id} "${second.name}". ` +
+							"A returned duplicate id or a silent rename means the collision this change " +
+							"exists to settle cannot occur on the real API.",
+					);
+				}
+				const siblings = await client.listChildrenByName(rootId, CONTENDED_NAME);
+				if (siblings.length !== 2 || new Set(siblings.map((file) => file.id)).size !== 2) {
+					throw new Error(
+						`${PREMISE} both creates succeeded (${first.id}, ${second.id}) but Drive's own ` +
+							`enumeration reports ${siblings.length} object(s) named "${CONTENDED_NAME}" ` +
+							`under the parent (ids: ${siblings.map((file) => file.id).join(", ")}) — so the ` +
+							"listing the cache builds its claim set from never carries the collision.",
+					);
+				}
+
+				// ── 2. The contention reaches the cache AS a contention ──
+				// Every drain in the window is kept, not just the one carrying the fact: the
+				// two siblings may arrive in one page or across several, and an intermediate
+				// drain that mis-attributed a displaced address would otherwise be consumed
+				// unobserved.
+				const observed: RemoteDelta[] = [];
+				const cycle = await pollForChange(
+					checkpoint,
+					`two siblings named "${CONTENDED_NAME}"`,
+					(delta) => {
+						observed.push(delta);
+						return (delta.contended ?? []).some((fact) => fact.path === CONTENDED_NAME);
+					},
+				);
+				const fact = (cycle.contended ?? []).find((entry) => entry.path === CONTENDED_NAME)!;
+				expect([fact.admittedId, fact.withheldId].sort()).toEqual([first.id, second.id].sort());
+				// Tier 2 of the arbiter, decided over the real ids. Asserting the rule rather
+				// than "whichever arrived first" is what makes this independent of the order
+				// Drive's change feed happened to report the two creations in.
+				expect(fact.admittedId).toBe([first.id, second.id].sort()[0]);
+				// Both claims are provider-resolved, so the loser is repairable — which is
+				// what separates this from a contention nothing can be done about.
+				expect(fact.owesRemediation).toBe(true);
+				// THE DATA-LOSS ROUTE. An address a contention displaced is absent from the
+				// working view but still present on the provider; reporting it in `deleted`
+				// would authorise deleting a live file locally.
+				for (const delta of observed) expect(delta.deleted).toEqual([]);
+				// Exactly one claimant is addressable, it is the admitted one, and the other
+				// holds no address ANYWHERE in the working view — not merely not this one.
+				expect((await fs.list()).map((entry) => entry.path)).toEqual([CONTENDED_NAME]);
+				expect((await fs.stat(CONTENDED_NAME))?.identityKey).toBe(fact.admittedId);
+
+				// ── 3. The repair, against the real API ──
+				// The target address comes from the production planner, so this exercises the
+				// address the plugin would actually ask for rather than one restated here.
+				const remediation = planAddressContentionRemediation({
+					contentions: cycle.contended ?? [],
+					records: new Map(),
+					renameByIdentity: fs.identityRename !== undefined,
+				});
+				expect(remediation.checkpointBlocked).toBe(true);
+				expect(remediation.actions).toHaveLength(1);
+				const repair = remediation.actions[0]!;
+				expect(repair.oldPath).toBe(CONTENDED_NAME);
+				expect(repair.providerIdentity).toBe(fact.withheldId);
+				expect(repair.path).toBe(insertConflictSuffix(CONTENDED_NAME, `id-${fact.withheldId}`));
+
+				const parentsBefore = (await client.getFile(fact.withheldId)).parents;
+				await fs.identityRename.renameById(repair.providerIdentity!, repair.path);
+
+				// The no-loss invariant, end to end: both objects reachable at distinct
+				// addresses, each with its own bytes, and the keeper's identity unmoved.
+				// `stat`/`read` do not replay a delta, so this reads the working view the
+				// repair itself produced rather than a later re-observation of it.
+				expect((await fs.stat(CONTENDED_NAME))?.identityKey).toBe(fact.admittedId);
+				expect((await fs.stat(repair.path))?.identityKey).toBe(fact.withheldId);
+				const contentById = new Map([[first.id, FIRST_CONTENT], [second.id, SECOND_CONTENT]]);
+				expect(decode(await fs.read(CONTENDED_NAME))).toBe(contentById.get(fact.admittedId));
+				expect(decode(await fs.read(repair.path))).toBe(contentById.get(fact.withheldId));
+
+				// ── 4. Only the leaf name moved ──
+				// `updateFileMetadata(id, { name })` sends no addParents/removeParents, and a
+				// real-API parent check is the part a fake cannot give: it is also what keeps
+				// the renamed object inside the tree `afterAll` trashes.
+				const movedOnDrive = await client.getFile(fact.withheldId);
+				expect(movedOnDrive.name).toBe(repair.path.split("/").pop());
+				expect(movedOnDrive.parents).toEqual(parentsBefore);
+				expect(movedOnDrive.parents).toEqual([rootId]);
+				const keeperOnDrive = await client.getFile(fact.admittedId);
+				expect(keeperOnDrive.name).toBe(CONTENDED_NAME);
+				expect(keeperOnDrive.parents).toEqual([rootId]);
+			} finally {
+				await fs.close();
+			}
+		});
+
+		// The orphan-collapse mechanism (a cached claim that falls back to its BARE NAME
+		// with `requested_echo` authority and loses the authority tier to a real
+		// root-level namesake) cannot be staged from outside the plugin: the only
+		// producer of such a claim is `resolveFilePathCached` inside `buildFromFiles`,
+		// and `fullList()` is `listAllFiles(rootFolderId)` — a parent-driven walk — so
+		// every file in that claim set has its own resolved parent chain in the same
+		// claim set. This case pins THAT, live: an out-of-root namesake reaches the
+		// account-wide change feed and must produce no claim, no contention, no
+		// deletion and no provider mutation. The day it produces one, the collapse is
+		// reachable after all and this goes red instead of the fact living only in prose.
+		it("derives no cache address for an out-of-root namesake, and does not touch it", async () => {
+			const rootId = await makeGoogleDriveChild(client, parentId);
+			// A sibling of the bound root, not a descendant: genuinely out of scope.
+			const outsideId = await makeGoogleDriveChild(client, parentId);
+			const store = new MetadataStore<GoogleDriveFile>(crypto.randomUUID(), {
+				dbNamePrefix: "air-sync-googledrive-e2e-out-of-root",
+				version: 1,
+			});
+			const fs = new GoogleDriveFs(client, rootId, undefined, store);
+			const checkpoint = fs.checkpoint;
+			try {
+				expect((await fs.list()).map((entry) => entry.path)).toEqual([]);
+				await checkpoint.commitCheckpoint();
+
+				// Both creations land INSIDE the delta window, and `changes.list` is
+				// account-wide rather than root-scoped, so the out-of-root object really is
+				// offered to the drain — it is declined, not unseen.
+				const outside = await client.uploadFile(CONTENDED_NAME, outsideId, bytes("outside-root"));
+				const inside = await client.uploadFile(CONTENDED_NAME, rootId, bytes("inside-root"));
+
+				const observed: RemoteDelta[] = [];
+				const cycle = await pollForChange(
+					checkpoint,
+					`"${CONTENDED_NAME}" created in the bound root`,
+					(delta) => {
+						observed.push(delta);
+						return delta.modified.includes(CONTENDED_NAME);
+					},
+				);
+				for (const delta of observed) {
+					expect(delta.contended ?? []).toEqual([]);
+					expect(delta.deleted).toEqual([]);
+				}
+				expect(cycle.modified).toEqual([CONTENDED_NAME]);
+				const entry = await fs.stat(CONTENDED_NAME);
+				expect(entry?.identityKey).toBe(inside.id);
+				// Provider-resolved, never the `requested_echo` bare-name echo a collapse
+				// would have written at this very address.
+				expect(entry?.pathAuthority).toBe("actual_resolved");
+				expect((await fs.list()).map((listed) => listed.path)).toEqual([CONTENDED_NAME]);
+
+				// No provider mutation: the out-of-root namesake still carries its own name
+				// under its own parent. A repair that had reached for it would show here.
+				const outsideAfter = await client.getFile(outside.id);
+				expect(outsideAfter.name).toBe(CONTENDED_NAME);
+				expect(outsideAfter.parents).toEqual([outsideId]);
+			} finally {
+				await fs.close();
+			}
+		});
+
+		// Premise probe only, for the `/`-in-a-provider-name collision shape. Air Sync
+		// composes names from vault path segments, which cannot contain `/`, so the
+		// plugin does not reach the shape on its own — but that DRIVE ACCEPTS SUCH A
+		// NAME is the mechanism's premise and was never checked. One create and one read
+		// by id: no cache, no delta, no polling. Observing the collision itself would
+		// need its own root, a folder and its own delta poll, which is why only the
+		// premise is probed here.
+		it("stores a provider name containing a path separator verbatim", async () => {
+			const rootId = await makeGoogleDriveChild(client, parentId);
+			const slashName = "slash/name.md";
+			let created: GoogleDriveFile;
+			try {
+				created = await client.uploadFile(slashName, rootId, bytes("slash-named"));
+			} catch (err) {
+				throw new Error(
+					`${PREMISE} Drive REFUSED a name containing "/" (${describeError(err)}). A ` +
+						"provider name can then never compose a derived cache address carrying a " +
+						"separator, so that collision shape is unreachable on this backend and the " +
+						"arbiter's handling of it is dead code here.",
+				);
+			}
+			const stored = await client.getFile(created.id);
+			if (stored.name !== slashName) {
+				throw new Error(
+					`${PREMISE} Drive stored "${stored.name}" for a requested name of ` +
+						`"${slashName}" — it rewrites the separator instead of keeping it, so that ` +
+						"collision shape is unreachable on this backend.",
+				);
 			}
 		});
 	});
