@@ -2,12 +2,44 @@ import type { FileEntity, PathAuthority } from "../types";
 import type { Logger } from "../../logging/logger";
 import { INTERNAL_METADATA_PATH } from "../remote-vault-contract";
 import { resolveCachedPathAuthority, resolvePathAuthority, resolveStoredPathAuthority } from "./path-authority";
+import { arbitrateAddress, type ContestedAddress } from "./address-arbitration";
+import {
+	assignClaimSet,
+	type AddressDisplacement,
+	type AddressDisplacementReason,
+	type ResolvedClaim,
+} from "./claim-set-assignment";
+
+export type { AddressDisplacement } from "./claim-set-assignment";
 
 export interface FileChangeResult {
 	oldPath: string | undefined;
 	newPath: string | undefined;
 	wasFolder: boolean;
 	oldDescendants: string[];
+	/** The address this change took from another live id, when it took one. */
+	displacement?: AddressDisplacement | null;
+	/** The claim this change did NOT write, because another live id holds its address. */
+	withheld?: WithheldClaim | null;
+}
+
+/**
+ * A claim a cache writer refused to write because another live id holds its
+ * address. The claimant's own stale entry is vacated (the provider says it is no
+ * longer there), and the whole fact is handed back so the caller can settle it
+ * against the close of its evidence unit. Nothing about it is stored here.
+ */
+export interface WithheldClaim extends AddressDisplacement {
+	/** The cache path the withheld claimant was removed from, if it held one. */
+	readonly vacatedPath: string | null;
+}
+
+/** What one {@link AbstractMetadataCache.applyFileChange} did, and what it cost. */
+export interface FileChangeApplication {
+	/** The cache path the entry now occupies, or null when its claim was withheld. */
+	readonly path: string | null;
+	readonly displacement: AddressDisplacement | null;
+	readonly withheld: WithheldClaim | null;
 }
 
 /**
@@ -95,9 +127,16 @@ export abstract class AbstractMetadataCache<TFile> {
 		return path === INTERNAL_METADATA_PATH;
 	}
 
-	/** Add or update a file in the cache with full index maintenance */
-	setFile(path: string, file: TFile, pathAuthority: PathAuthority = "requested_echo"): void {
-		if (this.isReserved(path)) return;
+	/**
+	 * Add or update a file in the cache with full index maintenance.
+	 *
+	 * Returns the displacement when a different stable id was evicted from `path`,
+	 * so no cache address is ever taken from a live object silently. It decides
+	 * nothing: a contended *derived* address is arbitrated by the caller
+	 * (`buildFromFiles`, `applyFileChange`) before it gets here.
+	 */
+	setFile(path: string, file: TFile, pathAuthority: PathAuthority = "requested_echo"): AddressDisplacement | null {
+		if (this.isReserved(path)) return null;
 		const id = this.extractId(file);
 		const incomingIsFolder = this.isFolderEntry(file);
 		const oldPath = this.idToPath.get(id);
@@ -111,9 +150,10 @@ export abstract class AbstractMetadataCache<TFile> {
 
 		// Provider upserts may re-key a stable id without a preceding tombstone.
 		// Keep the path and identity indexes bijective at their single mutation seam.
-		if (occupant && this.extractId(occupant) !== id) {
-			this.removeTree(path);
-		}
+		const occupantId = occupant === undefined ? undefined : this.extractId(occupant);
+		const displacement = occupantId !== undefined && occupantId !== id
+			? this.displaceOccupant(path, id, occupantId, "upsert_rekey", false)
+			: null;
 
 		if (oldPath && oldPath !== path) {
 			const wasFolder = this.folders.has(oldPath);
@@ -140,6 +180,51 @@ export abstract class AbstractMetadataCache<TFile> {
 			this.folders.delete(path);
 		}
 		this.addToIndex(path);
+		return displacement;
+	}
+
+	/** Evict the live occupant of a contended address and say what that cost. */
+	private displaceOccupant(
+		path: string,
+		admittedId: string,
+		withheldId: string,
+		reason: AddressDisplacementReason,
+		owesRemediation: boolean,
+	): AddressDisplacement {
+		const displacedPaths = this.collectDescendants(path).sort();
+		this.removeTree(path);
+		return this.announce({ path, admittedId, withheldId, displacedPaths, reason, owesRemediation });
+	}
+
+	/**
+	 * Vacate a claimant that lost its contended address and hand the fact back.
+	 * The claimant is not written anywhere else: inventing a disambiguated address
+	 * here would publish a spelling no provider has confirmed.
+	 */
+	private withholdClaim(contest: ContestedAddress, vacatedPath: string | undefined): WithheldClaim {
+		const displacedPaths = vacatedPath ? this.collectDescendants(vacatedPath).sort() : [];
+		if (vacatedPath) this.removeTree(vacatedPath);
+		return this.announce({
+			path: contest.path,
+			admittedId: contest.admittedId,
+			withheldId: contest.withheldId,
+			displacedPaths,
+			reason: contest.reason,
+			owesRemediation: contest.withheldOwesRemediation,
+			vacatedPath: vacatedPath ?? null,
+		});
+	}
+
+	/** One warn per contended address, then hand the fact to the caller. Nothing is stored. */
+	private announce<T extends AddressDisplacement>(fact: T): T {
+		this.logger?.warn("Contended cache address", {
+			path: fact.path,
+			admittedId: fact.admittedId,
+			withheldId: fact.withheldId,
+			displacedPaths: fact.displacedPaths,
+			reason: fact.reason,
+		});
+		return fact;
 	}
 
 	/** Remove a single entry from pathToFile/idToPath/folders and the children index */
@@ -152,8 +237,11 @@ export abstract class AbstractMetadataCache<TFile> {
 		this.folders.delete(path);
 	}
 
-	/** Bulk-load files into the cache. Does NOT clear — callers clear() first when rebuilding. */
-	bulkLoad(items: Iterable<[string, TFile, PathAuthority?]>): void {
+	/**
+	 * Bulk-load files into the cache. Does NOT clear — callers clear() first when
+	 * rebuilding. Returns whatever `setFile` displaced on the way in.
+	 */
+	bulkLoad(items: Iterable<[string, TFile, PathAuthority?]>): readonly AddressDisplacement[] {
 		const records = [...items];
 		const seenIds = new Map<string, string>();
 		for (const [path, file] of records) {
@@ -167,9 +255,12 @@ export abstract class AbstractMetadataCache<TFile> {
 			}
 			seenIds.set(id, path);
 		}
+		const displacements: AddressDisplacement[] = [];
 		for (const [path, file, pathAuthority = "requested_echo"] of records) {
-			this.setFile(path, file, pathAuthority);
+			const displacement = this.setFile(path, file, pathAuthority);
+			if (displacement) displacements.push(displacement);
 		}
+		return displacements;
 	}
 
 	/** Return a snapshot of all records for persistence */
@@ -241,9 +332,14 @@ export abstract class AbstractMetadataCache<TFile> {
 
 	/**
 	 * Build the cache from a flat list of files (as returned by a full list).
-	 * Resolves paths with memoization and bulk-loads into the cache.
+	 *
+	 * Resolves every path with memoization, then assigns the *complete* claim set
+	 * to addresses in one pass: contended paths are arbitrated and the loss is
+	 * propagated down resolved parent-id ancestry, so the contents do not depend on
+	 * the order the provider happened to list the objects in. Only survivors are
+	 * bulk-loaded; every loss is returned rather than performed silently.
 	 */
-	buildFromFiles(files: TFile[]): void {
+	buildFromFiles(files: TFile[]): readonly AddressDisplacement[] {
 		const byId = new Map<string, TFile>();
 		for (const file of files) {
 			byId.set(this.extractId(file), file);
@@ -251,24 +347,48 @@ export abstract class AbstractMetadataCache<TFile> {
 
 		const resolvedPaths = new Map<string, string>();
 		const resolvedAuthorities = new Map<string, PathAuthority>();
-		const resolved: [string, TFile][] = [];
+		const claims: ResolvedClaim<TFile>[] = [];
 		for (const file of files) {
 			const path = this.resolveFilePathCached(file, byId, resolvedPaths, new Set());
-			resolved.push([path, file]);
-			resolvePathAuthority(file, {
+			const authority = resolvePathAuthority(file, {
 				rootFolderId: this.rootFolderId,
 				byId,
 				extractId: (entry) => this.extractId(entry),
 				extractParentIds: (entry) => this.extractParentIds(entry),
 				resolved: resolvedAuthorities,
 			}, new Set());
+			// Reserved paths are never tracked, so they never contend for one.
+			if (this.isReserved(path)) continue;
+			claims.push({
+				id: this.extractId(file),
+				file,
+				path,
+				authority,
+				parentId: this.resolvedParentId(file, byId),
+			});
 		}
 
-		this.bulkLoad(resolved.map(([path, file]): [string, TFile, PathAuthority] => [
-			path,
-			file,
-			resolvedAuthorities.get(this.extractId(file)) ?? "requested_echo",
-		]));
+		const { admitted, displacements } = assignClaimSet(claims);
+		for (const displacement of displacements) this.announce(displacement);
+		const evicted = this.bulkLoad(admitted.map((claim): [string, TFile, PathAuthority] =>
+			[claim.path, claim.file, claim.authority]));
+		return [...displacements, ...evicted];
+	}
+
+	/**
+	 * The parent id the path resolver went through for this file — undefined for a
+	 * root-level entry, an unknown parent, or a bare-name fallback. This is the edge
+	 * a displacement propagates along: provider topology, not a string prefix, which
+	 * would also catch an unrelated object that merely spells its way under the name.
+	 */
+	private resolvedParentId(file: TFile, byId: ReadonlyMap<string, TFile>): string | undefined {
+		const parents = this.extractParentIds(file);
+		if (parents.length === 0) return undefined;
+		const parentId = this.findRelevantParentId(parents, byId);
+		if (!parentId || parentId === this.rootFolderId || parentId === this.extractId(file)) {
+			return undefined;
+		}
+		return byId.has(parentId) ? parentId : undefined;
 	}
 
 	/** Resolve a file's relative path using the existing cache */
@@ -381,37 +501,57 @@ export abstract class AbstractMetadataCache<TFile> {
 		const wasFolder = oldPath ? this.isFolder(oldPath) : false;
 		const oldDescendants = (oldPath && wasFolder)
 			? this.collectDescendants(oldPath) : [];
-		this.applyFileChange(file);
+		const applied = this.applyFileChange(file);
 		const newPath = this.getPathById(this.extractId(file));
-		return { oldPath, newPath, wasFolder, oldDescendants };
+		return {
+			oldPath,
+			newPath,
+			wasFolder,
+			oldDescendants,
+			displacement: applied?.displacement ?? null,
+			withheld: applied?.withheld ?? null,
+		};
 	}
 
-	/** Apply a single file change to the metadata cache */
-	applyFileChange(file: TFile): string | null {
+	/**
+	 * Apply a single file change to the metadata cache.
+	 *
+	 * Returns null on exactly the cases that returned null before arbitration
+	 * existed — an unresolvable path and the reserved metadata path — so a caller's
+	 * "place it at the requested path instead" fallback still fires only for those.
+	 */
+	applyFileChange(file: TFile): FileChangeApplication | null {
 		const id = this.extractId(file);
 		const path = this.resolvePathFromCache(file);
 		const oldPath = this.idToPath.get(id);
 
-		if (!path) {
-			// Can't resolve path (moved outside root or parent unknown).
-			// Remove stale cache entry if one exists.
-			if (oldPath) {
-				this.removeTree(oldPath);
-			}
+		// Can't resolve path (moved outside root or parent unknown), or the path is
+		// the backend's own metadata file, which is never tracked. Either way, drop
+		// a stale cache entry if one exists.
+		if (!path || this.isReserved(path)) {
+			if (oldPath) this.removeTree(oldPath);
 			return null;
 		}
 
-		// The backend's own metadata file is never tracked. If a previously-tracked
-		// file was moved onto this reserved path, drop its stale entry too.
-		if (this.isReserved(path)) {
-			if (oldPath) this.removeTree(oldPath);
-			return null;
+		// A derived address held by a different live id is a contention, not a
+		// last-write-wins upsert: the same rule decides it in every arrival order.
+		const occupantId = this.idAt(path);
+		const contest = occupantId === undefined || occupantId === id ? null : arbitrateAddress(
+			path,
+			{ id: occupantId, authority: this.getStoredPathAuthority(path) },
+			{ id, authority: "actual_resolved" },
+		);
+		if (contest?.outcome === "admit_incumbent") {
+			return { path: null, displacement: null, withheld: this.withholdClaim(contest, oldPath) };
 		}
 
 		// The delta names this entry and its parent id directly, so the entry's own
 		// spelling is provider-resolved. getPathAuthority() still projects any
 		// unresolved ancestor over it until that ancestor is confirmed.
+		const displacement = contest?.outcome === "admit_claimant" ? this.displaceOccupant(
+			path, id, contest.withheldId, contest.reason, contest.withheldOwesRemediation,
+		) : null;
 		this.setFile(path, file, "actual_resolved");
-		return path;
+		return { path, displacement, withheld: null };
 	}
 }

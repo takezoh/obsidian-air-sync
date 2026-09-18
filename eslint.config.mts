@@ -363,6 +363,18 @@ export default defineConfig(
 		rules: { "max-lines": ["error", { max: 341, skipBlankLines: true, skipComments: true }] },
 	},
 	{
+		// Pinned at 379 when the cache became the single owner of "which cache path
+		// does this provider object get?". The pure part of that answer IS split out
+		// (claim-set-assignment.ts, alongside path-authority.ts); what stays here is
+		// index mutation — evicting an occupant, vacating a withheld claimant and
+		// announcing either — which cannot leave the class that owns the five maps
+		// without exporting them. Ratchet down if the id-chain path resolver
+		// (resolvePathFromCache/resolveFilePathCached/findRelevantParentId) later
+		// moves out to its own module; that is its own task, with public callers.
+		files: ["src/fs/caching/metadata-cache.ts"],
+		rules: { "max-lines": ["error", { max: 379, skipBlankLines: true, skipComments: true }] },
+	},
+	{
 		// Lint manifest.json for the words the Obsidian submission validator
 		// HARD-rejects in name/description/id ("obsidian"/"plugin" — redundant,
 		// implied by context). The typescript-eslint parser turns .json into an
