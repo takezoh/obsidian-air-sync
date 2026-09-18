@@ -130,6 +130,23 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	 * store in the same transaction at commit time.
 	 */
 	private _scopeFingerprint: string | null = null;
+	/**
+	 * The contentions the full scan that built this working view decided, waiting to
+	 * be drained exactly once.
+	 *
+	 * A full scan is entered lazily, from whichever path-level call first needs the
+	 * cache — `list()`, `stat()`, `listDir()`. None of them can return an
+	 * address-level fact, so before this the scan's contentions were simply dropped
+	 * and a withheld object stayed invisible for as long as the checkpoint stood.
+	 * They belong to the working view, share its lifecycle, and are cleared with it.
+	 *
+	 * Handed over, not held: {@link drainWorkingViewContentions} empties it, so this
+	 * is a one-shot channel out of a lazy call and never a second reader's state. The
+	 * cursor-expiry route does not use it at all — `fullScanWithDelta` takes
+	 * `fullScan`'s return value directly, so its contentions travel in the delta and
+	 * are never reported twice.
+	 */
+	private _workingViewContentions: readonly AddressDisplacement[] = [];
 
 	protected constructor(
 		rootFolderId: string,
@@ -283,8 +300,26 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	protected async ensureInitialized(): Promise<boolean> {
 		if (this.initialized) return true;
 		if (await this.loadFromCache()) return true;
-		await this.fullScan();
+		// The caller is a path-level API with nowhere to put an address-level fact, so
+		// the scan's contentions are parked on the working view for the cycle to drain.
+		// `fullScanWithDelta` deliberately does not come through here: it takes the
+		// return value, so a cursor-expiry scan reports through the delta and only there.
+		this._workingViewContentions = await this.fullScan();
 		return false;
+	}
+
+	/**
+	 * Take the contentions the working view was built with, leaving none behind.
+	 *
+	 * Every temperature reports its contentions through this or through the delta, so
+	 * an address the cache could not seat is announced once per cycle no matter which
+	 * call happened to build the view — which is what makes "nothing disappears from
+	 * the working view without saying so" true on the full-scan route too.
+	 */
+	drainWorkingViewContentions(): readonly AddressDisplacement[] {
+		const drained = this._workingViewContentions;
+		this._workingViewContentions = [];
+		return drained;
 	}
 
 	/**
@@ -392,6 +427,7 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 		await this.cacheMutex.run(() => {
 			this._changesPageToken = null;
 			this._scopeFingerprint = null;
+			this._workingViewContentions = [];
 			this.cache.clear();
 			this.initialized = false;
 		});
@@ -413,6 +449,7 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 			}
 			this._changesPageToken = null;
 			this._scopeFingerprint = null;
+			this._workingViewContentions = [];
 			this.cache.clear();
 			this.initialized = false;
 		});

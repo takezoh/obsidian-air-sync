@@ -362,8 +362,13 @@ export default defineConfig(
 		// where the scan happens, and the sync layer's own diagnostics module is the
 		// wrong home for it — moving it there would mean handing the cache out past
 		// this class to log it.
+		// Re-pinned from 389 for the full scan's own contention channel. A scan is
+		// entered lazily from the path-level calls owned here, so the working-view field
+		// that carries its address-level facts out, and the drain that empties it, belong
+		// with the lifecycle that creates and clears them — beside the cursor and the
+		// scope fingerprint, which have exactly the same lifetime.
 		files: ["src/fs/caching/remote-fs.ts"],
-		rules: { "max-lines": ["error", { max: 389, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 397, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Dropbox's detached identity/path seams belong beside its other API-addressing

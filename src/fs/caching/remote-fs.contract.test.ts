@@ -743,4 +743,96 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			await fs.close();
 		});
 	});
+
+	/**
+	 * A delta is not the only thing that decides contentions. A FULL SCAN decides them
+	 * over the complete listing, and a scan is entered lazily from whichever path-level
+	 * call first needs the cache — `list()`, `stat()`, `listDir()` — none of which can
+	 * return an address-level fact. Without a channel of its own, a cycle that acquires
+	 * its remote side by scanning reports no contention at all, and the withheld object
+	 * stays invisible for as long as the checkpoint stands.
+	 */
+	describe("the full-scan route's own contention channel", () => {
+		/** Two live objects whose derived addresses collide, with no checkpoint to restore. */
+		function collidingSiblings() {
+			const remote = new FakeRemote();
+			remote.seedRaw(mockFile("a-note", "Note.md", remote.rootId));
+			remote.seedRaw(mockFile("z-note", "Note.md", remote.rootId));
+			return new MockRemoteFs(remote, makeStore());
+		}
+
+		it("hands over the contentions a lazily-entered full scan decided", async () => {
+			const fs = collidingSiblings();
+
+			// `list()` is a path-level call: it builds the working view as a side effect
+			// and returns files, so this is the only way the scan's facts get out.
+			await fs.list();
+
+			expect(fs.checkpoint.drainWorkingViewContentions?.()).toEqual([{
+				path: "Note.md",
+				admittedId: "a-note",
+				withheldId: "z-note",
+				displacedPaths: [],
+				reason: "lowest_stable_id",
+				owesRemediation: true,
+			}]);
+			await fs.close();
+		});
+
+		it("hands them over exactly once", async () => {
+			const fs = collidingSiblings();
+			await fs.list();
+
+			expect(fs.checkpoint.drainWorkingViewContentions?.()).toHaveLength(1);
+			// A second reader must not see them again: two announcements of one address
+			// would owe two repairs for one object.
+			expect(fs.checkpoint.drainWorkingViewContentions?.()).toEqual([]);
+			await fs.close();
+		});
+
+		it("leaves nothing here for the cursor-expiry route, which reports in the delta", async () => {
+			const remote = new FakeRemote();
+			const keep = mockFile("a-note", "Note.md", remote.rootId);
+			remote.seedRaw(keep);
+			const store = makeStore();
+			await seedCheckpoint(store, [keep], ["Note.md"]);
+			remote.seedRaw(mockFile("z-note", "Note.md", remote.rootId));
+
+			const fs = new MockRemoteFs(remote, store);
+			fs.requestCursorExpiry();
+			const delta = await fs.checkpoint.getChangedPaths();
+
+			// `fullScanWithDelta` takes the scan's return value directly, so the fact
+			// travels in the delta. Draining as well would report one address twice.
+			expect(delta?.contended).toHaveLength(1);
+			expect(fs.checkpoint.drainWorkingViewContentions?.()).toEqual([]);
+			await fs.close();
+		});
+
+		it("has nothing to hand over when the view came from a committed checkpoint", async () => {
+			const remote = new FakeRemote();
+			const keep = mockFile("a-note", "Note.md", remote.rootId);
+			remote.seedRaw(keep);
+			const store = makeStore();
+			await seedCheckpoint(store, [keep], ["Note.md"]);
+
+			const fs = new MockRemoteFs(remote, store);
+			await fs.list();
+
+			expect(fs.checkpoint.drainWorkingViewContentions?.()).toEqual([]);
+			await fs.close();
+		});
+
+		it("discards them with the working view it belongs to", async () => {
+			const fs = collidingSiblings();
+			await fs.list();
+
+			// An aborted attempt publishes nothing, so its facts must not survive into
+			// the next one — which re-scans and re-derives them anyway.
+			await fs.checkpoint.abortWorkingView();
+
+			expect(fs.checkpoint.drainWorkingViewContentions?.()).toEqual([]);
+			await fs.close();
+		});
+	});
 });

@@ -2493,6 +2493,57 @@ describe("SyncOrchestrator", () => {
 			// the rest of the vault, and the settled file must not be disturbed.
 			expect(readText(cycle.remoteFs, "elsewhere.md")).toBe("untouched by any contention");
 		});
+
+		/**
+		 * The same address, reached by the other acquisition route.
+		 *
+		 * A COLD cycle never asks for a delta — it lists both sides — so the contention
+		 * channel it uses is the full scan's own, not `getChangedPaths`. COLD is not an
+		 * exotic state: `forceFullScan` is `noCheckpoint || scopeChanged`, and editing one
+		 * ignore pattern is enough. `AGENTS.md` requires COLD, WARM and HOT to reach the
+		 * same Admission decision from the same facts; this is that requirement, measured.
+		 */
+		it("withholds the same address when a COLD cycle acquired it by full scan", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			confirmRemoteWrites(remoteFs);
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`,
+				lastSyncedIdentity: "test:root",
+			});
+			const deps = createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			addFile(localFs, CONTENDED, "the user's file", 1000);
+			await orchestrator.runSync();
+
+			const seated = remoteFs.files.get(CONTENDED)!;
+			seated.content = new TextEncoder().encode("the newcomer's bytes").buffer;
+			seated.entity = { ...seated.entity, identityKey: NEWCOMER, mtime: 2000, size: 20 };
+
+			const renameById = vi.fn().mockResolvedValue(undefined);
+			remoteFs.identityRename = { renameById };
+			// No checkpoint ⇒ forceFullScan ⇒ COLD, which never calls getChangedPaths.
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(false);
+			remoteFs.checkpoint!.drainWorkingViewContentions = vi.fn()
+				.mockReturnValueOnce([{
+					path: CONTENDED, admittedId: NEWCOMER, withheldId: RECORD_HOLDER,
+					displacedPaths: [], reason: "lowest_stable_id", owesRemediation: true,
+				}])
+				.mockReturnValue([]);
+			const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+			remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
+			remoteFs.checkpoint!.abortWorkingView = vi.fn().mockResolvedValue(undefined);
+
+			await orchestrator.runSync();
+			await orchestrator.close();
+
+			expect(readText(localFs, CONTENDED)).toBe("the user's file");
+			expect(renameById).toHaveBeenCalledWith(
+				NEWCOMER, "docs/Note.conflict-id-seated-id.md");
+			expect(commitCheckpoint).not.toHaveBeenCalled();
+		});
 	});
 
 	describe("a contended address reaches a user who changed no settings", () => {

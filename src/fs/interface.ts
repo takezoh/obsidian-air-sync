@@ -195,6 +195,23 @@ export interface IncrementalCheckpoint {
 	listCurrentSnapshot?(): Promise<FileEntity[]>;
 
 	/**
+	 * Take the contentions the current working view was built with, leaving none
+	 * behind, or an empty list when the view came from a committed checkpoint.
+	 *
+	 * `getChangedPaths` reports what a DELTA found. A working view can also be built
+	 * by a full scan, entered lazily from a path-level call (`list`, `stat`) that has
+	 * nowhere to return an address-level fact — so without this, a cycle acquiring its
+	 * remote side by full scan reports no contention at all, and an address the cache
+	 * could not seat stays silently absent for as long as the checkpoint stands.
+	 *
+	 * Draining is what keeps the two channels from double-reporting: the cursor-expiry
+	 * route carries its scan's contentions in the delta and leaves nothing here.
+	 * Optional, for the same reason `getChangedPaths`'s `contended` is: a backend
+	 * whose addresses are the provider's own keys can never produce one.
+	 */
+	drainWorkingViewContentions?(): readonly AddressDisplacement[];
+
+	/**
 	 * Whether a committed incremental checkpoint (delta cursor) exists. When false,
 	 * the sync engine cannot trust delta-based remote detection — the last sync never
 	 * completed, or was reset — so it forces a full cold reconcile. The cursor is

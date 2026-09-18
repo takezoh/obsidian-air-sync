@@ -114,6 +114,14 @@ export async function collectChanges(
 			? await collectCold(deps, allRecords)
 			: await collectWarm(deps, allRecords);
 	}
+	// Whatever temperature ran above, the remote side may have been acquired by a full
+	// scan — COLD always is, and any temperature is when no checkpoint stood. A scan
+	// decides contentions over the complete listing exactly as a delta does, but it is
+	// entered from a path-level call that cannot return one, so this is the only place
+	// they reach the cycle. Drained here rather than in each branch, so no temperature
+	// can be the one that forgets: COLD, WARM and HOT report the same facts.
+	const scanned = deps.remoteFs.checkpoint?.drainWorkingViewContentions?.() ?? [];
+	if (scanned.length > 0) deps.onRemoteContention?.(scanned);
 	changeSet.identityEvidence.unshift(...collectLocalRenameEvidence(changes));
 	ensureRenameEndpointObservations(changeSet.observations, changeSet.identityEvidence);
 	await confirmUnknownRenameEndpoints(changeSet, deps.localFs, deps.remoteFs);
