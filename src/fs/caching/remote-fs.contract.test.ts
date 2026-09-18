@@ -81,6 +81,12 @@ class FakeRemote {
 		this.files.set(file.id, file);
 	}
 
+	/** The same named object, arriving through the DELTA rather than the baseline. */
+	stageRaw(file: MockFile): void {
+		this.files.set(file.id, file);
+		this.events.push({ kind: "upsert", file });
+	}
+
 	/** Baseline file (no delta event) — part of the next full list. */
 	seed(path: string): void {
 		const id = `id${++this.idSeq}`;
@@ -286,6 +292,30 @@ function makeMockHarness(): CachingRemoteFsHarness<MockFile> {
 		stageRemoteRename: (oldPath, newPath, opts) => remote.stageRename(oldPath, newPath, opts),
 		seedFolderOutsideRoot: (folderPath) => remote.seedFolderOutsideRoot(folderPath),
 		stageMoveIntoRoot: (folderPath) => remote.stageMoveIntoRoot(folderPath),
+		// The base machinery's own answer, independent of any provider: this double is
+		// id-addressed with derived paths, so two live ids compose one address whenever
+		// two objects share a name under one parent. `alsoParentedBy` is ignored — the
+		// double is single-parent, which is the shape every non-Drive family has.
+		collision: {
+			kind: "stages",
+			stage: (claimants, route) => {
+				if (route === "expired") fs?.requestCursorExpiry();
+				for (const claimant of claimants) {
+					const file: MockFile = {
+						id: claimant.id,
+						name: claimant.name,
+						// An orphan's parent is one nothing in the listing names, so the
+						// path resolver falls back to its bare name and its spelling
+						// stays a guess.
+						parentId: claimant.orphaned ? "vanished" : claimant.parentId ?? remote.rootId,
+						checksum: `v-${claimant.id}`,
+						isFolder: claimant.isFolder,
+					};
+					if (route === "delta") remote.stageRaw(file);
+					else remote.seedRaw(file);
+				}
+			},
+		},
 	};
 }
 

@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import type { MetadataStore } from "../../../src/store/metadata-store";
-import type { CachingRemoteFs } from "../../../src/fs/caching/remote-fs";
+import type { CachingRemoteFs, RemoteDelta } from "../../../src/fs/caching/remote-fs";
+import type { FileEntity } from "../../../src/fs/types";
+import type { IFileSystem } from "../../../src/fs/interface";
+import { insertConflictSuffix } from "../../../src/sync/conflict";
 
 /**
  * What a backend provides so the shared crash-safety contract can drive it without
@@ -41,7 +44,69 @@ export interface CachingRemoteFsHarness<TFile> {
 	 * deltas carry the folder plus every pre-existing descendant.
 	 */
 	stageMoveIntoRoot(folderPath: string): void;
+	/**
+	 * How this family puts two live provider objects at one derived cache address —
+	 * or why it cannot. Required, so the question cannot be left unanswered.
+	 */
+	collision: CollisionStaging;
 }
+
+/** One live provider object staged for a collision, in the provider's own terms. */
+export interface CollisionClaimant {
+	/** The stable id the provider reports for it. */
+	readonly id: string;
+	/** The name the provider gives it — its last path segment. */
+	readonly name: string;
+	/** True when the object is a folder, so other claimants can hang off it. */
+	readonly isFolder?: boolean;
+	/**
+	 * The staged claimant this one hangs off, by id; absent means the bound root.
+	 * Parenting by id rather than by path is what lets a child be staged under a
+	 * claimant that is about to lose its address.
+	 */
+	readonly parentId?: string;
+	/**
+	 * Additional provider parent ids recorded alongside {@link parentId}, listed
+	 * BEFORE it — a legacy multi-parent entry whose array order must not matter.
+	 */
+	readonly alsoParentedBy?: readonly string[];
+	/**
+	 * The object's only parent is one the bound root does not reach, so the path
+	 * resolver falls back to its bare name and its spelling stays a guess.
+	 */
+	readonly orphaned?: boolean;
+}
+
+/**
+ * How the working view reaches a staged collision: `"baseline"` only a full listing
+ * sees it, `"delta"` the next delta reports it in array order, and `"expired"` the
+ * next delta reports its cursor gone so the filesystem full-scans and diffs by id.
+ */
+export type CollisionRoute = "baseline" | "delta" | "expired";
+
+/**
+ * A family's answer to "can two live stable ids claim one derived cache address?".
+ *
+ * A closed union and a required harness member, so a caching family must answer it:
+ * either it stages the shape, or it names the reason and the unsettled unknown the
+ * gap rests on. Silence does not compile, and a declared gap carries its citation.
+ */
+export type CollisionStaging =
+	| {
+		readonly kind: "stages";
+		/**
+		 * Put `claimants` on the remote in array order, reached by `route`. A property
+		 * rather than a method, so a case can lift it off the harness and drive it.
+		 */
+		readonly stage: (claimants: readonly CollisionClaimant[], route: CollisionRoute) => void;
+	}
+	| {
+		readonly kind: "cannot";
+		/** Why this family's namespace cannot hold two live ids at one address. */
+		readonly reason: string;
+		/** The unsettled unknown this gap rests on, by its id in `docs/`. */
+		readonly unknown: string;
+	};
 
 /**
  * The crash-safety / convergence contract for {@link CachingRemoteFs}, parameterized
@@ -428,6 +493,284 @@ export function runCachingRemoteFsContract<TFile>(
 			const replay = await fs.getChangedPaths();
 			expect([...(replay?.modified ?? [])].sort()).toEqual(["F", "F/a.md", "F/sub", "F/sub/b.md"]);
 			await store.close();
+		});
+
+		// ── Two live ids at one derived cache address ──
+		// A cache address is DERIVED for an id-addressed family: composed from a
+		// provider name plus a parent chain, so two live objects can compose the same
+		// one. Everything below is asserted through `list`, `stat`, `listDir` and the
+		// delta result only — never through the cache, which is exactly the surface a
+		// regression would hide behind.
+
+		describe("two live ids at one derived address", () => {
+			const declaration = makeHarness().collision;
+			if (declaration.kind === "cannot") {
+				// Not silence, and not a fabricated fixture: the reason this family's
+				// namespace cannot produce the shape, plus the unsettled unknown that
+				// would have to be settled before the claim could be made stronger.
+				it(`cannot be produced by this family: ${declaration.reason} (${declaration.unknown})`, () => {
+					expect(declaration.reason.length).toBeGreaterThan(0);
+					expect(declaration.unknown).toMatch(/^unknown-[a-z0-9-]+$/);
+				});
+				return;
+			}
+
+			/** The staging seam, already narrowed to the producing branch. */
+			function staged(h: CachingRemoteFsHarness<TFile>) {
+				if (h.collision.kind !== "stages") throw new Error("collision staging vanished");
+				return h.collision;
+			}
+
+			const paths = (entries: readonly FileEntity[]): string[] =>
+				entries.map((entry) => entry.path).sort();
+
+			/** The delta's own contention report, as plain comparable rows. */
+			const announced = (delta: RemoteDelta | null) =>
+				(delta?.contended ?? []).map((fact) => ({
+					path: fact.path,
+					admittedId: fact.admittedId,
+					withheldId: fact.withheldId,
+					displacedPaths: [...fact.displacedPaths],
+					reason: fact.reason,
+					owesRemediation: fact.owesRemediation,
+				}));
+
+			/**
+			 * The decision inside an announced fact, without the evidence that
+			 * legitimately differs between acquisition routes.
+			 */
+			const decided = (observed: { announced: ReturnType<typeof announced> }) =>
+				observed.announced.map(({ displacedPaths: _displaced, ...decision }) => decision);
+
+			/**
+			 * A committed baseline holding `first` at `Test.md`, then `second` arriving
+			 * at the same address by the given route. The two orderings of one claim
+			 * set are the same fixture with the two ids swapped.
+			 */
+			async function twoIdsAtOneAddress(
+				first: string, second: string, route: "delta" | "expired", storeId: string,
+			) {
+				const h = makeHarness();
+				const collision = staged(h);
+				collision.stage([{ id: first, name: "Test.md" }], "baseline");
+				const store = h.makeStore(storeId);
+				const fs = h.makeFs(store);
+				await fs.list();
+				await fs.commitCheckpoint();
+
+				collision.stage([{ id: second, name: "Test.md" }], route);
+				const delta = await fs.getChangedPaths();
+				const observed = {
+					addressable: (await fs.stat("Test.md"))?.identityKey,
+					listed: paths(await fs.list()),
+					announced: announced(delta),
+					deleted: [...(delta?.deleted ?? [])].sort(),
+				};
+				await store.close();
+				return observed;
+			}
+
+			it("keeps one addressable id and names the other in the delta result", async () => {
+				const observed = await twoIdsAtOneAddress("A1", "B2", "delta", "contract-collision-one");
+
+				expect(observed.addressable).toBe("A1");
+				expect(observed.announced).toEqual([{
+					path: "Test.md", admittedId: "A1", withheldId: "B2",
+					displacedPaths: [], reason: "lowest_stable_id", owesRemediation: true,
+				}]);
+				// The withheld object is still on the provider, so its address is absent
+				// for a reason that is not a deletion.
+				expect(observed.deleted).toEqual([]);
+			});
+
+			it("reaches the same assignment when the provider enumerates the pair in reverse", async () => {
+				const forward = await twoIdsAtOneAddress("A1", "B2", "delta", "contract-collision-fwd");
+				const reverse = await twoIdsAtOneAddress("B2", "A1", "delta", "contract-collision-rev");
+
+				// Order-independence is a claim about the DECISION: whichever of the two
+				// the provider happened to show first, the same id holds the address, the
+				// same pair is named and nothing is reported deleted.
+				expect(decided(reverse)).toEqual(decided(forward));
+				expect(reverse.addressable).toBe(forward.addressable);
+				expect(reverse.listed).toEqual(forward.listed);
+				expect(reverse.deleted).toEqual(forward.deleted);
+				expect(forward.addressable).toBe("A1");
+
+				// The EVIDENCE legitimately differs and is checked for what it is FOR,
+				// not for a fixed spelling: arriving second the loser never held the
+				// address, while arriving first it held it and vacated it. Whatever a
+				// family names there is an absence caused by the contention, so it is
+				// precisely what must never also be reported as a deletion.
+				for (const observed of [forward, reverse]) {
+					for (const fact of observed.announced) {
+						for (const absent of fact.displacedPaths) {
+							expect(observed.deleted).not.toContain(absent);
+						}
+					}
+				}
+			});
+
+			/**
+			 * docs=d1{a.md,b.md} against docs=d2{x.md}, in both orders, arriving as one
+			 * complete listing — the claim set whose loss has to propagate down provider
+			 * topology rather than down a string prefix.
+			 */
+			async function nestedCollision(d1First: boolean, storeId: string) {
+				const h = makeHarness();
+				const collision = staged(h);
+				collision.stage([{ id: "keep", name: "keep.md" }], "baseline");
+				const store = h.makeStore(storeId);
+				const fs = h.makeFs(store);
+				await fs.list();
+				await fs.commitCheckpoint();
+
+				const first: CollisionClaimant[] = [
+					{ id: "d1", name: "docs", isFolder: true },
+					{ id: "c1", name: "a.md", parentId: "d1" },
+					{ id: "c2", name: "b.md", parentId: "d1" },
+				];
+				const second: CollisionClaimant[] = [
+					{ id: "d2", name: "docs", isFolder: true },
+					{ id: "c3", name: "x.md", parentId: "d2" },
+				];
+				collision.stage(d1First ? [...first, ...second] : [...second, ...first], "expired");
+				const delta = await fs.getChangedPaths();
+				const observed = {
+					listed: paths(await fs.list()),
+					underWinner: paths(await fs.listDir("docs")),
+					losersChild: await fs.stat("docs/x.md"),
+					announced: announced(delta),
+					deleted: [...(delta?.deleted ?? [])].sort(),
+				};
+				await store.close();
+				return observed;
+			}
+
+			it("keeps no loser descendant reachable under the winner, in either order", async () => {
+				const d1First = await nestedCollision(true, "contract-collision-nested-a");
+				const d2First = await nestedCollision(false, "contract-collision-nested-b");
+
+				expect(d2First).toEqual(d1First);
+				expect(d1First.listed).toEqual(["docs", "docs/a.md", "docs/b.md", "keep.md"]);
+				expect(d1First.underWinner).toEqual(["docs/a.md", "docs/b.md"]);
+				expect(d1First.losersChild).toBeNull();
+				expect(d1First.announced).toEqual([{
+					path: "docs", admittedId: "d1", withheldId: "d2",
+					displacedPaths: ["docs/x.md"], reason: "lowest_stable_id", owesRemediation: true,
+				}]);
+				expect(d1First.deleted).toEqual([]);
+			});
+
+			it("decides the same collision outcome whether it is reached cold or by delta", async () => {
+				const byDelta = await twoIdsAtOneAddress("A1", "B2", "delta", "contract-collision-parity-d");
+				const cold = await twoIdsAtOneAddress("A1", "B2", "expired", "contract-collision-parity-c");
+
+				// The OUTCOME, not the entry set: a cold scan and a delta legitimately
+				// hold different entries, because the two path resolvers place a
+				// bare-name orphan differently. What must not differ is who holds the
+				// address and what the cycle announced about the loss.
+				expect(cold.addressable).toBe(byDelta.addressable);
+				expect(cold.announced).toEqual(byDelta.announced);
+				expect(cold.deleted).toEqual([]);
+				expect(byDelta.deleted).toEqual([]);
+			});
+
+			it("reports no contested path as deleted after a cursor expiry", async () => {
+				// The measured data-loss route: a committed folder loses its address to a
+				// newly-listed claimant, and the vanished-id sweep has to tell that apart
+				// from the provider dropping the folder. Reporting it would authorize
+				// deleting a live file out of the vault.
+				const h = makeHarness();
+				const collision = staged(h);
+				collision.stage([
+					{ id: "d2", name: "docs", isFolder: true },
+					{ id: "c3", name: "x.md", parentId: "d2" },
+				], "baseline");
+				const store = h.makeStore("contract-collision-expiry");
+				const fs = h.makeFs(store);
+				expect(paths(await fs.list())).toEqual(["docs", "docs/x.md"]);
+				await fs.commitCheckpoint();
+
+				collision.stage([
+					{ id: "d1", name: "docs", isFolder: true },
+					{ id: "c1", name: "a.md", parentId: "d1" },
+				], "expired");
+				const delta = await fs.getChangedPaths();
+
+				expect(delta?.deleted).toEqual([]);
+				expect(announced(delta)).toEqual([{
+					path: "docs", admittedId: "d1", withheldId: "d2",
+					displacedPaths: ["docs/x.md"], reason: "lowest_stable_id", owesRemediation: true,
+				}]);
+				expect((await fs.stat("docs"))?.identityKey).toBe("d1");
+				expect(await fs.stat("docs/x.md")).toBeNull();
+				await store.close();
+			});
+
+			it("leaves both objects present after the repair, the keeper at the plain address", async () => {
+				const h = makeHarness();
+				const collision = staged(h);
+				collision.stage([{ id: "A1", name: "Test.md" }], "baseline");
+				const store = h.makeStore("contract-collision-survival");
+				const fs = h.makeFs(store);
+				await fs.list();
+				await fs.commitCheckpoint();
+				collision.stage([{ id: "B2", name: "Test.md" }], "delta");
+				expect(announced(await fs.getChangedPaths())[0]?.withheldId).toBe("B2");
+
+				const target = insertConflictSuffix("Test.md", "id-B2");
+				const capability: IFileSystem["identityRename"] = (fs as IFileSystem).identityRename;
+				if (!capability) {
+					// No way to move an object off a contended address, so nothing is done
+					// to the provider at all. What must still hold is that nothing was
+					// lost: the namespace a cold scan finds is exactly what it was, with
+					// no conflict-suffixed address invented on the way.
+					const untouched = h.makeStore("contract-collision-survival-untouched");
+					const provider = h.makeFs(untouched);
+					expect(paths(await provider.list())).toEqual(["Test.md"]);
+					await untouched.close();
+					await store.close();
+					return;
+				}
+				await capability.renameById("B2", target);
+
+				// In the vault: both reachable, the keeper still at the plain address.
+				expect(paths(await fs.list())).toEqual([target, "Test.md"].sort());
+				expect((await fs.stat("Test.md"))?.identityKey).toBe("A1");
+				expect((await fs.stat(target))?.identityKey).toBe("B2");
+
+				// On the provider: a cold scan through a store that has never seen any of
+				// this finds the same two objects, so nothing was lost to repair it.
+				const fresh = h.makeStore("contract-collision-survival-provider");
+				const provider = h.makeFs(fresh);
+				expect(paths(await provider.list())).toEqual([target, "Test.md"].sort());
+				await fresh.close();
+				await store.close();
+			});
+
+			it("does not advance the committed cursor while a claimant is withheld", async () => {
+				const h = makeHarness();
+				const collision = staged(h);
+				collision.stage([{ id: "A1", name: "Test.md" }], "baseline");
+				const store = h.makeStore("contract-collision-no-commit");
+				const fs = h.makeFs(store);
+				await fs.list();
+				await fs.commitCheckpoint();
+
+				collision.stage([{ id: "B2", name: "Test.md" }], "delta");
+				const first = announced(await fs.getChangedPaths());
+				expect(first).toHaveLength(1);
+
+				// The cycle owed a repair, so it aborted instead of committing. The next
+				// cycle replays from the same committed cursor and re-observes the same
+				// contention — which is what makes the repair idempotently retryable.
+				await fs.abortWorkingView();
+				const replay = await fs.getChangedPaths();
+
+				expect(announced(replay)).toEqual(first);
+				expect(replay?.deleted).toEqual([]);
+				await store.close();
+			});
 		});
 	});
 }

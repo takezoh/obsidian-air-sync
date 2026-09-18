@@ -57,6 +57,16 @@ function makeOneDriveHarness(): CachingRemoteFsHarness<OneDriveItem> {
 	} as unknown as OneDriveClient;
 
 	return {
+		// Whether Graph even permits two same-named children under one OneDrive folder
+		// is unmeasured — it is what decides whether OneDrive must implement the rename
+		// capability at all. Staging it here would assert a shape the provider may not
+		// have, so the cell carries the unsettled unknown instead. Settled by attempting
+		// the creation through the Graph API in the opt-in e2e.
+		collision: {
+			kind: "cannot",
+			reason: "unmeasured whether Graph accepts two same-named children under one folder",
+			unknown: "unknown-onedrive-duplicate-names",
+		},
 		makeStore: (id) => new MetadataStore<OneDriveItem>(id, { dbNamePrefix: "air-sync-onedrive-contract", version: 1 }),
 		makeFs: (store) => new OneDriveFs(client, ROOT_ID, undefined, store),
 		seedFile: (path) => {
