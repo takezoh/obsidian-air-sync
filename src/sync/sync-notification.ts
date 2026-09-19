@@ -27,7 +27,10 @@ export function buildNotificationMessage(outcome: SyncCycleOutcome): string {
 		else if (action.action === "pull") counts.pulled++;
 		else if (action.action === "match") counts.matched++;
 		else if (action.action === "delete_local" || action.action === "delete_remote") counts.deleted++;
-		else if (action.action === "rename_remote" || action.action === "rename_local") counts.renamed++;
+		// A provider-namespace repair renames an object the vault never held under that
+		// name; it is the remote filesystem's business, not a rename to report.
+		else if ((action.action === "rename_remote" && action.providerIdentity === undefined) ||
+			action.action === "rename_local") counts.renamed++;
 	};
 	for (const { action } of execution.succeeded) count(action);
 	for (const { action } of execution.superseded) count(action);

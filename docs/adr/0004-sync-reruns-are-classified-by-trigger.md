@@ -13,6 +13,7 @@ Three kinds of events ask the engine to sync, and they carry different work:
 | **signal** | `focus`, `visibilitychange`, `online` | nothing local | "the world may have changed while we were away — re-check everything" (a full re-scan) |
 | **vault** | `create` / `modify` / `delete` / `rename` | a concrete local change (a dirty path / rename pair) | push/pull exactly that change |
 | **rescan** | the Rescan command | nothing | discard the checkpoint and force one cold reconcile |
+| **follow-up** | a cycle that closed as `follow_up` (a provider repair was owed, or a priority pull invalidated the cycle) | nothing | one more cycle, because convergence needs it |
 
 They reach `runSync` by **deliberately different paths**:
 
@@ -24,6 +25,10 @@ They reach `runSync` by **deliberately different paths**:
   (`orchestrator.ts`, the `isLocked` branch) and the `do/while` loop runs another cycle.
 - **rescan** → `resetCheckpoint()` under `syncMutex`, then `runSync()`; the `do/while` body runs
   once.
+- **follow-up** → `requestNormalLifecycle()` from inside the cycle that needs it, so always
+  mid-sync: it only sets `syncPending`, and the `do/while` runs one more cycle. It is the same
+  single slot the vault path uses, so however many requests arrive during a cycle, one cycle
+  follows.
 
 Since ADR 0001's sibling work landed the per-cycle [`TrackerSnapshot`](../../src/sync/local-tracker.ts),
 a `markDirty` arriving **mid-cycle** survives that cycle's `acknowledge` (the cycle clears only

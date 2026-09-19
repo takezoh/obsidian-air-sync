@@ -207,6 +207,25 @@ describe("finalizeSyncCycle", () => {
 		expect(remote.abortWorkingView).toHaveBeenCalledOnce();
 	});
 
+	it("still owes the follow-up when an unrelated component failed beside the repair", async () => {
+		const remote = checkpoint(vi.fn().mockResolvedValue(undefined));
+		const mixed = { dispositions: [
+			{ kind: "failed", paths: ["repaired.md"], actions: [], evidence: [], reasons: ["awaiting_repair"] },
+			{ kind: "failed", paths: ["other.md"], actions: [], evidence: [], reasons: ["present_unresolved"] },
+		] } as never;
+
+		const completion = await finalizeSyncCycle({
+			admission: mixed,
+			result: { succeeded: [], superseded: [], conflicts: [], failed: [], blocked: [] },
+			checkpoint: remote.value, scopeFingerprint: "scope", checkpointBlocked: true,
+		});
+
+		// The repair converges only in the next cycle, whatever else failed here; that
+		// cycle plans no repair for `other.md`, so it is the last, and reports it.
+		expect(completion).toEqual({ kind: "follow_up" });
+		expect(remote.abortWorkingView).toHaveBeenCalledOnce();
+	});
+
 	it("is incomplete for a component withheld with no repair to wait for", async () => {
 		const remote = checkpoint(vi.fn().mockResolvedValue(undefined));
 		const standing = { dispositions: [{ kind: "failed", paths: ["note.md"], actions: [], evidence: [],

@@ -14,11 +14,14 @@ interface SyncCycleFinalizationInput {
 /**
  * How a cycle closed. Only `clean` commits the checkpoint.
  *
- * `follow_up` is not a failure: every admitted action reached its terminal state and
- * nothing failed, but the checkpoint was withheld on purpose because convergence
- * needs one more cycle — a provider repair was owed, or a priority pull invalidated
- * this cycle's view. The caller queues that cycle; nothing about it is persisted.
- * `incomplete` is everything else that did not finish.
+ * `follow_up` is not a failure: every admitted action reached its terminal state, but
+ * the checkpoint was withheld on purpose because convergence needs one more cycle — a
+ * provider repair was owed, or a priority pull invalidated the cycle without
+ * invalidating any action (an invalidated action is blocked, which is incomplete).
+ * The caller queues that cycle; nothing about it is persisted. Admission failures do
+ * not stop the follow-up: none of them plans a repair, so the next cycle is the last
+ * one this owes, and it reports whatever of them still stands. `incomplete` is every
+ * other cycle that did not finish.
  */
 export type SyncCycleCompletion =
 	| { readonly kind: "clean" }
@@ -32,7 +35,7 @@ export type SyncCycleCompletion =
  * about what counts as an error.
  */
 export function awaitsRepair(component: AdmissionFailureComponent): boolean {
-	return component.reasons.every((reason) => reason === "awaiting_repair");
+	return component.reasons.length > 0 && component.reasons.every((reason) => reason === "awaiting_repair");
 }
 
 /** Abort failure escapes classification/retry without attempting another abort. */
@@ -53,8 +56,9 @@ async function abortWorkingView(checkpoint: IFileSystem["checkpoint"]): Promise<
 
 function completionOf(input: Omit<SyncCycleFinalizationInput, "checkpoint">): SyncCycleCompletion["kind"] {
 	if (!everyActionFinished(input)) return "incomplete";
-	const awaiting = input.admission.dispositions.some((disposition) => disposition.kind === "failed");
-	return input.checkpointBlocked || awaiting ? "follow_up" : "clean";
+	const failed = input.admission.dispositions.filter((disposition) => disposition.kind === "failed");
+	if (input.checkpointBlocked || failed.some(awaitsRepair)) return "follow_up";
+	return failed.length > 0 ? "incomplete" : "clean";
 }
 
 function everyActionFinished(input: Omit<SyncCycleFinalizationInput, "checkpoint">): boolean {
@@ -74,7 +78,6 @@ function everyActionFinished(input: Omit<SyncCycleFinalizationInput, "checkpoint
 	};
 	return input.result.failed.length === 0 && input.result.blocked.length === 0 &&
 		input.admission.dispositions.every((disposition) =>
-			(disposition.kind !== "failed" || awaitsRepair(disposition)) &&
 			(disposition.kind !== "authorized" || disposition.actions.every((action) => terminal(disposition, action))));
 }
 

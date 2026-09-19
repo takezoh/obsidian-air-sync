@@ -43,6 +43,19 @@ describe("sync notification Admission failure visibility", () => {
 		expect(summary.message).toBe("Everything up to date");
 	});
 
+	it("does not count a provider-namespace repair as a rename", () => {
+		const repair = {
+			action: "rename_remote", path: "note.conflict-id-z.md", oldPath: "note.md", providerIdentity: "z",
+		} as const;
+		const moved = { action: "rename_remote", path: "b.md", oldPath: "a.md" } as const;
+		const cycle: SyncCycleOutcome = {
+			...outcome(),
+			execution: { succeeded: [{ action: repair }, { action: moved }], superseded: [], failed: [], blocked: [], conflicts: [] },
+		};
+
+		expect(buildNotificationMessage(cycle)).toBe("Sync: 1 renamed");
+	});
+
 	it("coalesces Admission failures across cycles", () => {
 		const summary = new CycleSummary();
 		summary.add(outcome(1));

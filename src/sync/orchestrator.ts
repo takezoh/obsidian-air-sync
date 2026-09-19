@@ -24,7 +24,7 @@ import {
 	logSyncCyclePlan,
 	prepareSyncCycleSnapshotForExecution,
 } from "./sync-cycle-planning";
-import { runSyncCycleAttempt, WorkingViewAbortError } from "./sync-cycle-finalization";
+import { awaitsRepair, runSyncCycleAttempt, WorkingViewAbortError } from "./sync-cycle-finalization";
 import { admitBatchObservation } from "./plan-admission";
 import { PriorityCoordinator } from "./priority-coordinator";
 import { LocalMutationBarrier } from "./local-mutation-barrier";
@@ -271,7 +271,8 @@ export class SyncOrchestrator {
 				return {
 					outcome: lastOutcome,
 					succeeded: execution.succeeded.length + execution.superseded.length,
-					failed: execution.failed.length + admissionFailures.length,
+					failed: execution.failed.length +
+						admissionFailures.filter((failure) => !awaitsRepair(failure)).length,
 					blocked: execution.blocked.length,
 					conflicts: execution.conflicts.length,
 				};
