@@ -242,8 +242,15 @@ export abstract class AbstractMetadataCache<TFile> {
 
 		// Provider upserts may re-key a stable id without a preceding tombstone.
 		// Keep the path and identity indexes bijective at their single mutation seam.
-		// Never a shared path here: only provider-resolved folders share one, and every
-		// writer that can reach them arbitrates before it gets here.
+		// A shared path is refused rather than re-keyed: evicting it takes several
+		// folders, and this seat can return only one of them as a fact. Every writer
+		// that can reach a shared path arbitrates — and names each loss — first.
+		if (occupantId !== undefined && occupantId !== id && this.isShared(path)) {
+			throw new Error(
+				`Metadata cache cannot re-key "${path}", which merged folders share, to "${id}" ` +
+					"without arbitration: every folder it evicts must be named",
+			);
+		}
 		const displacement = occupantId !== undefined && occupantId !== id
 			? this.displaceOccupant(path, id, occupantId, "upsert_rekey", false)[0]
 			: null;

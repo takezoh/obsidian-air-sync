@@ -492,6 +492,15 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 			expect(cache.idAt("moved/docs/b.md")).toBe("c2");
 		});
 
+		it("refuses a plain seat that would re-key a shared path", () => {
+			const cache = makeCache();
+			mergedDocs(cache);
+
+			expect(() => cache.setFile("docs", file("a-file", "docs", ROOT), "actual_resolved"))
+				.toThrow("every folder it evicts must be named");
+			expect(cache.idsAt("docs")).toEqual(["m-d1", "z-d2"]);
+		});
+
 		it("refuses a plain seat that would move an object across a shared path", () => {
 			const cache = makeCache();
 			mergedDocs(cache);
@@ -867,12 +876,16 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 				folder("d4", "docs", ROOT),
 				file("c4", "y.md", "d4"),
 			]);
-			cache.setFile("docs", file("d5", "docs", ROOT), "actual_resolved");
+			// The folders merged at `docs` are taken by a file through the writer that
+			// arbitrates — a plain seat refuses a shared path — and each one is named.
+			const applied = cache.applyFileChange(file("a5", "docs", ROOT));
 
 			// buildFromFiles does not clear, so what survives is the union of the writers.
 			expect(cache.snapshotPathsById().size).toBe(cache.size);
-			expect(cache.idAt("docs")).toBe("d5");
-			expect(cache.getPathById("d5")).toBe("docs");
+			expect(cache.idAt("docs")).toBe("a5");
+			expect(cache.getPathById("a5")).toBe("docs");
+			expect([applied!.displacement!, ...applied!.additionalLosses].map((fact) => fact.withheldId).sort())
+				.toEqual(["d1", "d2", "d3", "d4"]);
 		});
 	});
 });

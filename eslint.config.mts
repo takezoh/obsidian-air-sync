@@ -433,8 +433,11 @@ export default defineConfig(
 		// access seam to the maps exists: capture / detachAll / reseat / removeObject /
 		// subtreePaths are one concept — taking one object's subtree out and seating it
 		// again — and are the natural module to ratchet this back down with.
+		// Re-pinned from 589 so the plain seat refuses to re-key a shared path, the same
+		// way it refuses to relocate across one: it can return only one fact, and an
+		// eviction there takes several.
 		files: ["src/fs/caching/metadata-cache.ts"],
-		rules: { "max-lines": ["error", { max: 589, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 595, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Lint manifest.json for the words the Obsidian submission validator

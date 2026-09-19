@@ -520,10 +520,11 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	 * Full scan with delta computation (the cursor-expiry fallback): snapshot old
 	 * paths-by-id, perform a fresh full scan, then diff old vs new by id.
 	 *
-	 * Only a replay reaches this, so a committed cursor always exists. An empty
-	 * snapshot is a committed view with nothing in it — everything the scan finds is
-	 * new — not an initial sync with no delta; and the scan's contentions must reach
-	 * the cycle either way.
+	 * Only a replay reaches this, so a cursor exists — committed, or the one a fresh
+	 * scan earlier in this working view captured. Either way the snapshot is a view,
+	 * and an empty one is a view with nothing in it: everything the scan finds is new,
+	 * not an initial sync with no delta, and the scan's contentions must reach the
+	 * cycle.
 	 */
 	private async fullScanWithDelta(): Promise<RemoteDelta> {
 		// Snapshot before fullScan() overwrites the cache.
