@@ -1,9 +1,14 @@
 import { requestUrl } from "../../platform/obsidian";
 import type { Logger } from "../../logging/logger";
 import { assertTokenResponse } from "./types";
-import { BaseOAuthTokenManager, buildOAuthState, computeS256Challenge, generateRandomString } from "../oauth-pkce";
+import {
+	BaseOAuthTokenManager,
+	buildOAuthState,
+	computeS256Challenge,
+	extractThrownErrorDetail,
+	generateRandomString,
+} from "../oauth-pkce";
 import { GOOGLE_DRIVE_AUTH, DEFAULT_CUSTOM_REDIRECT_URI } from "../auth-config";
-import { describeErrorBody, MAX_MESSAGE_BODY_CHARS } from "../backend-error-log";
 
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -293,7 +298,7 @@ export class GoogleAuthDirect extends GoogleAuthBase {
 			this.clearAuthState();
 			this.logger?.debug("Token exchange successful");
 		} catch (err) {
-			const detail = extractGoogleErrorDetail(err);
+			const detail = extractThrownErrorDetail(err);
 			this.logger?.error("Token exchange failed", { error: detail });
 			throw new Error(`Token exchange failed: ${detail}`);
 		}
@@ -322,22 +327,4 @@ export class GoogleAuthDirect extends GoogleAuthBase {
 			this.handleRefreshError(err);
 		}
 	}
-}
-
-/**
- * Render a Google OAuth error response for a thrown message. The body goes through
- * verbatim rather than being reduced to `error: error_description` — Google also
- * returns fields that rule out whole causes (`error_uri`, `error_subtype`, and the
- * nested `error.errors[].reason` shape), and a picked pair discards them.
- * Falls back to the Error's own message when there is no response body at all.
- */
-function extractGoogleErrorDetail(err: unknown): string {
-	const src = (err ?? {}) as { json?: unknown; text?: unknown };
-	if (src.json !== undefined || typeof src.text === "string") {
-		return describeErrorBody(
-			{ status: 0, json: src.json, text: typeof src.text === "string" ? src.text : undefined },
-			MAX_MESSAGE_BODY_CHARS,
-		);
-	}
-	return err instanceof Error ? err.message : String(err);
 }

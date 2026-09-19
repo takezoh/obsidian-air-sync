@@ -166,6 +166,32 @@ describe("BaseOAuthTokenManager", () => {
 		expect(rotated).toEqual(["RT2"]);
 		expect(m.getTokenState().refreshToken).toBe("RT2");
 	});
+
+	it("surfaces the provider error body on a 400 refresh rather than a generic status message", async () => {
+		const m = new TestTokenManager();
+		m.setTokens("RT", "", 0);
+		// A `requestUrl` rejection can carry the failed response's body; the thrown
+		// message must keep the RFC 6749 error code, not flatten to "status 400".
+		m.error = Object.assign(new Error("request failed, status 400"), {
+			status: 400,
+			json: {
+				error: "invalid_grant",
+				error_description: "Token has been expired or revoked.",
+			},
+		});
+
+		const err = (await m.getAccessToken().catch((e: unknown) => e)) as Error;
+		expect(err.message).toContain("invalid_grant");
+		expect(err.message).toContain("Token has been expired or revoked.");
+	});
+
+	it("falls back to the error message when a refresh rejection carries no body", async () => {
+		const m = new TestTokenManager();
+		m.setTokens("RT", "", 0);
+		m.error = Object.assign(new Error("Network error"), { status: 500 });
+
+		await expect(m.getAccessToken()).rejects.toThrow("Network error");
+	});
 });
 
 describe("extractTokenErrorDetail", () => {

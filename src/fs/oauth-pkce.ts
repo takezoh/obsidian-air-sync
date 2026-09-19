@@ -119,6 +119,22 @@ export function extractTokenErrorDetail(res: { json?: unknown; text?: string }):
 }
 
 /**
+ * Render the error detail for a `requestUrl` rejection. Obsidian's `requestUrl`
+ * rejects with an Error that can carry the failed response's `json`/`text`, so
+ * prefer that body (the RFC 6749 error code and its support fields) over the
+ * generic `request failed, status N` message — which otherwise hides an
+ * `invalid_grant` behind a status number. Falls back to the Error's own message
+ * when no body is attached (a transport failure with no response).
+ */
+export function extractThrownErrorDetail(err: unknown): string {
+	const src = (err ?? {}) as { json?: unknown; text?: unknown };
+	if (src.json !== undefined || typeof src.text === "string") {
+		return extractTokenErrorDetail({ json: src.json, text: typeof src.text === "string" ? src.text : undefined });
+	}
+	return err instanceof Error ? err.message : String(err);
+}
+
+/**
  * Shared OAuth access-token lifecycle: in-memory token state, expiry-skew reuse,
  * concurrent-refresh dedup, post-failure cooldown, and refresh-token-rotation
  * notification. Subclasses implement {@link performRefresh} with the provider's
@@ -200,10 +216,10 @@ export abstract class BaseOAuthTokenManager {
 		if (status === 400 || status === 401) {
 			this.authFailedAt = Date.now();
 		}
-		const msg = err instanceof Error ? err.message : String(err);
-		this.logger?.error("Token refresh failed", { error: msg });
+		const detail = extractThrownErrorDetail(err);
+		this.logger?.error("Token refresh failed", { status, error: detail });
 		if (status === 400 || status === 401) {
-			throw new AuthError(`Token refresh failed: ${msg}`, status);
+			throw new AuthError(`Token refresh failed: ${detail}`, status);
 		}
 		throw err as Error;
 	}
