@@ -21,8 +21,8 @@ export interface FileChangeResult {
 	displacement?: AddressDisplacement | null;
 	/** The claim this change did NOT write, because another live id holds its address. */
 	withheld?: WithheldClaim | null;
-	/** Losses the moved object's own descendants met at their new addresses. */
-	descendantLosses?: readonly WithheldClaim[];
+	/** Every loss this change caused beyond the one it names; see {@link FileChangeApplication}. */
+	additionalLosses?: readonly WithheldClaim[];
 	/** Each descendant that moved with the object and was seated, old path to new. */
 	relocated?: readonly RelocatedEntry[];
 	/**
@@ -58,11 +58,13 @@ export interface FileChangeApplication {
 	readonly displacement: AddressDisplacement | null;
 	readonly withheld: WithheldClaim | null;
 	/**
-	 * Losses the object's own descendants met on the way to their new addresses. Only
-	 * a folder that moved into an address other folders already share can meet one,
-	 * because only there is the destination subtree not vacant.
+	 * Every loss this change caused beyond `displacement` and `withheld`, each naming
+	 * its own object: the merged folders evicted along with a representative when a
+	 * claimant takes a path they shared, and the descendants a move re-seated that
+	 * lost their new addresses. None may go unnamed — an evicted object nobody names
+	 * could never be repaired or re-announced.
 	 */
-	readonly descendantLosses: readonly WithheldClaim[];
+	readonly additionalLosses: readonly WithheldClaim[];
 	/** Each descendant a folder move carried along and seated, old path to new. */
 	readonly relocated: readonly RelocatedEntry[];
 }
@@ -216,19 +218,15 @@ export abstract class AbstractMetadataCache<TFile> {
 			pathAuthority = this.getStoredPathAuthority(oldPath);
 		}
 		const claim: AddressClaim = { id, authority: pathAuthority, isFolder: incomingIsFolder };
-		// A move out of a path merged folders share, or into one, is a move of this
-		// object's own subtree and nothing else's: it is taken out whole and re-seated
-		// where it lands, each descendant beside whatever already lives there.
+		// A move out of a path merged folders share, or into one, moves this object's
+		// own subtree and must arbitrate each descendant where it lands and name every
+		// loss. That is `applyFileChange`'s job; a seat that decides nothing cannot do
+		// it, and a path-prefix rewrite here would carry the other folders' contents.
 		if (oldPath !== undefined && oldPath !== path && (this.isShared(oldPath) || this.mergesAt(path, claim))) {
-			const moving = this.capture(id);
-			this.detachAll(moving);
-			const displacement = this.setFile(path, file, pathAuthority);
-			if (incomingIsFolder) {
-				for (const item of moving.slice(1)) {
-					this.setFile(path + item.oldPath.slice(oldPath.length), item.file, item.authority);
-				}
-			}
-			return displacement;
+			throw new Error(
+				`Metadata cache cannot seat "${id}" at "${path}" from "${oldPath}": a move across a path ` +
+					"merged folders share is applyFileChange's to make",
+			);
 		}
 		const merged = this.mergedFolders.get(path);
 		if (merged?.has(id)) {
@@ -244,8 +242,10 @@ export abstract class AbstractMetadataCache<TFile> {
 
 		// Provider upserts may re-key a stable id without a preceding tombstone.
 		// Keep the path and identity indexes bijective at their single mutation seam.
+		// Never a shared path here: only provider-resolved folders share one, and every
+		// writer that can reach them arbitrates before it gets here.
 		const displacement = occupantId !== undefined && occupantId !== id
-			? this.displaceOccupant(path, id, occupantId, "upsert_rekey", false)
+			? this.displaceOccupant(path, id, occupantId, "upsert_rekey", false)[0]
 			: null;
 
 		if (oldPath && oldPath !== path) {
@@ -390,17 +390,28 @@ export abstract class AbstractMetadataCache<TFile> {
 		return [...new Set(this.capture(id).slice(1).map((item) => item.oldPath))];
 	}
 
-	/** Evict the live occupant of a contended address and say what that cost. */
+	/**
+	 * Evict the live occupant of a contended address and say what that cost — one
+	 * fact per object evicted. The representative's comes first; every folder merged
+	 * beside it follows with its own subtree, exactly as a full scan withholds each of
+	 * them separately, so the facts do not depend on which route reached the address.
+	 */
 	private displaceOccupant(
 		path: string,
 		admittedId: string,
 		withheldId: string,
 		reason: AddressDisplacementReason,
 		owesRemediation: boolean,
-	): AddressDisplacement {
-		const displacedPaths = this.collectDescendants(path).sort();
+	): [AddressDisplacement, ...AddressDisplacement[]] {
+		const merged = [...(this.mergedFolders.get(path)?.keys() ?? [])].map((memberId): AddressDisplacement => ({
+			path, admittedId, withheldId: memberId,
+			displacedPaths: this.subtreePaths(memberId).sort(), reason, owesRemediation,
+		}));
+		const theirs = new Set(merged.flatMap((fact) => fact.displacedPaths));
+		const displacedPaths = this.collectDescendants(path).filter((descendant) => !theirs.has(descendant)).sort();
 		this.removeTree(path);
-		return this.announce({ path, admittedId, withheldId, displacedPaths, reason, owesRemediation });
+		const representative = this.announce({ path, admittedId, withheldId, displacedPaths, reason, owesRemediation });
+		return [representative, ...merged.map((fact) => this.announce(fact))];
 	}
 
 	/** One warn per contended address, then hand the fact to the caller. Nothing is stored. */
@@ -719,7 +730,7 @@ export abstract class AbstractMetadataCache<TFile> {
 			oldDescendants,
 			displacement: applied?.displacement ?? null,
 			withheld: applied?.withheld ?? null,
-			descendantLosses: applied?.descendantLosses ?? [],
+			additionalLosses: applied?.additionalLosses ?? [],
 			relocated: applied?.relocated ?? [],
 			acrossSharedPath: wasFolder && oldPath !== newPath && (leftShared || joinedShared),
 		};
@@ -759,15 +770,18 @@ export abstract class AbstractMetadataCache<TFile> {
 		if (root.withheld) {
 			const displaced = moving.slice(1).map((item) => item.oldPath);
 			return {
-				path: null, displacement: null, descendantLosses: [], relocated: [],
+				path: null, displacement: null, additionalLosses: [], relocated: [],
 				withheld: this.announce({ ...root.withheld, displacedPaths: [...new Set(displaced)].sort(), vacatedPath: vacated }),
 			};
 		}
 		if (vacated === null || !this.isFolderEntry(file)) {
-			return { path, displacement: root.displacement, withheld: null, descendantLosses: [], relocated: [] };
+			return { path, displacement: root.displacement, withheld: null, additionalLosses: root.evictedMerged, relocated: [] };
 		}
 		const { losses, relocated } = this.reseat(moving.slice(1), vacated, path);
-		return { path, displacement: root.displacement, withheld: null, descendantLosses: losses, relocated };
+		return {
+			path, displacement: root.displacement, withheld: null,
+			additionalLosses: [...root.evictedMerged, ...losses], relocated,
+		};
 	}
 
 	/**
@@ -780,22 +794,30 @@ export abstract class AbstractMetadataCache<TFile> {
 	 */
 	private seatArbitrated(
 		path: string, id: string, file: TFile, authority: PathAuthority,
-	): { displacement: AddressDisplacement | null; withheld: Omit<WithheldClaim, "displacedPaths" | "vacatedPath"> | null } {
+	): {
+		displacement: AddressDisplacement | null;
+		/** Folders that shared `path` with the evicted representative, each a loss of its own. */
+		evictedMerged: WithheldClaim[];
+		withheld: Omit<WithheldClaim, "displacedPaths" | "vacatedPath"> | null;
+	} {
 		const occupantId = this.idAt(path);
 		const verdict = occupantId === undefined || occupantId === id ? null : arbitrateAddress(
 			path, this.claimAt(path, occupantId), { id, authority, isFolder: this.isFolderEntry(file) },
 		);
 		if (verdict?.outcome === "admit_incumbent") {
-			return { displacement: null, withheld: {
+			return { displacement: null, evictedMerged: [], withheld: {
 				path, admittedId: verdict.admittedId, withheldId: id,
 				reason: verdict.reason, owesRemediation: verdict.withheldOwesRemediation,
 			} };
 		}
-		const displacement = verdict?.outcome === "admit_claimant" ? this.displaceOccupant(
+		const [displacement = null, ...merged] = verdict?.outcome === "admit_claimant" ? this.displaceOccupant(
 			path, id, verdict.withheldId, verdict.reason, verdict.withheldOwesRemediation,
-		) : null;
+		) : [];
 		this.setFile(path, file, authority);
-		return { displacement, withheld: null };
+		return {
+			displacement, withheld: null,
+			evictedMerged: merged.map((fact) => ({ ...fact, vacatedPath: fact.path })),
+		};
 	}
 
 	/**
@@ -826,6 +848,7 @@ export abstract class AbstractMetadataCache<TFile> {
 				continue;
 			}
 			if (seat.displacement) evicted.push({ ...seat.displacement, vacatedPath: seat.displacement.path });
+			evicted.push(...seat.evictedMerged);
 			relocated.push({ oldPath: item.oldPath, newPath: target, isFolder: this.isFolderEntry(item.file) });
 		}
 		const withheld = [...lost.values()].map(({ claim, vacatedPath, displaced }) => this.announce({

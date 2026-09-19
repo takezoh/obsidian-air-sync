@@ -133,6 +133,21 @@ class FakeRemote {
 		}
 	}
 
+	/** Delete one object by its id — the only way to name one of two same-named folders. */
+	stageDeleteById(id: string): void {
+		if (!this.files.delete(id)) throw new Error(`stageDeleteById: no such id "${id}"`);
+		this.events.push({ kind: "delete", id });
+	}
+
+	/** Rename one object by its id, leaving its parent where it is. */
+	stageRenameById(id: string, name: string): void {
+		const entry = this.files.get(id);
+		if (!entry) throw new Error(`stageRenameById: no such id "${id}"`);
+		const renamed: MockFile = { ...entry, name };
+		this.files.set(id, renamed);
+		this.events.push({ kind: "upsert", file: renamed });
+	}
+
 	stageDelete(path: string): void {
 		const entry = [...this.files.values()].find((f) => f.name === path);
 		if (!entry) throw new Error(`stageDelete: no such file "${path}"`);
@@ -751,6 +766,60 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			await fs.close();
 		});
 
+		it("takes only the merged folder's own contents when the one deleted is not the representative", async () => {
+			const remote = twoDocsFolders();
+			const fs = new MockRemoteFs(remote, makeStore());
+			await fs.list();
+
+			remote.stageDeleteById("z-docs");
+			const delta = await fs.checkpoint.getChangedPaths();
+
+			expect((await fs.list()).map((entry) => entry.path).sort()).toEqual(["docs", "docs/a.md"]);
+			expect(await fs.stat("docs")).toMatchObject({ identityKey: "a-docs" });
+			expect(delta?.deleted).toEqual(["docs/b.md"]);
+			await fs.close();
+		});
+
+		it("reports neither a folder rename nor a deletion when a merged folder leaves on a cursor expiry", async () => {
+			const remote = twoDocsFolders();
+			const store = makeStore();
+			const fs = new MockRemoteFs(remote, store);
+			await fs.list();
+			await fs.checkpoint.commitCheckpoint();
+
+			remote.stageRenameById("z-docs", "archive");
+			fs.requestCursorExpiry();
+			const delta = await fs.checkpoint.getChangedPaths();
+
+			// `docs` is still the vault folder a-docs makes: it did not move and was not
+			// deleted. What moved is z-docs's own content, reported as its own move.
+			expect(delta?.renamed).toEqual([{ oldPath: "docs/b.md", newPath: "archive/b.md", identityKey: "z-child" }]);
+			expect(delta?.deleted).toEqual(["docs/b.md"]);
+			expect(delta?.modified).toContain("docs");
+			await fs.close();
+		});
+
+		it("reports no folder rename when a folder joins a shared name on a cursor expiry", async () => {
+			const remote = new FakeRemote();
+			remote.seedRaw(mockFile("m-docs", "docs", remote.rootId, true));
+			remote.seedRaw(mockFile("m-child", "a.md", "m-docs"));
+			remote.seedRaw(mockFile("a-other", "other", remote.rootId, true));
+			remote.seedRaw(mockFile("a-child", "b.md", "a-other"));
+			const fs = new MockRemoteFs(remote, makeStore());
+			await fs.list();
+			await fs.checkpoint.commitCheckpoint();
+
+			// The joining folder's id sorts first, so it becomes the representative.
+			remote.stageRenameById("a-other", "docs");
+			fs.requestCursorExpiry();
+			const delta = await fs.checkpoint.getChangedPaths();
+
+			expect(delta?.renamed).toEqual([{ oldPath: "other/b.md", newPath: "docs/b.md", identityKey: "a-child" }]);
+			expect(delta?.renamed?.some((pair) => pair.isFolder)).toBe(false);
+			expect(await fs.stat("docs/a.md")).toMatchObject({ identityKey: "m-child" });
+			await fs.close();
+		});
+
 		it("reports a folder moved into a shared name as its files' moves, not a folder rename", async () => {
 			const remote = new FakeRemote();
 			remote.seedRaw(mockFile("a-docs", "docs", remote.rootId, true));
@@ -883,6 +952,26 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			await fs.list();
 
 			expect(fs.checkpoint.drainWorkingViewContentions?.()).toEqual([expect.objectContaining({
+				path: "Note.md", admittedId: "a-note", withheldId: "z-note",
+			})]);
+			await fs.close();
+		});
+
+		it("still reports them when the cursor expires over a committed view with nothing in it", async () => {
+			// An empty committed view is a view, not an initial sync: every object the
+			// scan finds is new, and a contention it decides has to reach the cycle.
+			const remote = new FakeRemote();
+			const store = makeStore();
+			await seedCheckpoint(store, [], []);
+			remote.seedRaw(mockFile("a-note", "Note.md", remote.rootId));
+			remote.seedRaw(mockFile("z-note", "Note.md", remote.rootId));
+
+			const fs = new MockRemoteFs(remote, store);
+			fs.requestCursorExpiry();
+			const delta = await fs.checkpoint.getChangedPaths();
+
+			expect(delta?.modified).toEqual(["Note.md"]);
+			expect(delta?.contended).toEqual([expect.objectContaining({
 				path: "Note.md", admittedId: "a-note", withheldId: "z-note",
 			})]);
 			await fs.close();

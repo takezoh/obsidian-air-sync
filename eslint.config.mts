@@ -372,8 +372,12 @@ export default defineConfig(
 		// diff counts them live, `delete` removes every provider folder the vault folder
 		// is made of, and `list()` keeps the contentions its replay decided. Each is a
 		// lifecycle step this class already owns for the single-object case.
+		// Re-pinned from 402 so the cursor-expiry diff applies the same shared-path rule
+		// the incremental drain does — a folder leaving or joining a same-named one is
+		// its contents' moves, not a folder rename — and so an empty committed view
+		// still reports what its scan decided. Both are this class's own diff.
 		files: ["src/fs/caching/remote-fs.ts"],
-		rules: { "max-lines": ["error", { max: 402, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 411, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Over the default 300 for the vault folder several Drive folders make up.
@@ -424,8 +428,13 @@ export default defineConfig(
 		// kind this pin already keeps here, and cannot leave the class without
 		// exporting the maps. The delta-side placement that arbitrates each seat a move
 		// makes is the same: it has to read and write those maps between arbitrations.
+		// Re-pinned from 577 so that an eviction from a shared path names every folder it
+		// takes, as a full scan's claim-set assignment does. Split candidate, when an
+		// access seam to the maps exists: capture / detachAll / reseat / removeObject /
+		// subtreePaths are one concept — taking one object's subtree out and seating it
+		// again — and are the natural module to ratchet this back down with.
 		files: ["src/fs/caching/metadata-cache.ts"],
-		rules: { "max-lines": ["error", { max: 577, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 589, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Lint manifest.json for the words the Obsidian submission validator

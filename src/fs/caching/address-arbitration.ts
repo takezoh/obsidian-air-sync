@@ -55,12 +55,10 @@ export interface UncontestedAddress extends ArbitratedAddress {
  * provider folders that derive the same address are not two things competing for
  * it. Their contents are one directory's contents, and only a FILE inside it can
  * collide. `admittedId` is the representative — the folder a new file is created
- * in — and `mergedId` is the other; neither is withheld and neither owes a repair.
+ * in; the other shares the path beside it, neither withheld nor owing a repair.
  */
 export interface MergedAddress extends ArbitratedAddress {
 	readonly outcome: "merge";
-	/** The other folder, which shares `path` with the representative. */
-	readonly mergedId: string;
 	readonly withheldId: null;
 	readonly reason: "folder_merge";
 	readonly withheldOwesRemediation: false;
@@ -142,12 +140,10 @@ export function arbitrateAddress(
 		};
 	}
 	if (mergesAsOneFolder(incumbent, claimant)) {
-		const incumbentLeads = incumbent.id < claimant.id;
 		return {
 			path,
 			outcome: "merge",
-			admittedId: incumbentLeads ? incumbent.id : claimant.id,
-			mergedId: incumbentLeads ? claimant.id : incumbent.id,
+			admittedId: incumbent.id < claimant.id ? incumbent.id : claimant.id,
 			withheldId: null,
 			reason: "folder_merge",
 			withheldOwesRemediation: false,

@@ -87,6 +87,14 @@ function displacedAddresses(contended: readonly AddressDisplacement[]): Readonly
 	return paths;
 }
 
+/** The paths several ids held in a path-by-id snapshot — folders merged there. */
+function sharedPaths(pathById: ReadonlyMap<string, string>): ReadonlySet<string> {
+	const seen = new Set<string>();
+	const shared = new Set<string>();
+	for (const path of pathById.values()) (seen.has(path) ? shared : seen).add(path);
+	return shared;
+}
+
 /**
  * How many cached paths a completed full scan lists at debug level. Enough to
  * identify a missing file in an ordinary vault without letting a large one turn
@@ -510,15 +518,17 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 
 	/**
 	 * Full scan with delta computation (the cursor-expiry fallback): snapshot old
-	 * paths-by-id, perform a fresh full scan, then diff old vs new by id. Returns null
-	 * on the initial sync (no prior snapshot).
+	 * paths-by-id, perform a fresh full scan, then diff old vs new by id.
+	 *
+	 * Only a replay reaches this, so a committed cursor always exists. An empty
+	 * snapshot is a committed view with nothing in it — everything the scan finds is
+	 * new — not an initial sync with no delta; and the scan's contentions must reach
+	 * the cycle either way.
 	 */
-	private async fullScanWithDelta(): Promise<RemoteDelta | null> {
-		// Snapshot before fullScan() overwrites the cache (only reached on cursor expiry,
-		// when the cache is already populated).
+	private async fullScanWithDelta(): Promise<RemoteDelta> {
+		// Snapshot before fullScan() overwrites the cache.
 		const oldPathById = this.cache.snapshotPathsById();
 		const contended = await this.fullScan();
-		if (oldPathById.size === 0) return null; // initial sync — no delta
 		return this.diffById(oldPathById, contended);
 	}
 
@@ -527,6 +537,12 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	 * freshly-scanned cache. Keys on backend id, so it detects adds/deletes/renames but
 	 * NOT in-place content edits (same path+id); those are caught by the next incremental
 	 * sync or WARM mode's local-vs-record check.
+	 *
+	 * A folder that moved out of, or into, a path other folders share is not reported
+	 * as a folder rename — the rule the incremental drain follows too. The vault holds
+	 * one folder at such a path and that folder did not move; only this folder's own
+	 * contents did, and each of them is reported here as its own move. Its old path is
+	 * changed, not deleted, for as long as another folder still holds it.
 	 */
 	private diffById(
 		oldPathById: Map<string, string>,
@@ -534,18 +550,22 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	): RemoteDelta {
 		const displacedIds = new Set(contended.map((fact) => fact.withheldId));
 		const displaced = displacedAddresses(contended);
-		const modified: string[] = [];
-		const deleted: string[] = [];
+		const modified = new Set<string>();
+		const deleted = new Set<string>();
 		const renamed: RenamePair[] = [];
 		// Every id the scan placed, merged folders included: a folder merged beside
 		// another is live, and missing it here would sweep its old path as deleted.
-		const newIds = new Set(this.cache.snapshotPathsById().keys());
-		for (const [newPath, file] of this.cache.entries()) {
-			const id = this.cache.idAt(newPath);
-			if (id === undefined) continue;
+		const newPathById = this.cache.snapshotPathsById();
+		const sharedBefore = sharedPaths(oldPathById);
+		const acrossShared = (oldPath: string, newPath: string) => this.cache.isFolder(newPath) &&
+			(sharedBefore.has(oldPath) || this.cache.idsAt(newPath).length > 1);
+		for (const [id, newPath] of newPathById) {
 			const oldPath = oldPathById.get(id);
 			if (!oldPath) {
-				modified.push(newPath);
+				modified.add(newPath);
+			} else if (oldPath !== newPath && acrossShared(oldPath, newPath)) {
+				modified.add(newPath);
+				(this.cache.hasFile(oldPath) ? modified : deleted).add(oldPath);
 			} else if (oldPath !== newPath) {
 				// `id` is the cache's ADDRESS for this entry (it may be a synthetic
 				// fallback); the reported identity comes from the entity projection only.
@@ -553,28 +573,29 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 					oldPath,
 					newPath,
 					isFolder: this.cache.isFolder(newPath) || undefined,
-					identityKey: projectedIdentityKey(this.cache, newPath, file),
+					identityKey: projectedIdentityKey(this.cache, newPath),
 				});
-				modified.push(newPath);
-				deleted.push(oldPath);
+				modified.add(newPath);
+				deleted.add(oldPath);
 			}
 		}
 		// PRODUCER 2 of `deleted`: the vanished-id sweep, the route a cursor expiry
 		// takes and the one measured to reach `delete_local`. An id the scan withheld,
 		// and every path that went with it, vanished from the cache because another
-		// claimant took its address — not because the provider dropped it.
+		// claimant took its address — not because the provider dropped it. A folder
+		// that vanished from a path it shared leaves that path to the others.
 		for (const [id, oldPath] of oldPathById) {
-			if (newIds.has(id) || displacedIds.has(id) || displaced.has(oldPath)) continue;
-			deleted.push(oldPath);
+			if (newPathById.has(id) || displacedIds.has(id) || displaced.has(oldPath)) continue;
+			(sharedBefore.has(oldPath) && this.cache.hasFile(oldPath) ? modified : deleted).add(oldPath);
 		}
-		if (modified.length > 0 || deleted.length > 0 || renamed.length > 0) {
+		if (modified.size > 0 || deleted.size > 0 || renamed.length > 0) {
 			this.logger?.info("Full scan delta", {
-				added: modified.length - renamed.length,
-				deleted: deleted.length - renamed.length,
+				added: modified.size - renamed.length,
+				deleted: deleted.size - renamed.length,
 				renamed: renamed.length,
 			});
 		}
-		return { modified, deleted, renamed, contended };
+		return { modified: [...modified], deleted: [...deleted], renamed, contended };
 	}
 
 	/**

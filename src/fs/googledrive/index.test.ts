@@ -247,6 +247,32 @@ describe("GoogleDriveFs.write stale-cache guard for new paths", () => {
 		expect((await fs.stat("Templates/note.md"))?.identityKey).toBe("n1");
 	});
 
+	it("still refuses a same-named FILE and folder as the parent, which are not one folder", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const uploadFile = vi.fn();
+		const createFolder = vi.fn();
+		const client = {
+			listAllFiles: vi.fn().mockResolvedValue([]),
+			getChangesStartToken: vi.fn().mockResolvedValue("token-1"),
+			getFile: vi.fn().mockResolvedValue({
+				id: "root", name: "root", mimeType: "application/vnd.google-apps.folder", trashed: false,
+			}),
+			listChildrenByName: vi.fn().mockResolvedValue([
+				{ id: "one", name: "Templates", mimeType: "application/vnd.google-apps.folder", parents: ["root"] },
+				{ id: "two", name: "Templates", mimeType: "text/markdown", parents: ["root"] },
+			] satisfies GoogleDriveFile[]),
+			uploadFile, createFolder,
+		} as never;
+		const fs = new GoogleDriveFs(client, "root");
+		await fs.list();
+
+		await expect(fs.write(
+			"Templates/note.md", new TextEncoder().encode("x").buffer, 1000,
+		)).rejects.toThrow('Ambiguous provider entry for "Templates"');
+		expect(createFolder).not.toHaveBeenCalled();
+		expect(uploadFile).not.toHaveBeenCalled();
+	});
+
 	it("updates the existing child when resolving a case-only parent alias", async () => {
 		const { GoogleDriveFs } = await import("./index");
 		const folder: GoogleDriveFile = {
@@ -441,6 +467,38 @@ describe("GoogleDriveFs.rename of a vault folder several Drive folders make up",
 			["a-docs", { name: "notes" }], ["z-docs", { name: "notes" }],
 		]);
 		expect((await fs.list()).map((entry) => entry.path).sort()).toEqual(["notes", "notes/a.md", "notes/b.md"]);
+	});
+});
+
+describe("GoogleDriveFs folder moves across parents a merged vault folder spans", () => {
+	it("moves each Drive folder out of its own parent", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const folder = (id: string, name: string, parent: string): GoogleDriveFile => ({
+			id, name, mimeType: "application/vnd.google-apps.folder", parents: [parent],
+		});
+		// `top` is itself two Drive folders, so the two `docs` under it have different
+		// Drive parents while sharing one vault path.
+		const updateFileMetadata = vi.fn((id: string, _metadata: unknown, addParents?: string, _removeParents?: string) =>
+			Promise.resolve(folder(id, "docs", addParents ?? "root")));
+		const client = {
+			listAllFiles: vi.fn().mockResolvedValue([
+				folder("t1", "top", "root"), folder("t2", "top", "root"), folder("dest", "dest", "root"),
+				folder("a-docs", "docs", "t1"), folder("z-docs", "docs", "t2"),
+			]),
+			getChangesStartToken: vi.fn().mockResolvedValue("token-1"),
+			getFile: vi.fn().mockResolvedValue({
+				id: "root", name: "root", mimeType: "application/vnd.google-apps.folder", trashed: false,
+			}),
+			updateFileMetadata,
+		} as never;
+		const fs = new GoogleDriveFs(client, "root");
+		await fs.list();
+
+		await fs.rename("top/docs", "dest/docs");
+
+		expect(updateFileMetadata.mock.calls.map(([id, , add, remove]) => [id, add, remove])).toEqual([
+			["a-docs", "dest", "t1"], ["z-docs", "dest", "t2"],
+		]);
 	});
 });
 

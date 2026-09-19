@@ -177,10 +177,11 @@ function applyEntry<TFile>(
 		// announced and cannot be re-applied; the address it vacated is its own.
 		hold(acc, null, { ...applied.displacement, vacatedPath: applied.displacement.path });
 	}
-	// A folder that moved into an address other folders share can bring children
-	// that meet theirs. Their metadata came with the move, not with this page, so
-	// like an evicted occupant they are announced and cannot be re-applied here.
-	for (const loss of applied.descendantLosses ?? []) hold(acc, null, loss);
+	// The rest of what this change cost: folders merged beside an evicted occupant,
+	// and children a folder brought into a same-named one that met theirs. None of
+	// their metadata came with this page, so like an evicted occupant they are
+	// announced and cannot be re-applied here.
+	for (const loss of applied.additionalLosses ?? []) hold(acc, null, loss);
 
 	// Moved outside the tracked root (parent no longer resolves) → surface as deleted.
 	// This is the only cause of "no new path" left here: a claim this drain withheld

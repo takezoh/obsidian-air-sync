@@ -385,6 +385,122 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 		});
 	});
 
+	describe("a delta through a path several folders share", () => {
+		function mergedDocs(cache: BijectiveCache): void {
+			cache.buildFromFiles([
+				folder("m-d1", "docs", ROOT), file("c1", "a.md", "m-d1"),
+				folder("z-d2", "docs", ROOT), file("c2", "b.md", "z-d2"),
+			]);
+		}
+
+		it("removes a merged folder that is not the representative with only its own contents", () => {
+			const cache = makeCache();
+			mergedDocs(cache);
+
+			expect(cache.removeObject("z-d2").sort()).toEqual(["docs", "docs/b.md"]);
+
+			expect(cache.idsAt("docs")).toEqual(["m-d1"]);
+			expect(cache.idAt("docs/a.md")).toBe("c1");
+			expect(cache.hasFile("docs/b.md")).toBe(false);
+		});
+
+		it("promotes the other folder when the representative goes", () => {
+			const cache = makeCache();
+			mergedDocs(cache);
+
+			cache.removeObject("m-d1");
+
+			expect(cache.idsAt("docs")).toEqual(["z-d2"]);
+			expect(cache.idAt("docs/b.md")).toBe("c2");
+			expect(cache.hasFile("docs/a.md")).toBe(false);
+		});
+
+		it("names every folder a file evicts from a shared path, as a full scan does", () => {
+			const cache = makeCache();
+			mergedDocs(cache);
+
+			const applied = cache.applyFileChange(file("a-file", "docs", ROOT));
+
+			const byDelta = [applied!.displacement!, ...applied!.additionalLosses]
+				.map((fact) => [fact.withheldId, fact.displacedPaths]);
+			expect(byDelta).toEqual([["m-d1", ["docs/a.md"]], ["z-d2", ["docs/b.md"]]]);
+			expect(applied!.additionalLosses[0]).toMatchObject({ vacatedPath: "docs", admittedId: "a-file" });
+
+			const scanned = makeCache().buildFromFiles([
+				folder("m-d1", "docs", ROOT), file("c1", "a.md", "m-d1"),
+				folder("z-d2", "docs", ROOT), file("c2", "b.md", "z-d2"),
+				file("a-file", "docs", ROOT),
+			]);
+			expect(scanned.map((fact) => [fact.withheldId, fact.displacedPaths])).toEqual(byDelta);
+		});
+
+		it("returns the collisions a folder moving into a same-named one brings, and seats the rest", () => {
+			const cache = makeCache();
+			cache.buildFromFiles([
+				folder("d1", "docs", ROOT), file("c1", "a.md", "d1"), file("a-sub", "sub", "d1"),
+				folder("d2", "old", ROOT), file("c2", "a.md", "d2"), file("c4", "b.md", "d2"),
+				folder("s2", "sub", "d2"), file("c3", "deep.md", "s2"),
+			]);
+
+			const applied = cache.applyFileChangeDetectMove(folder("d2", "docs", ROOT));
+
+			expect(cache.idsAt("docs")).toEqual(["d1", "d2"]);
+			expect(applied.acrossSharedPath).toBe(true);
+			expect(applied.relocated).toEqual([{ oldPath: "old/b.md", newPath: "docs/b.md", isFolder: false }]);
+			expect([...applied.additionalLosses!].sort((a, b) => (a.withheldId < b.withheldId ? -1 : 1))).toEqual([
+				{
+					path: "docs/a.md", admittedId: "c1", withheldId: "c2", displacedPaths: [],
+					reason: "lowest_stable_id", owesRemediation: true, vacatedPath: "old/a.md",
+				},
+				{
+					path: "docs/sub", admittedId: "a-sub", withheldId: "s2", displacedPaths: ["old/sub/deep.md"],
+					reason: "lowest_stable_id", owesRemediation: true, vacatedPath: "old/sub",
+				},
+			]);
+			expect(cache.getPathById("c3")).toBeUndefined();
+			expect(cache.idAt("docs/a.md")).toBe("c1");
+		});
+
+		it("carries a shared path along when a folder above it moves", () => {
+			const cache = makeCache();
+			cache.buildFromFiles([
+				folder("t1", "top", ROOT),
+				folder("d1", "docs", "t1"), file("c1", "a.md", "d1"),
+				folder("d2", "docs", "t1"), file("c2", "b.md", "d2"),
+			]);
+
+			cache.applyFileChange(folder("t1", "moved", ROOT));
+
+			expect(cache.idsAt("moved/docs")).toEqual(["d1", "d2"]);
+			expect(cache.idAt("moved/docs/b.md")).toBe("c2");
+			expect(cache.hasFile("top/docs")).toBe(false);
+		});
+
+		it("carries a shared path along a backend's own path rewrite", () => {
+			const cache = makeCache();
+			cache.buildFromFiles([
+				folder("t1", "top", ROOT),
+				folder("d1", "docs", "t1"), folder("d2", "docs", "t1"), file("c2", "b.md", "d2"),
+			]);
+
+			cache.removeEntry("top");
+			cache.setFile("moved", folder("t1", "moved", ROOT), "actual_resolved");
+			cache.rewriteChildPaths("top", "moved");
+
+			expect(cache.idsAt("moved/docs")).toEqual(["d1", "d2"]);
+			expect(cache.getPathById("d2")).toBe("moved/docs");
+			expect(cache.idAt("moved/docs/b.md")).toBe("c2");
+		});
+
+		it("refuses a plain seat that would move an object across a shared path", () => {
+			const cache = makeCache();
+			mergedDocs(cache);
+
+			expect(() => cache.setFile("elsewhere", folder("z-d2", "elsewhere", ROOT), "actual_resolved"))
+				.toThrow("applyFileChange's to make");
+		});
+	});
+
 	describe("the loss propagates down resolved parent-id ancestry", () => {
 		// A folder that loses to a FILE takes its contents with it; two folders never
 		// contend at all, so every case here pits one against a file.
@@ -594,7 +710,7 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 					owesRemediation: true,
 					vacatedPath: "Old.md",
 				},
-				descendantLosses: [],
+				additionalLosses: [],
 				relocated: [],
 			});
 			expect(cache.idAt("Test.md")).toBe("f1");
@@ -634,7 +750,7 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 					reason: "lowest_stable_id",
 					owesRemediation: true,
 				},
-				descendantLosses: [],
+				additionalLosses: [],
 				relocated: [],
 			});
 			expect(cache.idAt("docs")).toBe("d1");
@@ -685,7 +801,7 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 			const applied = cache.applyFileChange(file("f1", "a.md", ROOT));
 
 			expect(applied).toEqual({
-				path: "a.md", displacement: null, withheld: null, descendantLosses: [], relocated: [],
+				path: "a.md", displacement: null, withheld: null, additionalLosses: [], relocated: [],
 			});
 		});
 	});

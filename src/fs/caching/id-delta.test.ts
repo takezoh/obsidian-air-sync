@@ -318,6 +318,27 @@ describe("applyIdDeltaPage", () => {
 		});
 	});
 
+	describe("a folder moving into a same-named one", () => {
+		it("reports its files' moves and its subfolders as changed, with no folder pair", () => {
+			const cache = makeCache();
+			seed(cache, [
+				["docs", folder("d1", "docs", ROOT)],
+				["old", folder("d2", "old", ROOT)],
+				["old/sub", folder("s2", "sub", "d2")],
+				["old/sub/deep.md", file("c3", "deep.md", "s2")],
+			]);
+
+			const acc = drain(cache, [[upsert(folder("d2", "docs", ROOT))]]);
+
+			expect(acc.renamedPaths).toEqual([{
+				oldPath: "old/sub/deep.md", newPath: "docs/sub/deep.md", identityKey: "c3",
+			}]);
+			expect([...acc.changedPaths].sort()).toEqual([
+				"docs", "docs/sub", "docs/sub/deep.md", "old", "old/sub", "old/sub/deep.md",
+			]);
+		});
+	});
+
 	/**
 	 * Every case below is a contention between a FILE holding an address and a claim
 	 * on it: two provider-resolved folders are one vault folder and never contend.
