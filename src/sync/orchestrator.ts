@@ -193,7 +193,15 @@ export class SyncOrchestrator {
 				if (!result) return; // Fatal error already handled
 
 				const { succeeded, failed, blocked, conflicts } = result;
-				if (result.outcome.completion.kind !== "clean") {
+				if (result.outcome.completion.kind === "follow_up") {
+					// Nothing failed; convergence needs one more cycle. Queue it the way any
+					// sync request is queued — one slot, consumed by this loop — and leave the
+					// status at syncing, because that cycle starts next.
+					this.requestNormalLifecycle();
+					this.deps.logger?.info("Sync cycle queued a follow-up", {
+						succeeded, conflicts, failed, blocked,
+					});
+				} else if (result.outcome.completion.kind === "incomplete") {
 					this.deps.onStatusChange("partial_error");
 					this.deps.logger?.warn("Sync completed with errors", {
 						succeeded, conflicts, failed, blocked,

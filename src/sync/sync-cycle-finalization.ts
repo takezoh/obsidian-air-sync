@@ -1,6 +1,6 @@
 import type { IFileSystem } from "../fs/interface";
 import type { ExecutionResult } from "./execution-result";
-import type { AdmissionResult } from "./plan-admission";
+import type { AdmissionFailureComponent, AdmissionResult } from "./plan-admission";
 import type { SyncAction } from "./types";
 
 interface SyncCycleFinalizationInput {
@@ -11,7 +11,29 @@ interface SyncCycleFinalizationInput {
 	checkpointBlocked?: boolean;
 }
 
-export type SyncCycleCompletion = { readonly kind: "clean" } | { readonly kind: "incomplete" };
+/**
+ * How a cycle closed. Only `clean` commits the checkpoint.
+ *
+ * `follow_up` is not a failure: every admitted action reached its terminal state and
+ * nothing failed, but the checkpoint was withheld on purpose because convergence
+ * needs one more cycle — a provider repair was owed, or a priority pull invalidated
+ * this cycle's view. The caller queues that cycle; nothing about it is persisted.
+ * `incomplete` is everything else that did not finish.
+ */
+export type SyncCycleCompletion =
+	| { readonly kind: "clean" }
+	| { readonly kind: "follow_up" }
+	| { readonly kind: "incomplete" };
+
+/**
+ * Whether a failed component is only waiting for a provider repair its own plan
+ * carries. The next cycle settles it, so the closeout owes a follow-up rather than a
+ * failure — and the notice reads this same predicate, so the two cannot disagree
+ * about what counts as an error.
+ */
+export function awaitsRepair(component: AdmissionFailureComponent): boolean {
+	return component.reasons.every((reason) => reason === "awaiting_repair");
+}
 
 /** Abort failure escapes classification/retry without attempting another abort. */
 export class WorkingViewAbortError extends Error {
@@ -29,7 +51,13 @@ async function abortWorkingView(checkpoint: IFileSystem["checkpoint"]): Promise<
 	}
 }
 
-function isComplete(input: Omit<SyncCycleFinalizationInput, "checkpoint">): boolean {
+function completionOf(input: Omit<SyncCycleFinalizationInput, "checkpoint">): SyncCycleCompletion["kind"] {
+	if (!everyActionFinished(input)) return "incomplete";
+	const awaiting = input.admission.dispositions.some((disposition) => disposition.kind === "failed");
+	return input.checkpointBlocked || awaiting ? "follow_up" : "clean";
+}
+
+function everyActionFinished(input: Omit<SyncCycleFinalizationInput, "checkpoint">): boolean {
 	const succeeded = new Map(input.result.succeeded.map((item) => [item.action, item]));
 	const superseded = new Map(input.result.superseded.map((item) => [item.action, item.terminalRecord]));
 	const terminal = (disposition: AdmissionResult["dispositions"][number], action: SyncAction) => {
@@ -44,8 +72,9 @@ function isComplete(input: Omit<SyncCycleFinalizationInput, "checkpoint">): bool
 				replacement?.path === action.path &&
 				replacement.remoteIdentityKey === action.remote?.identityKey);
 	};
-	return !input.checkpointBlocked && input.result.failed.length === 0 && input.result.blocked.length === 0 &&
-		input.admission.dispositions.every((disposition) => disposition.kind !== "failed" &&
+	return input.result.failed.length === 0 && input.result.blocked.length === 0 &&
+		input.admission.dispositions.every((disposition) =>
+			(disposition.kind !== "failed" || awaitsRepair(disposition)) &&
 			(disposition.kind !== "authorized" || disposition.actions.every((action) => terminal(disposition, action))));
 }
 
@@ -70,9 +99,9 @@ export async function runSyncCycleAttempt<T>(
 			try {
 				if (attempt.kind === "threw") throw attempt.error;
 				const input = finalization(attempt.value);
-				const clean = isComplete(input);
-				if (clean) await checkpoint?.commitCheckpoint({ scopeFingerprint: input.scopeFingerprint });
-				return { kind: "returned" as const, value: attempt.value, clean };
+				const completion = completionOf(input);
+				if (completion === "clean") await checkpoint?.commitCheckpoint({ scopeFingerprint: input.scopeFingerprint });
+				return { kind: "returned" as const, value: attempt.value, completion };
 			} catch (error) {
 				return { kind: "threw" as const, error };
 			}
@@ -81,8 +110,8 @@ export async function runSyncCycleAttempt<T>(
 			await abortWorkingView(checkpoint);
 			throw closeout.error;
 		}
-		if (!closeout.clean) await abortWorkingView(checkpoint);
-		return { value: closeout.value, completion: { kind: closeout.clean ? "clean" : "incomplete" } };
+		if (closeout.completion !== "clean") await abortWorkingView(checkpoint);
+		return { value: closeout.value, completion: { kind: closeout.completion } };
 	});
 }
 

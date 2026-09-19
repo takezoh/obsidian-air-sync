@@ -96,7 +96,7 @@ function authorizeComponents(
 	for (const observedComponent of components) {
 		const decision = decideIdentityComponent(
 			observedComponent, snapshot.scope, snapshot.baselinePaths, conflictStrategy,
-			remediation.unresolvedAddresses,
+			remediation.withheldAddresses,
 		);
 		const decidedComponent = decision.component;
 		const shared = {

@@ -14,6 +14,7 @@ import {
 } from "../__mocks__/sync-test-helpers";
 import type { AirSyncSettings } from "../settings";
 import type { AddressDisplacement } from "../fs/caching/claim-set-assignment";
+import type { FileEntity } from "../fs/types";
 import { AuthError } from "../fs/errors";
 import { sha256 } from "../utils/hash";
 import type { Logger } from "../logging/logger";
@@ -2360,9 +2361,12 @@ describe("SyncOrchestrator", () => {
 
 			const renameById = vi.fn().mockResolvedValue(undefined);
 			remoteFs.identityRename = { renameById };
-			remoteFs.checkpoint!.getChangedPaths = vi.fn().mockResolvedValue({
-				modified: [], deleted: [], contended: [contention(contendedPath)],
-			});
+			// Announced once: after the repair lands the provider no longer holds two
+			// objects there, so the next delta has nothing to say about the address.
+			const getChangedPaths = vi.fn()
+				.mockResolvedValueOnce({ modified: [], deleted: [], contended: [contention(contendedPath)] })
+				.mockResolvedValue({ modified: [], deleted: [] });
+			remoteFs.checkpoint!.getChangedPaths = getChangedPaths;
 			const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
 			const abortWorkingView = vi.fn().mockResolvedValue(undefined);
 			remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
@@ -2370,16 +2374,22 @@ describe("SyncOrchestrator", () => {
 
 			await orchestrator.runSync();
 			await orchestrator.close();
-			return { renameById, commitCheckpoint, abortWorkingView };
+			return { renameById, commitCheckpoint, abortWorkingView, getChangedPaths };
 		}
 
-		it("renames the provider object and withholds the checkpoint at an included address", async () => {
+		it("repairs, withholds that cycle's checkpoint, and commits in the follow-up it queues", async () => {
 			const cycle = await cycleWithContentionAt("docs/Note.md");
 
+			expect(cycle.renameById).toHaveBeenCalledOnce();
 			expect(cycle.renameById).toHaveBeenCalledWith(
 				"moved-id", "docs/Note.conflict-id-moved-id.md");
-			expect(cycle.commitCheckpoint).not.toHaveBeenCalled();
-			expect(cycle.abortWorkingView).toHaveBeenCalled();
+			// One runSync, two cycles: the repair cycle aborts its working view, and the
+			// cycle it queued — seeing the address settled — is the one that commits.
+			expect(cycle.getChangedPaths).toHaveBeenCalledTimes(2);
+			expect(cycle.abortWorkingView).toHaveBeenCalledOnce();
+			expect(cycle.commitCheckpoint).toHaveBeenCalledOnce();
+			expect(cycle.abortWorkingView.mock.invocationCallOrder[0]!)
+				.toBeLessThan(cycle.commitCheckpoint.mock.invocationCallOrder[0]!);
 		});
 
 		it("mutates nothing and still commits at an address the vault excludes", async () => {
@@ -2391,8 +2401,41 @@ describe("SyncOrchestrator", () => {
 			const cycle = await cycleWithContentionAt("private/Note.md");
 
 			expect(cycle.renameById).not.toHaveBeenCalled();
-			expect(cycle.commitCheckpoint).toHaveBeenCalled();
+			expect(cycle.commitCheckpoint).toHaveBeenCalledOnce();
 			expect(cycle.abortWorkingView).not.toHaveBeenCalled();
+			// Nothing was owed, so nothing was queued.
+			expect(cycle.getChangedPaths).toHaveBeenCalledOnce();
+		});
+
+		it("queues one follow-up however many times one is requested", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			confirmRemoteWrites(remoteFs);
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`, lastSyncedIdentity: "test:root",
+			});
+			const orchestrator = new SyncOrchestrator(createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+			}));
+			addFile(localFs, "keep.md", "settled", 1000);
+			await orchestrator.runSync();
+
+			// While the repair cycle runs, other sync requests arrive too — as vault
+			// events do. The queue is one slot: the cycle's own follow-up and those
+			// requests are all the same next cycle.
+			remoteFs.identityRename = { renameById: vi.fn(async () => {
+				await orchestrator.runSync();
+				await orchestrator.runSync();
+			}) };
+			const getChangedPaths = vi.fn()
+				.mockResolvedValueOnce({ modified: [], deleted: [], contended: [contention("docs/Note.md")] })
+				.mockResolvedValue({ modified: [], deleted: [] });
+			remoteFs.checkpoint!.getChangedPaths = getChangedPaths;
+
+			await orchestrator.runSync();
+			await orchestrator.close();
+
+			expect(getChangedPaths).toHaveBeenCalledTimes(2);
 		});
 	});
 
@@ -2411,6 +2454,34 @@ describe("SyncOrchestrator", () => {
 		/** The mock mints `id:<path>`, so this is what the settling cycle records. */
 		const RECORD_HOLDER = `id:${CONTENDED}`;
 		const NEWCOMER = "seated-id";
+		/** Where the repair moves the newcomer. */
+		const TARGET = "docs/Note.conflict-id-seated-id.md";
+
+		/**
+		 * The provider as the repair leaves it: the newcomer at the target it was renamed
+		 * to, and the record holder — which the cache had dropped to seat the newcomer —
+		 * back at its own address, bytes and identity unchanged.
+		 */
+		function landRepair(
+			remoteFs: MockFileSystem,
+			holder: { content: ArrayBuffer; entity: FileEntity },
+		) {
+			return vi.fn((_identity: string, target: string) => {
+				const seated = remoteFs.files.get(CONTENDED)!;
+				remoteFs.files.set(target, { content: seated.content, entity: { ...seated.entity, path: target } });
+				remoteFs.files.set(CONTENDED, holder);
+				return Promise.resolve();
+			});
+		}
+
+		/** Put the newcomer where the record holder was, keeping the holder to restore. */
+		function seatNewcomer(remoteFs: MockFileSystem) {
+			const seated = remoteFs.files.get(CONTENDED)!;
+			const holder = { content: seated.content, entity: { ...seated.entity } };
+			seated.content = new TextEncoder().encode("the newcomer's bytes").buffer;
+			seated.entity = { ...seated.entity, identityKey: NEWCOMER, mtime: 2000, size: 20 };
+			return holder;
+		}
 
 		/**
 		 * A settled vault, then a same-named sibling appears and wins the cache address.
@@ -2439,18 +2510,21 @@ describe("SyncOrchestrator", () => {
 
 			// The newcomer now occupies the address in the working view. Different bytes
 			// and a later mtime, so the ordinary rules have something to do with it.
-			const seated = remoteFs.files.get(CONTENDED)!;
-			seated.content = new TextEncoder().encode("the newcomer's bytes").buffer;
-			seated.entity = { ...seated.entity, identityKey: NEWCOMER, mtime: 2000, size: 20 };
+			const holder = seatNewcomer(remoteFs);
 
-			const renameById = vi.fn().mockResolvedValue(undefined);
+			const renameById = landRepair(remoteFs, holder);
 			remoteFs.identityRename = { renameById };
-			remoteFs.checkpoint!.getChangedPaths = vi.fn().mockResolvedValue({
-				modified: [CONTENDED], deleted: [], contended: [{
-					path: CONTENDED, admittedId: NEWCOMER, withheldId: RECORD_HOLDER,
-					displacedPaths: [], reason: "lowest_stable_id", owesRemediation: true,
-				}],
-			});
+			// The repair cycle's delta announces the contention; the follow-up's reports
+			// what the repair did; after that there is nothing new.
+			remoteFs.checkpoint!.getChangedPaths = vi.fn()
+				.mockResolvedValueOnce({
+					modified: [CONTENDED], deleted: [], contended: [{
+						path: CONTENDED, admittedId: NEWCOMER, withheldId: RECORD_HOLDER,
+						displacedPaths: [], reason: "lowest_stable_id", owesRemediation: true,
+					}],
+				})
+				.mockResolvedValueOnce({ modified: [CONTENDED, TARGET], deleted: [] })
+				.mockResolvedValue({ modified: [], deleted: [] });
 			const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
 			const abortWorkingView = vi.fn().mockResolvedValue(undefined);
 			remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
@@ -2461,26 +2535,31 @@ describe("SyncOrchestrator", () => {
 			return { renameById, commitCheckpoint, abortWorkingView, localFs, remoteFs };
 		}
 
-		it("writes nothing at the address the record holder keeps", async () => {
+		it("writes nothing at the address the record holder keeps, and syncs the newcomer where it moved", async () => {
 			const cycle = await newcomerWinsTheAddress();
 
-			// Without this, the cycle reads the newcomer against the record holder's
-			// baseline as a replaced destination and acts on it — overwriting the user's
-			// file, or duplicating it as a conflict — at the very address the repair below
-			// is about to move that same newcomer out of.
+			// Without the withholding, the repair cycle reads the newcomer against the
+			// record holder's baseline as a replaced destination and acts on it —
+			// overwriting the user's file, or duplicating it as a conflict — at the very
+			// address the repair is moving that same newcomer out of.
 			expect(readText(cycle.localFs, CONTENDED)).toBe("the user's file");
-			expect(readText(cycle.remoteFs, CONTENDED)).toBe("the newcomer's bytes");
+			expect(readText(cycle.remoteFs, CONTENDED)).toBe("the user's file");
+			// The follow-up converges: the newcomer, renamed, arrives as its own file —
+			// and nothing else carrying ".conflict" does.
 			expect([...cycle.localFs.files.keys()].filter((path) => path.includes(".conflict")))
-				.toEqual([]);
+				.toEqual([TARGET]);
+			expect(readText(cycle.localFs, TARGET)).toBe("the newcomer's bytes");
 		});
 
-		it("still moves the newcomer and still withholds the checkpoint", async () => {
+		it("moves the newcomer once, and commits only in the follow-up", async () => {
 			const cycle = await newcomerWinsTheAddress();
 
-			expect(cycle.renameById).toHaveBeenCalledWith(
-				NEWCOMER, "docs/Note.conflict-id-seated-id.md");
-			expect(cycle.commitCheckpoint).not.toHaveBeenCalled();
-			expect(cycle.abortWorkingView).toHaveBeenCalled();
+			expect(cycle.renameById).toHaveBeenCalledOnce();
+			expect(cycle.renameById).toHaveBeenCalledWith(NEWCOMER, TARGET);
+			expect(cycle.abortWorkingView).toHaveBeenCalledOnce();
+			expect(cycle.commitCheckpoint).toHaveBeenCalledOnce();
+			expect(cycle.abortWorkingView.mock.invocationCallOrder[0]!)
+				.toBeLessThan(cycle.commitCheckpoint.mock.invocationCallOrder[0]!);
 		});
 
 		it("leaves every uncontended path in the same cycle alone", async () => {
@@ -2514,12 +2593,13 @@ describe("SyncOrchestrator", () => {
 			const orchestrator = new SyncOrchestrator(deps);
 			addFile(localFs, CONTENDED, "the user's file", 1000);
 			await orchestrator.runSync();
+			// A provider listing spells the parent it created as resolved; the mock keeps
+			// its own mkdir an echo unless told otherwise, which a COLD listing would see.
+			confirmMockPath(remoteFs, "docs");
 
-			const seated = remoteFs.files.get(CONTENDED)!;
-			seated.content = new TextEncoder().encode("the newcomer's bytes").buffer;
-			seated.entity = { ...seated.entity, identityKey: NEWCOMER, mtime: 2000, size: 20 };
+			const holder = seatNewcomer(remoteFs);
 
-			const renameById = vi.fn().mockResolvedValue(undefined);
+			const renameById = landRepair(remoteFs, holder);
 			remoteFs.identityRename = { renameById };
 			// No checkpoint ⇒ forceFullScan ⇒ COLD, which never calls getChangedPaths.
 			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(false);
@@ -2537,9 +2617,12 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.close();
 
 			expect(readText(localFs, CONTENDED)).toBe("the user's file");
-			expect(renameById).toHaveBeenCalledWith(
-				NEWCOMER, "docs/Note.conflict-id-seated-id.md");
-			expect(commitCheckpoint).not.toHaveBeenCalled();
+			expect(renameById).toHaveBeenCalledOnce();
+			expect(renameById).toHaveBeenCalledWith(NEWCOMER, TARGET);
+			// The follow-up is COLD again and lists what the repair left: it converges
+			// and commits, with the newcomer synced at its new address.
+			expect(commitCheckpoint).toHaveBeenCalledOnce();
+			expect(readText(localFs, TARGET)).toBe("the newcomer's bytes");
 		});
 	});
 

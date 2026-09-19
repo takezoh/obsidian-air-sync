@@ -180,7 +180,7 @@ describe("address-contention remediation", () => {
 				facts(contentions, { recordHolders: synced("A1", "B2") }));
 
 			expect(plan.actions[0]?.providerIdentity).toBe("B2");
-			expect(plan.unresolvedAddresses).toEqual(new Set());
+			expect(plan.withheldAddresses).toEqual(new Map());
 		});
 
 		it("decides identically for both claim orders and for COLD and delta acquisition", () => {
@@ -260,7 +260,7 @@ describe("address-contention remediation", () => {
 				checkpointBlocked: plan.checkpointBlocked,
 			});
 
-			expect(completion).toEqual({ kind: "incomplete" });
+			expect(completion).toEqual({ kind: "follow_up" });
 			expect(calls).toEqual(["abortWorkingView"]);
 			expect(state.committed).toBe("cursor-1");
 		});
@@ -353,7 +353,7 @@ describe("address-contention remediation", () => {
 			expect(readText(remoteFs, "notes.md")).toBe("uncontested");
 			expect(stateStore.records.has("notes.md")).toBe(true);
 			expect(renamed).toEqual(["B2"]);
-			expect(completion).toEqual({ kind: "incomplete" });
+			expect(completion).toEqual({ kind: "follow_up" });
 			expect(calls).toEqual(["abortWorkingView"]);
 			expect(state.committed).toBe("cursor-1");
 		});

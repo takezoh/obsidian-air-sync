@@ -1,5 +1,6 @@
 import type { AddressDisplacement } from "../fs/caching/claim-set-assignment";
 import type { RenameAction } from "./types";
+import type { AdmissionFailureReason } from "./identity-component-decision";
 import { insertConflictSuffix } from "./conflict";
 
 /**
@@ -37,7 +38,7 @@ export interface AddressContentionRemediation {
 	 * a backend without the capability — does not block it, because blocking would
 	 * stall the cursor with no action that could ever clear it. That is not permission
 	 * to sync the address: where the keeper is not the seated claimant it is still in
-	 * {@link unresolvedAddresses}, and that component fails visibly instead.
+	 * {@link withheldAddresses}, and that component fails visibly instead.
 	 */
 	readonly checkpointBlocked: boolean;
 	/**
@@ -51,14 +52,17 @@ export interface AddressContentionRemediation {
 	 * claimant there would sync the wrong object at the keeper's address and publish a
 	 * record naming an object this same plan is moving away.
 	 *
-	 * The address is therefore unresolved, not empty and not the seated claimant. It
-	 * resolves on its own next cycle: the repair vacates it, the keeper stops losing
-	 * the contest, and the ordinary rules sync it with no special case at all.
+	 * The address is therefore unresolved, not empty and not the seated claimant, and
+	 * each carries why. `awaiting_repair`: this plan's repair vacates it, so the next
+	 * cycle syncs the keeper there with no special case — the cycle is owed a
+	 * follow-up, not reported as failing. `present_unresolved`: no repair this plan can
+	 * make reaches it, so it stays unresolved until the provider's facts change, and a
+	 * follow-up would only observe the same thing again.
 	 *
-	 * Independent of `renameByIdentity`: a backend that cannot repair the namespace
-	 * still must not sync the wrong object at that address.
+	 * Withheld regardless of `renameByIdentity`: a backend that cannot repair the
+	 * namespace still must not sync the wrong object at that address.
 	 */
-	readonly unresolvedAddresses: ReadonlySet<string>;
+	readonly withheldAddresses: ReadonlyMap<string, Extract<AdmissionFailureReason, "awaiting_repair" | "present_unresolved">>;
 }
 
 /** One contended address, and the claimant the owner's rule says it belongs to. */
@@ -98,14 +102,17 @@ export function planAddressContentionRemediation(
 	// An address whose seated claimant is already the keeper needs no withholding: the
 	// ordinary rules are looking at exactly the object this address syncs, and the
 	// repair moves a claimant that was never in the working view.
-	const unresolvedAddresses = new Set(
-		addresses.filter((address) => address.keeper === undefined || address.keeper !== address.admittedId)
-			.map((address) => address.path),
-	);
+	const unresolved = addresses
+		.filter((address) => address.keeper === undefined || address.keeper !== address.admittedId)
+		.map((address) => address.path);
+	const withheld = (repaired: ReadonlySet<string>) => new Map(unresolved.map((path) =>
+		[path, repaired.has(path) ? "awaiting_repair" as const : "present_unresolved" as const]));
 	// An absent capability is a configuration fact, not an error: no rename is
 	// planned and the cycle is not blocked, because nothing it could do would
 	// clear the condition.
-	if (!facts.renameByIdentity) return { actions: [], checkpointBlocked: false, unresolvedAddresses };
+	if (!facts.renameByIdentity) {
+		return { actions: [], checkpointBlocked: false, withheldAddresses: withheld(new Set()) };
+	}
 	const actions: RenameAction[] = [];
 	for (const address of addresses) {
 		if (!address.remediable || address.keeper === undefined) continue;
@@ -124,7 +131,10 @@ export function planAddressContentionRemediation(
 			providerIdentity: renamed,
 		});
 	}
-	return { actions, checkpointBlocked: actions.length > 0, unresolvedAddresses };
+	return {
+		actions, checkpointBlocked: actions.length > 0,
+		withheldAddresses: withheld(new Set(actions.map((action) => action.oldPath))),
+	};
 }
 
 /**

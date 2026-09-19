@@ -4280,16 +4280,16 @@ describe("a contended address is synced as the record names it, not as the cache
 		expect(result.executable.actions.filter((action) => action.path === "note.md")).toEqual([]);
 	});
 
-	it("reports the contended address as unobserved rather than resolving it", () => {
+	it("withholds the contended address as awaiting the repair this plan carries", () => {
 		const result = admitContended();
 
 		// The record holder is not in this cycle's view at all — the cache dropped it to
-		// seat the newcomer — so the remote endpoint at this address is UNOBSERVED, not
-		// absent and not the newcomer: something IS at the address and which object it
-		// denotes cannot be resolved from this cycle's facts.
+		// seat the newcomer — so what the address denotes cannot be resolved from this
+		// cycle's facts. The repair in this plan settles it, so the reason says so: the
+		// cycle is owed a follow-up, not a failure report.
 		const contended = result.dispositions.find((item) => item.paths.includes("note.md"));
 		expect(contended?.kind).toBe("failed");
-		expect((contended as AdmissionFailureComponent).reasons).toEqual(["present_unresolved"]);
+		expect((contended as AdmissionFailureComponent).reasons).toEqual(["awaiting_repair"]);
 	});
 
 	it("still plans the repair that lets the next cycle sync the record holder", () => {
@@ -4313,5 +4313,8 @@ describe("a contended address is synced as the record names it, not as the cache
 
 		expect(result.executable.actions).toEqual([]);
 		expect(result.checkpointBlocked).toBe(false);
+		// Nothing here will repair it, so it is not awaiting anything: it stays
+		// unresolved until the provider's facts change, and no follow-up is owed.
+		expect(result.failures.map((failure) => failure.reasons)).toEqual([["present_unresolved"]]);
 	});
 });

@@ -265,7 +265,10 @@ Admission logs executable/proposed counts and each failed component's reason,
 evidence kind/origin, endpoint dispositions, and paths (never content or credentials).
 Status remains `partial_error`, and Admission failures join failed actions in the ordinary error
 count. Their detailed reason remains diagnostic only. A later ordinary sync may reacquire current
-facts, but the failure is neither pending work nor a convergence guarantee.
+facts, but the failure is neither pending work nor a convergence guarantee. The one exception is
+`awaiting_repair`: the same plan carries the repair that settles it, so the cycle closes as
+`follow_up`, queues the next cycle, and counts no error (see
+[Address-contention remediation](#address-contention-remediation)).
 Private shaping helpers expose typed skip reasons to focused tests, but do not form an
 observable pipeline stage.
 
@@ -322,10 +325,16 @@ current-cycle facts rather than from a local rename, and it adds no `SyncActionT
   resolves, in the cache and on the provider, to the claimant that *keeps* it. There is no
   path-addressed fallback. The action carries no local counterpart, no baseline and no record
   publication (`RecordPublication` already excludes `rename_remote`).
-- **The commit gate.** A cycle owing a repair is checkpoint-blocked through the existing
-  `checkpointBlocked` input to cleanliness, so no cursor advances past a withheld claimant and
-  the next cycle replays the same evidence. Every uncontested action still executes and still
-  publishes its own `SyncRecord`. A non-remediable contention owes no repair and does not block
+- **The commit gate and the follow-up.** A cycle owing a repair is checkpoint-blocked through
+  the existing `checkpointBlocked` input to cleanliness, so no cursor advances past a withheld
+  claimant. Every uncontested action still executes and still publishes its own `SyncRecord`.
+  When nothing failed, the cycle closes as `follow_up` rather than `incomplete`: convergence
+  needs one more cycle, so the orchestrator queues it the way every sync request is queued —
+  `requestNormalLifecycle()`, a single pending flag the run loop consumes, so any number of
+  requests is one next cycle — and the status stays `syncing` instead of reporting a failure.
+  An address withheld for a repair this plan carries fails its component as `awaiting_repair`,
+  which counts toward `follow_up`; one no repair can reach stays `present_unresolved`, which
+  does not, because a follow-up would only observe it again. A non-remediable contention owes no repair and does not block
   the checkpoint by itself; if its keeper is not the claimant the cache seated, the address is
   still withheld as above, which fails that component and leaves the cycle not clean — visibly,
   as a failed component, and until the provider's facts change.

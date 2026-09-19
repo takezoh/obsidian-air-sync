@@ -194,7 +194,7 @@ Drive-only fan-out across same-named folders.)
 
 Four modules instead carry a **file-header `/* eslint max-lines */` comment**, which
 overrides the config entry for that file: `sync/scope-projection.ts` (340),
-`sync/conflict-resolver.ts` (350), `sync/identity-component-decision.ts` (815), and
+`sync/conflict-resolver.ts` (350), `sync/identity-component-decision.ts` (822), and
 `sync/plan-executor.ts` (1020 — so its 334 config entry above is inert). Same ratchet,
 same obligation to justify the pin in the comment; the inline form keeps the reason
 next to the code it is about.

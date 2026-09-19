@@ -26,6 +26,23 @@ describe("sync notification Admission failure visibility", () => {
 		expect(buildNotificationMessage(outcome(2))).toBe("Sync: 2 errors");
 	});
 
+	it("does not report a burst's repair-and-follow-up as errors", () => {
+		// The repair cycle withholds the contended address awaiting its own repair and
+		// queues a follow-up; the follow-up converges. Neither is an error of the burst.
+		const repairCycle: SyncCycleOutcome = {
+			...outcome(),
+			completion: { kind: "follow_up" },
+			admissionFailures: [{
+				kind: "failed", paths: ["note.md"], actions: [], evidence: [], reasons: ["awaiting_repair"],
+			}],
+		};
+		const summary = new CycleSummary();
+		summary.add(repairCycle);
+		summary.add(outcome());
+
+		expect(summary.message).toBe("Everything up to date");
+	});
+
 	it("coalesces Admission failures across cycles", () => {
 		const summary = new CycleSummary();
 		summary.add(outcome(1));

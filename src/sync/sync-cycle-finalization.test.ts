@@ -179,15 +179,63 @@ describe("finalizeSyncCycle", () => {
 		const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
 		const cycleCheckpoint = checkpoint(commitCheckpoint);
 
-		await finalizeSyncCycle({
+		const completion = await finalizeSyncCycle({
 			admission: admitted,
 			result: { succeeded: [], superseded: [], conflicts: [], failed: [], blocked: [] },
 			checkpoint: cycleCheckpoint.value, scopeFingerprint: "scope",
 			checkpointBlocked: true,
 		});
 
+		// Nothing failed: the cycle needs another, which is not an error.
+		expect(completion).toEqual({ kind: "follow_up" });
 		expect(commitCheckpoint).not.toHaveBeenCalled();
 		expect(cycleCheckpoint.abortWorkingView).toHaveBeenCalledOnce();
+	});
+
+	it("owes a follow-up for a component awaiting the repair its own plan carries", async () => {
+		const remote = checkpoint(vi.fn().mockResolvedValue(undefined));
+		const awaiting = { dispositions: [{ kind: "failed", paths: ["note.md"], actions: [], evidence: [],
+			reasons: ["awaiting_repair"] }] } as never;
+
+		const completion = await finalizeSyncCycle({
+			admission: awaiting,
+			result: { succeeded: [], superseded: [], conflicts: [], failed: [], blocked: [] },
+			checkpoint: remote.value, scopeFingerprint: "scope", checkpointBlocked: true,
+		});
+
+		expect(completion).toEqual({ kind: "follow_up" });
+		expect(remote.abortWorkingView).toHaveBeenCalledOnce();
+	});
+
+	it("is incomplete for a component withheld with no repair to wait for", async () => {
+		const remote = checkpoint(vi.fn().mockResolvedValue(undefined));
+		const standing = { dispositions: [{ kind: "failed", paths: ["note.md"], actions: [], evidence: [],
+			reasons: ["present_unresolved"] }] } as never;
+
+		const completion = await finalizeSyncCycle({
+			admission: standing,
+			result: { succeeded: [], superseded: [], conflicts: [], failed: [], blocked: [] },
+			checkpoint: remote.value, scopeFingerprint: "scope",
+		});
+
+		// A follow-up would observe exactly this again.
+		expect(completion).toEqual({ kind: "incomplete" });
+	});
+
+	it("is incomplete, not a follow-up, when an action failed in a withheld cycle", async () => {
+		const admitted = admission([], { isConfiguredScopeCompatible: () => true, byEndpoint: new Map() });
+		const remote = checkpoint(vi.fn().mockResolvedValue(undefined));
+
+		const completion = await finalizeSyncCycle({
+			admission: admitted,
+			result: { succeeded: [], superseded: [], conflicts: [], blocked: [],
+				failed: [{ action: { action: "push", path: "note.md" } as never, error: new Error("boom") }] },
+			checkpoint: remote.value, scopeFingerprint: "scope",
+			checkpointBlocked: true,
+		});
+
+		// A follow-up is owed only by a cycle that finished everything it was given.
+		expect(completion).toEqual({ kind: "incomplete" });
 	});
 
 	it("is a no-op when the filesystem has no checkpoint capability", async () => {

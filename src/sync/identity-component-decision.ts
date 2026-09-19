@@ -1,4 +1,4 @@
-/* eslint max-lines: ["error", 815] -- relation abandonment, exact-path binding, preservation-cover authorization, and Prefer-local eligibility must stay under the sole identity-policy owner. Re-pinned from 785 for the two corrected publication expectations: a replacement continues no row, so the incumbent it names is the occupant of the claimed address and nothing else. Re-pinned from 789 for the rename guard's cross-source note, which precedes the loop it explains; this directive counts comments. Re-pinned from 800 for the contended-address precondition: which provider object an address denotes is current topology, bound here with the endpoint and record facts below rather than filtered out of the result afterwards, so every rule reads one `CurrentFacts` and no caller can re-decide an address this owner already refused. */
+/* eslint max-lines: ["error", 822] -- relation abandonment, exact-path binding, preservation-cover authorization, and Prefer-local eligibility must stay under the sole identity-policy owner. Re-pinned from 785 for the two corrected publication expectations: a replacement continues no row, so the incumbent it names is the occupant of the claimed address and nothing else. Re-pinned from 789 for the rename guard's cross-source note, which precedes the loop it explains; this directive counts comments. Re-pinned from 800 for the contended-address precondition: which provider object an address denotes is current topology, bound here with the endpoint and record facts below rather than filtered out of the result afterwards, so every rule reads one `CurrentFacts` and no caller can re-decide an address this owner already refused. Re-pinned from 815 for `awaiting_repair`, the reason that tells a withheld address whose repair its own plan carries apart from one nothing will settle — the closeout owes the first a follow-up cycle and the second nothing — and it belongs in the closed vocabulary this owner defines. */
 import type { FileEntity } from "../fs/types";
 import type { IdentityComponent } from "./plan-admission-graph";
 import { selectReportFamily } from "./identity-component-report-family";
@@ -14,8 +14,15 @@ import type {
 	ConflictStrategy, ConflictAction,
 } from "./types";
 
+/**
+ * Why Admission could not authorize a component this cycle.
+ *
+ * `awaiting_repair` alone is not a failure to converge: the component sits at a
+ * contended address whose provider repair this same plan carries, so the next cycle
+ * decides it from settled facts. Every other reason stands until the facts change.
+ */
 export type AdmissionFailureReason =
-	| "conflicting_identity" | "identity_postcondition_unproven"
+	| "conflicting_identity" | "identity_postcondition_unproven" | "awaiting_repair"
 	| "incomplete_folder_mapping" | "present_unresolved"
 	| "rename_mismatch" | "unknown_observation" | "unknown_scope"
 	| "remote_identity_missing" | "case_alias_content_mismatch"
@@ -79,12 +86,12 @@ export function decideIdentityComponent(
 	scope: ScopeProjection,
 	baselinePaths?: ReadonlySet<string>,
 	conflictStrategy: ConflictStrategy = "auto_merge",
-	unresolvedAddresses?: ReadonlySet<string>,
+	withheldAddresses?: ReadonlyMap<string, AdmissionFailureReason>,
 ): IdentityComponentDecision {
 	const fail = (reason: AdmissionFailureReason): IdentityComponentDecision => ({
 		component: { ...component, actions: [] }, reasons: [reason],
 	});
-	const current = indexFacts(component, scope, unresolvedAddresses);
+	const current = indexFacts(component, scope, withheldAddresses);
 	if (typeof current === "string") return fail(current);
 	for (const path of component.paths) {
 		if (baselinePaths?.has(path) && !current.records.has(path)) return fail("unknown_observation");
@@ -329,17 +336,17 @@ function compareUtf8(left: string, right: string): number {
 function indexFacts(
 	component: IdentityComponent,
 	scope: ScopeProjection,
-	unresolvedAddresses?: ReadonlySet<string>,
+	withheldAddresses?: ReadonlyMap<string, AdmissionFailureReason>,
 ): CurrentFacts | AdmissionFailureReason {
 	// Two live provider objects claim this address and the one it belongs to — the one
 	// the committed record names — is not the one the cache seated, so it is not in this
 	// cycle's view at all. Something IS there, and which object the address denotes
-	// cannot be resolved from these facts: `present_unresolved`, not an absence and not
-	// the seated claimant. Nor can anything beneath it, which the seated claimant's
-	// subtree now occupies. It resolves without a special case once the repair lands.
+	// cannot be resolved from these facts — not an absence and not the seated claimant.
+	// Nor can anything beneath it, which the seated claimant's subtree now occupies.
+	// The contention stage says why: a repair this plan carries, or none it can make.
 	for (const path of component.paths) {
-		for (const address of unresolvedAddresses ?? []) {
-			if (path === address || path.startsWith(`${address}/`)) return "present_unresolved";
+		for (const [address, reason] of withheldAddresses ?? []) {
+			if (path === address || path.startsWith(`${address}/`)) return reason;
 		}
 	}
 	const local = new Map<string, FileEntity>();

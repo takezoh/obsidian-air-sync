@@ -1,6 +1,6 @@
 import type { ExecutionResult } from "./plan-executor";
 import type { AdmissionFailureComponent } from "./plan-admission";
-import type { SyncCycleCompletion } from "./sync-cycle-finalization";
+import { awaitsRepair, type SyncCycleCompletion } from "./sync-cycle-finalization";
 
 /** One complete cycle outcome across the Admission and execution boundaries. */
 export interface SyncCycleOutcome {
@@ -38,7 +38,10 @@ export function buildNotificationMessage(outcome: SyncCycleOutcome): string {
 	if (counts.deleted > 0) parts.push(`${counts.deleted} deleted`);
 	if (counts.renamed > 0) parts.push(`${counts.renamed} renamed`);
 	if (execution.conflicts.length > 0) parts.push(`${execution.conflicts.length} conflicts`);
-	const errors = execution.failed.length + outcome.admissionFailures.length;
+	// A component awaiting a repair its own cycle carried converged in the follow-up
+	// that cycle queued; it is not an error of the burst.
+	const errors = execution.failed.length +
+		outcome.admissionFailures.filter((failure) => !awaitsRepair(failure)).length;
 	if (errors > 0) parts.push(`${errors} ${errors === 1 ? "error" : "errors"}`);
 	if (execution.blocked.length > 0) parts.push(`${execution.blocked.length} blocked`);
 	if (outcome.completion.kind === "incomplete" && errors === 0 && execution.blocked.length === 0) parts.push("incomplete");
