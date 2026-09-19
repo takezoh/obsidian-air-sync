@@ -9,7 +9,6 @@ import { initRegistry, getAllBackendProviders } from "./fs/registry";
 import type { ISecretStore } from "./fs/secret-store";
 import type { SyncStatus } from "./sync/orchestrator";
 import { SyncOrchestrator } from "./sync/orchestrator";
-import { buildStatusBarText, type SyncStatusDetail } from "./sync/sync-notification";
 import { SyncScheduler } from "./sync/scheduler";
 import { ScreenWakeLockManager } from "./sync/wake-lock";
 import { LocalChangeTracker } from "./sync/local-tracker";
@@ -23,8 +22,6 @@ export default class AirSyncPlugin extends Plugin {
 	backendManager!: BackendManager;
 	private statusBarEl: HTMLElement | null = null;
 	private syncStatus: SyncStatus = "not_connected";
-	/** The last cycle's own facts, for the status bar. Rendered, never stored. */
-	private syncStatusDetail: SyncStatusDetail | undefined;
 	private orchestrator!: SyncOrchestrator;
 	private scheduler!: SyncScheduler;
 	private wakeLock!: ScreenWakeLockManager;
@@ -69,10 +66,12 @@ export default class AirSyncPlugin extends Plugin {
 			getLogger: () => this.logger,
 			getVaultName: () => this.app.vault.getName(),
 			onConnected: () => {
-				this.setSyncStatus("idle");
+				this.syncStatus = "idle";
+				this.updateStatusBar();
 			},
 			onDisconnected: () => {
-				this.setSyncStatus("not_connected");
+				this.syncStatus = "not_connected";
+				this.updateStatusBar();
 			},
 			// A remote target was just bound mid-session — run the first sync now so
 			// files start transferring without waiting for an incidental
@@ -115,9 +114,8 @@ export default class AirSyncPlugin extends Plugin {
 			remoteFs: () => this.backendManager.getRemoteFs(),
 			backendProvider: () => this.backendManager.getBackendProvider(),
 			isMobile: () => Platform.isMobile,
-			onStatusChange: (status, detail) => {
+			onStatusChange: (status) => {
 				this.syncStatus = status;
-				this.syncStatusDetail = detail;
 				this.updateStatusBar();
 				this.wakeLock.setActive(status === "syncing");
 			},
@@ -252,7 +250,8 @@ export default class AirSyncPlugin extends Plugin {
 			if (!this.localFs || !this.backendManager.getRemoteFs()) {
 				await this.backendManager.initBackend();
 				if (!this.localFs || !this.backendManager.getRemoteFs()) {
-					this.setSyncStatus("not_connected");
+					this.syncStatus = "not_connected";
+					this.updateStatusBar();
 					new Notice("Not connected to a remote backend");
 					return;
 				}
@@ -260,7 +259,8 @@ export default class AirSyncPlugin extends Plugin {
 			await this.orchestrator.runSync();
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			this.setSyncStatus("error");
+			this.syncStatus = "error";
+			this.updateStatusBar();
 			new Notice(`Sync error: ${msg}`);
 			this.logger.error("Unhandled sync error", { error: msg });
 		}
@@ -283,17 +283,24 @@ export default class AirSyncPlugin extends Plugin {
 		await this.orchestrator.rescan();
 	}
 
-	/**
-	 * Set the status outside a sync cycle, where no cycle detail applies — a
-	 * previous cycle's contended count must not survive into an unrelated status.
-	 */
-	private setSyncStatus(status: SyncStatus): void {
-		this.syncStatus = status;
-		this.syncStatusDetail = undefined;
-		this.updateStatusBar();
-	}
-
 	private updateStatusBar(): void {
-		this.statusBarEl?.setText(buildStatusBarText(this.syncStatus, this.syncStatusDetail));
+		if (!this.statusBarEl) return;
+		switch (this.syncStatus) {
+			case "idle":
+				this.statusBarEl.setText("Synced");
+				break;
+			case "syncing":
+				this.statusBarEl.setText("Syncing...");
+				break;
+			case "error":
+				this.statusBarEl.setText("Sync error");
+				break;
+			case "partial_error":
+				this.statusBarEl.setText("Synced (with errors)");
+				break;
+			case "not_connected":
+				this.statusBarEl.setText("Not connected");
+				break;
+		}
 	}
 }

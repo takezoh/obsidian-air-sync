@@ -13,10 +13,7 @@ import {
 	mockSettings as baseMockSettings,
 } from "../__mocks__/sync-test-helpers";
 import type { AirSyncSettings } from "../settings";
-import { DEFAULT_SETTINGS } from "../settings";
 import type { AddressDisplacement } from "../fs/caching/claim-set-assignment";
-import { buildStatusBarText, type SyncStatusDetail } from "./sync-notification";
-import type { SyncStatus } from "./types";
 import { AuthError } from "../fs/errors";
 import { sha256 } from "../utils/hash";
 import type { Logger } from "../logging/logger";
@@ -2543,89 +2540,6 @@ describe("SyncOrchestrator", () => {
 			expect(renameById).toHaveBeenCalledWith(
 				NEWCOMER, "docs/Note.conflict-id-seated-id.md");
 			expect(commitCheckpoint).not.toHaveBeenCalled();
-		});
-	});
-
-	describe("a contended address reaches a user who changed no settings", () => {
-		/**
-		 * The shipped defaults with only the IndexedDB key made unique. Both logging
-		 * surfaces are off here, which is precisely the configuration in which neither
-		 * the warn line nor the cycle summary reaches anyone and the status bar is the
-		 * only thing left.
-		 */
-		function defaultSettings(): AirSyncSettings {
-			return { ...DEFAULT_SETTINGS, vaultId: `test-${Math.random()}` };
-		}
-
-		/** A settled vault, then one cycle whose delta announces a contention. */
-		async function statusAfterContentionAt(
-			contendedPath: string, withheldIds: readonly string[] = ["moved-id"],
-		) {
-			const localFs = createMockLocalFs();
-			const remoteFs = createMockRemoteFs();
-			confirmRemoteWrites(remoteFs);
-			const settings = defaultSettings();
-			settings.ignorePatterns = ["private/**"];
-			const statuses: Array<[SyncStatus, SyncStatusDetail | undefined]> = [];
-			const deps = createDeps({
-				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
-				onStatusChange: (status, detail) => { statuses.push([status, detail]); },
-			});
-			const orchestrator = new SyncOrchestrator(deps);
-			addFile(localFs, "keep.md", "settled", 1000);
-			await orchestrator.runSync();
-
-			remoteFs.identityRename = { renameById: vi.fn().mockResolvedValue(undefined) };
-			remoteFs.checkpoint!.getChangedPaths = vi.fn().mockResolvedValue({
-				modified: [], deleted: [],
-				// One loss per claimant that did not get the address, each taking a
-				// descendant with it — the count is per ADDRESS, so this is still one.
-				contended: withheldIds.map((withheldId) => ({
-					path: contendedPath, admittedId: "keeper-id", withheldId,
-					displacedPaths: [`${contendedPath}/${withheldId}-child.md`],
-					reason: "lowest_stable_id", owesRemediation: true,
-				})),
-			});
-			statuses.length = 0;
-
-			await orchestrator.runSync();
-			await orchestrator.close();
-			return { settings, notify: deps.notify as ReturnType<typeof vi.fn>, last: statuses.at(-1)! };
-		}
-
-		it("states the count on the status bar instead of the generic partial-cycle text", async () => {
-			const { settings, notify, last: [status, detail] } = await statusAfterContentionAt("docs/Note.md");
-			expect([settings.enableLogging, settings.showSyncNotifications]).toEqual([false, false]);
-
-			expect(detail).toEqual({ contended: 1, errors: 0 });
-			expect(buildStatusBarText(status, detail)).toBe("Synced (1 contended address)");
-			// Without the clause the same cycle would say only this — which is the
-			// defect the unit exists to remove.
-			expect(buildStatusBarText(status)).toBe("Synced (with errors)");
-			// A non-error fact: no error status, no error count, and no Notice on
-			// settings that switched notifications off.
-			expect(status).not.toBe("error");
-			expect(notify).not.toHaveBeenCalled();
-		});
-
-		it("counts one address however many claimants lost it", async () => {
-			// Three siblings spelling one name produce two losses at one address. The
-			// user has one problem, at one path, and is told about one.
-			const { last: [, detail] } = await statusAfterContentionAt(
-				"docs/Note.md", ["moved-id", "other-id"]);
-
-			expect(detail).toEqual({ contended: 1, errors: 0 });
-		});
-
-		it("states an address the vault excludes, which no cycle will repair", async () => {
-			// The count is the cycle's OWN contention report, not the subset Admission
-			// may act on. An excluded address is the one nothing will ever fix, so
-			// staying silent about it would be the worst answer of all.
-			const { last: [status, detail] } = await statusAfterContentionAt("private/Note.md");
-
-			expect(detail).toEqual({ contended: 1, errors: 0 });
-			expect(status).toBe("idle");
-			expect(buildStatusBarText(status, detail)).toBe("Synced (1 contended address)");
 		});
 	});
 

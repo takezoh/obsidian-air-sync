@@ -330,9 +330,11 @@ current-cycle facts rather than from a local rename, and it adds no `SyncActionT
   still withheld as above, which fails that component and leaves the cycle not clean — visibly,
   as a failed component, and until the provider's facts change.
 
-Nothing here is persisted — not the contention, not the disposition, not a repair queue. The
-count reaches the user as a non-error clause in the status bar and the cycle summary; the paths
-and both stable ids stay in the log.
+Nothing here is persisted — not the contention, not the disposition, not a repair queue. Nor
+is any of it shown to the user: two provider objects claiming one derived address is a fact
+about the Google Drive namespace, which `fs/` and Admission settle between them, and the UI has
+nothing to say about it and nothing the user could do with it. The paths and both stable ids go
+to the log at warn level (`Contended cache address`).
 
 ## Execution phases (lane/tier scheduling)
 

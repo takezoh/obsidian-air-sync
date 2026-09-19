@@ -18,7 +18,6 @@ import {
 	CycleSummary,
 	type SyncCycleOutcome,
 	type SyncCycleResult,
-	type SyncStatusDetail,
 } from "./sync-notification";
 import { logChangeDetection } from "./sync-cycle-diagnostics";
 import {
@@ -44,11 +43,7 @@ export interface SyncOrchestratorDeps {
 	localFs: () => IFileSystem | null;
 	remoteFs: () => IFileSystem | null;
 	backendProvider: () => IBackendProvider | null;
-	/**
-	 * Report the sync status, plus — only for a cycle that has one — the cycle
-	 * detail the status bar states. Every other call stays one-argument.
-	 */
-	onStatusChange: (status: SyncStatus, detail?: SyncStatusDetail) => void;
+	onStatusChange: (status: SyncStatus) => void;
 	onProgress: (text: string) => void;
 	notify: (message: string, durationMs?: number) => void;
 	/** Returns true when running on mobile (used for mobile sync restrictions) */
@@ -116,12 +111,6 @@ export class SyncOrchestrator {
 			this.deps.logger?.debug("shouldSync: skipped", { hasRemote, isLocked, isConnecting, isLayoutReady });
 		}
 		return hasRemote && !isLocked && !isConnecting && isLayoutReady;
-	}
-
-	/** A cycle with nothing extra to say keeps the plain one-argument status call. */
-	private notifyStatus(status: SyncStatus, detail: SyncStatusDetail | undefined): void {
-		if (detail) this.deps.onStatusChange(status, detail);
-		else this.deps.onStatusChange(status);
 	}
 
 	isExcluded(path: string): boolean {
@@ -204,18 +193,13 @@ export class SyncOrchestrator {
 				if (!result) return; // Fatal error already handled
 
 				const { succeeded, failed, blocked, conflicts } = result;
-				// A contention never changes the STATUS — it is not an error and does not
-				// make one — it only travels alongside it to the status bar, the one
-				// per-cycle surface no setting gates.
-				const contended = result.outcome.contended;
-				const detail = contended > 0 ? { contended, errors: failed } : undefined;
 				if (result.outcome.completion.kind !== "clean") {
-					this.notifyStatus("partial_error", detail);
+					this.deps.onStatusChange("partial_error");
 					this.deps.logger?.warn("Sync completed with errors", {
 						succeeded, conflicts, failed, blocked,
 					});
 				} else {
-					this.notifyStatus("idle", detail);
+					this.deps.onStatusChange("idle");
 					this.deps.logger?.info("Sync completed", {
 						succeeded, conflicts, failed, blocked,
 					});
@@ -454,18 +438,12 @@ export class SyncOrchestrator {
 		// uncontested action in this cycle still executes and still publishes its own
 		// SyncRecord — only the cycle-level checkpoint is withheld.
 		if (admission.checkpointBlocked) this.activeBatch.blockCheckpoint();
-		// What the cycle SAW, not what it may repair: an address the vault excludes is
-		// still an address two objects are claiming, and the user who excluded it is
-		// the one person who can act on it. The count is the cycle's own contention
-		// report and nothing else, distinct-by-address so a displaced folder counts
-		// once however many descendants went with it.
-		const contended = new Set(contentions.map((fact) => fact.path)).size;
-		return { settings, provider, admission, contended };
+		return { settings, provider, admission };
 		} finally {
 			preparationPermit.release();
 		}
 		})();
-		const { settings, provider, admission, contended } = prepared;
+		const { settings, provider, admission } = prepared;
 		const total = admission.executable.actions.length;
 
 		const classifyError = (err: unknown) => provider?.classifyError?.(err) ?? classifyHttpError(err);
@@ -492,7 +470,7 @@ export class SyncOrchestrator {
 		};
 
 				const execution = await executePlan(admission.executable, ctx);
-				return { settings, provider, admission, execution, contended };
+				return { settings, provider, admission, execution };
 			}, (close) => this.priorityCoordinator.finalize(close), ({ admission, execution }) => {
 				this.activeBatch?.setPhase("finalizing");
 				return { admission, result: execution, scopeFingerprint,
@@ -504,8 +482,7 @@ export class SyncOrchestrator {
 				settings.backendData = { ...settings.backendData, ...provider.readBackendState() };
 			}
 			await this.deps.saveSettings();
-			return { execution, admissionFailures: admission.failures, completion: closed.completion,
-				contended: closed.value.contended };
+			return { execution, admissionFailures: admission.failures, completion: closed.completion };
 		} finally {
 			this.activeBatch = null;
 		}
