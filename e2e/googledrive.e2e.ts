@@ -48,6 +48,8 @@ const SCOPE_ENTRY_POLL_INTERVAL_MS = 1500;
 
 /** One name, two Drive objects — the provider fact issue #90's whole change rests on. */
 const CONTENDED_NAME = "Contended.md";
+/** One folder name, two Drive folders — the owner's example for same-named folders. */
+const MERGED_FOLDER = "docs";
 /** Which sibling carries which bytes, so the no-loss check can't be satisfied by a swap. */
 const FIRST_CONTENT = "first-upload";
 const SECOND_CONTENT = "second-upload";
@@ -244,10 +246,9 @@ if (!creds) {
 			const checkpoint = fs.checkpoint;
 			try {
 				// The committed empty baseline is what makes every later read a WARM delta
-				// from a real persisted cursor. It is also the ONLY route on which a
-				// contention is announced at all: a fresh full scan decides its contentions
-				// and discards them (`getChangedPaths` returns null after one), so a
-				// cold-start staging could not observe this through any public surface.
+				// from a real persisted cursor, which is the route this case asserts on. (A
+				// fresh full scan announces through `drainWorkingViewContentions` instead;
+				// the same-named-folders case below checks that channel live.)
 				expect((await fs.list()).map((entry) => entry.path)).toEqual([]);
 				await checkpoint.commitCheckpoint();
 
@@ -319,7 +320,7 @@ if (!creds) {
 				// address the plugin would actually ask for rather than one restated here.
 				const remediation = planAddressContentionRemediation({
 					contentions: cycle.contended ?? [],
-					records: new Map(),
+					recordHolders: new Set(),
 					renameByIdentity: fs.identityRename !== undefined,
 				});
 				expect(remediation.checkpointBlocked).toBe(true);
@@ -447,6 +448,103 @@ if (!creds) {
 						`"${slashName}" — it rewrites the separator instead of keeping it, so that ` +
 						"collision shape is unreachable on this backend.",
 				);
+			}
+		});
+
+		// The owner's model for same-named FOLDERS, live: docs(A)/a.md and
+		// docs(B)/{a.md, b.md} are one vault folder holding all three, and only the two
+		// a.md collide. It rests on a second provider fact — Drive lets two folders with
+		// one name live under one parent — and on the drain seeing both folders' contents.
+		it("holds two same-named folders as one vault folder, contending only the colliding file", async () => {
+			const rootId = await makeGoogleDriveChild(client, parentId);
+			const store = new MetadataStore<GoogleDriveFile>(crypto.randomUUID(), {
+				dbNamePrefix: "air-sync-googledrive-e2e-folder-merge",
+				version: 1,
+			});
+			const fs = new GoogleDriveFs(client, rootId, undefined, store);
+			const cold = new GoogleDriveFs(client, rootId);
+			const checkpoint = fs.checkpoint;
+			try {
+				expect((await fs.list()).map((entry) => entry.path)).toEqual([]);
+				await checkpoint.commitCheckpoint();
+
+				// ── 1. The premise: two same-named folders under one parent ──
+				const folderA = await client.createFolder(MERGED_FOLDER, rootId);
+				const folderB = await client.createFolder(MERGED_FOLDER, rootId);
+				const folders = await client.listChildrenByName(rootId, MERGED_FOLDER);
+				if (folderA.id === folderB.id || folders.length !== 2) {
+					throw new Error(
+						`${PREMISE} Drive did not keep two folders named "${MERGED_FOLDER}" under one ` +
+							`parent (created ${folderA.id}, ${folderB.id}; enumeration reports ` +
+							`${folders.length}). Same-named folders then never reach the cache, and ` +
+							"merging them is a rule with no condition to apply to.",
+					);
+				}
+				const aInA = await client.uploadFile("a.md", folderA.id, bytes("a-in-A"));
+				const aInB = await client.uploadFile("a.md", folderB.id, bytes("a-in-B"));
+				const bInB = await client.uploadFile("b.md", folderB.id, bytes("b-in-B"));
+				const content = new Map([[aInA.id, "a-in-A"], [aInB.id, "a-in-B"]]);
+
+				// ── 2. One vault folder, one contended file, nothing deleted ──
+				// Every drain in the window is kept: the folders and their contents may
+				// arrive across several, and each one must call nothing a deletion.
+				const observed: RemoteDelta[] = [];
+				const facts = () => observed.flatMap((delta) => delta.contended ?? [])
+					.filter((fact) => fact.path === `${MERGED_FOLDER}/a.md`);
+				await pollForChange(checkpoint, "two same-named folders and their contents", (delta) => {
+					observed.push(delta);
+					return facts().length > 0 &&
+						observed.some((seen) => seen.modified.includes(`${MERGED_FOLDER}/b.md`));
+				});
+				for (const delta of observed) expect(delta.deleted).toEqual([]);
+				expect((await fs.list()).map((entry) => entry.path).sort())
+					.toEqual([MERGED_FOLDER, `${MERGED_FOLDER}/a.md`, `${MERGED_FOLDER}/b.md`]);
+				expect((await fs.stat(MERGED_FOLDER))?.identityKey).toBe([folderA.id, folderB.id].sort()[0]);
+				expect((await fs.stat(`${MERGED_FOLDER}/b.md`))?.identityKey).toBe(bInB.id);
+				const fact = facts().at(-1)!;
+				expect(fact.admittedId).toBe([aInA.id, aInB.id].sort()[0]);
+				expect([fact.admittedId, fact.withheldId].sort()).toEqual([aInA.id, aInB.id].sort());
+				expect(fact.owesRemediation).toBe(true);
+
+				// ── 3. A full scan reaches the same fact through its own channel ──
+				expect((await cold.list()).map((entry) => entry.path).sort())
+					.toEqual([MERGED_FOLDER, `${MERGED_FOLDER}/a.md`, `${MERGED_FOLDER}/b.md`]);
+				expect(cold.checkpoint.drainWorkingViewContentions?.()).toEqual([
+					expect.objectContaining({ path: fact.path, admittedId: fact.admittedId, withheldId: fact.withheldId }),
+				]);
+
+				// ── 4. The repair moves one FILE, inside its own Drive folder ──
+				const remediation = planAddressContentionRemediation({
+					contentions: [fact], recordHolders: new Set(), renameByIdentity: true,
+				});
+				const repair = remediation.actions[0]!;
+				expect(repair.path).toBe(insertConflictSuffix(`${MERGED_FOLDER}/a.md`, `id-${fact.withheldId}`));
+				const parentsBefore = (await client.getFile(fact.withheldId)).parents;
+				await fs.identityRename.renameById(fact.withheldId, repair.path);
+				expect((await fs.stat(`${MERGED_FOLDER}/a.md`))?.identityKey).toBe(fact.admittedId);
+				expect((await fs.stat(repair.path))?.identityKey).toBe(fact.withheldId);
+				expect(decode(await fs.read(`${MERGED_FOLDER}/a.md`))).toBe(content.get(fact.admittedId));
+				expect(decode(await fs.read(repair.path))).toBe(content.get(fact.withheldId));
+				expect((await client.getFile(fact.withheldId)).parents).toEqual(parentsBefore);
+
+				// ── 5. The vault folder moves as one, and loses only what is really gone ──
+				await fs.rename(MERGED_FOLDER, "notes");
+				expect((await client.getFile(folderA.id)).name).toBe("notes");
+				expect((await client.getFile(folderB.id)).name).toBe("notes");
+				await checkpoint.commitCheckpoint();
+
+				const survivors = new Set([aInA.id]);
+				await client.deleteFile(folderB.id);
+				const gone = await pollForChange(checkpoint, `Drive folder ${folderB.id} deleted`,
+					(delta) => delta.deleted.includes("notes/b.md"));
+				expect((await fs.stat("notes"))?.identityKey).toBe(folderA.id);
+				const remaining = await fs.list();
+				expect(remaining.filter((entry) => !entry.isDirectory).map((entry) => entry.identityKey))
+					.toEqual([...survivors]);
+				for (const entry of remaining) expect(gone.deleted).not.toContain(entry.path);
+			} finally {
+				await fs.close();
+				await cold.close();
 			}
 		});
 	});
