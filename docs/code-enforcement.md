@@ -185,8 +185,8 @@ is not a mandate to shrink the file by force.
 Eight modules currently carry such overrides as known debt in `eslint.config.mts`:
 `fs/googledrive/auth.ts` (337), `sync/orchestrator.ts` (444), `sync/plan-executor.ts`
 (334), `fs/caching/remote-fs.ts` (411), `fs/dropbox/index.ts` (317),
-`fs/backend-manager.ts` (341), `fs/caching/metadata-cache.ts` (595), and
-`fs/googledrive/index.ts` (306).
+`fs/backend-manager.ts` (369), `fs/caching/metadata-cache.ts` (595), and
+`fs/googledrive/index.ts` (321).
 Ratchet them down when a natural responsibility split presents itself.
 (`fs/googledrive/index.ts` was once here at 397; ADR 0001 lifted its cache/checkpoint
 machinery into `fs/caching/`, dropping it under 300. It is back, just over, for the

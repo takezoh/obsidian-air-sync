@@ -4,6 +4,7 @@ import type { AirSyncSettings } from "../../settings";
 import type { Logger } from "../../logging/logger";
 import type { ErrorClassification } from "../errors";
 import type { RemoteVaultResolution } from "../remote-vault-contract";
+import type { RemoteVaultDisplay } from "../backend";
 import { MetadataStore } from "../../store/metadata-store";
 import { PkceAppFolderProvider, type PkceAppFolderData } from "../pkce-app-folder-provider";
 import { OneDriveClient } from "./client";
@@ -104,7 +105,10 @@ export abstract class OneDriveProviderBase extends PkceAppFolderProvider<OneDriv
 	 * path is not stored — this reflects the folder's live location. Returns the
 	 * parent path + name, or just the name, or null if not bound.
 	 */
-	async getRemoteVaultDisplayPath(settings: AirSyncSettings, logger?: Logger): Promise<string | null> {
+	async getRemoteVaultDisplayPath(
+		settings: AirSyncSettings,
+		logger?: Logger,
+	): Promise<RemoteVaultDisplay | null> {
 		const data = this.getData(settings);
 		if (!data.remoteVaultFolderId) return null;
 		const client = this.makeDetachedClient(data, logger);
@@ -113,8 +117,8 @@ export abstract class OneDriveProviderBase extends PkceAppFolderProvider<OneDriv
 		if (parentPath) {
 			// e.g. "/drive/root:/Apps/Air Sync" → strip the Graph prefix, append the name.
 			const after = parentPath.split(":").pop() ?? "";
-			return `${after}/${item.name}`;
+			return { path: `${after}/${item.name}` };
 		}
-		return item.name;
+		return { path: item.name };
 	}
 }

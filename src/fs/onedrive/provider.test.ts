@@ -109,8 +109,8 @@ describe("OneDriveProvider.getRemoteVaultDisplayPath", () => {
 			mockRes({ id: "vaultid", name: "MyVault", parentReference: { id: "approot", path: "/drive/root:/Apps/Air Sync" } }),
 		);
 		const { provider } = await makeProvider(CONNECTED);
-		const path = await provider.getRemoteVaultDisplayPath(settingsWith({ remoteVaultFolderId: "vaultid", ...FRESH }));
-		expect(path).toBe("/Apps/Air Sync/MyVault");
+		const display = await provider.getRemoteVaultDisplayPath(settingsWith({ remoteVaultFolderId: "vaultid", ...FRESH }));
+		expect(display).toEqual({ path: "/Apps/Air Sync/MyVault" });
 	});
 
 	it("returns null when no folder is bound", async () => {

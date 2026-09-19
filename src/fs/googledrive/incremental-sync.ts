@@ -1,4 +1,4 @@
-import { FOLDER_MIME } from "./types";
+import { FOLDER_MIME, isGoogleDriveTrashed } from "./types";
 import type { GoogleDriveChange, GoogleDriveFile } from "./types";
 import { LIST_PAGE_CAP } from "./client";
 import type { GoogleDriveClient } from "./client";
@@ -140,7 +140,7 @@ function toListedEntry(file: GoogleDriveFile): IdDeltaEntry<GoogleDriveFile> {
 function toEntries(changes: GoogleDriveChange[]): IdDeltaEntry<GoogleDriveFile>[] {
 	const entries: IdDeltaEntry<GoogleDriveFile>[] = [];
 	for (const change of changes) {
-		if (change.removed || change.file?.trashed) {
+		if (change.removed || isGoogleDriveTrashed(change.file)) {
 			entries.push({ id: change.fileId, isFolder: change.file?.mimeType === FOLDER_MIME, file: undefined });
 		} else if (change.file) {
 			entries.push({ id: change.fileId, isFolder: change.file.mimeType === FOLDER_MIME, file: change.file });

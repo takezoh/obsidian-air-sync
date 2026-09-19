@@ -345,6 +345,26 @@ export class BackendManager {
 			// used its open connection, so reassigning without closing would leak it.
 			this.closeRemoteFs();
 
+			// A target that is already bound must be usable before it is exposed to the
+			// sync engine. The custom-OAuth id is typed by hand (never through the
+			// Picker), and a target bound to a previous connection may have become
+			// unusable (moved to Trash) while disconnected — otherwise the FS would be
+			// built and only the first sync would abort against it.
+			try {
+				await this.assertRemoteVaultUsable(settings);
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				this.deps.getLogger().error("Failed to validate remote folder", { message: msg });
+				this.deps.notify(`Folder selection failed: ${msg}`);
+				// Return to a disconnected state: the rejected target must not resurface on a
+				// later initBackend/runSync, and the id field must be editable again. The
+				// provider decides what to preserve, so custom OAuth keeps its credentials
+				// and folder id and needs no manual Disconnect.
+				await this.teardownActiveBackend(settings);
+				this.deps.refreshSettingsDisplay();
+				return;
+			}
+
 			// No remote-vault binding here: after auth the user picks the folder
 			// explicitly (default-folder button or the Picker). createFs returns null
 			// until a folder is bound, so the settings UI shows the folder-choice state.
@@ -394,6 +414,18 @@ export class BackendManager {
 	}
 
 	/**
+	 * Ask the active provider to confirm the already-bound remote target is usable
+	 * before it is exposed to the sync engine. A no-op for a provider without the
+	 * optional seam and for an unbound target. Throws the provider's user-facing
+	 * error when it is not usable.
+	 */
+	private assertRemoteVaultUsable(settings: AirSyncSettings): Promise<void> {
+		const provider = this.backendProvider;
+		if (!provider?.validateRemoteVault) return Promise.resolve();
+		return provider.validateRemoteVault(settings, this.deps.getLogger());
+	}
+
+	/**
 	 * Discard ALL of the current target's sync state so the next sync starts cold: the
 	 * checkpoint store (cursor + cache) AND the SyncRecord baseline. Used at the connect /
 	 * disconnect / switch boundaries (Rescan instead keeps the baseline, clearing only the
@@ -436,22 +468,45 @@ export class BackendManager {
 			// Discard this target's sync state so nothing stale survives a reconnect —
 			// before disconnect() resets backendData (resetAll keys the store off it).
 			await this.resetAll(settings);
-
-			settings.backendData = await this.backendProvider.disconnect(settings);
-			// Forget the synced identity so a later reconnect (to any target) starts clean.
-			settings.lastSyncedIdentity = "";
-			await this.deps.saveSettings();
-
-			// Close the FS connection before dropping it — resetAll opened the store (via
-			// resetCheckpoint) to clear it, so nulling without close leaks it.
-			this.closeRemoteFs();
-			this.remoteFs = null;
-			this.deps.onDisconnected();
+			await this.teardownActiveBackend(settings);
 		} finally {
 			this.connecting = false;
 		}
 
 		this.deps.refreshSettingsDisplay();
+	}
+
+	/**
+	 * Reset the active backend to a disconnected state: revoke + clear its tokens and
+	 * persisted params, drop the live FS, and report disconnected. The provider decides
+	 * what to preserve — custom OAuth keeps its credential refs and folder id, so its
+	 * id field becomes editable again without a manual Disconnect. The caller owns the
+	 * `connecting` gate and must have discarded the target's checkpoint/baseline first
+	 * (`resetAll`), because `disconnect()` resets the data the store is keyed off.
+	 */
+	private async teardownActiveBackend(settings: AirSyncSettings): Promise<void> {
+		const provider = this.backendProvider;
+		if (!provider) return;
+		try {
+			settings.backendData = await provider.disconnect(settings);
+		} catch (e) {
+			// A revoke failure must not block the local teardown.
+			this.deps.getLogger().warn("Backend revoke during disconnect failed (continuing)", {
+				error: e instanceof Error ? e.message : String(e),
+			});
+		} finally {
+			// Guarantee the plugin-owned tokens are gone even if the revoke call failed,
+			// so isConnected() cannot stay true and reopen the connect gate.
+			provider.clearPluginSecrets?.();
+		}
+		// Forget the synced identity so a later reconnect (to any target) starts clean.
+		settings.lastSyncedIdentity = "";
+		await this.deps.saveSettings();
+		// Close the FS connection before dropping it — resetAll opened the store (via
+		// resetCheckpoint) to clear it, so nulling without close leaks it.
+		this.closeRemoteFs();
+		this.remoteFs = null;
+		this.deps.onDisconnected();
 	}
 
 	/**

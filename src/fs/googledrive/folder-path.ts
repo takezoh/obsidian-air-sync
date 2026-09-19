@@ -1,6 +1,8 @@
 import type { GoogleDriveClient } from "./client";
 import type { Logger } from "../../logging/logger";
 import { isHttpError } from "./incremental-sync";
+import { classifyFetchedGoogleDriveFolder } from "./folder-usability";
+import type { GoogleDriveFetchedFolderProblem } from "./folder-usability";
 
 /** Hard cap on the parent walk — guards against unexpectedly deep trees / cycles. */
 const MAX_PATH_DEPTH = 50;
@@ -17,6 +19,16 @@ async function resolveRootId(client: GoogleDriveClient): Promise<string | undefi
 	} catch {
 		return undefined;
 	}
+}
+
+/** A resolved folder path together with the seam's non-usable verdict for the
+ *  bound folder, if any. A trashed folder still resolves with a normal path, so
+ *  the caller needs the verdict to avoid rendering it as an ordinary location;
+ *  keeping the problem (rather than a single flag) lets the caller phrase every
+ *  non-usable case exhaustively. */
+export interface GoogleDriveFolderPath {
+	path: string;
+	problem?: GoogleDriveFetchedFolderProblem;
 }
 
 /**
@@ -40,7 +52,7 @@ export async function resolveFolderPath(
 	client: GoogleDriveClient,
 	folderId: string,
 	logger?: Logger,
-): Promise<string | null> {
+): Promise<GoogleDriveFolderPath | null> {
 	let file;
 	try {
 		file = await client.getFile(folderId);
@@ -51,6 +63,11 @@ export async function resolveFolderPath(
 		});
 		return null;
 	}
+
+	// Read usability through the shared seam rather than `file.trashed` here, so a
+	// new condition handled by the seam is not forgotten on the display path.
+	const classified = classifyFetchedGoogleDriveFolder(file);
+	const problem = classified.usable ? undefined : classified.problem;
 
 	const rootId = await resolveRootId(client);
 
@@ -93,5 +110,5 @@ export async function resolveFolderPath(
 	}
 
 	const path = segments.join("/");
-	return truncated ? `…/${path}` : path;
+	return { path: truncated ? `…/${path}` : path, problem };
 }

@@ -2,6 +2,7 @@ import { Setting } from "../platform/obsidian";
 import type { App, TextComponent } from "../platform/obsidian";
 import type { AirSyncSettings } from "../settings";
 import type { BackendConnectionActions } from "../fs/settings-renderer";
+import type { RemoteVaultDisplay } from "../fs/backend";
 import { AppFolderPickerModal, type AppFolderPickerProvider } from "./app-folder-picker";
 
 /**
@@ -43,18 +44,22 @@ export function renderConnectionStatus(
 	);
 }
 
+/** The resolved bound-folder display, as every provider returns it. */
+export type ResolvedFolderDisplay = RemoteVaultDisplay;
+
 /**
  * Render the bound remote-folder field: a disabled text field showing the folder id
  * IMMEDIATELY (never block on a network call), then best-effort upgraded to the
  * id-resolved display path. A slow/failed/never-settling lookup just leaves the id
- * shown — it must never stick on a "Resolving…" placeholder.
+ * shown — it must never stick on a "Resolving…" placeholder. A warning replaces the
+ * description so an unusable bound folder does not read as an ordinary location.
  */
 export function renderBoundFolderField(
 	folderSetting: Setting,
 	opts: {
 		desc: string;
 		folderId: string;
-		resolvePath?: () => Promise<string | null | undefined> | undefined;
+		resolvePath?: () => Promise<ResolvedFolderDisplay | null | undefined> | undefined;
 	},
 ): void {
 	folderSetting.setDesc(opts.desc);
@@ -63,7 +68,11 @@ export function renderBoundFolderField(
 		pathField = text.setValue(opts.folderId).setDisabled(true);
 	});
 	void opts.resolvePath?.()
-		?.then((path) => { if (path) pathField?.setValue(path); })
+		?.then((display) => {
+			if (!display) return;
+			if (display.path) pathField?.setValue(display.path);
+			if (display.warning) folderSetting.setDesc(display.warning);
+		})
 		.catch(() => { /* keep the id shown */ });
 }
 

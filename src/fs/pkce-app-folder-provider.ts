@@ -1,6 +1,6 @@
 import type { App } from "../platform/obsidian";
 import { getBackendData } from "./backend";
-import type { IBackendProvider } from "./backend";
+import type { IBackendProvider, RemoteVaultDisplay } from "./backend";
 import type { ISecretStore } from "./secret-store";
 import type { IFileSystem } from "./interface";
 import type { IBackendSettingsRenderer } from "./settings-renderer";
@@ -74,7 +74,10 @@ export abstract class PkceAppFolderProvider<
 		vaultName: string,
 		logger?: Logger,
 	): Promise<RemoteVaultResolution>;
-	abstract getRemoteVaultDisplayPath(settings: AirSyncSettings, logger?: Logger): Promise<string | null>;
+	abstract getRemoteVaultDisplayPath(
+		settings: AirSyncSettings,
+		logger?: Logger,
+	): Promise<RemoteVaultDisplay | null>;
 
 	// ── Shared plumbing ──
 

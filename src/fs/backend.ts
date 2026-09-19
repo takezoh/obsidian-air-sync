@@ -8,6 +8,18 @@ import type { ErrorClassification } from "./errors";
 import type { IBackendSettingsRenderer } from "./settings-renderer";
 
 /**
+ * The bound remote target's display location. `path` is human-readable and
+ * best-effort. `warning` is an optional non-fatal note to show with the location
+ * when the target is present but not usable (e.g. Google Drive keeps a trashed
+ * folder resolvable, so its path alone would look normal). The shape is
+ * backend-neutral: the backend owns the wording, not a backend-specific state flag.
+ */
+export interface RemoteVaultDisplay {
+	path: string;
+	warning?: string;
+}
+
+/**
  * Abstraction for a remote storage backend.
  * Each backend (Google Drive, Dropbox, etc.) implements this interface.
  * main.ts and sync/ never import backend-specific modules directly.
@@ -84,11 +96,29 @@ export interface IBackendProvider {
 	picker?: WebFolderPicker;
 
 	/**
-	 * Resolve the bound remote vault's current path for display, from its stored id
-	 * (the path itself is not persisted). Optional: backends that don't address by
-	 * id, or that display the id directly, omit it. May make a network call.
+	 * Resolve the bound remote vault's current display location from its stored id
+	 * (the path itself is not persisted), with an optional warning when the target is
+	 * present but not usable. Optional: backends that don't address by id, or that
+	 * display the id directly, omit it. May make a network call.
 	 */
-	getRemoteVaultDisplayPath?(settings: AirSyncSettings, logger?: Logger): Promise<string | null>;
+	getRemoteVaultDisplayPath?(
+		settings: AirSyncSettings,
+		logger?: Logger,
+	): Promise<RemoteVaultDisplay | null>;
+
+	/**
+	 * Confirm the already-bound remote target is usable. Invoked by BackendManager at
+	 * the connect boundary — after auth completes (so a token exists) and before
+	 * `createFs` — only when a target is already bound. Optional: backends whose
+	 * binding is already validated when chosen omit it.
+	 *
+	 * Contract: throw a user-facing error only for a *definite* unusable verdict; a
+	 * transport, auth or rate-limit failure must fail open (warn and return) so a
+	 * correct binding is not rejected because the provider was momentarily
+	 * unreachable. A thrown error makes BackendManager return the session to a
+	 * disconnected state.
+	 */
+	validateRemoteVault?(settings: AirSyncSettings, logger?: Logger): Promise<void>;
 
 	/**
 	 * Clear this backend's per-target durable checkpoint store (the IndexedDB

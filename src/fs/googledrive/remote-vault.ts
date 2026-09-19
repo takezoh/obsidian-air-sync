@@ -3,6 +3,7 @@ import type { Logger } from "../../logging/logger";
 import type { RemoteVaultResolution } from "../remote-vault-contract";
 import { REMOTE_VAULT_ROOT } from "../remote-vault-contract";
 import { FOLDER_MIME } from "./types";
+import { inspectGoogleDriveFolder } from "./folder-usability";
 
 /**
  * Resolve or create this vault's remote folder in Google Drive, by convention.
@@ -36,26 +37,41 @@ async function resolveLinked(
 	client: GoogleDriveClient,
 	cachedFolderId: string,
 ): Promise<RemoteVaultResolution> {
-	// Verify the cached folder still exists and is accessible. A folder moved to
-	// Trash still resolves via getFile (HTTP 200, not 404) — Drive's normal
-	// single-click delete trashes rather than erases — so without this check a
-	// stale link would silently keep operating against a folder the user can no
-	// longer see or add content to (every list() reflects that folder's own
-	// current children, whatever they are, without ever detecting anything
-	// changed on the "real" folder the user thinks they're using). Treat it the
-	// same as a folder that no longer exists, matching CachingRemoteFs's own
-	// trashed-root check for the same ambiguity (fullScan → assertRootAlive).
-	let file;
+	// Verify the cached folder is still bindable through the shared seam. A folder
+	// moved to Trash still resolves via getFile (HTTP 200, not 404) — Drive's normal
+	// single-click delete trashes rather than erases — so without this a stale link
+	// would silently keep operating against a folder the user can no longer see or
+	// add content to. Treat any non-usable outcome like a folder that no longer
+	// exists.
+	let inspection;
 	try {
-		file = await client.getFile(cachedFolderId);
+		inspection = await inspectGoogleDriveFolder(client, cachedFolderId);
 	} catch (err) {
+		// Auth/rate-limit/server failures surface with the original detail wrapped,
+		// matching the previous getFile behaviour.
 		const msg = err instanceof Error ? err.message : String(err);
 		throw new Error(`Failed to access remote vault folder: ${msg}`);
 	}
-	if (file.trashed) {
-		throw new Error(`Failed to access remote vault folder: folder ${cachedFolderId} is in Trash`);
+	if (inspection.usable) {
+		return { backendUpdates: { remoteVaultFolderId: cachedFolderId } };
 	}
-	return { backendUpdates: { remoteVaultFolderId: cachedFolderId } };
+	switch (inspection.problem) {
+		case "trashed":
+			throw new Error(`Failed to access remote vault folder: folder ${cachedFolderId} is in Trash`);
+		case "not_folder":
+			throw new Error("Failed to access remote vault folder: folder id does not name a folder");
+		case "not_found":
+		case "inaccessible": {
+			const detail = inspection.cause instanceof Error
+				? inspection.cause.message
+				: String(inspection.cause);
+			throw new Error(`Failed to access remote vault folder: ${detail}`);
+		}
+		default: {
+			const exhaustive: never = inspection;
+			throw new Error(`Failed to access remote vault folder: ${String(exhaustive)}`);
+		}
+	}
 }
 
 async function resolveByName(

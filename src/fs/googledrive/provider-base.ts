@@ -1,5 +1,5 @@
 import type { App } from "../../platform/obsidian";
-import type { IBackendProvider } from "../backend";
+import type { IBackendProvider, RemoteVaultDisplay } from "../backend";
 import type { ISecretStore } from "../secret-store";
 import type { IFileSystem } from "../interface";
 import type { AirSyncSettings } from "../../settings";
@@ -11,9 +11,9 @@ import { GoogleDriveFs } from "./index";
 import { METADATA_CACHE_VERSION, MetadataStore } from "../../store/metadata-store";
 import { resolveGoogleDriveRemoteVault } from "./remote-vault";
 import { resolveFolderPath } from "./folder-path";
-import { isHttpError } from "./incremental-sync";
+import { inspectGoogleDriveFolder } from "./folder-usability";
+import type { GoogleDriveFolderProblem, GoogleDriveFetchedFolderProblem } from "./folder-usability";
 import { classifyGoogleDriveError } from "./errors";
-import { FOLDER_MIME } from "./types";
 import type { GoogleDriveFile } from "./types";
 import type { GoogleDriveBackendData } from "./provider";
 import { hasBackendSecret, clearBackendSecrets, setBackendSecret } from "../token-store";
@@ -26,6 +26,41 @@ import {
 /** A Google Drive file id is a URL-safe base64 token; reject anything else so a crafted
  *  deep link can't inject path/query segments into the getFile URL. */
 const GOOGLE_DRIVE_ID_RE = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * The user-facing reason a Drive folder the user just picked cannot be bound.
+ * Used by `completeWebFolderPick`, where the user can re-open the Picker. The
+ * decision itself lives in `inspectGoogleDriveFolder`; this only phrases it.
+ */
+function describeUnusableGoogleDriveFolder(problem: GoogleDriveFolderProblem): string {
+	switch (problem) {
+		case "not_found":
+		case "inaccessible":
+			return "That folder isn't accessible to Air Sync. Re-pick it in the Google Picker so access is granted.";
+		case "not_folder":
+			return "Please select a folder, not a file.";
+		case "trashed":
+			return "That folder is in Google Drive's Trash. Restore it, or pick a different folder.";
+	}
+}
+
+/**
+ * The display warning for a bound folder the seam found present but not usable.
+ * Exhaustive over the fetched-file problems, so a new one cannot fall through to a
+ * silent ordinary path.
+ */
+function describeUnusableFetchedFolder(problem: GoogleDriveFetchedFolderProblem): string {
+	switch (problem) {
+		case "not_folder":
+			return "The bound location is not a folder.";
+		case "trashed":
+			return "This folder is in Google Drive's Trash.";
+		default: {
+			const exhaustive: never = problem;
+			return `The bound location is not usable (${String(exhaustive)}).`;
+		}
+	}
+}
 
 /**
  * Base provider for Google Drive variants.
@@ -131,10 +166,11 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 
 	/**
 	 * Bind the vault to a folder picked via the Google Picker. Validates the CSRF
-	 * state, then confirms the chosen id is a folder reachable under the current scope
-	 * with `getFile`. Under `drive.file`, the Picker selection is what grants the app
-	 * access — so a successful `getFile` is the proof the grant landed; a 404 means the
-	 * grant didn't apply (re-pick), while auth/rate-limit/server errors surface as-is.
+	 * state, then confirms the chosen id is a bindable folder through the shared
+	 * `inspectGoogleDriveFolder` seam. Under `drive.file`, the Picker selection is what
+	 * grants the app access — so a successful read is the proof the grant landed; a 404
+	 * means the grant didn't apply (re-pick), while auth/rate-limit/server errors
+	 * surface as-is.
 	 */
 	async completeWebFolderPick(
 		params: Record<string, string | undefined>,
@@ -158,62 +194,103 @@ export abstract class GoogleDriveProviderBase implements IBackendProvider {
 		if (!GOOGLE_DRIVE_ID_RE.test(id)) throw new Error("Invalid folder id.");
 
 		// Detached client (like the other picker reads) so validating the selection
-		// can't reset a concurrently-running sync's in-memory tokens.
+		// can't reset a concurrently-running sync's in-memory tokens. `inspectGoogleDriveFolder`
+		// is the shared seam every binding path goes through; the id here is not
+		// necessarily a Picker result, because params.id is accepted as a fallback, so
+		// it can name an arbitrary folder the Picker never offered.
 		const client = this.makeDetachedClient(settings, logger);
-		let file: GoogleDriveFile;
-		try {
-			file = await client.getFile(id);
-		} catch (err) {
-			// A picked folder whose grant didn't land is unreadable: drive.file usually
-			// answers 404 (the app can't see it at all), but 403 (permission denied) is
-			// possible for some selections (e.g. shared drives). Both mean "re-pick";
-			// anything else (auth/rate-limit/server) surfaces as-is.
-			if (isHttpError(err, 404) || isHttpError(err, 403)) {
+		const inspection = await inspectGoogleDriveFolder(client, id);
+		if (!inspection.usable) {
+			if (inspection.problem === "not_found" || inspection.problem === "inaccessible") {
 				logger?.warn("Picked Google Drive folder is not accessible under the granted scope", { id });
-				throw new Error(
-					"That folder isn't accessible to Air Sync. Re-pick it in the Google Picker so access is granted.",
-				);
 			}
-			throw err;
-		}
-		if (file.mimeType !== FOLDER_MIME) {
-			throw new Error("Please select a folder, not a file.");
-		}
-		// Drive's normal single-click delete moves a folder to Trash rather than
-		// erasing it, so getFile() above still succeeds (200, not 404) for a folder
-		// the user can no longer see or add content to — the same ambiguity
-		// resolveLinked() (remote-vault.ts) guards for the cached-id rebind path.
-		// This path needs its own check because `id` above is not necessarily a
-		// Picker result: params.id is accepted as a fallback, so an arbitrary folder
-		// id can reach here without the Picker ever having offered it.
-		if (file.trashed) {
-			throw new Error("That folder is in Google Drive's Trash. Restore it, or pick a different folder.");
+			throw new Error(describeUnusableGoogleDriveFolder(inspection.problem));
 		}
 
 		// Bind by id only — the id is the sole binding and the sync engine addresses
 		// everything by it, so a picked folder needs no name/metadata recorded.
 		return {
 			backendUpdates: {
-				remoteVaultFolderId: file.id,
+				remoteVaultFolderId: inspection.file.id,
 				pendingFolderPickState: "",
 			},
 		};
 	}
 
 	/**
-	 * Resolve the bound folder's current path from its id, for display in settings.
-	 * Nothing is stored — this reflects the folder's live location (so a remote
-	 * rename/move shows up). Walks the parent chain up to My Drive; under the
-	 * built-in `drive.file` scope ungranted ancestors are unreadable, so the path
-	 * may be truncated with a leading "…/" (see resolveFolderPath). Returns null
-	 * if not bound.
+	 * Confirm the already-bound folder is still usable, at the FS-construction boundary
+	 * and before the sync engine sees it. A custom-OAuth user types the folder id by
+	 * hand and never goes through the Picker, so this is the only place their choice is
+	 * checked against Drive. Throws only for a definite unusable verdict; a transport,
+	 * auth or rate-limit failure fails open (warn and continue) so a correct binding is
+	 * not rejected because Drive was momentarily unreachable — the sync engine surfaces
+	 * and retries that with its own classification. Uses the shared auth (safe:
+	 * BackendManager holds its `connecting` gate across the connect).
 	 */
-	async getRemoteVaultDisplayPath(settings: AirSyncSettings, logger?: Logger): Promise<string | null> {
+	async validateRemoteVault(settings: AirSyncSettings, logger?: Logger): Promise<void> {
+		const data = this.getData(settings);
+		if (!data.remoteVaultFolderId) return;
+		const client = this.makeClient(settings, logger);
+
+		let inspection;
+		try {
+			inspection = await inspectGoogleDriveFolder(client, data.remoteVaultFolderId);
+		} catch (err) {
+			// A transport/auth/rate-limit failure is not a binding defect: fail open and
+			// let the sync engine surface and retry it with its own classification (R3),
+			// rather than reject a correct id because Drive was temporarily unreachable.
+			logger?.warn("Could not validate the bound Google Drive folder; continuing", {
+				message: err instanceof Error ? err.message : String(err),
+			});
+			return;
+		}
+		if (inspection.usable) return;
+		switch (inspection.problem) {
+			case "trashed":
+				throw new Error(
+					"The bound remote vault folder is in Google Drive's Trash. Restore it, or disconnect and choose a different folder.",
+				);
+			case "not_found":
+				throw new Error(
+					"The bound remote vault folder couldn't be found. Check the folder id, or disconnect and choose a different folder.",
+				);
+			case "inaccessible":
+				throw new Error(
+					"Air Sync doesn't have access to the bound remote vault folder. Reconnect, or disconnect and choose a different folder.",
+				);
+			case "not_folder":
+				throw new Error(
+					"The bound remote vault folder id doesn't name a folder. Disconnect and choose a different folder.",
+				);
+			default: {
+				const exhaustive: never = inspection;
+				throw new Error(`The bound remote vault folder is unusable: ${String(exhaustive)}`);
+			}
+		}
+	}
+
+	/**
+	 * Resolve the bound folder's current display location from its id, for display in
+	 * settings. Nothing is stored — this reflects the folder's live location (so a
+	 * remote rename/move shows up). Walks the parent chain up to My Drive; under the
+	 * built-in `drive.file` scope ungranted ancestors are unreadable, so the path may
+	 * be truncated with a leading "…/" (see resolveFolderPath). A folder in Trash still
+	 * resolves, so it is reported as a warning rather than an ordinary path. Returns
+	 * null if not bound.
+	 */
+	async getRemoteVaultDisplayPath(
+		settings: AirSyncSettings,
+		logger?: Logger,
+	): Promise<RemoteVaultDisplay | null> {
 		const data = this.getData(settings);
 		if (!data.remoteVaultFolderId) return null;
 		// Detached client so this UI read can't reset the live sync's shared tokens.
 		const client = this.makeDetachedClient(settings, logger);
-		return resolveFolderPath(client, data.remoteVaultFolderId, logger);
+		const resolved = await resolveFolderPath(client, data.remoteVaultFolderId, logger);
+		if (!resolved) return null;
+		return resolved.problem
+			? { path: resolved.path, warning: describeUnusableFetchedFolder(resolved.problem) }
+			: { path: resolved.path };
 	}
 
 	async disconnect(_settings: AirSyncSettings): Promise<Record<string, unknown>> {

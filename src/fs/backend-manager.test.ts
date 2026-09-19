@@ -469,6 +469,54 @@ describe("BackendManager — resetAll on connect (start cold)", () => {
 	});
 });
 
+describe("BackendManager — remote vault validation on connect", () => {
+	it("fails the connect and builds no filesystem when the bound target is unusable", async () => {
+		const settings = mockSettings();
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend();
+		fakeProvider.auth.completeAuth = () => Promise.resolve({});
+		const validate = vi.fn().mockRejectedValue(new Error("folder is in Trash"));
+		fakeProvider.validateRemoteVault = validate;
+		const disconnectSpy = vi.fn().mockResolvedValue({});
+		fakeProvider.disconnect = disconnectSpy;
+		const clearSecretsSpy = vi.fn();
+		fakeProvider.clearPluginSecrets = clearSecretsSpy;
+		vi.mocked(deps.onConnected).mockClear();
+
+		await mgr.completeBackendConnect("auth-code");
+
+		expect(validate).toHaveBeenCalledTimes(1);
+		expect(deps.onConnected).not.toHaveBeenCalled();
+		expect(deps.notify).toHaveBeenCalledWith("Folder selection failed: folder is in Trash");
+		// The rejected target is returned to a disconnected state (provider.disconnect +
+		// onDisconnected), so a later initBackend cannot rebuild it and the id is editable.
+		expect(disconnectSpy).toHaveBeenCalledTimes(1);
+		expect(clearSecretsSpy).toHaveBeenCalled();
+		expect(mgr.getRemoteFs()).toBeNull();
+		expect(deps.onDisconnected).toHaveBeenCalled();
+	});
+
+	it("proceeds to build the filesystem when the bound target validates", async () => {
+		const settings = mockSettings();
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend();
+		fakeProvider.auth.completeAuth = () => Promise.resolve({});
+		const validate = vi.fn().mockResolvedValue(undefined);
+		fakeProvider.validateRemoteVault = validate;
+		const disconnectSpy = vi.fn().mockResolvedValue({});
+		fakeProvider.disconnect = disconnectSpy;
+		vi.mocked(deps.onConnected).mockClear();
+
+		await mgr.completeBackendConnect("auth-code");
+
+		expect(validate).toHaveBeenCalledTimes(1);
+		expect(deps.onConnected).toHaveBeenCalledTimes(1);
+		expect(disconnectSpy).not.toHaveBeenCalled();
+	});
+});
+
 describe("BackendManager — web folder pick", () => {
 	it("startBackendFolderPick persists the provider's returned state", async () => {
 		const settings = mockSettings();

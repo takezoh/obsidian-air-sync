@@ -146,10 +146,10 @@ describe("DropboxProvider.getRemoteVaultDisplayPath", () => {
 	it("resolves the bound folder's current path from its id (not persisted)", async () => {
 		const spy = (await spyRequestUrl()).mockResolvedValue(mockRes(dbxFolder("vault", "/MyVault")));
 		const { provider } = await makeProvider(CONNECTED);
-		const path = await provider.getRemoteVaultDisplayPath(
+		const display = await provider.getRemoteVaultDisplayPath(
 			settingsWith({ remoteVaultFolderId: "id:vault", accessTokenExpiry: Date.now() + 3_600_000 }),
 		);
-		expect(path).toBe("/MyVault");
+		expect(display).toEqual({ path: "/MyVault" });
 		const call = spy.mock.calls.find((c) => String((c[0] as RequestUrlParam).url).includes("get_metadata"));
 		expect((JSON.parse((call![0] as RequestUrlParam).body as string) as { path: string }).path).toBe("id:vault");
 	});

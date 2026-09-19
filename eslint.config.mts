@@ -385,8 +385,12 @@ export default defineConfig(
 		// fan-out that renames every one of them, and `ensureFolder` seating all of them
 		// instead of refusing, are Drive's own addressing and belong with its other
 		// mutating ops rather than in the shared cache.
+		// Re-pinned from 306 when the root-liveness check began going through the shared
+		// folder-usability seam: classifying not_found/inaccessible/trashed/not_folder and
+		// rethrowing the original 404/403 is one cohesive check that must stay beside the
+		// sync-time abort it drives.
 		files: ["src/fs/googledrive/index.ts"],
-		rules: { "max-lines": ["error", { max: 306, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 321, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Dropbox's detached identity/path seams belong beside its other API-addressing
@@ -400,8 +404,11 @@ export default defineConfig(
 		// auth+folder operation itself lives in backend-auth-folder-pick.ts; this file
 		// retains only its connecting gate and lifecycle re-init because those must
 		// remain coordinated with every other bind/connect path owned here.
+		// Re-pinned from 341 for the connect-boundary usability gate: validating before
+		// createFs and, on rejection, returning the session to a disconnected state are
+		// one lifecycle step that must stay beside the connect/teardown logic owned here.
 		files: ["src/fs/backend-manager.ts"],
-		rules: { "max-lines": ["error", { max: 341, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 369, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Re-pinned from 379 for `projectedIdentityKey`, the free function every rename

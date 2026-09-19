@@ -13,6 +13,8 @@ import { normalizeSyncPath, validateRename } from "../../utils/path";
 import { CachingRemoteFs } from "../caching/remote-fs";
 import type { IncrementalChangesResult } from "../caching/remote-fs";
 import { resolveDetachedIdPath } from "../priority-observation";
+import { inspectGoogleDriveFolder } from "./folder-usability";
+import { isGoogleDriveTrashed } from "./types";
 
 /**
  * IFileSystem implementation backed by Google Drive.
@@ -47,10 +49,29 @@ export class GoogleDriveFs extends CachingRemoteFs<GoogleDriveFile> {
 		// accepting an empty listing: getFile throws (404) if it was permanently
 		// deleted, and trashed===true means it was moved to Trash. Either way abort
 		// this sync rather than nuking the local vault (the volume-based abort guard
-		// was removed in favour of this root-liveness check).
-		const root = await this.client.getFile(this.rootFolderId);
-		if (root.trashed) {
-			throw new Error(`Remote vault folder is in Trash (id: ${this.rootFolderId})`);
+		// was removed in favour of this root-liveness check). The classification is
+		// the same shared seam every binding path uses.
+		const inspection = await inspectGoogleDriveFolder(this.client, this.rootFolderId);
+		if (inspection.usable) return;
+		switch (inspection.problem) {
+			case "trashed":
+				throw new Error(`Remote vault folder is in Trash (id: ${this.rootFolderId})`);
+			case "not_found":
+			case "inaccessible":
+				// Preserve the original error (status intact) so error classification and
+				// the cold-reconcile abort behave exactly as before.
+				throw inspection.cause;
+			case "not_folder":
+				// A file at the bound id lists as empty, so without this the cold
+				// reconcile would read it as a genuinely empty remote and mass-delete the
+				// local vault.
+				throw new Error(`Remote vault folder is not a folder (id: ${this.rootFolderId})`);
+			default: {
+				const exhaustive: never = inspection;
+				throw new Error(
+					`Remote vault folder is unusable (id: ${this.rootFolderId}): ${String(exhaustive)}`,
+				);
+			}
 		}
 	}
 
@@ -64,7 +85,7 @@ export class GoogleDriveFs extends CachingRemoteFs<GoogleDriveFile> {
 	protected async fetchCurrentFile(fileId: string): Promise<GoogleDriveFile | null> {
 		try {
 			const file = await this.client.getFile(fileId);
-			return file.trashed ? null : file;
+			return isGoogleDriveTrashed(file) ? null : file;
 		} catch (err) {
 			if (err && typeof err === "object" && "status" in err && err.status === 404) return null;
 			throw err;

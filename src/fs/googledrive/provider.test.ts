@@ -328,10 +328,10 @@ describe("GoogleDriveProvider.getRemoteVaultDisplayPath", () => {
 			}),
 		);
 		const { provider } = await makeProvider(CONNECTED);
-		const path = await provider.getRemoteVaultDisplayPath(
+		const display = await provider.getRemoteVaultDisplayPath(
 			settingsWith({ remoteVaultFolderId: "FID", ...FRESH }),
 		);
-		expect(path).toBe("Work/Projects/Notes"); // root reached cleanly → no marker
+		expect(display?.path).toBe("Work/Projects/Notes"); // root reached cleanly → no marker
 	});
 
 	it("returns a clean path (no marker) for a folder directly under My Drive", async () => {
@@ -343,10 +343,10 @@ describe("GoogleDriveProvider.getRemoteVaultDisplayPath", () => {
 			}),
 		);
 		const { provider } = await makeProvider(CONNECTED);
-		const path = await provider.getRemoteVaultDisplayPath(
+		const display = await provider.getRemoteVaultDisplayPath(
 			settingsWith({ remoteVaultFolderId: "FID", ...FRESH }),
 		);
-		expect(path).toBe("obsidian-air-sync/test");
+		expect(display?.path).toBe("obsidian-air-sync/test");
 	});
 
 	it("marks the path partial with a leading …/ only when a non-root ancestor is unreadable", async () => {
@@ -358,10 +358,10 @@ describe("GoogleDriveProvider.getRemoteVaultDisplayPath", () => {
 			}),
 		);
 		const { provider } = await makeProvider(CONNECTED);
-		const path = await provider.getRemoteVaultDisplayPath(
+		const display = await provider.getRemoteVaultDisplayPath(
 			settingsWith({ remoteVaultFolderId: "FID", ...FRESH }),
 		);
-		expect(path).toBe("…/Notes");
+		expect(display?.path).toBe("…/Notes");
 	});
 
 	it("omits the marker when the root can't be identified (can't distinguish root from a real ancestor)", async () => {
@@ -371,16 +371,91 @@ describe("GoogleDriveProvider.getRemoteVaultDisplayPath", () => {
 			routeGetFile({ FID: { name: "Notes", parents: ["P1"] } }),
 		);
 		const { provider } = await makeProvider(CONNECTED);
-		const path = await provider.getRemoteVaultDisplayPath(
+		const display = await provider.getRemoteVaultDisplayPath(
 			settingsWith({ remoteVaultFolderId: "FID", ...FRESH }),
 		);
-		expect(path).toBe("Notes");
+		expect(display?.path).toBe("Notes");
 	});
 
 	it("returns null when no folder is bound, without a network call", async () => {
 		const spy = await spyRequestUrl();
 		const { provider } = await makeProvider(CONNECTED);
 		expect(await provider.getRemoteVaultDisplayPath(settingsWith({}))).toBeNull();
+		expect(spy).not.toHaveBeenCalled();
+	});
+});
+
+describe("GoogleDriveProvider.getRemoteVaultDisplayPath (trashed)", () => {
+	it("warns instead of rendering a trashed folder as an ordinary path", async () => {
+		(await spyRequestUrl()).mockResolvedValue(
+			mockRes({ id: "FID", name: "MyVault", mimeType: FOLDER_MIME, trashed: true }),
+		);
+		const { provider } = await makeProvider(CONNECTED);
+		const display = await provider.getRemoteVaultDisplayPath(
+			settingsWith({ remoteVaultFolderId: "FID", ...FRESH }),
+		);
+		expect(display).toEqual({ path: "MyVault", warning: "This folder is in Google Drive's Trash." });
+	});
+
+	it("returns no warning for a live folder", async () => {
+		(await spyRequestUrl()).mockResolvedValue(
+			mockRes({ id: "FID", name: "MyVault", mimeType: FOLDER_MIME, trashed: false }),
+		);
+		const { provider } = await makeProvider(CONNECTED);
+		const display = await provider.getRemoteVaultDisplayPath(
+			settingsWith({ remoteVaultFolderId: "FID", ...FRESH }),
+		);
+		expect(display).toEqual({ path: "MyVault" });
+	});
+});
+
+describe("GoogleDriveProvider.validateRemoteVault", () => {
+	it("accepts a live bound folder", async () => {
+		(await spyRequestUrl()).mockResolvedValue(
+			mockRes({ id: "FID", name: "MyVault", mimeType: FOLDER_MIME }),
+		);
+		const { provider } = await makeProvider(CONNECTED);
+		await expect(
+			provider.validateRemoteVault(settingsWith({ remoteVaultFolderId: "FID", ...FRESH })),
+		).resolves.toBeUndefined();
+	});
+
+	it("rejects a bound folder moved to Trash", async () => {
+		(await spyRequestUrl()).mockResolvedValue(
+			mockRes({ id: "FID", name: "MyVault", mimeType: FOLDER_MIME, trashed: true }),
+		);
+		const { provider } = await makeProvider(CONNECTED);
+		await expect(
+			provider.validateRemoteVault(settingsWith({ remoteVaultFolderId: "FID", ...FRESH })),
+		).rejects.toThrow(/Trash/);
+	});
+
+	it("rejects a bound id that is not found", async () => {
+		(await spyRequestUrl()).mockRejectedValue(Object.assign(new Error("Not Found"), { status: 404 }));
+		const { provider } = await makeProvider(CONNECTED);
+		await expect(
+			provider.validateRemoteVault(settingsWith({ remoteVaultFolderId: "FID", ...FRESH })),
+		).rejects.toThrow(/couldn't be found/);
+	});
+
+	it("fails open on a 403 rate limit rather than blaming a correct folder id", async () => {
+		const rateLimit = Object.assign(new Error("Rate Limit Exceeded"), {
+			status: 403,
+			json: { error: { errors: [{ reason: "userRateLimitExceeded" }] } },
+		});
+		(await spyRequestUrl()).mockRejectedValue(rateLimit);
+		const { provider } = await makeProvider(CONNECTED);
+		// A throttle is not a binding defect: validation does not block, and the sync
+		// engine retries with its own classification instead of a bogus "folder id" error.
+		await expect(
+			provider.validateRemoteVault(settingsWith({ remoteVaultFolderId: "FID", ...FRESH })),
+		).resolves.toBeUndefined();
+	});
+
+	it("does nothing when no folder is bound, without a network call", async () => {
+		const spy = await spyRequestUrl();
+		const { provider } = await makeProvider(CONNECTED);
+		await expect(provider.validateRemoteVault(settingsWith({}))).resolves.toBeUndefined();
 		expect(spy).not.toHaveBeenCalled();
 	});
 });

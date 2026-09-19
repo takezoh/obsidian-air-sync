@@ -3,6 +3,7 @@ import type { IFileSystem } from "../interface";
 import type { AirSyncSettings } from "../../settings";
 import type { Logger } from "../../logging/logger";
 import type { RemoteVaultResolution } from "../remote-vault-contract";
+import type { RemoteVaultDisplay } from "../backend";
 import { MetadataStore } from "../../store/metadata-store";
 import { PkceAppFolderProvider, type PkceAppFolderData } from "../pkce-app-folder-provider";
 import { DropboxClient } from "./client";
@@ -114,12 +115,15 @@ export abstract class DropboxProviderBase extends PkceAppFolderProvider<DropboxB
 	 * settings. The path is not stored — this reflects the folder's live location
 	 * (so a remote move/rename shows up). Returns null if not bound.
 	 */
-	async getRemoteVaultDisplayPath(settings: AirSyncSettings, logger?: Logger): Promise<string | null> {
+	async getRemoteVaultDisplayPath(
+		settings: AirSyncSettings,
+		logger?: Logger,
+	): Promise<RemoteVaultDisplay | null> {
 		const data = this.getData(settings);
 		if (!data.remoteVaultFolderId) return null;
 		// Detached client so this UI read can't reset the live sync's shared tokens.
 		const client = this.makeDetachedClient(data, logger);
 		const meta = await client.getMetadata(data.remoteVaultFolderId);
-		return meta.path_display ?? null;
+		return meta.path_display ? { path: meta.path_display } : null;
 	}
 }

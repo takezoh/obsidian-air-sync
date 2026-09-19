@@ -33,6 +33,16 @@ export interface GoogleDriveFile {
 	version?: string;
 }
 
+/**
+ * The one reader of Drive's `trashed` flag. Drive's single-click delete moves an
+ * item to Trash rather than erasing it, so a trashed item still resolves via
+ * `getFile` with HTTP 200. Lives on the leaf type module so both the delta mapper
+ * and the folder-usability seam read the same predicate without a cycle.
+ */
+export function isGoogleDriveTrashed(file: GoogleDriveFile | undefined): boolean {
+	return file?.trashed === true;
+}
+
 /** Response from files.list API */
 export interface GoogleDriveFileList {
 	files: GoogleDriveFile[];
