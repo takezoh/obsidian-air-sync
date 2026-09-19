@@ -30,6 +30,11 @@ function createSettings(overrides: Partial<AirSyncSettings> = {}): AirSyncSettin
 	return { ...DEFAULT_SETTINGS, enableLogging: true, ...overrides };
 }
 
+/** Let queued microtasks (the auto-flush chain and its adapter awaits) run out. */
+async function drainMicrotasks(): Promise<void> {
+	for (let i = 0; i < 30; i++) await Promise.resolve();
+}
+
 describe("Logger", () => {
 	let adapter: ReturnType<typeof createMockAdapter>;
 	let settings: AirSyncSettings;
@@ -114,6 +119,102 @@ describe("Logger", () => {
 		await logger.flush();
 
 		expect(adapter.written.size).toBe(0);
+	});
+
+	it("writes an error line without an explicit flush() call", async () => {
+		// Errors own their durability: a pre-sync-cycle failure (connect/auth/
+		// folder-pick) has no cycle-end or unload flush to rely on, so requiring
+		// every call site to remember flush() is how #82 lost lines silently.
+		logger.error("must be durable");
+
+		await drainMicrotasks();
+
+		const files = Array.from(adapter.written.keys());
+		expect(files).toHaveLength(1);
+		expect(adapter.written.get(files[0] ?? "")).toContain("[ERROR] must be durable");
+	});
+
+	it("coalesces a synchronous burst of errors into a single flush", async () => {
+		const writeSpy = vi.fn((path: string, data: string) => {
+			adapter.written.set(path, data);
+			return Promise.resolve();
+		});
+		adapter.write = writeSpy;
+		logger.error("first error");
+		logger.error("second error");
+		logger.error("third error");
+
+		await drainMicrotasks();
+
+		expect(writeSpy).toHaveBeenCalledTimes(1);
+		const content = Array.from(adapter.written.values())[0] ?? "";
+		expect(content).toContain("[ERROR] first error");
+		expect(content).toContain("[ERROR] second error");
+		expect(content).toContain("[ERROR] third error");
+	});
+
+	it("does not auto-flush non-error levels", async () => {
+		logger.debug("d");
+		logger.info("i");
+		logger.warn("w");
+
+		await drainMicrotasks();
+
+		expect(adapter.written.size).toBe(0);
+	});
+
+	it("mirrors a flush failure to console instead of swallowing it silently", async () => {
+		const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		adapter.write = vi.fn(() => Promise.reject(new Error("disk full")));
+
+		logger.info("test");
+		await logger.flush();
+
+		expect(consoleSpy).toHaveBeenCalledWith(
+			"Air Sync: failed to flush logs to .airsync/logs/",
+			expect.any(Error),
+		);
+		consoleSpy.mockRestore();
+	});
+
+	it("serializes concurrent flush() calls instead of racing on the log file", async () => {
+		// Without serialization, two overlapping flush() calls each read the same
+		// on-disk content before either writes back, and whichever writes last
+		// silently clobbers the other's lines. Control write() completion order
+		// directly to prove flush() #2 never even starts its own write until
+		// flush() #1's finishes -- not just that the end result happens to look right.
+		const pendingWrites: { resolve: () => void }[] = [];
+		adapter.write = vi.fn((path: string, data: string) => new Promise<void>((resolve) => {
+			pendingWrites.push({
+				resolve: () => { adapter.written.set(path, data); resolve(); },
+			});
+		}));
+
+		const tick = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+
+		logger.info("first");
+		const flush1 = logger.flush();
+		await tick();
+
+		logger.info("second");
+		const flush2 = logger.flush();
+		await tick();
+
+		// flush() #2 must still be blocked on the mutex -- it hasn't reached
+		// write() at all yet, since flush() #1 hasn't released the lock.
+		expect(pendingWrites).toHaveLength(1);
+
+		pendingWrites[0]!.resolve();
+		await flush1;
+		await tick();
+
+		expect(pendingWrites).toHaveLength(2);
+		pendingWrites[1]!.resolve();
+		await flush2;
+
+		const content = Array.from(adapter.written.values())[0];
+		expect(content).toContain("[INFO] first");
+		expect(content).toContain("[INFO] second");
 	});
 
 	it("appends to existing log file", async () => {

@@ -1,6 +1,7 @@
 import type { AirSyncSettings } from "../settings";
 import type { RawFsAdapter } from "../fs/raw-fs";
 import { ensureDir } from "../fs/raw-fs";
+import { AsyncMutex } from "../queue/async-queue";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -40,6 +41,23 @@ export class Logger {
 	private _deviceName: string;
 	private _adapter: RawFsAdapter;
 	private getSettings: () => AirSyncSettings;
+	/**
+	 * Serializes flush()'s read-modify-write against the log file. Logger is the
+	 * sole writer of `.airsync/logs/...`, so this is the one place that has to hold
+	 * the serialization: without it, two overlapping flush() calls each read the
+	 * same on-disk content before either writes, and whichever writes last clobbers
+	 * the other's lines — a lost update with no error, since a flush failure is
+	 * caught (and, below, mirrored to console) rather than thrown.
+	 */
+	private flushMutex = new AsyncMutex();
+	/**
+	 * Whether an automatic post-error flush is already queued. Errors own their
+	 * durability here rather than at each call site: a failure logged before any
+	 * sync cycle runs (connect/auth/folder-pick) has no later flush to rely on, and
+	 * every new pre-sync call site used to be able to forget one. Queuing through a
+	 * microtask also coalesces a synchronous burst of error lines into one write.
+	 */
+	private autoFlushQueued = false;
 
 	constructor(
 		adapter: RawFsAdapter,
@@ -106,31 +124,51 @@ export class Logger {
 		} else {
 			consoleFn(`Air Sync: ${message}`);
 		}
+
+		// An error must not wait for a sync cycle that may never run to become
+		// durable; see autoFlushQueued.
+		if (level === "error") this.scheduleFlush();
+	}
+
+	/** Queue one automatic flush for the current microtask's worth of error lines. */
+	private scheduleFlush(): void {
+		if (this.autoFlushQueued) return;
+		this.autoFlushQueued = true;
+		void Promise.resolve().then(() => {
+			this.autoFlushQueued = false;
+			return this.flush();
+		});
 	}
 
 	async flush(): Promise<void> {
-		if (this.buffer.length === 0) return;
+		await this.flushMutex.run(async () => {
+			if (this.buffer.length === 0) return;
 
-		const lines = this.buffer;
-		this.buffer = [];
+			const lines = this.buffer;
+			this.buffer = [];
 
-		const date = new Date().toISOString().slice(0, 10);
-		const logsDir = ".airsync/logs";
-		const dir = `${logsDir}/${this._deviceName}`;
-		const filePath = `${dir}/${date}.log`;
+			const date = new Date().toISOString().slice(0, 10);
+			const logsDir = ".airsync/logs";
+			const dir = `${logsDir}/${this._deviceName}`;
+			const filePath = `${dir}/${date}.log`;
 
-		try {
-			await ensureDir(this._adapter, dir);
+			try {
+				await ensureDir(this._adapter, dir);
 
-			let existing = "";
-			if (await this._adapter.exists(filePath)) {
-				existing = await this._adapter.read(filePath);
+				let existing = "";
+				if (await this._adapter.exists(filePath)) {
+					existing = await this._adapter.read(filePath);
+				}
+
+				const content = existing + lines.join("\n") + "\n";
+				await this._adapter.write(filePath, content);
+			} catch (err) {
+				// Logging must never break the app — but a completely silent failure
+				// here means the one tool this project's own troubleshooting flow
+				// depends on can go missing with no trace anywhere. Mirror it to
+				// console like every other log line, instead of swallowing outright.
+				console.error("Air Sync: failed to flush logs to .airsync/logs/", err);
 			}
-
-			const content = existing + lines.join("\n") + "\n";
-			await this._adapter.write(filePath, content);
-		} catch {
-			// Logging should never break the app — silently drop on failure
-		}
+		});
 	}
 }
