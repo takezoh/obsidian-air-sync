@@ -740,11 +740,13 @@ export function runCachingRemoteFsContract<TFile>(
 			});
 
 			/**
-			 * docs=d1{a.md,b.md} against docs=d2{x.md}, in both orders, arriving as one
-			 * complete listing — the claim set whose loss has to propagate down provider
-			 * topology rather than down a string prefix.
+			 * Two provider folders named `docs`, in both orders, arriving as one complete
+			 * listing. They are one vault folder: both contents under one address, and a
+			 * contention only where two of THOSE collide.
 			 */
-			async function nestedCollision(d1First: boolean, storeId: string) {
+			async function sameNamedFolders(
+				d1First: boolean, storeId: string, secondChildren: readonly string[] = ["x.md"],
+			) {
 				const h = makeHarness();
 				const collision = staged(h);
 				collision.stage([{ id: "keep", name: "keep.md" }], "baseline");
@@ -760,14 +762,14 @@ export function runCachingRemoteFsContract<TFile>(
 				];
 				const second: CollisionClaimant[] = [
 					{ id: "d2", name: "docs", isFolder: true },
-					{ id: "c3", name: "x.md", parentId: "d2" },
+					...secondChildren.map((name, index): CollisionClaimant => ({ id: `c${index + 3}`, name, parentId: "d2" })),
 				];
 				collision.stage(d1First ? [...first, ...second] : [...second, ...first], "expired");
 				const delta = await fs.getChangedPaths();
 				const observed = {
 					listed: paths(await fs.list()),
-					underWinner: paths(await fs.listDir("docs")),
-					losersChild: await fs.stat("docs/x.md"),
+					underDocs: paths(await fs.listDir("docs")),
+					folder: (await fs.stat("docs"))?.identityKey,
 					announced: announced(delta),
 					deleted: [...(delta?.deleted ?? [])].sort(),
 				};
@@ -775,17 +777,29 @@ export function runCachingRemoteFsContract<TFile>(
 				return observed;
 			}
 
-			it("keeps no loser descendant reachable under the winner, in either order", async () => {
-				const d1First = await nestedCollision(true, "contract-collision-nested-a");
-				const d2First = await nestedCollision(false, "contract-collision-nested-b");
+			it("holds both same-named folders' contents under one address, in either order", async () => {
+				const d1First = await sameNamedFolders(true, "contract-collision-nested-a");
+				const d2First = await sameNamedFolders(false, "contract-collision-nested-b");
+
+				expect(d2First).toEqual(d1First);
+				expect(d1First.listed).toEqual(["docs", "docs/a.md", "docs/b.md", "docs/x.md", "keep.md"]);
+				expect(d1First.underDocs).toEqual(["docs/a.md", "docs/b.md", "docs/x.md"]);
+				// One vault folder, represented by the smallest id.
+				expect(d1First.folder).toBe("d1");
+				expect(d1First.announced).toEqual([]);
+				expect(d1First.deleted).toEqual([]);
+			});
+
+			it("contends only a colliding file inside same-named folders, in either order", async () => {
+				// The owner's example: docs(d1)/{a.md, b.md} and docs(d2)/{a.md}.
+				const d1First = await sameNamedFolders(true, "contract-collision-child-a", ["a.md"]);
+				const d2First = await sameNamedFolders(false, "contract-collision-child-b", ["a.md"]);
 
 				expect(d2First).toEqual(d1First);
 				expect(d1First.listed).toEqual(["docs", "docs/a.md", "docs/b.md", "keep.md"]);
-				expect(d1First.underWinner).toEqual(["docs/a.md", "docs/b.md"]);
-				expect(d1First.losersChild).toBeNull();
 				expect(d1First.announced).toEqual([{
-					path: "docs", admittedId: "d1", withheldId: "d2",
-					displacedPaths: ["docs/x.md"], reason: "lowest_stable_id", owesRemediation: true,
+					path: "docs/a.md", admittedId: "c1", withheldId: "c3",
+					displacedPaths: [], reason: "lowest_stable_id", owesRemediation: true,
 				}]);
 				expect(d1First.deleted).toEqual([]);
 			});
@@ -808,7 +822,8 @@ export function runCachingRemoteFsContract<TFile>(
 				// The measured data-loss route: a committed folder loses its address to a
 				// newly-listed claimant, and the vanished-id sweep has to tell that apart
 				// from the provider dropping the folder. Reporting it would authorize
-				// deleting a live file out of the vault.
+				// deleting a live file out of the vault. The claimant is a FILE, because a
+				// second folder would be merged beside the first and lose nothing.
 				const h = makeHarness();
 				const collision = staged(h);
 				collision.stage([
@@ -820,10 +835,7 @@ export function runCachingRemoteFsContract<TFile>(
 				expect(paths(await fs.list())).toEqual(["docs", "docs/x.md"]);
 				await fs.commitCheckpoint();
 
-				collision.stage([
-					{ id: "d1", name: "docs", isFolder: true },
-					{ id: "c1", name: "a.md", parentId: "d1" },
-				], "expired");
+				collision.stage([{ id: "d1", name: "docs" }], "expired");
 				const delta = await fs.getChangedPaths();
 
 				expect(delta?.deleted).toEqual([]);

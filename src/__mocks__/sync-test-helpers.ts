@@ -284,6 +284,9 @@ export function createMockStateStore(): {
 		getAll() {
 			return Promise.resolve(Array.from(records.values()));
 		},
+		recordedIdentities(identities: readonly string[]) {
+			return Promise.resolve(new Set(identities.filter((identity) => rowFor(identity) !== undefined)));
+		},
 		put(record: SyncRecord) {
 			records.set(record.path, record);
 			return Promise.resolve();

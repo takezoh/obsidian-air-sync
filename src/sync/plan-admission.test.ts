@@ -4265,7 +4265,7 @@ describe("a contended address is synced as the record names it, not as the cache
 				path: "note.md", admittedId: NEWCOMER, withheldId: RECORD_HOLDER,
 				displacedPaths: [], reason: "lowest_stable_id", owesRemediation: true,
 			}],
-			records: new Map([["note.md", record]]),
+			recordHolders: new Set([RECORD_HOLDER]),
 			renameByIdentity,
 		});
 	}

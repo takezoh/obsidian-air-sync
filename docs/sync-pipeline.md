@@ -124,7 +124,7 @@ Folder renames are captured separately at the event boundary: a `TFolder` routes
 
 `IFileSystem.checkpoint.getChangedPaths()` returns `{ modified, deleted, renamed?, contended? }` or `null`. `null` means no incremental data is available — fall back to warm/cold detection. The `renamed` array carries `{ oldPath, newPath, isFolder? }` as authoritative reported evidence. The acquisition owner captures that evidence before later detection work, so a retry cannot consume the live cursor and lose the constraint.
 
-`contended` names the derived cache addresses this cycle found claimed by two live stable ids (a Google Drive folder can hold two same-named children; the vault cannot). It is not a change at any path, so it never enters `ChangeSet`: `getRemoteChanges()` hands it straight to the orchestrator through an `onRemoteContention` callback, the sibling of `onRemoteIdentityEvidence`. The filesystem has already subtracted every displaced address from `deleted` — the object that lost the address is still on the provider — and no layer above `fs/` may reclassify one as an absence. The orchestrator drops contentions at paths `isExcluded()` filters out, then hands the rest to Admission (see [Address-contention remediation](#address-contention-remediation)). Nothing about a contention is persisted; the next cycle re-observes whatever still stands.
+`contended` names the derived cache addresses this cycle found claimed by two live stable ids (a Google Drive folder can hold two same-named children; the vault cannot). Two provider-resolved same-named *folders* are not a contention — they are one vault folder, whose contents are both folders' contents; only what collides inside it is. A cycle that acquires its remote side by listing instead of asking for a delta — COLD — receives the same facts through `checkpoint.drainWorkingViewContentions()`, which hands over what a full scan or a replay inside `list()` decided; `collectChanges` drains it after every temperature, so none is the one that forgets. It is not a change at any path, so it never enters `ChangeSet`: `getRemoteChanges()` hands it straight to the orchestrator through an `onRemoteContention` callback, the sibling of `onRemoteIdentityEvidence`. The filesystem has already subtracted every displaced address from `deleted` — the object that lost the address is still on the provider — and no layer above `fs/` may reclassify one as an absence. The orchestrator drops contentions at paths `isExcluded()` filters out, then hands the rest to Admission (see [Address-contention remediation](#address-contention-remediation)). Nothing about a contention is persisted; the next cycle re-observes whatever still stands.
 
 ### Comparison functions
 
@@ -282,8 +282,9 @@ its source.
 `plan-admission-case-alias.ts`: like it, it originates a `rename_remote` from complete
 current-cycle facts rather than from a local rename, and it adds no `SyncActionType`.
 
-- **Inputs.** The contentions the cycle's delta announced, each contended path's committed
-  `SyncRecord`, whether `remoteFs.identityRename` is present — and, applied by the
+- **Inputs.** The contentions the cycle announced, which of their claimants hold a committed
+  `SyncRecord` — looked up by the claimant's own identity, not by the contended path — whether
+  `remoteFs.identityRename` is present — and, applied by the
   orchestrator *before* Admission, the vault's exclusion scope. The cache holds every object
   under the bound root, excluded paths included; a repair writes to the provider, so it may
   only ever reach a path the user actually syncs. The filter sits at the orchestrator and
@@ -293,12 +294,13 @@ current-cycle facts rather than from a local rename, and it adds no `SyncActionT
   rename capability is present. A contention involving a `requested_echo` claim is an
   out-of-root guess — there is nothing in the working area to rename — and is announced but
   not repaired.
-- **The keeper** is the claimant holding a committed `SyncRecord` at the contended path, else
-  the claimant the arbiter admitted. The record store is keyed by `remoteIdentityKey` under a
-  unique `path` index, so at most one record stands at an address and at most one claimant can
-  hold one; the choice is a function of the unordered claim set plus committed state and is
-  identical under COLD, WARM and HOT. This is what stops a file the user has been syncing for
-  months from being renamed to make room for a newly appeared duplicate. It is the *sole*
+- **The keeper** is the one claimant holding a committed `SyncRecord` — sync priority goes to
+  the object with sync history. When that singles out none — no claimant holds one, or several
+  were each already synced (one moved here from its own address) — it is the claimant the
+  arbiter admitted. Either way the choice is a function of the unordered claim set plus
+  committed state, and identical under COLD, WARM and HOT. This is what stops a file the user
+  has been syncing for months from being renamed to make room for a newly appeared duplicate.
+  It is the *sole*
   decider for the address: the cache's arbiter settles who occupies the working view, which is
   a mechanism that cannot read sync state, and where the two answers differ this one holds.
 - **The address is withheld** whenever the keeper is not the claimant the cache seated. The
@@ -308,7 +310,8 @@ current-cycle facts rather than from a local rename, and it adds no `SyncActionT
   would sync the wrong object at the keeper's address *and* publish a record naming an object
   the same plan is moving away. Admission therefore binds the address as `present_unresolved`
   in `indexFacts` — something is there, and which object it denotes cannot be resolved from
-  these facts. It resolves with no special case next cycle, once the repair has vacated it.
+  these facts — and so does everything beneath it, which the seated claimant's subtree now
+  occupies. It resolves with no special case next cycle, once the repair has vacated it.
   Independent of the rename capability: a backend that cannot repair the namespace still must
   not sync the wrong object there.
 - **The target** is `insertConflictSuffix(path, "id-" + <the renamed claimant's stable id>)` —
@@ -322,7 +325,10 @@ current-cycle facts rather than from a local rename, and it adds no `SyncActionT
 - **The commit gate.** A cycle owing a repair is checkpoint-blocked through the existing
   `checkpointBlocked` input to cleanliness, so no cursor advances past a withheld claimant and
   the next cycle replays the same evidence. Every uncontested action still executes and still
-  publishes its own `SyncRecord`. A non-remediable contention owes nothing and does not block.
+  publishes its own `SyncRecord`. A non-remediable contention owes no repair and does not block
+  the checkpoint by itself; if its keeper is not the claimant the cache seated, the address is
+  still withheld as above, which fails that component and leaves the cycle not clean — visibly,
+  as a failed component, and until the provider's facts change.
 
 Nothing here is persisted — not the contention, not the disposition, not a repair queue. The
 count reaches the user as a non-error clause in the status bar and the cycle summary; the paths

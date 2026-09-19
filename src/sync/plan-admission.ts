@@ -77,7 +77,7 @@ export function admitBatchObservation(
 	return authorizeComponents(
 		observation, buildFactComponents(observation), conflictStrategy,
 		// A cycle whose filesystem announced nothing owes nothing.
-		contention ?? { contentions: [], records: new Map(), renameByIdentity: false },
+		contention ?? { contentions: [], recordHolders: new Set(), renameByIdentity: false },
 	);
 }
 

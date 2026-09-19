@@ -131,20 +131,20 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	 */
 	private _scopeFingerprint: string | null = null;
 	/**
-	 * The contentions the full scan that built this working view decided, waiting to
-	 * be drained exactly once.
+	 * The contentions decided while building this working view from a path-level call,
+	 * waiting to be drained exactly once.
 	 *
 	 * A full scan is entered lazily, from whichever path-level call first needs the
-	 * cache — `list()`, `stat()`, `listDir()`. None of them can return an
-	 * address-level fact, so before this the scan's contentions were simply dropped
-	 * and a withheld object stayed invisible for as long as the checkpoint stood.
-	 * They belong to the working view, share its lifecycle, and are cleared with it.
+	 * cache — `list()`, `stat()`, `listDir()` — and `list()` replays the cursor on a
+	 * restored checkpoint. None of them can return an address-level fact, so before
+	 * this their contentions were simply dropped and a withheld object stayed invisible
+	 * for as long as the checkpoint stood. They belong to the working view, share its
+	 * lifecycle, and are cleared with it.
 	 *
 	 * Handed over, not held: {@link drainWorkingViewContentions} empties it, so this
-	 * is a one-shot channel out of a lazy call and never a second reader's state. The
-	 * cursor-expiry route does not use it at all — `fullScanWithDelta` takes
-	 * `fullScan`'s return value directly, so its contentions travel in the delta and
-	 * are never reported twice.
+	 * is a one-shot channel out of a lazy call and never a second reader's state. A
+	 * delta `getChangedPaths` returns carries its own contentions and parks nothing
+	 * here, so nothing is reported twice.
 	 */
 	private _workingViewContentions: readonly AddressDisplacement[] = [];
 
@@ -340,8 +340,12 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 			if (!cursor) return false;
 
 			this.cache.clear();
-			this.cache.bulkLoad(files.map((r): [string, TFile, PathAuthority?] =>
-				[r.path, r.file, r.pathAuthority]));
+			// A merged folder path is one stored record carrying its other folders; each
+			// is seated at the same path, where the cache merges it beside the first.
+			this.cache.bulkLoad(files.flatMap((r): [string, TFile, PathAuthority?][] => [
+				[r.path, r.file, r.pathAuthority],
+				...(r.merged ?? []).map((file): [string, TFile, PathAuthority?] => [r.path, file, r.pathAuthority]),
+			]));
 			this._changesPageToken = cursor;
 			this._scopeFingerprint = meta.get(SCOPE_FINGERPRINT_META_KEY) ?? null;
 			this.initialized = true;
@@ -533,11 +537,12 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 		const modified: string[] = [];
 		const deleted: string[] = [];
 		const renamed: RenamePair[] = [];
-		const newIds = new Set<string>();
+		// Every id the scan placed, merged folders included: a folder merged beside
+		// another is live, and missing it here would sweep its old path as deleted.
+		const newIds = new Set(this.cache.snapshotPathsById().keys());
 		for (const [newPath, file] of this.cache.entries()) {
 			const id = this.cache.idAt(newPath);
 			if (id === undefined) continue;
-			newIds.add(id);
 			const oldPath = oldPathById.get(id);
 			if (!oldPath) {
 				modified.push(newPath);
@@ -620,7 +625,15 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 		return this.cacheMutex.run(async () => {
 			// A fresh full scan captures "now"; a restored cursor warrants a replay.
 			if (await this.ensureInitialized()) {
-				await this._applyIncrementalChanges();
+				// The replay's paths are superseded by the listing this returns, but its
+				// contentions are not: they are facts about this working view, and this
+				// path-level call has nowhere else to put them. A cycle that lists instead
+				// of asking for a delta — COLD with a checkpoint standing, as after a scope
+				// change — would otherwise report none.
+				const delta = await this._applyIncrementalChanges();
+				if (delta && delta.contended.length > 0) {
+					this._workingViewContentions = [...this._workingViewContentions, ...delta.contended];
+				}
 			}
 			return this.snapshotEntities();
 		});
@@ -687,15 +700,18 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 
 	async delete(path: string): Promise<void> {
 		path = normalizeSyncPath(path);
-		// Phase 1: resolve the backend id under the mutex.
-		const fileId = await this.cacheMutex.run(async () => {
+		// Phase 1: resolve the backend id under the mutex — and, for a vault folder that
+		// several provider folders make up, every one of theirs.
+		const { fileId, mergedIds } = await this.cacheMutex.run(async () => {
 			await this.ensureInitialized();
-			return this.cache.idAt(path) ?? null;
+			return { fileId: this.cache.idAt(path) ?? null, mergedIds: this.cache.idsAt(path).slice(1) };
 		});
 
 		if (!fileId) return;
 
-		// Phase 2: remote delete outside the mutex (network I/O).
+		// Phase 2: remote delete outside the mutex (network I/O). The vault folder is
+		// all of them, so deleting only the representative would bring the rest back.
+		for (const id of mergedIds) await this.deleteRemote(id);
 		await this.deleteRemote(fileId);
 
 		// Phase 3: update the cache under the mutex with an id guard — the inline twin of

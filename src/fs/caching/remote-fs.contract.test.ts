@@ -1,11 +1,10 @@
 import "fake-indexeddb/auto";
 import { describe, expect, it } from "vitest";
 import type { FileEntity } from "../types";
-import type { RenamePair } from "../types";
 import { MetadataStore } from "../../store/metadata-store";
-import { AbstractMetadataCache, projectedIdentityKey } from "./metadata-cache";
-import type { AddressDisplacement, WithheldClaim } from "./metadata-cache";
+import { AbstractMetadataCache } from "./metadata-cache";
 import { CachingRemoteFs } from "./remote-fs";
+import { applyIdDeltaPage, createIdDeltaResult } from "./id-delta";
 import type { IncrementalChangesResult, RemoteDelta } from "./remote-fs";
 import { runCachingRemoteFsContract } from "../../../tests/fs/contracts/caching-remote-fs.contract";
 import type { CachingRemoteFsHarness } from "../../../tests/fs/contracts/caching-remote-fs.contract";
@@ -161,25 +160,6 @@ class FakeRemote {
 	}
 }
 
-/**
- * Flatten one withheld claim the way `id-delta.ts` publishes it: the address the
- * claimant vacated belongs with the descendants that went with it, because the
- * absence rule has to subtract them together.
- */
-function toContentionFact(claim: WithheldClaim): AddressDisplacement {
-	const absent = claim.vacatedPath === null
-		? [...claim.displacedPaths]
-		: [claim.vacatedPath, ...claim.displacedPaths].sort();
-	return {
-		path: claim.path,
-		admittedId: claim.admittedId,
-		withheldId: claim.withheldId,
-		displacedPaths: absent,
-		reason: claim.reason,
-		owesRemediation: claim.owesRemediation,
-	};
-}
-
 class MockRemoteFs extends CachingRemoteFs<MockFile> {
 	readonly name = "mock";
 	private failAfterFirstChange = false;
@@ -202,49 +182,24 @@ class MockRemoteFs extends CachingRemoteFs<MockFile> {
 			return Promise.resolve({ needsFullScan: true, changedPaths: new Set<string>() });
 		}
 		const { changes, newCursor } = this.remote.changesSince(cursor);
-		const changedPaths = new Set<string>();
-		const renamedPaths: RenamePair[] = [];
-		const contended: AddressDisplacement[] = [];
+		// The production applier, not a copy of it: what this harness pins is the
+		// shared cache and delta contract every id-addressed backend runs. Each change
+		// is its own page, which keeps the provider's event order and lets a later page
+		// fail after an earlier one was applied.
+		const acc = createIdDeltaResult();
 		for (const [index, ch] of changes.entries()) {
-			if (ch.kind === "delete") {
-				const path = this.cache.getPathById(ch.id);
-				if (path) {
-					for (const d of this.cache.collectDescendants(path)) changedPaths.add(d);
-					changedPaths.add(path);
-					this.cache.removeTree(path);
-				}
-			} else {
-				const applied = this.cache.applyFileChangeDetectMove(ch.file);
-				const { oldPath, newPath, wasFolder, oldDescendants } = applied;
-				if (applied.withheld) {
-					// The cache refused this claim, so the claimant's own address was
-					// vacated. Report it changed and DECLARE why, exactly as the shared
-					// id-addressed applier does — an undeclared vacancy reads as a delete.
-					const fact = toContentionFact(applied.withheld);
-					for (const path of fact.displacedPaths) changedPaths.add(path);
-					contended.push(fact);
-					continue;
-				}
-				if (applied.displacement) contended.push(applied.displacement);
-				if (newPath) changedPaths.add(newPath);
-				if (oldPath && newPath && oldPath !== newPath) {
-					changedPaths.add(oldPath);
-					for (const d of oldDescendants) changedPaths.add(d);
-					// Faithful to a real backend's producer: the reported identity is the
-					// cache's own entity projection for newPath, never an address.
-					renamedPaths.push({
-						oldPath, newPath, isFolder: wasFolder || undefined,
-						identityKey: projectedIdentityKey(this.cache, newPath),
-					});
-					if (wasFolder) for (const nd of this.cache.collectDescendants(newPath)) changedPaths.add(nd);
-				}
-			}
+			applyIdDeltaPage(this.cache, acc, [ch.kind === "delete"
+				? { id: ch.id, isFolder: false, file: undefined }
+				: { id: ch.file.id, isFolder: !!ch.file.isFolder, file: ch.file }]);
 			if (index === 0 && this.failAfterFirstChange) {
 				this.failAfterFirstChange = false;
 				throw new Error("injected later page failure");
 			}
 		}
-		return Promise.resolve({ needsFullScan: false, newToken: newCursor, changedPaths, renamedPaths, contended });
+		return Promise.resolve({
+			needsFullScan: false, newToken: newCursor, changedPaths: acc.changedPaths,
+			renamedPaths: acc.renamedPaths, contended: acc.displacements,
+		});
 	}
 
 	protected fetchCurrentFile(fileId: string): Promise<MockFile | null> {
@@ -546,14 +501,15 @@ describe("the three producers of RemoteDelta.deleted", () => {
 
 	describe("producer 1 — _applyIncrementalChanges' hasFile split over the drain's changed paths", () => {
 		/**
-		 * Two folders claim `docs`; the cache admits one and withholds the other, whose
-		 * own address (`old`, with a child) is vacated as a result. The drain reports
-		 * those paths changed and declares the contention — producer 3's half — and this
-		 * is where the declaration has to stop them becoming deletions.
+		 * A folder claims `docs`, which a FILE holds; the cache admits the file and
+		 * withholds the folder, whose own address (`old`, with a child) is vacated as a
+		 * result. The drain reports those paths changed and declares the contention —
+		 * producer 3's half — and this is where the declaration has to stop them
+		 * becoming deletions. (A second FOLDER would be merged, and lose nothing.)
 		 */
 		async function runWithheldFolderDelta(): Promise<{ delta: RemoteDelta; fs: MockRemoteFs }> {
 			const remote = new FakeRemote();
-			remote.seedRaw(mockFile("a-docs", "docs", remote.rootId, true));
+			remote.seedRaw(mockFile("a-docs", "docs", remote.rootId));
 			remote.seedRaw(mockFile("z-old", "old", remote.rootId, true));
 			remote.seedRaw(mockFile("z-child", "a.md", "z-old"));
 			const fs = new MockRemoteFs(remote, makeStore());
@@ -621,8 +577,9 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			const store = makeStore();
 			await seedCheckpoint(store, [loser, childA, childB], ["docs", "docs/a.md", "docs/b.md"]);
 
-			// A second `docs` folder appears remotely; its id sorts below the cached one.
-			remote.seedRaw(mockFile("a-docs", "docs", remote.rootId, true));
+			// A `docs` FILE appears remotely; its id sorts below the cached folder's. (A
+			// second folder would be merged beside the first, taking nothing from it.)
+			remote.seedRaw(mockFile("a-docs", "docs", remote.rootId));
 
 			const fs = new MockRemoteFs(remote, store);
 			fs.requestCursorExpiry();
@@ -708,7 +665,7 @@ describe("the three producers of RemoteDelta.deleted", () => {
 		it("carries the drain's own contention facts through to the classification", async () => {
 			const { delta, fs } = await (async () => {
 				const remote = new FakeRemote();
-				remote.seedRaw(mockFile("a-docs", "docs", remote.rootId, true));
+				remote.seedRaw(mockFile("a-docs", "docs", remote.rootId));
 				remote.seedRaw(mockFile("z-old", "old", remote.rootId, true));
 				remote.seedRaw(mockFile("z-child", "a.md", "z-old"));
 				const fs = new MockRemoteFs(remote, makeStore());
@@ -741,6 +698,94 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			expect(delta?.deleted).toEqual(["note.md"]);
 			expect(delta?.contended).toEqual([]);
 			await fs.close();
+		});
+	});
+
+	/**
+	 * Two provider folders with one name are one vault folder. Nothing about that is a
+	 * contention, and nothing that happens to one of them may reach the other's contents.
+	 */
+	describe("a vault folder made of several provider folders", () => {
+		function twoDocsFolders(): FakeRemote {
+			const remote = new FakeRemote();
+			remote.seedRaw(mockFile("a-docs", "docs", remote.rootId, true));
+			remote.seedRaw(mockFile("a-child", "a.md", "a-docs"));
+			remote.seedRaw(mockFile("z-docs", "docs", remote.rootId, true));
+			remote.seedRaw(mockFile("z-child", "b.md", "z-docs"));
+			return remote;
+		}
+
+		it("deletes nothing on a cursor expiry that finds a second folder", async () => {
+			const remote = new FakeRemote();
+			const cached = mockFile("z-docs", "docs", remote.rootId, true);
+			const child = mockFile("z-child", "b.md", "z-docs");
+			for (const file of [cached, child]) remote.seedRaw(file);
+			const store = makeStore();
+			await seedCheckpoint(store, [cached, child], ["docs", "docs/b.md"]);
+			remote.seedRaw(mockFile("a-docs", "docs", remote.rootId, true));
+
+			const fs = new MockRemoteFs(remote, store);
+			fs.requestCursorExpiry();
+			const delta = await fs.checkpoint.getChangedPaths();
+
+			expect(delta?.deleted).toEqual([]);
+			expect(delta?.contended).toEqual([]);
+			expect(await fs.stat("docs/b.md")).toMatchObject({ identityKey: "z-child" });
+			await fs.close();
+		});
+
+		it("takes only the deleted folder's own contents when one of them is deleted", async () => {
+			const remote = twoDocsFolders();
+			const fs = new MockRemoteFs(remote, makeStore());
+			await fs.list();
+
+			remote.stageDelete("docs");
+			const delta = await fs.checkpoint.getChangedPaths();
+			const survivor = await fs.stat("docs");
+
+			expect(survivor?.isDirectory).toBe(true);
+			// Whichever of the two the provider dropped, the other's child is still there.
+			const kept = (await fs.list()).map((entry) => entry.path).sort();
+			expect(kept.filter((path) => path.startsWith("docs/"))).toHaveLength(1);
+			expect(delta?.deleted.filter((path) => kept.includes(path))).toEqual([]);
+			await fs.close();
+		});
+
+		it("reports a folder moved into a shared name as its files' moves, not a folder rename", async () => {
+			const remote = new FakeRemote();
+			remote.seedRaw(mockFile("a-docs", "docs", remote.rootId, true));
+			remote.seedRaw(mockFile("a-child", "a.md", "a-docs"));
+			remote.seedRaw(mockFile("z-old", "old", remote.rootId, true));
+			remote.seedRaw(mockFile("z-child", "b.md", "z-old"));
+			const fs = new MockRemoteFs(remote, makeStore());
+			await fs.list();
+
+			remote.stageRename("old", "docs", { isFolder: true });
+			const delta = await fs.checkpoint.getChangedPaths();
+
+			// A folder pair would say the vault folder `docs` moved, contents and all.
+			expect(delta?.renamed).toEqual([{ oldPath: "old/b.md", newPath: "docs/b.md", identityKey: "z-child" }]);
+			expect(delta?.contended).toEqual([]);
+			expect(await fs.stat("docs/a.md")).toMatchObject({ identityKey: "a-child" });
+			expect(await fs.stat("docs/b.md")).toMatchObject({ identityKey: "z-child" });
+			await fs.close();
+		});
+
+		it("persists and restores both folders through a checkpoint", async () => {
+			const remote = twoDocsFolders();
+			const store = makeStore();
+			const first = new MockRemoteFs(remote, store);
+			await first.list();
+			await first.checkpoint.commitCheckpoint();
+			await first.close();
+
+			const restored = new MockRemoteFs(remote, store);
+			const listed = (await restored.list()).map((entry) => entry.path).sort();
+
+			expect(listed).toEqual(["docs", "docs/a.md", "docs/b.md"]);
+			await restored.checkpoint.getChangedPaths();
+			expect(await restored.stat("docs/b.md")).toMatchObject({ identityKey: "z-child" });
+			await restored.close();
 		});
 	});
 
@@ -820,6 +865,26 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			await fs.list();
 
 			expect(fs.checkpoint.drainWorkingViewContentions?.()).toEqual([]);
+			await fs.close();
+		});
+
+		it("hands over the contentions a replay inside list() decided", async () => {
+			// COLD with a checkpoint standing — the scope-change route — lists rather than
+			// asking for a delta, and `list()` replays the cursor on the way. What that
+			// replay decided is a fact about this working view like any other.
+			const remote = new FakeRemote();
+			const keep = mockFile("z-note", "Note.md", remote.rootId);
+			remote.seedRaw(keep);
+			const store = makeStore();
+			await seedCheckpoint(store, [keep], ["Note.md"]);
+			remote.stageRaw(mockFile("a-note", "Note.md", remote.rootId));
+
+			const fs = new MockRemoteFs(remote, store);
+			await fs.list();
+
+			expect(fs.checkpoint.drainWorkingViewContentions?.()).toEqual([expect.objectContaining({
+				path: "Note.md", admittedId: "a-note", withheldId: "z-note",
+			})]);
 			await fs.close();
 		});
 

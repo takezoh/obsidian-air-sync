@@ -129,6 +129,19 @@ export class SyncStateStore {
 		});
 	}
 
+	/**
+	 * Which of these provider identities hold a committed record. The store is keyed
+	 * by identity, so this reads each row by its own key rather than by any address.
+	 */
+	async recordedIdentities(identities: readonly string[]): Promise<Set<string>> {
+		if (identities.length === 0) return new Set();
+		return this.helper.runTransaction(STORE_NAME, "readonly", (tx) => {
+			const store = tx.objectStore(STORE_NAME);
+			const reqs = identities.map((identity) => ({ identity, req: store.count(identity) }));
+			return () => new Set(reqs.filter(({ req }) => req.result > 0).map(({ identity }) => identity));
+		});
+	}
+
 	/** Get all sync records (without prevSyncContent for lightweight listing) */
 	async getAll(): Promise<SyncRecord[]> {
 		return this.helper.runTransaction(STORE_NAME, "readonly", (tx) => {

@@ -293,7 +293,8 @@ describe("applyIdDeltaPage", () => {
 			const cache = makeCache();
 			seed(cache, [["docs", folder("d2", "docs", ROOT)], ["docs/a.md", file("c1", "a.md", "d2")]]);
 
-			const acc = drain(cache, [[upsert(folder("d1", "docs", ROOT))]]);
+			// A file: a second folder would be merged beside d2, not contend with it.
+			const acc = drain(cache, [[upsert(file("d1", "docs", ROOT))]]);
 
 			expect(cache.idAt("docs")).toBe("d1");
 			expect(acc.withheld).toEqual([expect.objectContaining({
@@ -303,12 +304,28 @@ describe("applyIdDeltaPage", () => {
 				displacedPaths: ["docs/a.md"],
 			})]);
 		});
+
+		it("merges a provider-resolved folder arriving at a folder's address, contents and all", () => {
+			const cache = makeCache();
+			seed(cache, [["docs", folder("d2", "docs", ROOT)], ["docs/a.md", file("c1", "a.md", "d2")]]);
+
+			const acc = drain(cache, [[upsert(folder("d1", "docs", ROOT)), upsert(file("c2", "b.md", "d1"))]]);
+
+			expect(acc.withheld).toEqual([]);
+			expect(cache.idsAt("docs")).toEqual(["d1", "d2"]);
+			expect(cache.idAt("docs/a.md")).toBe("c1");
+			expect(cache.idAt("docs/b.md")).toBe("c2");
+		});
 	});
 
+	/**
+	 * Every case below is a contention between a FILE holding an address and a claim
+	 * on it: two provider-resolved folders are one vault folder and never contend.
+	 */
 	describe("a contention is not final until the drain ends", () => {
 		it("readmits the withheld claimant when a later page tombstones the admitted id", () => {
 			const cache = makeCache();
-			seed(cache, [["docs", folder("d1", "docs", ROOT)]]);
+			seed(cache, [["docs", file("d1", "docs", ROOT)]]);
 
 			const acc = drain(cache, [
 				[upsert(folder("d2", "docs", ROOT))],
@@ -321,7 +338,7 @@ describe("applyIdDeltaPage", () => {
 
 		it("withdraws the contention before publication rather than announcing a settled loss", () => {
 			const cache = makeCache();
-			seed(cache, [["docs", folder("d1", "docs", ROOT)]]);
+			seed(cache, [["docs", file("d1", "docs", ROOT)]]);
 
 			const acc = drain(cache, [
 				[upsert(folder("d2", "docs", ROOT))],
@@ -335,7 +352,7 @@ describe("applyIdDeltaPage", () => {
 
 		it("keeps the contention when the tombstone names the losing id instead", () => {
 			const cache = makeCache();
-			seed(cache, [["docs", folder("d1", "docs", ROOT)]]);
+			seed(cache, [["docs", file("d1", "docs", ROOT)]]);
 
 			const acc = drain(cache, [
 				[upsert(folder("d2", "docs", ROOT))],
@@ -350,7 +367,7 @@ describe("applyIdDeltaPage", () => {
 
 		it("still announces the loss when nothing in the drain frees the address", () => {
 			const cache = makeCache();
-			seed(cache, [["docs", folder("d1", "docs", ROOT)]]);
+			seed(cache, [["docs", file("d1", "docs", ROOT)]]);
 
 			const acc = drain(cache, [
 				[upsert(folder("d2", "docs", ROOT))],
@@ -365,7 +382,7 @@ describe("applyIdDeltaPage", () => {
 	describe("settlement closes the page before the caller walks its re-listing targets", () => {
 		it("puts a folder admitted at settlement into enteredFolderIds", () => {
 			const cache = makeCache();
-			seed(cache, [["docs", folder("d1", "docs", ROOT)]]);
+			seed(cache, [["docs", file("d1", "docs", ROOT)]]);
 
 			const acc = drain(cache, [
 				[upsert(folder("d2", "docs", ROOT))],
@@ -381,7 +398,7 @@ describe("applyIdDeltaPage", () => {
 		it("reports a readmission from a vacated address as the move it is", () => {
 			const cache = makeCache();
 			seed(cache, [
-				["docs", folder("d1", "docs", ROOT)],
+				["docs", file("d1", "docs", ROOT)],
 				["old", folder("d2", "old", ROOT)],
 				["old/a.md", file("c1", "a.md", "d2")],
 			]);
@@ -423,7 +440,7 @@ describe("applyIdDeltaPage", () => {
 		it("reports a withheld claimant's vacated address as displaced, never as a deletion", () => {
 			const cache = makeCache();
 			seed(cache, [
-				["docs", folder("d1", "docs", ROOT)],
+				["docs", file("d1", "docs", ROOT)],
 				["old", folder("d2", "old", ROOT)],
 				["old/a.md", file("c1", "a.md", "d2")],
 			]);
@@ -504,7 +521,7 @@ describe("applyIdDeltaPage", () => {
 
 			for (const pages of pageSplits(claims).concat(pageSplits([...claims].reverse()))) {
 				const cache = makeCache();
-				seed(cache, [["docs", folder("d1", "docs", ROOT)], ["notes", folder("e1", "notes", ROOT)]]);
+				seed(cache, [["docs", file("d1", "docs", ROOT)], ["notes", file("e1", "notes", ROOT)]]);
 
 				const acc = drain(cache, pages);
 
@@ -514,7 +531,7 @@ describe("applyIdDeltaPage", () => {
 		});
 
 		it("names the same admitted and withheld id whichever claim the drain saw first", () => {
-			const claims = [folder("d1", "docs", ROOT), folder("d2", "docs", ROOT)];
+			const claims = [file("d1", "docs", ROOT), file("d2", "docs", ROOT)];
 
 			for (const [first, second] of [claims, [...claims].reverse()]) {
 				const cache = makeCache();
@@ -537,7 +554,8 @@ describe("applyIdDeltaPage", () => {
 
 			expect(Object.getOwnPropertyNames(cache).sort()).toEqual(before);
 			expect(before).toEqual([
-				"children", "folders", "idToPath", "logger", "pathAuthorities", "pathToFile", "rootFolderId",
+				"children", "folders", "idToPath", "logger", "mergedFolders", "pathAuthorities", "pathToFile",
+				"rootFolderId",
 			]);
 		});
 

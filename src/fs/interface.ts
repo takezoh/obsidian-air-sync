@@ -196,16 +196,18 @@ export interface IncrementalCheckpoint {
 
 	/**
 	 * Take the contentions the current working view was built with, leaving none
-	 * behind, or an empty list when the view came from a committed checkpoint.
+	 * behind.
 	 *
-	 * `getChangedPaths` reports what a DELTA found. A working view can also be built
-	 * by a full scan, entered lazily from a path-level call (`list`, `stat`) that has
-	 * nowhere to return an address-level fact — so without this, a cycle acquiring its
-	 * remote side by full scan reports no contention at all, and an address the cache
-	 * could not seat stays silently absent for as long as the checkpoint stands.
+	 * `getChangedPaths` reports what a delta it RETURNS found. A working view is also
+	 * built by path-level calls (`list`, `stat`) that have nowhere to return an
+	 * address-level fact: a lazily-entered full scan, and the cursor replay `list()`
+	 * performs on a restored checkpoint. Without this, a cycle acquiring its remote
+	 * side by listing — COLD, with or without a checkpoint — reports no contention at
+	 * all, and an address the cache could not seat stays silently absent for as long
+	 * as the checkpoint stands.
 	 *
-	 * Draining is what keeps the two channels from double-reporting: the cursor-expiry
-	 * route carries its scan's contentions in the delta and leaves nothing here.
+	 * Draining is what keeps the two channels from double-reporting: a delta that is
+	 * returned carries its own contentions and leaves nothing here.
 	 * Optional, for the same reason `getChangedPaths`'s `contended` is: a backend
 	 * whose addresses are the provider's own keys can never produce one.
 	 */

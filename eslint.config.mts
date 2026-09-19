@@ -367,8 +367,22 @@ export default defineConfig(
 		// that carries its address-level facts out, and the drain that empties it, belong
 		// with the lifecycle that creates and clears them — beside the cursor and the
 		// scope fingerprint, which have exactly the same lifetime.
+		// Re-pinned from 397 for folders that share a path: the checkpoint restores a
+		// merged folder's other members from its one stored record, the cursor-expiry
+		// diff counts them live, `delete` removes every provider folder the vault folder
+		// is made of, and `list()` keeps the contentions its replay decided. Each is a
+		// lifecycle step this class already owns for the single-object case.
 		files: ["src/fs/caching/remote-fs.ts"],
-		rules: { "max-lines": ["error", { max: 397, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 402, skipBlankLines: true, skipComments: true }] },
+	},
+	{
+		// Over the default 300 for the vault folder several Drive folders make up.
+		// Drive is the only backend whose namespace holds same-named folders, so the
+		// fan-out that renames every one of them, and `ensureFolder` seating all of them
+		// instead of refusing, are Drive's own addressing and belong with its other
+		// mutating ops rather than in the shared cache.
+		files: ["src/fs/googledrive/index.ts"],
+		rules: { "max-lines": ["error", { max: 306, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Dropbox's detached identity/path seams belong beside its other API-addressing
@@ -400,8 +414,18 @@ export default defineConfig(
 		// without exporting them. Ratchet down if the id-chain path resolver
 		// (resolvePathFromCache/resolveFilePathCached/findRelevantParentId) later
 		// moves out to its own module; that is its own task, with public callers.
+		// Re-pinned from 386 for folders that share a path. Two provider-resolved
+		// folders deriving one address are one vault folder (the owner's rule), so a
+		// path can hold several folder objects: a sixth index beside the five above,
+		// which every mutation must keep consistent with the others in the same step —
+		// a merge seats one beside the representative, a removal promotes the next, and
+		// a move or tombstone takes one object's own subtree told apart by provider
+		// parentage rather than by path prefix. It is index mutation of exactly the
+		// kind this pin already keeps here, and cannot leave the class without
+		// exporting the maps. The delta-side placement that arbitrates each seat a move
+		// makes is the same: it has to read and write those maps between arbitrations.
 		files: ["src/fs/caching/metadata-cache.ts"],
-		rules: { "max-lines": ["error", { max: 386, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 577, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Lint manifest.json for the words the Obsidian submission validator

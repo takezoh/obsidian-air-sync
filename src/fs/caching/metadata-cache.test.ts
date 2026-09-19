@@ -37,10 +37,13 @@ class TestMetadataCache extends AbstractMetadataCache<TestFile> {
 }
 
 /**
- * Asserts the bijection AFTER EVERY MUTATION rather than only at the end: each
- * writer is wrapped, and `bulkLoad`/`buildFromFiles` route through the wrapped
- * `setFile`, so an intermediate state that maps one path to two ids (or one id to
- * two paths) fails on the call that produced it.
+ * Asserts the path↔id relation AFTER EVERY MUTATION rather than only at the end:
+ * each writer is wrapped, and `bulkLoad`/`buildFromFiles` route through the wrapped
+ * `setFile`, so an intermediate state that breaks it fails on the call that
+ * produced it.
+ *
+ * The relation: no id is at two paths, and a path holds one object — except that
+ * provider-resolved folders may share one, because they are one vault folder.
  */
 class BijectiveCache extends TestMetadataCache {
 	private readonly seen = new Set<string>();
@@ -75,17 +78,24 @@ class BijectiveCache extends TestMetadataCache {
 	private check(): void {
 		const rows = this.exportRecords();
 		expect(rows.length).toBe(this.size);
-		// path → id is injective: distinct paths never collapse onto one id.
-		expect(this.snapshotPathsById().size).toBe(this.size);
+		// Distinct paths never collapse onto one id.
+		const ids = rows.flatMap((row) => this.idsAt(row.path));
+		expect(new Set(ids).size).toBe(ids.length);
+		expect(this.snapshotPathsById().size).toBe(ids.length);
 		for (const row of rows) {
-			const id = this.idAt(row.path);
-			expect(id).toBeDefined();
-			expect(this.getPathById(id!)).toBe(row.path);
+			expect(this.idAt(row.path)).toBeDefined();
+			for (const id of this.idsAt(row.path)) expect(this.getPathById(id)).toBe(row.path);
+			// Only provider-resolved folders share a path.
+			if (row.merged) {
+				expect(row.isFolder).toBe(true);
+				expect(row.pathAuthority).toBe("actual_resolved");
+				expect(row.merged.every((merged) => merged.folder === true)).toBe(true);
+			}
 		}
-		// id → path is injective too, and no id lingers on a path that no longer holds it.
+		// No id lingers on a path that no longer holds it.
 		for (const id of this.seen) {
 			const path = this.getPathById(id);
-			if (path !== undefined) expect(this.idAt(path)).toBe(id);
+			if (path !== undefined) expect(this.idsAt(path)).toContain(id);
 		}
 	}
 }
@@ -225,8 +235,8 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 			const cache = makeCache();
 
 			const displacements = cache.buildFromFiles([
-				folder("d1", "docs", ROOT),
-				folder("d2", "docs", ROOT),
+				file("d1", "docs", ROOT),
+				file("d2", "docs", ROOT),
 				folder("cyc1", "A", "cyc2"),
 				folder("cyc2", "B", "cyc1"),
 			]);
@@ -259,8 +269,10 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 			const descendants = Array.from({ length: 500 },
 				(_, index) => file(`c${index}`, `note-${index}.md`, "d2"));
 
+			// The folder loses to a file — two folders would be one vault folder, and
+			// nothing would be displaced at all.
 			const displacements = cache.buildFromFiles([
-				folder("d1", "docs", ROOT), folder("d2", "docs", ROOT), ...descendants,
+				file("d1", "docs", ROOT), folder("d2", "docs", ROOT), ...descendants,
 			]);
 
 			// Emission is a function of contended ADDRESSES, never of how much went
@@ -276,7 +288,7 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 		it("behaves identically with no logger, and still returns the count", () => {
 			const { logger, warn } = fakeLogger();
 			const files = [
-				folder("d1", "docs", ROOT), folder("d2", "docs", ROOT), file("c1", "x.md", "d2"),
+				file("d1", "docs", ROOT), folder("d2", "docs", ROOT), file("c1", "x.md", "d2"),
 			];
 			const logged = makeCache(logger);
 			const silent = makeCache();
@@ -293,12 +305,91 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 		});
 	});
 
-	describe("the loss propagates down resolved parent-id ancestry", () => {
-		// docs=d1{a.md,b.md} vs docs=d2{x.md}: the permutation both earlier drafts fail.
-		const nestedCollision = [
+	describe("two provider-resolved folders at one path are one vault folder", () => {
+		// The owner's example: docs(d1)/a.md and docs(d2)/{a.md, b.md}. The vault sees one
+		// `docs` holding all three, and only the two a.md — files — contend.
+		const ownersExample = [
 			folder("d1", "docs", ROOT),
 			file("c1", "a.md", "d1"),
-			file("c2", "b.md", "d1"),
+			folder("d2", "docs", ROOT),
+			file("c2", "a.md", "d2"),
+			file("c3", "b.md", "d2"),
+		];
+
+		it("holds both folders' contents and contends only the colliding file, in every order", () => {
+			const orders = permutations(ownersExample);
+			const reference = makeCache();
+			const referenceDisplacements = reference.buildFromFiles(orders[0]!);
+
+			expect(listing(reference)).toEqual([
+				"docs/a.md|c1|false|actual_resolved",
+				"docs/b.md|c3|false|actual_resolved",
+				"docs|d1|true|actual_resolved",
+			]);
+			expect(reference.idsAt("docs")).toEqual(["d1", "d2"]);
+			expect(referenceDisplacements).toEqual([{
+				path: "docs/a.md",
+				admittedId: "c1",
+				withheldId: "c2",
+				displacedPaths: [],
+				reason: "lowest_stable_id",
+				owesRemediation: true,
+			}]);
+
+			for (const order of orders) {
+				const cache = makeCache();
+				const displacements = cache.buildFromFiles(order);
+
+				expect({ order: order.map((f) => f.id), listing: listing(cache) })
+					.toEqual({ order: order.map((f) => f.id), listing: listing(reference) });
+				expect(stats(cache)).toEqual(stats(reference));
+				expect(displacements).toEqual(referenceDisplacements);
+				expect(cache.idsAt("docs")).toEqual(["d1", "d2"]);
+			}
+		});
+
+		it("merges with nothing displaced when their contents do not collide", () => {
+			const cache = makeCache();
+
+			const displacements = cache.buildFromFiles([
+				folder("d1", "docs", ROOT), file("c1", "a.md", "d1"),
+				folder("d2", "docs", ROOT), file("c2", "b.md", "d2"),
+			]);
+
+			expect(displacements).toEqual([]);
+			expect(cache.getPathById("d2")).toBe("docs");
+			expect(cache.idAt("docs/b.md")).toBe("c2");
+		});
+
+		it("merges a folder whose same-named subfolders merge in turn", () => {
+			const cache = makeCache();
+
+			cache.buildFromFiles([
+				folder("d1", "docs", ROOT), folder("s1", "sub", "d1"), file("c1", "a.md", "s1"),
+				folder("d2", "docs", ROOT), folder("s2", "sub", "d2"), file("c2", "b.md", "s2"),
+			]);
+
+			expect(cache.idsAt("docs/sub")).toEqual(["s1", "s2"]);
+			expect(cache.idAt("docs/sub/a.md")).toBe("c1");
+			expect(cache.idAt("docs/sub/b.md")).toBe("c2");
+		});
+
+		it("never merges a request echo, which is a guess from outside the root", () => {
+			const cache = makeCache();
+			cache.setFile("docs", folder("d1", "docs", ROOT), "actual_resolved");
+
+			cache.setFile("docs", folder("d2", "docs", "unknown"));
+
+			expect(cache.idsAt("docs")).toEqual(["d2"]);
+			expect(cache.getPathById("d1")).toBeUndefined();
+		});
+	});
+
+	describe("the loss propagates down resolved parent-id ancestry", () => {
+		// A folder that loses to a FILE takes its contents with it; two folders never
+		// contend at all, so every case here pits one against a file.
+		const nestedCollision = [
+			file("d1", "docs", ROOT),
 			folder("d2", "docs", ROOT),
 			file("c3", "x.md", "d2"),
 		];
@@ -308,11 +399,7 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 			const reference = makeCache();
 			const referenceDisplacements = reference.buildFromFiles(orders[0]!);
 
-			expect(listing(reference)).toEqual([
-				"docs/a.md|c1|false|actual_resolved",
-				"docs/b.md|c2|false|actual_resolved",
-				"docs|d1|true|actual_resolved",
-			]);
+			expect(listing(reference)).toEqual(["docs|d1|false|actual_resolved"]);
 			expect(referenceDisplacements).toEqual([{
 				path: "docs",
 				admittedId: "d1",
@@ -330,7 +417,7 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 					.toEqual({ order: order.map((f) => f.id), listing: listing(reference) });
 				expect(stats(cache)).toEqual(stats(reference));
 				expect(displacements).toEqual(referenceDisplacements);
-				// The loser's child never reaches the winner's folder, in ANY order —
+				// The loser's child never reaches the winner's address, in ANY order —
 				// including the ones where it was listed before its parent lost.
 				expect(cache.getPathById("c3")).toBeUndefined();
 				expect(cache.hasFile("docs/x.md")).toBe(false);
@@ -341,7 +428,7 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 			const cache = makeCache();
 
 			const displacements = cache.buildFromFiles([
-				folder("d1", "docs", ROOT),
+				file("d1", "docs", ROOT),
 				folder("d2", "docs", ROOT),
 				folder("s2", "sub", "d2"),
 				file("leaf", "deep.md", "s2"),
@@ -355,7 +442,7 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 				reason: "lowest_stable_id",
 				owesRemediation: true,
 			}]);
-			expect(listing(cache)).toEqual(["docs|d1|true|actual_resolved"]);
+			expect(listing(cache)).toEqual(["docs|d1|false|actual_resolved"]);
 		});
 
 		it("does NOT displace an entry that merely spells its way under the contended path", () => {
@@ -365,7 +452,7 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 			const cache = makeCache();
 
 			cache.buildFromFiles([
-				folder("d1", "docs", ROOT),
+				file("d1", "docs", ROOT),
 				folder("d2", "docs", ROOT),
 				file("c3", "x.md", "d2"),
 				file("spoof", "docs/spoof.md", ROOT),
@@ -378,7 +465,7 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 		it("keeps a legacy multi-parent entry identical for both orders of its parents", () => {
 			// findRelevantParentId prefers rootFolderId, so both orders resolve through
 			// the root — including when the OTHER in-scope parent is the withheld folder.
-			const base = [folder("d1", "docs", ROOT), folder("d2", "docs", ROOT)];
+			const base = [file("d1", "docs", ROOT), folder("d2", "docs", ROOT)];
 			const rootFirst = { id: "m1", name: "m.md", parents: [ROOT, "d2"] };
 			const rootSecond = { id: "m1", name: "m.md", parents: ["d2", ROOT] };
 
@@ -440,7 +527,8 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 			cache.setFile("docs/sub", folder("s1", "sub", "d1"), "actual_resolved");
 			cache.setFile("docs/sub/deep.md", file("c2", "deep.md", "s1"), "actual_resolved");
 
-			const displacement = cache.setFile("docs", folder("d2", "docs", ROOT), "actual_resolved");
+			// A file re-keying a folder's path is a replacement; a folder would merge.
+			const displacement = cache.setFile("docs", file("d2", "docs", ROOT), "actual_resolved");
 
 			expect(displacement).toEqual({
 				path: "docs",
@@ -461,7 +549,7 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 			cache.setFile("docs", folder("d1", "docs", ROOT), "actual_resolved");
 			cache.setFile("docs/a.md", file("c1", "a.md", "d1"), "actual_resolved");
 
-			cache.setFile("docs", folder("d2", "docs", ROOT), "actual_resolved");
+			cache.setFile("docs", file("d2", "docs", ROOT), "actual_resolved");
 
 			expect(cache.idAt("docs")).toBe("d2");
 			expect(cache.hasFile("docs/a.md")).toBe(false);
@@ -506,6 +594,8 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 					owesRemediation: true,
 					vacatedPath: "Old.md",
 				},
+				descendantLosses: [],
+				relocated: [],
 			});
 			expect(cache.idAt("Test.md")).toBe("f1");
 			// The provider says f2 is no longer at Old.md, so the cache does not claim it is.
@@ -515,7 +605,7 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 
 		it("names the withheld claimant's own displaced descendants", () => {
 			const cache = makeCache();
-			cache.setFile("docs", folder("d1", "docs", ROOT), "actual_resolved");
+			cache.setFile("docs", file("d1", "docs", ROOT), "actual_resolved");
 			cache.setFile("old", folder("d2", "old", ROOT), "actual_resolved");
 			cache.setFile("old/a.md", file("c1", "a.md", "d2"), "actual_resolved");
 
@@ -531,7 +621,7 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 			cache.setFile("docs", folder("d2", "docs", ROOT), "actual_resolved");
 			cache.setFile("docs/a.md", file("c1", "a.md", "d2"), "actual_resolved");
 
-			const applied = cache.applyFileChange(folder("d1", "docs", ROOT));
+			const applied = cache.applyFileChange(file("d1", "docs", ROOT));
 
 			expect(applied).toEqual({
 				path: "docs",
@@ -544,6 +634,8 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 					reason: "lowest_stable_id",
 					owesRemediation: true,
 				},
+				descendantLosses: [],
+				relocated: [],
 			});
 			expect(cache.idAt("docs")).toBe("d1");
 		});
@@ -592,7 +684,9 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 
 			const applied = cache.applyFileChange(file("f1", "a.md", ROOT));
 
-			expect(applied).toEqual({ path: "a.md", displacement: null, withheld: null });
+			expect(applied).toEqual({
+				path: "a.md", displacement: null, withheld: null, descendantLosses: [], relocated: [],
+			});
 		});
 	});
 
@@ -610,8 +704,12 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 			cache.setFile("docs", folder("d3", "docs", ROOT), "actual_resolved");
 
 			expect(Object.getOwnPropertyNames(cache).sort()).toEqual(before);
+			// `mergedFolders` is topology, not memory of a contention: it holds which
+			// provider folders make up a vault folder as the provider reports them now,
+			// and a scan re-derives it from nothing.
 			expect(before).toEqual([
-				"children", "folders", "idToPath", "logger", "pathAuthorities", "pathToFile", "rootFolderId",
+				"children", "folders", "idToPath", "logger", "mergedFolders", "pathAuthorities", "pathToFile",
+				"rootFolderId",
 			]);
 		});
 

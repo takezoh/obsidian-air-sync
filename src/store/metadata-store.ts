@@ -4,14 +4,23 @@ import type { PathAuthority } from "../fs/types";
 const FILES_STORE = "files";
 const META_STORE = "meta";
 
-/** Bump whenever persisted file-record semantics require a cold cache rebuild. */
-export const METADATA_CACHE_VERSION = 4;
+/**
+ * Bump whenever persisted file-record semantics require a cold cache rebuild.
+ *
+ * v5: a folder path can be made of several provider folders, carried as `merged`.
+ * A checkpoint written before that kept one of them and silently dropped the rest,
+ * with their contents; restoring it would leave those objects invisible for as long
+ * as the checkpoint stood, so it is rebuilt from a full scan instead.
+ */
+export const METADATA_CACHE_VERSION = 5;
 
 export interface FileRecord<T> {
 	path: string;
 	file: T;
 	isFolder: boolean;
 	pathAuthority?: PathAuthority;
+	/** The other provider folders merged at this folder path, beside `file`. */
+	merged?: T[];
 }
 
 export interface MetadataStoreConfig {

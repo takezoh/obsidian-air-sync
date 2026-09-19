@@ -15,6 +15,12 @@ export interface AddressClaim {
 	readonly id: string;
 	/** Whether the claim's spelling came from the provider or from a request echo. */
 	readonly authority: PathAuthority;
+	/**
+	 * Whether the claiming object is a folder. Absent means it is not: a claim that
+	 * does not say it is a folder never merges, which is the behaviour every claim
+	 * had before folders could.
+	 */
+	readonly isFolder?: boolean;
 }
 
 /** The tier that settled a real contest between two distinct stable ids. */
@@ -24,8 +30,8 @@ export type AddressContestReason =
 	/** Tier 2: the lexicographically smallest stable id is admitted. */
 	| "lowest_stable_id";
 
-/** The tier that settled the arbitration, including the non-contest. */
-export type AddressArbitrationReason = "same_stable_id" | AddressContestReason;
+/** The tier that settled the arbitration, including the non-contests. */
+export type AddressArbitrationReason = "same_stable_id" | "folder_merge" | AddressContestReason;
 
 interface ArbitratedAddress {
 	/** The contended cache address, echoed back so a caller can key the fact by it. */
@@ -39,6 +45,24 @@ export interface UncontestedAddress extends ArbitratedAddress {
 	readonly outcome: "no_contest";
 	readonly withheldId: null;
 	readonly reason: "same_stable_id";
+	readonly withheldOwesRemediation: false;
+}
+
+/**
+ * Two provider-resolved folders claimed one address: they are one vault folder.
+ *
+ * A vault folder is only a path — Air Sync keeps no record for one — so two
+ * provider folders that derive the same address are not two things competing for
+ * it. Their contents are one directory's contents, and only a FILE inside it can
+ * collide. `admittedId` is the representative — the folder a new file is created
+ * in — and `mergedId` is the other; neither is withheld and neither owes a repair.
+ */
+export interface MergedAddress extends ArbitratedAddress {
+	readonly outcome: "merge";
+	/** The other folder, which shares `path` with the representative. */
+	readonly mergedId: string;
+	readonly withheldId: null;
+	readonly reason: "folder_merge";
 	readonly withheldOwesRemediation: false;
 }
 
@@ -59,8 +83,26 @@ export interface ContestedAddress extends ArbitratedAddress {
 	readonly withheldOwesRemediation: boolean;
 }
 
-/** The decision itself. Total: exactly one claim holds the address, and the other is named. */
-export type AddressArbitration = UncontestedAddress | ContestedAddress;
+/**
+ * The decision itself. Total: exactly one claim holds the address, and the other is
+ * either the same object, merged beside it, or named as withheld.
+ */
+export type AddressArbitration = UncontestedAddress | MergedAddress | ContestedAddress;
+
+/**
+ * Whether two distinct claims on one address are one vault folder rather than a
+ * contest. The single statement of the rule, so the arbiter and the cache's own
+ * seat cannot disagree about it.
+ *
+ * Both must be folders, and both must be provider-resolved. A `requested_echo`
+ * claim never merges: its spelling is a guess whose parent chain does not reach the
+ * bound sync root, so merging it would pour an object from outside the working area
+ * into the vault. It is arbitrated exactly as it always was, and loses.
+ */
+export function mergesAsOneFolder(left: AddressClaim, right: AddressClaim): boolean {
+	return left.id !== right.id && left.isFolder === true && right.isFolder === true &&
+		left.authority === "actual_resolved" && right.authority === "actual_resolved";
+}
 
 /**
  * Decide which of two claims holds a contended derived cache address.
@@ -73,11 +115,16 @@ export type AddressArbitration = UncontestedAddress | ContestedAddress;
  *
  * Tiers, in order:
  *  1. equal stable ids ⇒ `no_contest` (the arriving claim is an ordinary update);
- *  2. `actual_resolved` is admitted over `requested_echo`;
- *  3. otherwise the lexicographically smallest stable id is admitted.
+ *  2. two provider-resolved folders ⇒ `merge` ({@link mergesAsOneFolder}), with the
+ *     lexicographically smallest id as the representative;
+ *  3. `actual_resolved` is admitted over `requested_echo`;
+ *  4. otherwise the lexicographically smallest stable id is admitted.
  *
- * The tie-break's arbitrariness is acceptable because both objects survive and
- * both sync; the arbiter decides only *which address each one ends up at*.
+ * `admittedId` follows the same total order in every outcome — authority, then
+ * lowest id — so folding the arbiter over a claim set names one holder whatever the
+ * outcomes along the way. The tie-break's arbitrariness is acceptable because both
+ * objects survive and both sync; the arbiter decides only *which address each one
+ * ends up at*.
  */
 export function arbitrateAddress(
 	path: string,
@@ -91,6 +138,18 @@ export function arbitrateAddress(
 			admittedId: incumbent.id,
 			withheldId: null,
 			reason: "same_stable_id",
+			withheldOwesRemediation: false,
+		};
+	}
+	if (mergesAsOneFolder(incumbent, claimant)) {
+		const incumbentLeads = incumbent.id < claimant.id;
+		return {
+			path,
+			outcome: "merge",
+			admittedId: incumbentLeads ? incumbent.id : claimant.id,
+			mergedId: incumbentLeads ? claimant.id : incumbent.id,
+			withheldId: null,
+			reason: "folder_merge",
 			withheldOwesRemediation: false,
 		};
 	}

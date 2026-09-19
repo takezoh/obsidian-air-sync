@@ -182,18 +182,19 @@ the new size, with a comment saying why the split was deferred. The pin is a
 ratchet: it stops *silent* growth and flags the file as split-when-convenient — it
 is not a mandate to shrink the file by force.
 
-Seven modules currently carry such overrides as known debt in `eslint.config.mts`:
+Eight modules currently carry such overrides as known debt in `eslint.config.mts`:
 `fs/googledrive/auth.ts` (337), `sync/orchestrator.ts` (444), `sync/plan-executor.ts`
-(334), `fs/caching/remote-fs.ts` (380), `fs/dropbox/index.ts` (317),
-`fs/backend-manager.ts` (341), and `fs/caching/metadata-cache.ts` (386).
+(334), `fs/caching/remote-fs.ts` (402), `fs/dropbox/index.ts` (317),
+`fs/backend-manager.ts` (341), `fs/caching/metadata-cache.ts` (577), and
+`fs/googledrive/index.ts` (306).
 Ratchet them down when a natural responsibility split presents itself.
-(`fs/googledrive/index.ts` was here at 397; ADR 0001 lifted its cache/checkpoint
-machinery into `fs/caching/`, dropping it back under 300, so it is no longer
-overridden.)
+(`fs/googledrive/index.ts` was once here at 397; ADR 0001 lifted its cache/checkpoint
+machinery into `fs/caching/`, dropping it under 300. It is back, just over, for the
+Drive-only fan-out across same-named folders.)
 
 Four modules instead carry a **file-header `/* eslint max-lines */` comment**, which
 overrides the config entry for that file: `sync/scope-projection.ts` (340),
-`sync/conflict-resolver.ts` (350), `sync/identity-component-decision.ts` (785), and
+`sync/conflict-resolver.ts` (350), `sync/identity-component-decision.ts` (815), and
 `sync/plan-executor.ts` (1020 — so its 334 config entry above is inert). Same ratchet,
 same obligation to justify the pin in the comment; the inline form keeps the reason
 next to the code it is about.

@@ -1,5 +1,5 @@
 import type { AddressDisplacement } from "../fs/caching/claim-set-assignment";
-import type { RenameAction, SyncRecord } from "./types";
+import type { RenameAction } from "./types";
 import { insertConflictSuffix } from "./conflict";
 
 /**
@@ -7,7 +7,7 @@ import { insertConflictSuffix } from "./conflict";
  *
  * Nothing here is a prior error, an Admission failure, a database version, a
  * record count or a recovery marker: the decision is a function of this cycle's
- * observed contentions, the committed `SyncRecord` at each contended path, and
+ * observed contentions, which of the claimants hold a committed `SyncRecord`, and
  * whether the remote filesystem offers the identity-addressed rename. That is what
  * makes COLD, WARM and HOT produce the same answer for the same facts, and it is
  * why nothing about a contention is persisted — every cycle re-derives it.
@@ -16,13 +16,13 @@ export interface AddressContentionFacts {
 	/** This cycle's contended addresses, as the filesystem announced them. */
 	readonly contentions: readonly AddressDisplacement[];
 	/**
-	 * The committed `SyncRecord` at each contended path, keyed by path. The record
-	 * store is keyed by `remoteIdentityKey` under a UNIQUE `path` index, so at most
-	 * one record can stand at an address and therefore at most one claimant can hold
-	 * the one at a contended address — which is what makes the keeper a function of
-	 * the unordered claim set.
+	 * The claimants that hold a committed `SyncRecord`, by provider identity.
+	 *
+	 * Looked up by the object, not by the contended path: a claimant that was synced
+	 * at another address and moved here is still the object the user has been
+	 * syncing, and the record store is keyed by exactly this identity.
 	 */
-	readonly records: ReadonlyMap<string, SyncRecord | undefined>;
+	readonly recordHolders: ReadonlySet<string>;
 	/** Whether the remote filesystem can rename a provider object by its stable id. */
 	readonly renameByIdentity: boolean;
 }
@@ -34,8 +34,10 @@ export interface AddressContentionRemediation {
 	/**
 	 * Whether the cycle must not commit its checkpoint. Set only when a repair is
 	 * actually owed: a contention nothing can be done about — an orphan collapse, or
-	 * a backend without the capability — is announced, not blocked, because blocking
-	 * would stall the cursor with no action that could ever clear it.
+	 * a backend without the capability — does not block it, because blocking would
+	 * stall the cursor with no action that could ever clear it. That is not permission
+	 * to sync the address: where the keeper is not the seated claimant it is still in
+	 * {@link unresolvedAddresses}, and that component fails visibly instead.
 	 */
 	readonly checkpointBlocked: boolean;
 	/**
@@ -166,7 +168,7 @@ function contendedAddresses(facts: AddressContentionFacts): ContendedAddress[] {
 			admittedId,
 			claimants: sorted,
 			keeper: admittedId === undefined
-				? undefined : chooseKeeper(sorted, admittedId, facts.records.get(path)),
+				? undefined : chooseKeeper(sorted, admittedId, facts.recordHolders),
 			remediable: admittedId !== undefined && !unreachable.has(path),
 		});
 	}
@@ -176,12 +178,14 @@ function contendedAddresses(facts: AddressContentionFacts): ContendedAddress[] {
 /**
  * Which claimant keeps the plain address — and therefore which one this address syncs.
  *
- * The one holding the committed `SyncRecord` there — so the user's established file
- * keeps its name and the newcomer moves. If neither holds one, it is the claimant
- * the arbiter admitted, which is itself a function of the unordered claim set.
- * `AGENTS.md` permits a decision to depend on a component's current endpoints and
- * its committed `SyncRecord`; that input is legitimate here and refused inside the
- * cache, which holds no sync state and must not acquire any.
+ * The owner's rule: sync priority goes to the object that has a `SyncRecord`, so the
+ * user's established file keeps its name and the newcomer moves. When that does not
+ * single one out — no claimant holds a record, or several were each already synced
+ * — it is the claimant the arbiter admitted, which is a function of the unordered
+ * claim set and so the same whatever order anything arrived in. `AGENTS.md` permits
+ * a decision to depend on a component's current endpoints and its committed
+ * `SyncRecord`; that input is legitimate here and refused inside the cache, which
+ * holds no sync state and must not acquire any.
  *
  * This is the SOLE decider for a contended address. The cache's arbiter settles who
  * occupies the cache; that is a working-view mechanism and cannot read sync state.
@@ -189,9 +193,8 @@ function contendedAddresses(facts: AddressContentionFacts): ContendedAddress[] {
  * never both at once, which would sync one claimant and rename it in the same plan.
  */
 function chooseKeeper(
-	claimants: readonly string[], admittedId: string, record: SyncRecord | undefined,
+	claimants: readonly string[], admittedId: string, recordHolders: ReadonlySet<string>,
 ): string {
-	const recorded = record?.remoteIdentityKey;
-	if (recorded !== undefined && claimants.includes(recorded)) return recorded;
-	return admittedId;
+	const synced = claimants.filter((id) => recordHolders.has(id));
+	return synced.length === 1 ? synced[0]! : admittedId;
 }

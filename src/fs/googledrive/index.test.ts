@@ -217,12 +217,14 @@ describe("GoogleDriveFs mutation provenance", () => {
 });
 
 describe("GoogleDriveFs.write stale-cache guard for new paths", () => {
-	it("rejects an unresolved parent when Google Drive returns duplicate names", async () => {
+	it("writes into the representative when Google Drive returns two same-named folders", async () => {
 		const { GoogleDriveFs } = await import("./index");
 		const duplicate = (id: string): GoogleDriveFile => ({
 			id, name: "Templates", mimeType: "application/vnd.google-apps.folder", parents: ["root"],
 		});
-		const uploadFile = vi.fn();
+		const uploadFile = vi.fn().mockResolvedValue({
+			id: "n1", name: "note.md", mimeType: "text/markdown", parents: ["one"],
+		} satisfies GoogleDriveFile);
 		const createFolder = vi.fn();
 		const client = {
 			listAllFiles: vi.fn().mockResolvedValue([]),
@@ -236,11 +238,13 @@ describe("GoogleDriveFs.write stale-cache guard for new paths", () => {
 		const fs = new GoogleDriveFs(client, "root");
 		await fs.list();
 
-		await expect(fs.write(
-			"Templates/note.md", new TextEncoder().encode("x").buffer, 1000,
-		)).rejects.toThrow('Ambiguous provider entry for "Templates"');
+		await fs.write("Templates/note.md", new TextEncoder().encode("x").buffer, 1000);
+
+		// Two same-named folders are one vault folder, not an ambiguity: neither is
+		// duplicated by a third, and new content goes to the smallest id.
 		expect(createFolder).not.toHaveBeenCalled();
-		expect(uploadFile).not.toHaveBeenCalled();
+		expect(uploadFile).toHaveBeenCalledWith("note.md", "one", expect.anything(), expect.anything(), undefined, 1000);
+		expect((await fs.stat("Templates/note.md"))?.identityKey).toBe("n1");
 	});
 
 	it("updates the existing child when resolving a case-only parent alias", async () => {
@@ -400,6 +404,43 @@ describe("GoogleDriveFs.rename stale-cache guard for the destination", () => {
 		);
 
 		mockRequestUrl.mockRestore();
+	});
+});
+
+describe("GoogleDriveFs.rename of a vault folder several Drive folders make up", () => {
+	it("renames every one of them, each out of its own parent", async () => {
+		const { GoogleDriveFs } = await import("./index");
+		const folder = (id: string, name: string): GoogleDriveFile => ({
+			id, name, mimeType: "application/vnd.google-apps.folder", parents: ["root"],
+		});
+		const child = (id: string, name: string, parent: string): GoogleDriveFile => ({
+			id, name, mimeType: "text/markdown", parents: [parent],
+		});
+		const updateFileMetadata = vi.fn((id: string, metadata: { name?: string }) =>
+			Promise.resolve(folder(id, metadata.name ?? "docs")));
+		const client = {
+			listAllFiles: vi.fn().mockResolvedValue([
+				folder("a-docs", "docs"), child("a1", "a.md", "a-docs"),
+				folder("z-docs", "docs"), child("z1", "b.md", "z-docs"),
+			]),
+			getChangesStartToken: vi.fn().mockResolvedValue("token-1"),
+			listChanges: vi.fn().mockResolvedValue({ changes: [], newStartPageToken: "token-2" }),
+			getFile: vi.fn().mockResolvedValue({
+				id: "root", name: "root", mimeType: "application/vnd.google-apps.folder", trashed: false,
+			}),
+			updateFileMetadata,
+		} as never;
+		const fs = new GoogleDriveFs(client, "root");
+		expect((await fs.list()).map((entry) => entry.path).sort()).toEqual(["docs", "docs/a.md", "docs/b.md"]);
+
+		await fs.rename("docs", "notes");
+
+		// Renaming only the representative would leave z-docs behind as `docs`, and
+		// bring b.md straight back into the vault at its old path.
+		expect(updateFileMetadata.mock.calls.map(([id, metadata]) => [id, metadata])).toEqual([
+			["a-docs", { name: "notes" }], ["z-docs", { name: "notes" }],
+		]);
+		expect((await fs.list()).map((entry) => entry.path).sort()).toEqual(["notes", "notes/a.md", "notes/b.md"]);
 	});
 });
 

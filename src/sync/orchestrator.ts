@@ -424,17 +424,18 @@ export class SyncOrchestrator {
 		const remediable = contentions.filter((fact) => !this.isExcluded(fact.path));
 
 		// `AGENTS.md` permits a decision to depend on a component's committed
-		// SyncRecord; this is the one input that keeps a user's established file from
-		// being renamed to make room for a newly appeared duplicate. Acquired before
-		// the cut point below, with the rest of the cycle's evidence.
-		const contendedRecords = await this.stateStore
-			.getMany([...new Set(remediable.map((fact) => fact.path))]);
+		// SyncRecord; which claimants hold one is the input that keeps a user's
+		// established file from being renamed to make room for a newly appeared
+		// duplicate. Looked up by the claimants' own identities, and acquired before the
+		// cut point below, with the rest of the cycle's evidence.
+		const recordHolders = await this.stateStore.recordedIdentities(
+			[...new Set(remediable.flatMap((fact) => [fact.admittedId, fact.withheldId]))]);
 
 		// This call is the authorization cut point. Exceptions from this line onward
 		// are not reclassified as evidence-acquisition recovery.
 		const admission = admitBatchObservation(planning.snapshot, conflictStrategy, {
 			contentions: remediable,
-			records: contendedRecords,
+			recordHolders,
 			renameByIdentity: remoteFs.identityRename !== undefined,
 		});
 		logSyncCyclePlan(this.deps.logger, admission);

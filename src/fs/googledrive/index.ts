@@ -219,33 +219,41 @@ export class GoogleDriveFs extends CachingRemoteFs<GoogleDriveFile> {
 				const metadata: { name?: string } = {};
 				if (oldName !== newName) metadata.name = newName;
 
-				let addParents: string | undefined;
-				let removeParents: string | undefined;
-				if (oldParentPath !== newParentPath) {
-					addParents = newParentPath
-						? await this.ensureFolder(newParentPath)
-						: this.rootFolderId;
-					removeParents = (googleDriveFile.parents && googleDriveFile.parents.length > 0
-						? this.cache.findRelevantParentId(googleDriveFile.parents, { has: (id: string) => this.cache.hasId(id) })
-						: undefined)
-						?? (oldParentPath
-							? this.cache.getFile(oldParentPath)?.id ?? this.rootFolderId
-							: this.rootFolderId);
-				}
+				const addParents = oldParentPath === newParentPath ? undefined
+					: newParentPath ? await this.ensureFolder(newParentPath) : this.rootFolderId;
+				// A vault folder several Drive folders make up moves as one: every one of
+				// them is renamed, each out of its own parent.
+				const subjects = this.cache.isFolder(oldPath) ? this.cache.foldersAt(oldPath) : [googleDriveFile];
+				const moves = subjects.map((subject) => ({
+					fileId: subject.id,
+					removeParents: addParents === undefined ? undefined
+						: (subject.parents && subject.parents.length > 0
+							? this.cache.findRelevantParentId(subject.parents, { has: (id: string) => this.cache.hasId(id) })
+							: undefined)
+							?? (oldParentPath
+								? this.cache.getFile(oldParentPath)?.id ?? this.rootFolderId
+								: this.rootFolderId),
+				}));
 
 				return {
 					fileId: googleDriveFile.id,
 					metadata,
 					addParents,
-					removeParents,
+					moves,
 					wasFolder: this.cache.isFolder(oldPath),
 				};
 			},
-			execute: (r) => this.client.updateFileMetadata(
-				r.fileId, r.metadata, r.addParents, r.removeParents
-			),
+			execute: async (r) => {
+				const results = [];
+				for (const move of r.moves) {
+					results.push(await this.client.updateFileMetadata(
+						move.fileId, r.metadata, r.addParents, move.removeParents,
+					));
+				}
+				return results;
+			},
 			staleGuard: (r) => ({ path: oldPath, expectedId: r.fileId }),
-			update: (r, result) => {
+			update: (r, results) => {
 				// The shared stale-guard only validates the SOURCE (oldPath still resolves
 				// to our file id). The destination is checked in resolve() (phase 1), but a
 				// concurrent re-keyer could land a DIFFERENT file at newPath during the
@@ -257,15 +265,17 @@ export class GoogleDriveFs extends CachingRemoteFs<GoogleDriveFile> {
 				// unreachable (ADR 0001, T7: rename_remote runs serially in the structural
 				// phase, and deltas never run during execute) — retained as defense-in-depth.
 				const occupant = this.cache.getFile(newPath);
-				if (occupant && occupant.id !== result.id) {
+				if (occupant && !results.some((result) => result.id === occupant.id)) {
 					this.logger?.warn("Skipping stale cache update for rename", { path: newPath });
 					return;
 				}
 				this.cache.removeEntry(oldPath);
-				if (!this.cache.applyFileChange(result)) {
-					// A successful rename operation itself confirms its requested endpoint
-					// when a sparse provider response omits parent-chain fields.
-					this.cache.setFile(newPath, result, "actual_resolved");
+				for (const result of results) {
+					if (!this.cache.applyFileChange(result)) {
+						// A successful rename operation itself confirms its requested endpoint
+						// when a sparse provider response omits parent-chain fields.
+						this.cache.setFile(newPath, result, "actual_resolved");
+					}
 				}
 				if (r.wasFolder) {
 					this.cache.rewriteChildPaths(oldPath, newPath);
@@ -341,13 +351,22 @@ export class GoogleDriveFs extends CachingRemoteFs<GoogleDriveFile> {
 				// Guard against Google Drive's same-name folder creation:
 				// check Google Drive before creating a potentially duplicate folder
 				const candidates = await this.client.listChildrenByName(parentId, part);
-				if (candidates.length > 1) {
+				// Same-named FOLDERS are one vault folder, so finding several is not an
+				// ambiguity: they are all seated, and the representative — the smallest
+				// id, as the cache chooses it — is where new content goes.
+				const folders = candidates.filter((candidate) => candidate.mimeType === FOLDER_MIME)
+					.sort((a, b) => (a.id < b.id ? -1 : 1));
+				if (candidates.length > 1 && folders.length !== candidates.length) {
 					throw new Error(`Ambiguous provider entry for "${requestedPath}"`);
 				}
-				const existing = candidates[0];
+				const existing = folders[0] ?? candidates[0];
 				if (existing?.mimeType === FOLDER_MIME) {
-					if (!this.cache.applyFileChange(existing)) {
-						this.cache.setFile(requestedPath, existing, "requested_echo");
+					for (const folder of folders) {
+						// Only the representative may fall back to the requested spelling: an
+						// echo never merges, so a second one would evict the first.
+						if (!this.cache.applyFileChange(folder) && folder === existing) {
+							this.cache.setFile(requestedPath, folder, "requested_echo");
+						}
 					}
 					parentId = existing.id;
 				} else if (existing) {

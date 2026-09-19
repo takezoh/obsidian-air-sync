@@ -13,7 +13,7 @@ import { captureBatchObservation } from "./sync-cycle-planning";
 import { directConflictCandidateHint } from "./conflict";
 import { executePlan } from "./plan-executor";
 import { finalizeSyncCycle } from "./sync-cycle-finalization";
-import type { PathObservation, SyncRecord } from "./types";
+import type { PathObservation } from "./types";
 import {
 	addFile, createMockLocalFs, createMockRemoteFs, createMockStateStore, readText,
 } from "../__mocks__/sync-test-helpers";
@@ -66,14 +66,12 @@ function facts(
 	contentions: readonly AddressDisplacement[],
 	overrides: Partial<AddressContentionFacts> = {},
 ): AddressContentionFacts {
-	return { contentions, records: new Map(), renameByIdentity: true, ...overrides };
+	return { contentions, recordHolders: new Set(), renameByIdentity: true, ...overrides };
 }
 
-function recordFor(path: string, remoteIdentityKey: string): Map<string, SyncRecord> {
-	return new Map([[path, {
-		path, hash: "h", localMtime: 1, remoteMtime: 1, localSize: 1, remoteSize: 1,
-		remoteIdentityKey, syncedAt: 1,
-	}]]);
+/** The claimants holding a committed record — looked up by identity, not by address. */
+function synced(...identities: string[]): ReadonlySet<string> {
+	return new Set(identities);
 }
 
 /** A checkpoint whose committed cursor only moves when `commitCheckpoint` is called. */
@@ -156,7 +154,7 @@ describe("address-contention remediation", () => {
 			expect(contentions[0]?.admittedId).toBe("A1");
 
 			const plan = planAddressContentionRemediation(
-				facts(contentions, { records: recordFor("Test.md", "B2") }));
+				facts(contentions, { recordHolders: synced("B2") }));
 
 			expect(plan.actions).toEqual([{
 				action: "rename_remote", path: "Test.conflict-id-A1.md",
@@ -168,9 +166,21 @@ describe("address-contention remediation", () => {
 			const contentions = coldContention([sibling("A1"), sibling("B2")]);
 
 			const plan = planAddressContentionRemediation(
-				facts(contentions, { records: recordFor("Test.md", "stranger") }));
+				facts(contentions, { recordHolders: synced("stranger") }));
 
 			expect(plan.actions[0]?.providerIdentity).toBe("B2");
+		});
+
+		it("falls back to the order-independent rule when every claimant was already synced", () => {
+			// Two objects that each hold a record collide — one moved here from its own
+			// address. Sync history singles out neither, so the arbiter's pick keeps it.
+			const contentions = coldContention([sibling("A1"), sibling("B2")]);
+
+			const plan = planAddressContentionRemediation(
+				facts(contentions, { recordHolders: synced("A1", "B2") }));
+
+			expect(plan.actions[0]?.providerIdentity).toBe("B2");
+			expect(plan.unresolvedAddresses).toEqual(new Set());
 		});
 
 		it("decides identically for both claim orders and for COLD and delta acquisition", () => {
@@ -188,9 +198,9 @@ describe("address-contention remediation", () => {
 			expect(acquisitions.deltaAdmitsClaimant[0]?.displacedPaths).toEqual(["Test.md"]);
 			expect(acquisitions.cold[0]?.displacedPaths).toEqual([]);
 
-			for (const records of [new Map<string, SyncRecord>(), recordFor("Test.md", "B2")]) {
+			for (const recordHolders of [synced(), synced("B2")]) {
 				const plans = Object.entries(acquisitions).map(([temperature, contentions]) =>
-					[temperature, planAddressContentionRemediation(facts(contentions, { records }))] as const);
+					[temperature, planAddressContentionRemediation(facts(contentions, { recordHolders }))] as const);
 				for (const [temperature, plan] of plans) {
 					expect([temperature, plan]).toEqual([temperature, plans[0]![1]]);
 				}

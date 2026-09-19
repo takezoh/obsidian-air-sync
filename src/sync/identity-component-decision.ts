@@ -335,9 +335,12 @@ function indexFacts(
 	// the committed record names — is not the one the cache seated, so it is not in this
 	// cycle's view at all. Something IS there, and which object the address denotes
 	// cannot be resolved from these facts: `present_unresolved`, not an absence and not
-	// the seated claimant. It resolves without a special case once the repair lands.
+	// the seated claimant. Nor can anything beneath it, which the seated claimant's
+	// subtree now occupies. It resolves without a special case once the repair lands.
 	for (const path of component.paths) {
-		if (unresolvedAddresses?.has(path)) return "present_unresolved";
+		for (const address of unresolvedAddresses ?? []) {
+			if (path === address || path.startsWith(`${address}/`)) return "present_unresolved";
+		}
 	}
 	const local = new Map<string, FileEntity>();
 	const remote = new Map<string, FileEntity>();

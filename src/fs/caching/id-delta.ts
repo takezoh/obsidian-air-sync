@@ -1,5 +1,5 @@
 import type { RenamePair } from "../types";
-import type { AbstractMetadataCache, AddressDisplacement, WithheldClaim } from "./metadata-cache";
+import type { AbstractMetadataCache, AddressDisplacement, RelocatedEntry, WithheldClaim } from "./metadata-cache";
 import { projectedIdentityKey } from "./metadata-cache";
 
 /**
@@ -152,14 +152,10 @@ function applyEntry<TFile>(
 		// The provider says this object is gone, so any contention it was part of is
 		// withdrawn: there is nothing left to readmit and nothing left to announce.
 		acc.standing.delete(entry.id);
-		// Tombstone: remove the path + its subtree, recording every removed path.
-		const path = cache.getPathById(entry.id);
-		if (path) {
-			const descendants = cache.collectDescendants(path);
-			acc.changedPaths.add(path);
-			for (const d of descendants) acc.changedPaths.add(d);
-			cache.removeTree(path);
-		}
+		// Tombstone: remove the object and its own subtree, recording every path they
+		// held. A folder that shared its path with others leaves those, and their
+		// contents, in place.
+		for (const path of cache.removeObject(entry.id)) acc.changedPaths.add(path);
 		return;
 	}
 
@@ -181,6 +177,10 @@ function applyEntry<TFile>(
 		// announced and cannot be re-applied; the address it vacated is its own.
 		hold(acc, null, { ...applied.displacement, vacatedPath: applied.displacement.path });
 	}
+	// A folder that moved into an address other folders share can bring children
+	// that meet theirs. Their metadata came with the move, not with this page, so
+	// like an evicted occupant they are announced and cannot be re-applied here.
+	for (const loss of applied.descendantLosses ?? []) hold(acc, null, loss);
 
 	// Moved outside the tracked root (parent no longer resolves) → surface as deleted.
 	// This is the only cause of "no new path" left here: a claim this drain withheld
@@ -203,8 +203,38 @@ function applyEntry<TFile>(
 
 	acc.changedPaths.add(newPath);
 	const moved = !!oldPath && oldPath !== newPath;
-	if (moved) {
+	if (moved && applied.acrossSharedPath) {
+		reportContentsMove(cache, acc, oldPath, oldDescendants, applied.relocated ?? []);
+	} else if (moved) {
 		reportMove(cache, acc, { oldPath, newPath, wasFolder, oldDescendants });
+	}
+}
+
+/**
+ * Report a folder move out of, or into, a path other folders share — as what moved.
+ *
+ * The vault sees one folder at a shared path, so a pair naming the folder would say
+ * the whole vault folder moved, carrying the other folders' contents with it. What
+ * actually moved is this folder's own contents, so each file is reported as its own
+ * move with its own identity, and the folder paths only as changed.
+ */
+function reportContentsMove<TFile>(
+	cache: AbstractMetadataCache<TFile>,
+	acc: IdDeltaResult,
+	oldPath: string,
+	oldDescendants: readonly string[],
+	relocated: readonly RelocatedEntry[],
+): void {
+	acc.changedPaths.add(oldPath);
+	for (const d of oldDescendants) acc.changedPaths.add(d);
+	for (const entry of relocated) {
+		acc.changedPaths.add(entry.newPath);
+		if (entry.isFolder) continue;
+		acc.renamedPaths.push({
+			oldPath: entry.oldPath,
+			newPath: entry.newPath,
+			identityKey: projectedIdentityKey(cache, entry.newPath),
+		});
 	}
 }
 
