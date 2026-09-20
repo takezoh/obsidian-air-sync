@@ -1,145 +1,141 @@
 # Error Handling
 
+This document owns the resilience judgements: how failures are classified, retried, and
+isolated, and what is deliberately *not* done. Classification and policy code lives in the
+module pointers below.
+
 ## Error classification
 
-Error classification is **backend-neutral and centralized in `fs/errors.ts`**, so the sync engine and the fs-layer backends all act on one taxonomy without knowing any backend's error shape.
-
-`getErrorInfo()` (`fs/errors.ts`) extracts the transport-level facts from an arbitrary thrown value:
-
-```typescript
-interface ErrorInfo {
-  status: number | null;     // HTTP status code
-  retryAfter: number | null; // Retry-After header value in seconds
-}
-```
-
-It handles both Fetch API `Headers` objects and plain `Record<string, string>` headers. The `Retry-After` header is parsed as either a number of seconds or an HTTP-date (RFC 7231). `status` is taken from `err.status` if present (no numeric validation). For an HTTP-date `Retry-After`, `retryAfter` is the relative delay in seconds: `max(0, ceil((parsedDate - now) / 1000))`. Both fields are `null` when absent or unparseable; a malformed negative `Retry-After` is clamped to 0.
-
-`classifyHttpError()` (`fs/errors.ts`) maps those facts to a small, retry-policy-facing **`ErrorClassification`** (`{ kind, retryAfterMs? }`):
+Error classification is **backend-neutral and centralized** (`fs/errors.ts`), so the sync
+engine and the fs-layer backends act on one taxonomy without knowing any backend's error
+shape. A thrown value is reduced to transport-level facts (HTTP status and a parsed
+`Retry-After`, handling both Fetch headers and plain header records; absence or unparseable
+values become null), then mapped to a small retry-policy-facing classification:
 
 | `kind` | Trigger | Policy |
 |--------|---------|--------|
 | `auth` | `AuthError` or 401 | abort, prompt to reconnect |
 | `permission` | 403 (not a rate limit) | abort, prompt about permissions |
-| `rateLimit` | 429 | retry, honoring `retryAfterMs` |
+| `rateLimit` | 429 | retry, honoring `Retry-After` |
 | `notFound` | 404 | stop retrying |
 | `transient` | network blip / 5xx / unknown | retry with backoff |
-| `permanent` | explicit backend/protocol invariant failure (for example a 2xx resumable-upload init without `Location`) | stop retrying; quarantine only when a stable `permanentCode` is present |
+| `permanent` | explicit backend/protocol invariant failure | stop retrying; quarantine only with a stable `permanentCode` |
 
-A backend with a quirkier convention wraps this in its own `classifyError` (the `IBackendProvider` hook). Google Drive does: `classifyGoogleDriveError()` (`fs/googledrive/errors.ts`) re-tags a **403 that is actually a rate limit** as `rateLimit` (retry) rather than `permission` (abort), detected by inspecting `error.json.error.errors[].reason` for `rateLimitExceeded` / `userRateLimitExceeded` / `dailyLimitExceeded`. This is the one Drive-specific wrinkle the neutral classifier can't know; everything else defers to `classifyHttpError`.
+A backend with a quirkier convention wraps this via the provider hook. Google Drive does:
+a **403 that is actually a rate limit** is re-tagged as `rateLimit` (retry) rather than
+`permission` (abort), detected from the error body's rate-limit reasons. This is the one
+Drive-specific wrinkle the neutral classifier cannot know.
 
 ## Retry strategy
 
-The retry **policy** is one pure function — `decideRetry(classification, attempt, maxRetries, rng)` (`fs/errors.ts`) — shared by every retry site so behaviour can't drift between them and the policy is unit-testable with an injected `rng`. Given a classification it returns `abort` (`auth`/`permission`), `stop` (`notFound`/`permanent`), `retry` (with a `delayMs`), or `exhausted`. The delay honors a server-set `retryAfterMs` when present, else full-jitter exponential backoff: `2^(attempt-1) * 1000 * (0.5 + rng())` ms.
+The retry **policy** is one pure function (`decideRetry` in `fs/errors.ts`) shared by every
+retry site, so behaviour cannot drift and the policy is unit-testable with an injected RNG.
+Given a classification it returns abort (`auth`/`permission`), stop (`notFound`/`permanent`),
+retry with a delay, or exhausted; the delay honors a server-set `retryAfterMs` when present,
+else full-jitter exponential backoff. The orchestrator classifies with the backend override
+when present, else the neutral classifier, then decides.
 
-`SyncOrchestrator.executeWithRetry()` drives each `executeSyncOnce()` cycle through that policy:
-
-- **Classify**: `provider.classifyError?.(err) ?? classifyHttpError(err)` — the backend override (e.g. Google's 403-means-rate-limit) when present, else the neutral classifier.
-- **Decide**: `decideRetry(classification, attempt, MAX_RETRIES = 3, Math.random)` — `abort`/`stop` end the loop early (no backoff); `retry` sleeps `delayMs` then re-runs; `exhausted` falls through to the generic failure tail.
-
-Only a *thrown* error from `executeSyncOnce()` triggers a *cycle-level* retry. Per-file failures are caught inside `executePlan` (in `executeAction`/`executeConflictAction`) and recorded in `result.failed` without throwing, so they never cause a cycle-level retry — a sync with failed or blocked actions returns a normal result reported as `"partial_error"`. The only error that propagates out of action execution is `AuthError` (re-thrown to abort the whole sync). Errors thrown *outside* per-action try/catch — Observation (`collectChanges`/`prepareSyncCycleSnapshot`), Admission (`admitBatchObservation`), Commit/finalization, or `saveSettings` — do reach the retry loop.
+Only a *thrown* error from a cycle triggers a *cycle-level* retry. Per-file failures are
+caught inside execution and recorded without throwing, so they never cause a cycle-level
+retry — a sync with failed or blocked actions returns a normal `partial_error` result. The
+only error that propagates out of action execution is `AuthError`. Errors thrown *outside*
+the per-action try/catch (Observation, Admission, Commit/finalization, settings save) do
+reach the retry loop.
 
 ### Two retry layers
 
 There are **two independent retry layers** (they do not multiply):
 
-1. **Per-action, in-cycle** (`withIoRetry`, `plan-executor.ts`): each action's network I/O is retried up to `MAX_ACTION_RETRIES = 3` for `rateLimit`/`transient` classifications, honoring `Retry-After` (else the same jittered backoff) — the **same shared `decideRetry` policy** the cycle-level loop uses (see [Retry strategy](#retry-strategy)). It classifies via `ctx.classifyError` — the backend's own override (e.g. Google's 403-means-rate-limit) when present, else `classifyHttpError`. `AuthError` is rethrown immediately (the only cycle-abort path); `permission`/`notFound` are not retried. An exhausted retry rethrows the *original* error so the per-action catch records it in `result.failed` — a *return*, never a throw, so it does **not** reach the cycle-level loop. On a `rateLimit`, the transfer phase's `AdaptivePool` is signalled (`noteRateLimit`) before the backoff sleep so its concurrency ceiling halves immediately. Net effect: a transient 429 no longer defers a file to the next (forced-cold) cycle, so cycles complete clean more often (a clean cycle commits the checkpoint and avoids a repeated cold reconcile).
-2. **Cycle-level** (`MAX_RETRIES = 3`, above): only a *thrown* error (effectively `AuthError`, or an error outside per-action try/catch) re-runs the whole cycle.
+1. **Per-action, in-cycle**: each action's network I/O is retried a bounded number of times for `rateLimit`/`transient`, honoring `Retry-After` else the same jittered backoff, using the **same shared policy** as the cycle-level loop. `AuthError` is rethrown immediately (the only cycle-abort path); `permission`/`notFound` are not retried. An exhausted retry rethrows the *original* error so the per-action catch records it as a failure — a return, never a throw, so it does not reach the cycle-level loop. On a rate limit the transfer pool is signalled before the backoff sleep so its concurrency ceiling halves immediately. Net effect: a transient rate limit no longer defers a file to a forced-cold cycle, so cycles complete clean more often.
+2. **Cycle-level**: only a *thrown* error (effectively `AuthError`, or an error outside per-action try/catch) re-runs the whole cycle.
 
-Worst case for a single action is `MAX_ACTION_RETRIES` (3) I/O attempts; it never compounds with `MAX_RETRIES`.
+Worst case for a single action is the per-action bound; it never compounds with the
+cycle-level bound.
 
 ### Admission failures
 
 If fresh rename reconciliation cannot prove one terminal state, Admission emits no
-executable action for that identity component. The cycle remains visible as
-`partial_error` and the notification counts an ordinary error, but it writes no pending
-operation, phase, or checkpoint. A later ordinary scheduler trigger performs fresh
-acquisition (COLD in the same session when required); this is re-observation, not a
-promise that unchanged contradictory evidence will converge. Legacy v6 rename rows can
-only supply candidate endpoints and never authorize a replayed effect.
+executable action for that identity component. The cycle remains visible as `partial_error`
+and counts an ordinary error, but writes no pending operation, phase, or checkpoint. A later
+ordinary trigger performs fresh acquisition; this is re-observation, not a promise that
+unchanged contradictory evidence will converge. Legacy rename rows can only supply candidate
+endpoints and never authorize a replayed effect.
 
 ### Non-retryable errors
 
-| Error | Behavior |
-|-------|----------|
-| `AuthError` | Immediate abort, status set to `"error"`, notification to reconnect |
-| 403 (non-rate-limit) | Immediate abort, permission denied notification |
-| 404 / `permanent` | Break the retry loop immediately (no backoff); falls through to the generic failure tail for cycle-level errors. For per-action errors, the action lands in `result.failed` without in-cycle retry. |
+`AuthError` and a non-rate-limit 403 abort immediately (with a reconnect / permission
+notification). A 404 or a `permanent` error breaks the retry loop immediately with no
+backoff; as a per-action error it is recorded as failed without an in-cycle retry.
 
 ## Rate limiting
 
-Google Drive rate limits manifest as:
-
-| Status | Condition | Classification |
-|--------|-----------|----------------|
-| 429 | Too Many Requests | `classifyHttpError` maps 429 → `rateLimit` |
-| 403 | Rate limit exceeded | `classifyGoogleDriveError` re-tags 403 → `rateLimit` when `error.json.error.errors[].reason` is a rate-limit reason |
-
-Both land on `rateLimit`, so `decideRetry` retries them honoring the `Retry-After` header value when available, falling back to exponential backoff.
-
-A transport-level 401 auto-refresh-retry happens inside `GoogleDriveClient.request()` before errors reach this orchestrator-level retry loop — see [google-drive-backend.md § Transport-level 401 retry](google-drive-backend.md#transport-level-401-retry).
+Google Drive rate limits manifest as a 429 or a 403 with a rate-limit reason (re-tagged by
+the Drive classifier). Both then retry under the shared policy, honoring `Retry-After` when
+available and falling back to exponential backoff. A transport-level 401 auto-refresh-retry
+happens inside the Google Drive client before errors reach the orchestrator-level loop — see
+[google-drive-backend.md § Transport-level 401 retry](google-drive-backend.md#transport-level-401-retry).
 
 ## Recovery scenarios
 
 | Scenario | Recovery |
 |----------|----------|
-| Network drop | Retry up to 3x with backoff. If all retries fail, set status to `"error"`. On network restore (`online` event), `SyncScheduler` triggers a new sync. |
-| Crash mid-sync | State is committed per action after successful I/O; uncommitted actions are re-detected next cycle. See [sync-pipeline.md § State commit](sync-pipeline.md#state-commit). |
-| IndexedDB eviction | `GoogleDriveFs` falls back to cold path (full scan). `SyncStateStore` returns empty `getAll()`, triggering cold change detection which does a full outer join. `resolveEmptyHashes` is implicit: cold mode treats all paths as candidates. |
-| Auth error | `AuthError` causes immediate abort. On a 400/401 token-refresh failure, `GoogleAuthBase.handleRefreshError()` records `authFailedAt = Date.now()`; for the next `AUTH_FAILED_COOLDOWN` (60 s) `getAccessToken()` short-circuits and throws `AuthError(401)` without attempting a refresh. After the cooldown a refresh is retried. Reconnecting (`setTokens()`) or any successful token store/refresh (`storeTokenResponse()`) resets `authFailedAt = 0`. Non-400/401 refresh errors are re-thrown unchanged and do not arm the cooldown. |
-| Individual file error | Caught per-action; the failed action is recorded in `result.failed`, other actions continue, status set to `"partial_error"`. After one forced cold recovery, the same repeated local-origin poison action classified as `permanent` with a stable `permanentCode` may be recorded in `result.blocked` for 5 minutes instead of being executed again. See [sync-pipeline.md § Execution phases](sync-pipeline.md#execution-phases-lanetier-scheduling) and [Per-file error isolation](#per-file-error-isolation) below. |
+| Network drop | Retry up to the bound with backoff; if all fail, status `error`. On network restore, the scheduler triggers a new sync. |
+| Crash mid-sync | State commits per action after successful I/O; uncommitted actions are re-detected next cycle. See [sync-pipeline.md § State commit](sync-pipeline.md#state-commit). |
+| IndexedDB eviction | The state store returns an empty set, triggering cold change detection, which treats all paths as candidates. |
+| Auth error | `AuthError` aborts immediately. A 400/401 token-refresh failure arms a cooldown during which token acquisition short-circuits and throws without a network attempt; after the cooldown a refresh is retried. Reconnecting or any successful token store/refresh resets it, and non-400/401 refresh errors do not arm it. |
+| Individual file error | Caught per-action; the failure is recorded, other actions continue, status `partial_error`. After one forced cold recovery, a repeated local-origin poison action classified `permanent` with a stable `permanentCode` may be blocked for a bounded period instead of executed again. See [sync-pipeline.md § Execution phases](sync-pipeline.md#execution-phases-lanetier-scheduling). |
 | Mass deletion | No volume-based abort; erroneous deletions are prevented structurally. See [sync-pipeline.md § Deletion safety](sync-pipeline.md#deletion-safety). |
-| Stale cache (Google Drive) | `withCacheMutex()` verifies the file ID hasn't changed during I/O. If stale, the cache update is skipped with a warning. |
+| Stale cache (Google Drive) | A write verifies the file ID has not changed during I/O; if stale, the cache update is skipped with a warning. |
 
 ## Per-file error isolation
 
-In `plan-executor.ts`, each action is wrapped in a try/catch:
+Each action is wrapped in its own try/catch: only `AuthError` is re-thrown (aborting the
+whole sync); every other error is recorded as a failed action so remaining actions
+continue. The same isolation applies to ordinary and conflict actions, each with the
+per-action retry above; execution's phases are described in
+[sync-pipeline.md](sync-pipeline.md).
 
-```typescript
-try {
-  const { localEntity, remoteEntity } = await runActionIO(action, ctx);
-  await commitAction(action, localEntity, remoteEntity, ctx.committer);
-  result.succeeded.push({ action, localEntity, remoteEntity });
-} catch (err) {
-  if (err instanceof AuthError) throw err;  // re-throw to abort entire sync
-  const error = err instanceof Error ? err : new Error(String(err));
-  result.failed.push({ action, error });     // isolate, continue with other actions
-} finally {
-  reportProgress();
-}
-```
-
-Execution runs in three phases (lane/tier scheduling — see [sync-pipeline.md](sync-pipeline.md)). Phase 1 runs transfers (`push`, `pull`) concurrently via an `AdaptivePool` (AIMD: desktop start 5 / max 10, mobile start 3 / max 8; +1 every 8 clean runs, halve on a rate-limit; plus a byte budget — in-flight bytes ≤ desktop 1 GB / mobile 512 MB — bounding peak memory), with the state-only `match`/`cleanup` run inline; Phase 2 runs `conflict` serially in its own phase via `executeConflictAction`; Phase 3 runs the remote and local structural lanes concurrently, each doing its renames serially then its deletes pooled (`AsyncPool(DELETE_CONCURRENCY = 5)`). Both `executeAction` and `executeConflictAction` apply the same per-action isolation (and the per-action `withIoRetry` above): each action is wrapped in its own try/catch that re-throws only `AuthError` (aborting the whole sync) and records every other error in `result.failed` so remaining actions continue.
-
-`SyncOrchestrator` also keeps an in-memory failed-action tracker. It never persists across plugin reloads. Only local-origin actions that are safe to skip after recovery (`push`, `delete_remote`, `rename_remote`) and whose failure classification is `permanent` with a stable `permanentCode` are eligible. If the same backend/action/path/permanentCode signature fails in two consecutive cycles, the third cycle records it in `result.blocked` without executing its I/O. Success, action/content changes, action type changes, a non-eligible failure classification, or the 5 minute TTL clear the block. Remote-origin and conflict actions are deliberately excluded, and `transient` / `rateLimit` failures are deliberately excluded so a recovered network/provider is retried immediately.
+The orchestrator also keeps an in-memory failed-action tracker that never persists across
+reloads. Only local-origin actions that are safe to skip after recovery and whose failure is
+`permanent` with a stable `permanentCode` are eligible. If the same signature fails in two
+consecutive cycles, the third cycle records it as blocked without executing its I/O;
+success, action/content changes, action-type changes, a non-eligible classification, or the
+TTL clear the block. Remote-origin and conflict actions are deliberately excluded, and
+`transient`/`rateLimit` failures are deliberately excluded so a recovered provider is
+retried immediately.
 
 A local source changing, moving, or disappearing after the final pre-write check is not
 itself an action failure when the executor already captured the admitted bytes and proves
-the remote terminal contains them. It publishes that exact captured revision as the
-historical baseline; any later vault event remains pending for the next cycle. This does
-not relax stale pre-write inputs, an unproved or corrupt remote terminal, exact record
-CAS, or a pull whose remote source changes or disappears. See
+the remote terminal contains them; it publishes that exact captured revision as the
+historical baseline. This does not relax stale pre-write inputs, an unproved or corrupt
+remote terminal, exact record CAS, or a pull whose remote source changes. See
 [ADR 20260914](adr/adr-20260914-publish-captured-push-revision.md).
 
 ## Acknowledge pattern
 
-Each sync cycle captures a `snapshot()` of the tracker at the start — a frozen copy of `dirtyPaths`, `renamePairs`, `folderRenamePairs`, and `initialized` — drives change detection from it, and acknowledges exactly that snapshot at the end:
+Each sync cycle captures a snapshot of the tracker at the start, drives change detection
+from it, and acknowledges exactly that snapshot at the end.
 
-```typescript
-// In orchestrator.runSync(), once per do/while cycle:
-const snapshot = this.deps.localTracker.snapshot();
-// …change detection + execution read `snapshot`…
-if (completion.kind === "clean") {
-  this.deps.localTracker.acknowledge(snapshot);
-} else {
-  this.deps.localTracker.acknowledgeRelations(snapshot);
-}
-```
+A full acknowledge (after a clean result) removes each snapshot dirty path and clears each
+captured rename pair only when the live entry still equals the snapshot value — a mid-cycle
+rename that re-created or overwrote that key differs from the snapshot and survives — then
+marks the tracker initialized. A terminal partial result acknowledges only the
+generation-aware relations, leaving dirty paths and initialization unchanged: a failed
+content edit stays HOT, but a stale failed relation is not replayed forever. Using the
+start-of-cycle snapshot is deliberate: a mid-cycle `markDirty`/rename is never swept.
 
-`acknowledge(snapshot)` removes each of the snapshot's dirty paths from `dirtyPaths`, and clears each captured rename pair and folder-rename pair **only when the live entry still equals the snapshot's value** — a mid-cycle rename that re-created or overwrote that key (a fresh pair, or the same `newPath` with a different source) differs from the snapshot and survives. It then sets `initialized = true`. `acknowledgeRelations(snapshot)` applies only that generation-aware relation removal and leaves dirty paths and initialization unchanged. Using the start-of-cycle snapshot rather than the live set is deliberate: a `markDirty`/rename arriving mid-cycle is never swept.
+A fatal error (AuthError, non-rate-limit 403, 404, or retries exhausted) returns no result
+and preserves the whole snapshot. Folder rename events put both root addresses in the dirty
+set; if those unbaselined roots are absent at address-local stat after relation abandonment,
+HOT promotes to WARM to rediscover descendants, and a relation report recreated after
+capture survives for the next cycle.
 
-Full `acknowledge` is reached only after a clean non-null result. A *fatal* error — `AuthError`, a non-rate-limit 403, a 404 (which breaks the retry loop), or retries exhausted — returns null, so `runSync` returns early at `if (!result) return;` and preserves the whole snapshot. A terminal *partial* result calls `acknowledgeRelations(snapshot)` instead: captured dirty paths remain pending, while captured file/folder rename reports are removed only when their endpoint generations still match. This keeps a failed equal-mtime/equal-size content edit on HOT, but prevents a stale failed relation from replaying forever. Folder rename events put both root addresses in the dirty set; if those unbaselined roots are absent at address-local stat after relation abandonment, HOT promotes to WARM to rediscover descendants. A relation report recreated after capture survives for the next cycle.
+The priority pull acknowledges the path after completion (success or failure) to prevent
+re-triggering, clearing only that path's dirty and rename-pair entry and intentionally
+leaving folder-rename state and initialization untouched — a single-file pull must not wipe
+pending folder renames or flip the tracker out of its cold-start state.
 
-The `pullSingle()` method calls `acknowledgePath(path)` after completion (success or failure) to prevent re-triggering the file-open priority sync for the same path. Unlike `acknowledge`, it clears only that path's dirty and rename-pair entry, intentionally leaving `folderRenamePairs` and `initialized` untouched — a single-file pull must not wipe pending folder renames or flip the tracker out of its cold-start state.
-
-Setting `initialized = true` is a precondition for hot-mode change detection, but hot mode is selected only when the tracker is initialized AND has at least one dirty path (`collectHot`); an initialized tracker with no dirty paths uses warm mode, or cold mode when the state store is empty. After a cycle with no concurrent edits the dirty set is empty, so the immediately following cycle (absent new edits) runs in warm mode rather than hot.
+Hot mode requires the tracker to be initialized AND to have at least one dirty path; an
+initialized tracker with no dirty paths uses warm mode, or cold mode when the state store is
+empty. After a cycle with no concurrent edits the dirty set is empty, so the following cycle
+(absent new edits) runs warm rather than hot.

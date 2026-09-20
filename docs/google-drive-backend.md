@@ -1,235 +1,264 @@
 # Google Drive Backend
 
+This document owns the Google Drive-specific design judgements. Wire protocols, cache
+internals, and method-level algorithms live in `fs/googledrive/`.
+
 ## GoogleDriveFs
 
-`GoogleDriveFs` (`fs/googledrive/index.ts`) implements `IFileSystem` for Google Drive. It avoids downloading file content during `list()` and `stat()` by maintaining an in-memory metadata cache. Content is only downloaded when `read()` is called.
+The Google Drive filesystem implements `IFileSystem`. It avoids downloading content during
+listing/stat by maintaining an in-memory metadata cache; content is only downloaded on read.
 
 ### Initialization lifecycle
 
-The remote delta cursor (`changesPageToken`) has a single source of truth: the `MetadataStore` (IndexedDB, keyed `{vaultId}-{remoteVaultFolderId}`), where it is stored in `META_STORE` **alongside the file map and committed in the same transaction** (see [ADR 0001](adr/0001-metadata-cache-is-subordinate-to-commit-last.md)). It is **not** kept in `settings`. The cursor advances only on a fully-successful sync; see [Crash recovery](sync-pipeline.md#crash-recovery).
+The remote delta cursor has a single source of truth: the metadata store, stored **alongside
+the file map and committed in the same transaction** (see
+[ADR 0001](adr/0001-metadata-cache-is-subordinate-to-commit-last.md)). It is **not** kept in
+settings, and it advances only on a fully-successful sync (see
+[Crash recovery](sync-pipeline.md#crash-recovery)).
 
-On first `list()`, `stat()`, `read()`, or `write()`, `ensureInitialized()` runs:
-
-1. **Checkpoint present** (file map + cursor restored together): `loadFromCache()` reads both the file map and the cursor (`META_STORE`) from IndexedDB — they were committed in one transaction, so a checkpoint exists only when **both** are present. An incremental replay is warranted.
-2. **No checkpoint** (genuine first sync, an empty/missing store, or after a rescan / state clear): `fullScan()` clears the cache, fetches a fresh changes start token BEFORE listing (so changes that land during the scan are not missed), runs `listAllFiles()` recursively with **adaptive** concurrency (an `AdaptivePool` starting at 3, ramping toward 8 on sustained success and halving on a rate-limit — see [Full-scan listing concurrency](#full-scan-listing-concurrency)), builds the `GoogleDriveMetadataCache` from the flat file list, and marks the FS initialized. No replay is warranted — the token is "now". Persistence is deferred to the checkpoint commit (a clean cycle), not eager.
-
-`list()` and `getChangedPaths()` apply an incremental `changes.list` only when a replay is warranted (checkpoint restored, or the FS was already initialized); a fresh full scan reports no delta. The cache is scoped to `vaultId` so a plugin reinstall (which regenerates `vaultId`) starts with a fresh cache, preventing stale entries.
+Initialization either restores a checkpoint (file map + cursor together, so an incremental
+replay is warranted) or, when none exists (genuine first sync, empty/missing store, or after
+a rescan/state clear), clears the cache, captures a fresh changes start token **before**
+listing so changes during the scan are not missed, lists all files recursively, builds the
+cache, and marks the filesystem initialized. A fresh full scan reports no delta — the token
+is "now" — and persistence is deferred to the clean-cycle checkpoint commit, not eager. The
+cache is scoped to the vault id so a plugin reinstall starts fresh.
 
 ### Cache invalidation
 
-`getChangedPaths()` is the sole entry point for remote change detection (`IFileSystem` contract). It runs under the cache mutex (`cacheMutex.run`), calls `ensureInitialized()`, and:
+Remote change detection goes through the delta entry point, under the cache mutex, after
+ensuring initialization. It returns no data when a fresh full scan just captured "now", and
+otherwise applies incremental changes from the cursor, splitting collected paths into
+modified/deleted by checking whether each still exists in the cache — except a path absent
+because a **contended address** displaced it, which is neither: the object is still on
+Drive, so it is reported as contended, never deleted. An expired changes token falls back to
+a full scan diffed against the prior cache.
 
-- Returns `null` when no replay is warranted — a fresh full scan just captured "now", so there is no delta (initial sync).
-- Otherwise calls `applyIncrementalChanges()` from the current cursor (see [Incremental sync](#incremental-sync)). The collected `changedPaths` are split into `modified`/`deleted` by checking whether each path still exists in the cache (`cache.hasFile(path)`) — except that a path absent because a **contended address** displaced it is neither: the object is still on Drive, so it goes to `contended`, never to `deleted`.
-- A 410 from `changes.list` (expired token) is converted to `needsFullScan` and falls back to `fullScanWithDelta()`.
+**Same-named folders.** Drive lets one folder hold two same-named children. When both are
+**folders** and provider-resolved, they are **one vault folder**: a vault folder is only a
+path, and Air Sync keeps no record for one. The cache holds both at that path — the smallest
+ID is the representative every path-level reader sees and where new content is created — and
+each folder's contents keep the addresses they derive through it. Nothing is displaced and
+nothing is announced; only a *file* inside can collide. Deleting or moving one takes only
+its own contents, told apart by parent ID rather than path prefix; renaming or deleting the
+vault folder applies to every Drive folder it is made of. A request-echo folder (whose
+parent chain does not reach the bound root) never merges.
 
-**Same-named folders.** Drive lets one folder hold two children with the same name. When both are **folders** and both spellings are provider-resolved, they are **one vault folder**: a vault folder is only a path, and Air Sync keeps no record for one. The cache holds both at that path — the smallest ID is the representative every path-level reader sees and where new content is created — and each folder's contents keep the addresses they derive through it. Nothing is displaced and nothing is announced; only a *file* inside can collide. Deleting or moving one of them on Drive takes only its own contents, told apart by parent ID rather than by path prefix; renaming or deleting the vault folder applies to every Drive folder it is made of. A request-echo folder (a guess whose parent chain does not reach the bound root) never merges.
+**Contended addresses.** Otherwise a vault path cannot hold both. When two distinct file IDs
+resolve to one cache path, the cache does **not** silently evict the occupant: it arbitrates
+(provider-resolved spelling beats a bare-name request echo; among equals the lowest file ID
+wins), removes the losing claimant's subtree, and **returns** the loss as a fact naming the
+path, both IDs, the removed descendants, and the reason — one warn line per contended
+address, never per descendant. Within a drain the losses accumulate and settle at every page
+close, so a tombstone for the winning ID later in the same drain readmits the withheld
+claimant and withdraws the contention before anything is published. Every producer of the
+deleted set subtracts the addresses a contention explains. The condition is repaired
+upstream by one rename of the non-keeper issued by stable id, and the cycle's checkpoint is
+blocked until it lands. See
+[Sync pipeline → Address-contention remediation](sync-pipeline.md#address-contention-remediation).
 
-**Contended addresses.** Otherwise — two files, a file and a folder, or a request echo — a vault path cannot hold both. When two distinct file IDs resolve to one cache path, the cache does **not** silently `removeTree()` the occupant. It arbitrates (provider-resolved spelling beats a bare-name request echo; among equals the lexicographically lowest file ID wins), removes the losing claimant's subtree along with it, and **returns** the loss as a fact naming the path, both IDs, the removed descendant paths and the reason — with one `warn` line per contended address, never per descendant. Within an incremental drain the losses accumulate and are settled at every page close, so a tombstone for the winning ID later in the same drain readmits the withheld claimant and withdraws the contention before anything is published. What survives the drain travels out as `RemoteDelta.contended`, and every producer of `deleted` subtracts the addresses it explains. The condition is then repaired upstream — one `rename_remote` of the non-keeper to `insertConflictSuffix(path, "id-" + <its file ID>)`, issued through `identityRename` — and the cycle's checkpoint is blocked until it lands. See [Sync pipeline → Address-contention remediation](sync-pipeline.md#address-contention-remediation).
+**Entered-folder re-listing.** The changes feed reports one change per changed *item*:
+moving a folder into the vault root reports the folder alone, and its unchanged descendants
+produce no change. So a folder whose ID had no cached path when its change applied (never
+tracked, evicted by an earlier move-out, restored from Trash, or reached because its
+ancestor chain entered scope) would land in the cache empty and its files would stay
+invisible until a cold rescan. The delta apply records those IDs while applying (per-call,
+never persisted) and, **after the whole drain**, resolves each to its current path, drops
+ones that left scope or are nested under another target, and walks the rest sequentially
+with no retry layer of its own. Each listing merges back through the same per-page apply so
+a descendant already cached surfaces as a rename rather than a duplicate, and the merge only
+upserts: absence from a listing never removes a cached entry. This is the **only** full-tree
+listing on the incremental path; a rename or move of an already-cached folder issues no
+request. A listing failure propagates, so the cursor is not advanced and the attempt aborts;
+the next attempt re-lists from the same committed window. See
+[ADR: Google Drive delta re-lists entered folders](adr/adr-20260916-gdrive-delta-relists-entered-folders.md).
 
-**Entered-folder re-listing.** `changes.list` reports one change per changed *item*: moving a folder into the vault root reports the folder alone, and its unchanged descendants produce no change at all. So a folder whose ID had no cached path when its change applied (never tracked, evicted by an earlier move-out, restored from Trash, or reached because its ancestor chain entered scope) would otherwise land in the cache empty, and its pre-existing files would stay invisible until a cold rescan. `applyIncrementalChanges()` records those IDs while applying (`enteredFolderIds` on the shared `id-delta.ts` accumulator — per-call bookkeeping, never persisted) and, **after the whole drain**, resolves each to its current path, drops the ones that left scope again, drops the ones nested under another target, and walks the rest with `listAllFiles(folderId)` — sequentially, one target at a time, with no retry layer of its own. Each listing is merged back through the same per-page apply, so a descendant already cached elsewhere surfaces as a rename rather than a duplicate, and the merge only ever upserts: absence from a listing never removes a cached entry. This is the **only** use of `listAllFiles()` on the incremental path; a delta with no entering folder (including a rename or move of an already-cached folder) issues no request. A listing failure propagates out of `applyIncrementalChanges()`, so the cursor is not advanced and the attempt aborts without committing — the next attempt re-lists the same folders from the same committed window. See [ADR: Google Drive delta re-lists entered folders](adr/adr-20260916-gdrive-delta-relists-entered-folders.md).
+The expired-token full-scan-with-delta route snapshots old paths by file ID, full-scans,
+then diffs **by file ID only**: a new ID is added, a moved ID is a rename plus modify/delete,
+and an ID present before but absent after is deleted **unless the scan's own arbitration
+withheld it** — a withheld ID vanished because another claimant took its address, so it is
+excluded from the deleted set and reported as contended. Because it keys on file ID, it
+**cannot see in-place content edits** (same path + same ID); those surface on the next
+incremental sync or via warm mode. A folder that moved out of or into a shared same-named
+path is not a renamed folder pair — the vault folder there did not move — so its contents
+are reported as their own moves.
 
-`fullScanWithDelta()` is reached only on the 410 path, from a replay — so a cursor always exists, committed or captured by a fresh scan earlier in the same working view. It snapshots the old paths-by-Google Drive-ID, performs a full scan, then diffs old vs new **by Google Drive file ID only**: a new ID is `modified` (added), a moved ID (different path) is a `renamed`+`modified`+`deleted`, and an ID present before but absent after is `deleted` **unless the scan's own claim-set arbitration withheld it** — a withheld ID, and every old path that went with it, vanished from the cache because another claimant took its address, not because Drive dropped it, so it is excluded from `deleted` and reported in `contended`. Because it keys on file ID, it **cannot see in-place content edits** (same path + same ID) -- those surface on the next incremental sync or via warm mode's local-vs-record check. A folder that moved out of or into a path same-named folders share is not a `renamed` folder pair — the vault folder there did not move — so, as in the incremental drain, its contents are reported as their own moves and its old path stays `modified` while another folder still holds it. An empty snapshot is a view with nothing in it: everything the scan finds is added, and its contentions are reported like any other scan's.
-
-The two routes can report one move in different shapes, and both converge. A subfolder that is not itself shared, moving with a folder out of a shared path, reaches the drain only through its files, while the 410 diff — which sees ids and paths, not which move carried an object — also reports it as a folder pair. And when every folder of a shared path moves to one destination in the same window — as when another device renames the vault folder — either route reports the files' moves, the old path deleted and the new one modified, rather than one folder rename: each folder, taken alone, left or joined a path another shared.
+The two routes can report one move in different shapes, and both converge.
 
 ### Mutex protection
 
-All cache reads and writes are protected by `cacheMutex` (an `AsyncMutex`). Write operations use `withCacheMutex()` which:
-1. Resolves IDs/paths under the mutex, producing a `{ path, expectedId }` stale-guard descriptor before any I/O
-2. Executes network I/O outside the mutex
-3. Re-acquires the mutex and skips the cache update (logging a warning) if `expectedId` is set and the cache's current Google Drive ID for that path no longer equals `expectedId` -- i.e. a concurrent operation re-keyed the path during the I/O
-
-This step 3 is the **compare-and-swap** of an optimistic protocol: releasing the mutex in step 2 (so uploads run concurrently) is what makes the step-1 view potentially stale by step 3. Under the current architecture the guard is **dormant** -- it never fires in production, because no two concurrent (Group-A) ops ever target the same path. It is retained as defense-in-depth; see [ADR 0001 → T7](adr/0001-metadata-cache-is-subordinate-to-commit-last.md) for the reachability proof and disposition.
+All cache reads and writes are protected by the cache mutex. Writes resolve ids/paths under
+the mutex into a stale-guard descriptor, execute network I/O outside it, and re-acquire it to
+skip the cache update if the path was re-keyed during the I/O. This is the compare-and-swap
+of an optimistic protocol: releasing the mutex so uploads run concurrently is what makes the
+first view potentially stale. Under the current architecture the guard is **dormant** — no
+two concurrent same-path ops exist — and is retained as defense-in-depth; see
+[ADR 0001 → T7](adr/0001-metadata-cache-is-subordinate-to-commit-last.md).
 
 ### stat() and hash
 
-`stat()` always returns `hash: ""`. The sync engine uses `remoteChecksum` (Google Drive's `md5Checksum`, tagged `{ algo: "md5", value }`) for remote change detection via `hasRemoteChanged()`. This avoids downloading file content just to compute a hash.
-
-`stat()` and `read()` deliberately do NOT apply incremental changes -- `list()` is always called first in the sync cycle and refreshes the cache, so these only read it. For folders, the returned entity is `{ isDirectory:true, size:0, mtime:0, hash:"" }` with no `backendMeta`.
+`stat()` always returns no local hash; the sync engine uses the remote md5 checksum for
+remote change detection, avoiding a download just to compute a hash. `stat()` and `read()`
+deliberately do **not** apply incremental changes — the sync cycle calls `list()` first,
+which refreshes the cache.
 
 ### Detached priority observation
 
-File-open priority reads bypass the shared metadata cache and delta cursor. They independently
-resolve the admitted Drive file ID and the current path occupant, then download by the stable ID.
-The read token is `md5Checksum + size`, not Drive's metadata `version`: live E2E showed that
-`version` can settle after a write and produce a false `target_changed` without a content change.
-The checksum token makes the read guard content-scoped; identity and structural/path changes remain
-guarded by the separate ID and occupant observations. Folders and files without complete checksum
-evidence fail closed.
+File-open priority reads bypass the shared cache and delta cursor. They independently
+resolve the admitted Drive file ID and the current path occupant, then download by the
+stable ID. The read token is the remote checksum plus size, not Drive's metadata version:
+live E2E showed version can settle after a write and produce a false change without a
+content change. The checksum token makes the read guard content-scoped, while identity and
+structural changes stay guarded by the separate ID and occupant observations. Folders and
+files without complete checksum evidence fail closed.
 
 ### Identity-addressed rename
 
-`GoogleDriveFs` is the only backend that implements the optional `IFileSystem.identityRename`
-capability, because it is the only one whose namespace can hold two live objects at one derived
-address. `renameById(fileId, newPath)` renames the object **by its Drive file ID**, so it can move
-an object the cache is deliberately not holding — which is exactly what a withheld claimant is.
-Only the final segment moves; the object keeps the Drive parent it already has. It runs through the
-ordinary `withCacheMutex` three-phase protocol with `expectedId: undefined` on the *destination*
-(nothing is resolved through the cache, and the only thing a concurrent writer could have taken is
-the target address), and the cache is updated from the file Drive returns — never from the
-requested spelling. Its sole caller is the address-contention repair; see
-[Sync pipeline → Address-contention remediation](sync-pipeline.md#address-contention-remediation).
+Google Drive is the only backend that implements the optional identity-rename capability,
+because it is the only one whose namespace can hold two live objects at one derived address.
+Renaming by stable id lets it move an object the cache is deliberately not holding — exactly
+what a withheld claimant is. Only the final segment moves; the cache is updated from the
+file Drive returns, never the requested spelling. Its sole caller is the address-contention
+repair.
 
 ### Hiding `.airsync/metadata.json`
 
-`.airsync/metadata.json` is a **legacy** backend-internal file. New vaults never create it — the remote vault is now identified by its folder name (`obsidian-air-sync/<Vault Name>`, see below) — but older vaults may still have one, and a device still running an older plugin version could write one, so the exclusion guards are retained as belt-and-suspenders. `GoogleDriveFs` keeps any such file out of the sync engine by **never ingesting it into the metadata cache** (`INTERNAL_METADATA_PATH`, defined in `sync/remote-vault.ts`; skipped in `GoogleDriveMetadataCache.bulkLoad` and `applyFileChange`). Because every read path is cache-backed, that one exclusion covers `list()`, `stat()`, `read()`, `delete()`, `listDir()`, and `getChangedPaths()` uniformly. The single write path that doesn't consult the cache — `write()` (upload) — `throws` for this path rather than fabricating a baseline.
-
-The sync engine also reserves the same path symmetrically in `SyncOrchestrator.isExcluded()`, so it is never pushed/pulled/deleted from the local side either — even when the user opts `.airsync` into `syncDotPaths`. (Remote-side hiding alone would be unsafe: a local copy could be pushed, a synthetic write would commit a baseline, and the next cycle would `delete_local` it as a phantom remote deletion. The orchestrator exclusion is the authoritative guarantee; the cache-level skip is enumeration hygiene.)
+`.airsync/metadata.json` is a **legacy** internal file. New vaults never create it (the
+remote vault is identified by folder name), but older vaults may have one and an older
+plugin version could write one, so the guards are retained. Google Drive keeps it out of the
+sync engine by never ingesting it into the metadata cache; because every read path is
+cache-backed, that one exclusion covers list/stat/read/delete/listDir/change-detection
+uniformly, and the one write path that bypasses the cache throws for it rather than
+fabricating a baseline. The sync engine also reserves the same path symmetrically so it is
+never pushed/pulled/deleted locally: remote-side hiding alone would be unsafe (a local copy
+could be pushed and later deleted as a phantom remote deletion), so the orchestrator
+exclusion is the authoritative guarantee and the cache-level skip is enumeration hygiene.
 
 ## GoogleDriveMetadataCache
 
-`GoogleDriveMetadataCache` (`metadata-cache.ts`) maintains 4 indexes:
+The metadata cache holds path↔file mappings in memory. Its design judgements:
 
-| Index | Type | Purpose |
-|-------|------|---------|
-| `pathToFile` | `Map<string, GoogleDriveFile>` | Primary lookup by relative path |
-| `idToPath` | `Map<string, string>` | Reverse lookup for changes.list processing |
-| `folders` | `Set<string>` | Track which paths are folders |
-| `children` | `Map<string, Set<string>>` | Parent-to-children index for O(k) child lookups |
-
-Key operations:
-- `buildFromFiles(files)`: builds the cache from a flat `GoogleDriveFile[]` list. Uses memoized path resolution (`resolveFilePathCached()`) to compute relative paths from parent chains in O(n) total, then runs one **claim-set assignment** pass over the whole resolved set (`claim-set-assignment.ts`) before loading: every path with more than one claimant is arbitrated, and the loss cascades down the resolved parent-ID chain — not by string prefix — so a loser's subtree is never bound under the winner in any listing order. Returns the displacements it decided.
-- `applyFileChange(file)`: handles a single incremental change -- resolves path from cache, handles renames/moves, maintains all indexes. Returns a `FileChangeApplication` (`{ path, displacement, withheld, additionalLosses, relocated }`) or `null`; it arbitrates before writing when the resolved path is already held by a different live ID, so it may end up *withholding* this claim rather than writing it. A move takes the object's own subtree out whole and re-seats each descendant at its new address, arbitrated there too — only a folder moving into a same-named folder can meet a collision. Every loss beyond the one the result names — those, and the folders merged beside an occupant a claimant evicts — is returned in `additionalLosses`, each naming its own object.
-- `applyFileChangeDetectMove(file)`: wraps `applyFileChange()` with before/after path comparison. Returns `{ oldPath, newPath, wasFolder, oldDescendants }` for move detection, plus `displacement` / `withheld` when the change contended an address, and `acrossSharedPath` when a folder moved out of or into a same-named folder — which the drain reports as its files' moves, not as a folder rename, because the vault folder there did not move.
-- `setFile(path, file, pathAuthority)`: the single index-mutation seam. Returns the `AddressDisplacement` when a **different** stable ID was evicted from `path` (a provider upsert re-keying an address with no preceding tombstone), or `null`. It never decides a contended derived address itself — `buildFromFiles` and `applyFileChange` arbitrate before calling it.
-- `bulkLoad(items)`: returns whatever `setFile` displaced on the way in. It still throws on a duplicate **stable ID** with its original message and breadth; duplicate *paths* are arbitrated, never thrown for (a deterministic throw classifies as `transient` and would burn `MAX_RETRIES` full enumerations).
-- `removeTree(path)`: removes a path and all descendants (via `collectDescendants()`).
-- `rewriteChildPaths(old, new)`: rewrites descendant paths when a folder is renamed.
-- `googleDriveFileToEntity(path, googleDriveFile)`: converts cached metadata to `FileEntity` without downloading content. Folders → `{ isDirectory:true, size:0, mtime:0, hash:"" }` (no `backendMeta`). Files → `size = parseInt(size||"0")`, `mtime = new Date(modifiedTime).getTime()` (0 if NaN/absent), `hash:""`, `remoteChecksum:{ algo:"md5", value: md5Checksum }`, `backendMeta:{ googleDriveId }`. That `remoteChecksum` (Google Drive md5) is what makes hash-enrichment and `hasRemoteChanged()` work without a download.
+- It builds from a flat file list, resolving relative paths from parent chains, then runs one **claim-set assignment** over the whole resolved set before loading: every multiply-claimed path is arbitrated, and the loss cascades down the resolved parent-id chain — not by string prefix — so a loser's subtree is never bound under the winner in any listing order.
+- A single incremental change resolves the path, handles renames/moves, and maintains the indexes. It arbitrates before writing when the resolved path is already held by a different live ID, so it may end up *withholding* the claim. A move takes the object's subtree out whole and re-seats each descendant at its new address, arbitrated there too — only a folder moving into a same-named folder can collide — and every loss beyond the one named is returned as its own fact.
+- Loading returns whatever a write displaced. It still throws on a duplicate **stable ID** (one id maps to exactly one path), while duplicate *paths* are arbitrated, never thrown for, because a deterministic throw classifies as transient and would burn full enumerations.
+- Cached metadata converts to a filesystem entity without downloading; Drive files surface their md5 as the remote checksum, which is what makes hash-enrichment and remote change detection work without a download.
 
 ## Incremental sync
 
-`applyIncrementalChanges()` (`incremental-sync.ts`) integrates with Google Drive's changes.list API:
-
-1. Fetch changes pages using the stored `changesPageToken`
-2. Sort each page: folders first (shallow before deep) so parent paths resolve correctly before children
-3. For each change:
-   - **Removed/trashed**: collect descendants, call `cache.removeTree()`, add all paths to `changedPaths`
-   - **Modified/created**: call `cache.applyFileChangeDetectMove()`, add resolved path to `changedPaths`. If a move is detected (oldPath ≠ newPath), add oldPath to `deletedPaths` and record in `renamedPaths`
-   - If a tracked item moves out of the sync root (old path known, new path unresolvable), its old path -- and, if it was a folder, its old descendant paths -- are reported as deleted
-   - When a folder is moved or renamed (it was a folder and oldPath ≠ newPath), all of its new descendant paths are additionally re-emitted as modified/updated, because their resolved paths shifted
-4. `applyIncrementalChanges()` mutates only the in-memory cache and advances the cursor in memory (`IncrementalChangesResult.newToken`); it does **not** persist. Persistence is deferred to the checkpoint commit (`commitGoogleDriveCache`, called by the orchestrator after a fully-successful cycle), which writes the touched file records **and** the cursor (`META_STORE`) in one atomic transaction (`commitIncremental`), or rewrites the whole map after a full scan (`saveAll`). See [Crash recovery](sync-pipeline.md#crash-recovery)
-5. Return `{ newToken, changedPaths, renamedPaths, contended }` or `{ needsFullScan: true }` on 410. `contended` is the set of address contentions still standing at the last page close (see [Contended addresses](#cache-invalidation)); without it every absence a contention caused would read as a Drive deletion
-
-The 410 fallback triggers `fullScanWithDelta()` which compares persisted metadata against the fresh cache to compute renames, additions, and deletions.
+The incremental apply fetches changes pages from the cursor, folders first (shallow before
+deep) so parent paths resolve before children. A removed/trashed item removes its subtree; a
+modified item resolves through move detection, and a detected move flags the old path
+deleted and records the pair. A tracked item moving out of the root reports its old path
+(and old descendants for a folder) as deleted; a folder move/rename additionally re-emits
+its new descendant paths as modified. The apply mutates only the in-memory cache and
+advances the cursor in memory; persistence is deferred to the checkpoint commit after a
+fully-successful cycle, which writes the touched records and cursor in one atomic
+transaction. The return carries the new token, changed/renamed paths, and the contentions
+still standing at the last page close — without which every absence a contention caused
+would read as a Drive deletion.
 
 ## GoogleDriveClient
 
-`GoogleDriveClient` (`client.ts`) wraps the Google Drive REST API v3 using Obsidian's `requestUrl` (CORS-free via Electron's net module).
-
-**Requested fields** (`FILE_FIELDS`): `id, name, mimeType, size, modifiedTime, parents, md5Checksum, trashed, version` (`trashed` is requested so soft-deleted files can be detected and treated as removed)
-
-Key methods:
-
-| Method | Description |
-|--------|-------------|
-| `listAllFiles(rootId)` | Recursive listing with **adaptive** concurrency (`AdaptivePool`, start 3 / max 8) + per-page rate-limit retry — see [Full-scan listing concurrency](#full-scan-listing-concurrency) |
-| `uploadFile(...)` | Multipart upload for files <= 5 MB, delegates to `ResumableUploader` for larger files |
-| `downloadFile(fileId)` | `GET /files/{id}?alt=media` |
-| `getChangesStartToken()` | `GET /changes/startPageToken` |
-| `listChanges(token)` | `GET /changes?pageToken=...` with full file metadata |
-| `deleteFile(fileId)` | Soft delete (trash) by default, permanent delete optional |
-| `findChildByName(parentId, name, mimeType?)` | Query `'<parent>' in parents and name = '<escaped name>' and trashed = false` (plus optional `mimeType`), `pageSize` 1; returns the first match or null. Both parent ID and name are backslash/quote-escaped. Dedupes folder creation against Google Drive's same-name-folder behavior |
-| `updateFileMetadata(...)` | PATCH for rename/move with `addParents`/`removeParents` |
+The client wraps the Google Drive REST API v3 via Obsidian's `requestUrl` (CORS-free via
+Electron's net module). It requests the file fields needed for change detection, including
+trashed (so soft-deletes are detected as removals). Methods cover the recursive full
+listing, multipart/resumable upload, download, changes start token and listing, soft or
+permanent delete, child lookup by name (used to dedup folder creation against Drive's
+same-name behavior), and metadata update for rename/move.
 
 ### Full-scan listing concurrency
 
-`listAllFiles()` is the cold/initial enumeration: it walks the folder tree one `files.list` per folder (the `drive.file` scope can't flat-list the whole drive), reached on a first sync / rescan / 410 cursor-expiry full-scan — plus one scoped exception on the incremental path: the entered-folder re-listing described under [Cache invalidation](#cache-invalidation). A steady-state delta with no entering folder issues no walk. It runs on an **`AdaptivePool`** (AIMD): it starts at concurrency **3** (the historical fixed value ⇒ no change at t=0), ramps **+1 every 8** cleanly-listed folders up to **8**, and **halves** (floor 1) on a rate-limit. Each page (`listFiles`) is wrapped in a bounded retry (`MAX_LIST_RETRIES = 3`) via `classifyGoogleDriveError` + `decideRetry`/`sleep`: a `rateLimit` (incl. Google's 403-means-rate-limit) or `transient` error is retried honoring `Retry-After`, and on a rate-limit the pool is signalled (`noteRateLimit`) **before** the backoff sleep so its ceiling drops immediately while the task holds its slot (a natural throttle). `auth`/`permission`/`notFound` propagate, failing the scan exactly as before. This lets a folder-heavy vault's initial enumeration discover the sustainable rate instead of a fixed 3. The recursive walk lives in `list-all.ts` as a free function (`client.listAllFiles` is a thin delegate), so it is testable in isolation; its `sleepFn` is injectable for fast deterministic tests. (Mirrors the sync engine's transfer-phase `AdaptivePool` + `withIoRetry`; the AIMD primitive is shared in `queue/`, and the classification + `decideRetry` policy in `fs/errors.ts`.)
-
-#### One entry per id, one walk per folder
-
-The walk accumulates into a `Map` keyed by stable file id (last occurrence wins) and
-skips a folder it has already enqueued. Both guard the same downstream contract:
-`MetadataCache.bulkLoad()` deliberately rejects a duplicate stable id — one id maps to
-exactly one path — so a repeat would fail the entire scan as corrupt metadata, and the
-plain `Error` classifies as `transient`, burning three full enumerations before giving
-up. A repeat is reachable two ways: a legacy multi-parent file whose parents are both
-inside the synced root is returned by both listings, and a single folder's pages are not
-a point-in-time snapshot. The per-folder guard additionally stops a multi-parent *folder*
-from re-walking its whole subtree, and bounds the walk itself — `LIST_PAGE_CAP` caps the
-pages of one folder, not the traversal, so without it a parent cycle would enqueue
-forever. Drive rejects moving a folder into its own descendant, but nothing here depends
-on that staying true. `Map` preserves the first insertion position when it overwrites, so
-the parent-before-child order the entered-folder re-listing relies on still holds. Unlike
-OneDrive — where Graph documents repeats and collapsing them is the normal case — Drive
-does not, so an actual collapse is logged at `warn` with a bounded sample of the ids.
+The full listing is the cold/initial enumeration: it walks the folder tree one folder per
+request (the app-scoped permission cannot flat-list the whole drive), reached on a first
+sync, rescan, or expired-token full scan — plus the entered-folder exception above. A
+steady-state delta with no entering folder issues no walk. It runs on an **adaptive pool**
+(AIMD): it starts at the historical concurrency, ramps up on cleanly-listed folders, and
+halves on a rate limit. Each page is wrapped in a bounded retry using the Drive classifier
+and the shared policy: a rate limit or transient error is retried honoring `Retry-After`,
+and on a rate limit the pool is signalled before the backoff sleep so its ceiling drops
+immediately while the task holds its slot. Auth/permission/not-found propagate, failing the
+scan. This lets a folder-heavy vault's initial enumeration discover the sustainable rate
+instead of a fixed concurrency. The walk is a free function with an injectable sleep for
+deterministic tests, and it accumulates into a map keyed by stable id (last occurrence wins)
+while skipping an already-enqueued folder: both guard the downstream contract that metadata
+loading rejects a duplicate stable id, which would otherwise fail the whole scan as corrupt
+metadata and burn three enumerations. The per-folder guard also bounds a multi-parent
+folder's re-walk, and a page cap bounds one folder's pages so a parent cycle cannot enqueue
+forever.
 
 ### Transport-level 401 retry
 
-`request()` injects `Authorization: Bearer <token>` and, on a 401 from the first attempt only, forces a token refresh via `getToken(true)` and retries the request exactly once (guarded by the `retried` flag). Every Google Drive error is re-thrown as `Error("Google Drive API <operation> failed: <msg>")` that copies `status`, `headers`, and `json` from the original, so `classifyGoogleDriveError()` (status/headers via `classifyHttpError`, plus the `error.json` rate-limit reasons) can classify it -- and so upstream 410 (changes-token-expired) handling can read them.
+The request path injects the bearer token and, on a 401 from the first attempt only, forces
+a token refresh and retries exactly once. Every Drive error is re-thrown carrying status,
+headers, and parsed body, so the Drive classifier can map it and expired-token handling can
+read them.
 
 ## Authentication
 
-Two OAuth implementations share a common base class (`GoogleAuthBase`). The server side of the built-in flow — the `auth-airsync.takezo.dev` endpoints — lives in the dedicated [obsidian-air-sync-auth](https://github.com/takezoh/obsidian-air-sync-auth) repo.
+Two OAuth implementations share a common base. The server side of the built-in flow lives in
+the dedicated [obsidian-air-sync-auth](https://github.com/takezoh/obsidian-air-sync-auth)
+repo.
 
-### GoogleAuth (server-side, built-in)
+- **Built-in (server-side)**: redirects to Google OAuth with a fixed callback and the built-in public client id, requesting offline access and consent. The auth server exchanges the code with a confidential client secret; the plugin receives tokens through the custom protocol handler. Refresh goes through the auth server. Scope is `drive.file` (app-created files only). Current versions use Google's top-level OAuth Picker on desktop and mobile, with the worker preserving picked file ids while exchanging the code; older versions keep their hosted Picker page. Custom OAuth has no Picker and takes an explicit folder ID. The chosen folder is validated through the shared binding seam before publishing; the custom typed id is validated at the connect boundary (after auth, before the filesystem is created).
+- **Custom (PKCE)**: the user provides their own client id and secret; the flow uses an S256 challenge. The auth server relays the code back without exchanging it, and the plugin exchanges and refreshes directly with Google's token endpoint, defaulting to the `drive.file` scope and a callback distinct from the built-in flow.
 
-- Redirects to Google OAuth with `redirect_uri = https://auth-airsync.takezo.dev/google/callback`, `client_id` = the built-in public client ID, `access_type=offline`, and `prompt=consent`
-- Auth server exchanges the code for tokens (confidential client with `client_secret`)
-- Plugin receives tokens via `obsidian://air-sync-auth?access_token=...&refresh_token=...`
-- Token refresh: POST `https://auth-airsync.takezo.dev/google/token/refresh` with JSON body `{ refresh_token }`
-- Scope: `drive.file` (app-created files only)
-- Current plugin versions use Google's top-level OAuth Picker (`trigger_onepick=true`, `allow_folder_selection=true`, folder MIME filter) for the built-in backend on desktop and mobile. The auth worker preserves the callback's `picked_file_ids` while exchanging the accompanying code. Older plugin versions keep using their unchanged hosted PickerBuilder endpoint. Custom OAuth does not expose a Picker; its folder ID is entered explicitly in settings. The plugin validates one id, the shared OAuth/picker state, and the chosen folder through the shared binding seam (`inspectGoogleDriveFolder`) before publishing the new binding; for the custom typed id, that validation runs at the connect boundary via `validateRemoteVault` (after auth, before the FS is created).
-
-### GoogleAuthDirect (PKCE, custom credentials)
-
-- User provides their own `client_id` and `client_secret`
-- Uses PKCE (S256 code challenge) for the authorization flow
-- Auth server relays the code back without exchanging it
-- Plugin exchanges code and refreshes tokens directly with Google's token endpoint
-- Defaults: scope `https://www.googleapis.com/auth/drive.file`, redirect URI `https://airsync.takezo.dev/callback` (distinct from the built-in flow's `auth-airsync.takezo.dev/google/callback`). The PKCE code verifier is a 64-character random string and the state nonce is a 32-character string (embedded in a base64-encoded JSON state object); the challenge is `base64url(SHA-256(verifier))` with `code_challenge_method=S256`. `include_granted_scopes=true` is sent only when the optional `includeGrantedScopes` flag is set (default false). Code exchange and refresh both POST to `https://oauth2.googleapis.com/token` with `client_id` and `client_secret`; exchange additionally sends `code_verifier`, `code`, and `redirect_uri` (`grant_type=authorization_code`), while refresh sends `refresh_token` (`grant_type=refresh_token`)
-
-### Shared behavior (GoogleAuthBase)
-
-- Refresh deduplication: concurrent `getAccessToken()` calls share one in-flight refresh promise
-- Proactive refresh: refreshes 60 seconds before expiry
-- CSRF protection: random state parameter verified on callback
-- Auth failure cooldown: on a 400/401 refresh failure, `handleRefreshError()` records `authFailedAt = Date.now()`. For the next `AUTH_FAILED_COOLDOWN` (60 s) any `getAccessToken()` throws `AuthError` (status 401) immediately without hitting the network; after 60 s it retries the refresh. A successful `setTokens()` / token response resets the timer (`authFailedAt = 0`). Non-400/401 refresh errors are re-thrown unchanged and do not arm the cooldown
-- Token revocation: POST to `oauth2.googleapis.com/revoke`
+Shared behavior: refresh deduplication (concurrent requests share one in-flight refresh),
+proactive refresh shortly before expiry, CSRF protection via a verified state parameter, and
+an auth-failure cooldown on a 400/401 refresh failure (which short-circuits token acquisition
+without a network attempt and is reset by a successful token store; non-400/401 errors do not
+arm it). Disconnect revokes the token.
 
 ### Token storage
 
-Tokens (`refreshToken`, `accessToken`) are stored in Obsidian's `SecretStorage` via `token-store.ts`, never in `settings.backendData`. Completion succeeds only after an immediately exact readback of its required refresh credential; a rotated refresh token uses the same check before refreshed response state is installed. This is an API-level postcondition, not a claim that the OS has physically flushed storage. Only non-secret data lives in `settings.backendData`: `remoteVaultFolderId`, `accessTokenExpiry`, and `pendingAuthState`/`pendingCodeVerifier` (transient, to survive a plugin reload mid-flow), plus the custom-OAuth fields. The delta cursor is **not** here — it lives in the `MetadataStore` (`META_STORE`), co-located with the file map (ADR 0001) (`customClientId`/`customClientSecret` are SecretStorage secret-name references, `customScope`, `customRedirectUri`, `customIncludeGrantedScopes`).
+Tokens are stored in Obsidian's SecretStorage, never in settings. Completion succeeds only
+after an immediately exact readback of the required refresh credential; a rotated token uses
+the same check before the refreshed response is installed. This is an API-level
+postcondition, not a claim that the OS has physically flushed storage. Only non-secret data
+lives in settings (folder id, access-token expiry, transient pending auth state/verifier,
+and the custom-OAuth fields); the delta cursor lives in the metadata store, co-located with
+the file map (ADR 0001).
 
 ## Resumable upload
 
-`ResumableUploader` (`resumable-upload.ts`) handles files > 5 MB (`RESUMABLE_THRESHOLD`):
-
-1. Initiate a resumable upload session (POST/PATCH with `uploadType=resumable`)
-2. Upload the entire content in a **single PUT** — chunked upload is impossible here because Obsidian's `requestUrl` (Electron `net`) can't reliably handle the `308 Resume Incomplete` responses chunking depends on
-
-The init response's `Location` header is read case-insensitively because Obsidian desktop and mobile runtimes may expose response header keys with different casing. If Drive returns 2xx without an upload URL, the error includes the response status and sorted header keys and is classified as `permanent` with `permanentCode = "googledrive.resumable_upload.missing_location"` so in-cycle retry does not repeat a structurally invalid protocol response and sync quarantine does not depend on human-readable diagnostics.
-
-A failed PUT is simply retried as a fresh upload on the next sync cycle; the resumable session is only an envelope for the single PUT, not a byte-range resume.
+Uploads above a threshold use a resumable session, but content is sent in a **single PUT** —
+chunked upload is impossible because Obsidian's `requestUrl` (Electron net) cannot reliably
+handle the `308 Resume Incomplete` responses chunking depends on. The init response's
+Location header is read case-insensitively because desktop and mobile runtimes may expose
+header keys with different casing. A 2xx without an upload URL is classified permanent with a
+stable code, so in-cycle retry does not repeat a structurally invalid protocol response and
+quarantine does not depend on human-readable diagnostics. A failed PUT is retried as a fresh
+upload next cycle; the session is only an envelope, not a byte-range resume.
 
 ## Provider model
 
-### GoogleDriveProvider (built-in)
+- **Built-in** (`googledrive`): uses the server-side auth; its resolver finds or creates `obsidian-air-sync/<Vault Name>`. It is invoked **explicitly** when the user binds the default folder, not automatically on connect.
+- **Custom** (`googledrive-custom`): uses the PKCE auth with user-provided credentials and requires the remote vault folder id to be set manually; its resolver throws when unset. Because the hand-typed id never passes through the Picker, it is validated at the connect boundary: after auth and before filesystem creation, a rejection tears the session down to disconnected with no filesystem. Custom disconnect preserves its credential refs and folder id, so the id becomes editable again without a manual disconnect; because no token survives the teardown, a later init/sync cannot resurrect the rejected target. Validation fails closed only on a *definite* unusable verdict; a transport/auth/rate-limit failure fails open so a temporarily unreachable Drive does not reject a correct binding. A target trashed *after* a successful connect, or while the plugin is closed, is caught by the sync-time root liveness check, which re-observes every cycle and recovers automatically once restored.
 
-- Type: `"googledrive"`
-- Uses `GoogleAuth` (server-side OAuth)
-- `resolveRemoteVault()`: finds or creates `obsidian-air-sync/<Vault Name>` in Google Drive. Invoked **explicitly** when the user binds the default folder (the "default folder" button → `BackendManager.bindDefaultRemoteVault()`), **not** automatically on connect
-
-### GoogleDriveCustomProvider (user credentials)
-
-- Type: `"googledrive-custom"`
-- Uses `GoogleAuthDirect` (PKCE with user-provided `client_id` / `client_secret`)
-- Requires `remoteVaultFolderId` to be set manually in settings; its `resolveRemoteVault()` override throws (`"Remote vault folder id is required for custom OAuth"`) when it is unset
-- Because the hand-typed id never passes through the Picker, it is validated at the connect boundary: `BackendManager.completeBackendConnect` calls the provider's `validateRemoteVault` after auth and before `createFs`, and on rejection tears the session back down to disconnected (provider `disconnect` + `onDisconnected`, no filesystem). Custom OAuth's `disconnect` preserves its credential refs and folder id, so the id field becomes editable again without a manual Disconnect. Because no token survives the teardown, a later `initBackend`/`runSync` cannot resurrect the rejected target. `validateRemoteVault` only fails closed on a *definite* unusable verdict (`not_found` / `inaccessible` / `not_folder` / `trashed`); a transport, auth or rate-limit failure fails open so a temporarily unreachable Drive does not reject a correct binding. A target that becomes trashed *after* a successful connect, or while the plugin is closed, is caught by the existing sync-time `assertRootAlive`, which re-observes every cycle and recovers automatically once it is restored.
-- On disconnect, preserves custom credential references and folder ID
-
-Both extend `GoogleDriveProviderBase` which handles `createFs()`, `readBackendState(fs)` (persists only non-secret token state — the cursor is committed atomically with the cache by `commitCheckpoint`, not here), `commitCheckpoint(fs)` (forwards to the FS), and `disconnect()` (also clears the per-target `MetadataStore`). The "is there a checkpoint?" query and the checkpoint reset now live on the FS: `IFileSystem.hasCheckpoint()` (async, reads `META_STORE`) and `resetCheckpoint()` (clears the cursor + cache; used by an identity change and the **Rescan vault** action).
+Both extend a provider base handling filesystem creation, non-secret token-state persistence
+(the cursor is committed atomically with the cache by the checkpoint, not here), checkpoint
+forwarding, and disconnect (which also clears the per-target metadata store). The
+checkpoint-existence query and reset live on the filesystem.
 
 ### Remote vault resolution
 
-Layout: `<Google Drive root>/obsidian-air-sync/<Vault Name>` — the folder **name is the vault name**; there is no `.airsync/metadata.json`. Binding is always explicit (the user picks a folder in the Google Picker, or presses the default-folder button); nothing is auto-bound on connect. The default-folder button calls `resolveRemoteVault()`, which builds a `GoogleDriveClient` and calls `resolveGoogleDriveRemoteVault()` (returns `{ remoteVaultFolderId }`):
+Layout: `<Google Drive root>/obsidian-air-sync/<Vault Name>` — the folder **name is the
+vault name**; there is no `.airsync/metadata.json`. Binding is always explicit; nothing is
+auto-bound on connect.
 
-- If `remoteVaultFolderId` is cached, `resolveLinked()` confirms the folder is bindable through `inspectGoogleDriveFolder`. Drive's normal single-click delete moves a folder to Trash rather than erasing it, so `getFile()` alone would keep succeeding (200, not 404) against a folder the user can no longer see or add content to — the trashed classification fails closed instead of silently binding to it forever. The settings display uses the same seam: `resolveFolderPath` classifies the folder it already fetched via `classifyFetchedGoogleDriveFolder`, and `getRemoteVaultDisplayPath` returns `{ path, warning? }` so the field shows a Trash warning instead of an ordinary path. A 403 that is actually a rate limit is rethrown rather than classified `inaccessible`, so it keeps its retry classification.
-- Otherwise it find-or-creates the root `obsidian-air-sync` folder, then find-or-creates `obsidian-air-sync/<Vault Name>` (`findChildByName` / `createFolder`) and binds it.
+- If the remote folder id is cached, the resolver confirms bindability through the shared folder-usability seam. Drive's normal single-click delete moves a folder to Trash rather than erasing it, so a plain fetch would keep succeeding against a folder the user can no longer see — the trashed classification fails closed instead of binding to it forever. The settings display uses the same seam, showing a Trash warning. A 403 that is actually a rate limit is rethrown rather than classified inaccessible, keeping its retry classification.
+- Otherwise it find-or-creates the root `obsidian-air-sync` folder, then the vault-named folder, and binds it.
 
-Bound folders picked via either Google Picker flow are addressed purely by id (`completeWebFolderPick`), independent of this layout. Every binding path — the Picker, the cached-id rebind (`resolveLinked`), the default folder, the custom hand-typed id (`validateRemoteVault` at connect), and the settings display — decides usability through one seam, `inspectGoogleDriveFolder` (`folder-usability.ts`). It classifies a folder as `not_found` / `inaccessible` / `not_folder` / `trashed` from the `getFile` metadata already requested (`trashed` is in `FILE_FIELDS`, so no extra request), and leaves the wording and the throw-vs-`null` choice to each caller. `completeWebFolderPick` and `resolveLinked` both fail closed on a trashed folder for the same reason: the id is not necessarily a Picker result (`params.id` is accepted as a fallback for `picked_file_ids`), so an arbitrary folder id can reach them. The built-in top-level flow completes authorization and binding under one `BackendManager` connecting gate so no filesystem is exposed between those two steps.
+Bound folders picked via either Picker flow are addressed purely by id, independent of this
+layout. Every binding path — Picker, cached-id rebind, default folder, custom typed id, and
+settings display — decides usability through one seam classifying not-found / inaccessible /
+not-a-folder / trashed from the metadata already requested, leaving wording and throw-vs-null
+to each caller. The Picker and rebind both fail closed on a trashed folder because an
+arbitrary id can reach them. The built-in top-level flow completes authorization and binding
+under one connecting gate so no filesystem is exposed between those steps.
 
 ### createFs() contract
 
-`createFs()` returns null unless both a refresh token (SecretStorage) and `remoteVaultFolderId` exist. It instantiates a `MetadataStore` keyed `${vaultId}-${remoteVaultFolderId}` (`dbNamePrefix` `air-sync-drive`, version 1) and seeds the auth with the stored tokens and `accessTokenExpiry`. It does **not** seed the cursor — the FS restores it (with the file map) from the `MetadataStore` on first init (`loadFromCache`).
+Filesystem creation returns nothing unless both a refresh token (SecretStorage) and a remote
+vault folder id exist. It instantiates a per-target metadata store and seeds the auth with
+the stored tokens and expiry. It does **not** seed the cursor — the filesystem restores it
+with the file map from the metadata store on first init.
