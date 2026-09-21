@@ -22,20 +22,16 @@ const SETTINGS: BackendSettingsDefinition = {
 	fields: [
 		{
 			key: "authMode",
-			label: "OAuth mode",
-			type: "select",
-			defaultValue: "default",
-			options: [
-				{ value: "default", label: "Air Sync's Dropbox app" },
-				{ value: "custom", label: "My own Dropbox app" },
-			],
+			label: "Use your own Dropbox app (custom OAuth)",
+			type: "toggle",
+			defaultValue: false,
 		},
 		{ key: "remoteVaultFolderId", label: "Remote folder id", type: "text" },
 		{
 			key: "customClientId",
 			label: "App key",
 			type: "text",
-			visibleWhen: { field: "authMode", equals: "custom" },
+			visibleWhen: { field: "authMode", equals: true },
 		},
 	],
 };
@@ -43,7 +39,7 @@ const SETTINGS: BackendSettingsDefinition = {
 const spec: PkceModuleSpec = {
 	displayName: "Dropbox",
 	defaultClientId: DROPBOX_AUTH.clientId,
-	isCustom: (config) => asString(config.authMode) === "custom",
+	isCustom: (config) => config.authMode === true,
 	customClientId: (config) => asString(config.customClientId),
 	createManager: (clientId, _config, context) => new DropboxAuth(clientId, createContextTransport(context.http), context.logger),
 	authorizeUrl: (clientId, codeChallenge, state) => buildDropboxAuthorizeUrl({ clientId, codeChallenge, state }),

@@ -12,7 +12,10 @@ import type {
 } from "../../src/backend-api";
 
 const SERVICES = ["googledrive", "onedrive", "dropbox"] as const;
-const MODES = ["default", "custom"] as const;
+const MODES = [
+	["built-in", false],
+	["custom", true],
+] as const;
 
 interface MemoryStore extends ISecretStore {
 	readonly map: Map<string, string>;
@@ -45,7 +48,7 @@ function memoryConfig(initial: JsonObject = {}) {
 	return { store, read: () => bag };
 }
 
-function serviceModule(service: string, mode: string, revoked: string[]): BackendModule {
+function serviceModule(service: string, mode: boolean, revoked: string[]): BackendModule {
 	const state = `${service}-${mode}-state`;
 	return {
 		id: service,
@@ -71,17 +74,14 @@ function serviceModule(service: string, mode: string, revoked: string[]): Backen
 				{
 					key: "authMode",
 					label: "Mode",
-					type: "select",
-					options: [
-						{ value: "default", label: "Default" },
-						{ value: "custom", label: "Custom" },
-					],
+					type: "toggle",
+					defaultValue: false,
 				},
 				{
 					key: "clientSecret",
 					label: "Client secret",
 					type: "secret_reference",
-					visibleWhen: { field: "authMode", equals: "custom" },
+					visibleWhen: { field: "authMode", equals: true },
 				},
 			],
 		},
@@ -117,7 +117,7 @@ function connectionFor(module: BackendModule, isCurrent: () => boolean = () => t
 
 describe("createModuleConnection — declarative auth across services", () => {
 	describe.each(SERVICES)("%s auth", (service) => {
-		it.each(MODES)("connects in %s mode", async (mode) => {
+		it.each(MODES)("connects in %s mode", async (_label, mode) => {
 			const revoked: string[] = [];
 			const { connection, opened, read } = connectionFor(serviceModule(service, mode, revoked));
 
@@ -143,7 +143,7 @@ describe("createModuleConnection — generation safety", () => {
 		const revoked: string[] = [];
 		let current = true;
 		const { connection, read } = connectionFor(
-			serviceModule("dropbox", "default", revoked),
+			serviceModule("dropbox", false, revoked),
 			() => current,
 		);
 		current = false;
@@ -155,7 +155,7 @@ describe("createModuleConnection — generation safety", () => {
 		const revoked: string[] = [];
 		let current = true;
 		const { connection, opened, read } = connectionFor(
-			serviceModule("dropbox", "default", revoked),
+			serviceModule("dropbox", false, revoked),
 			() => current,
 		);
 		current = false;
@@ -166,7 +166,7 @@ describe("createModuleConnection — generation safety", () => {
 
 	it("treats a disposed connection as stale", async () => {
 		const revoked: string[] = [];
-		const { connection, read } = connectionFor(serviceModule("dropbox", "default", revoked));
+		const { connection, read } = connectionFor(serviceModule("dropbox", false, revoked));
 		await connection.dispose();
 		expect(connection.isCurrent()).toBe(false);
 		expect(await connection.completeAuth("late-code")).toBe(false);
@@ -175,7 +175,7 @@ describe("createModuleConnection — generation safety", () => {
 
 	it("binds the real auth host to the connection generation and cancels it on teardown", async () => {
 		const revoked: string[] = [];
-		const { connection } = connectionFor(serviceModule("googledrive", "default", revoked));
+		const { connection } = connectionFor(serviceModule("googledrive", false, revoked));
 		// `context.auth` is the connection's own generation-bound host, not a stub.
 		expect(connection.context.auth).toBe(connection.auth);
 		expect(connection.auth.generation).toBe(1);
@@ -188,7 +188,7 @@ describe("createModuleConnection — generation safety", () => {
 
 	it("binds the default folder only while current", async () => {
 		const revoked: string[] = [];
-		const { connection, read } = connectionFor(serviceModule("onedrive", "default", revoked));
+		const { connection, read } = connectionFor(serviceModule("onedrive", false, revoked));
 		await expect(connection.resolveDefaultFolder("MyVault")).resolves.toEqual({
 			id: "onedrive:MyVault",
 		});
@@ -242,7 +242,7 @@ describe("ModuleConnection.disconnect", () => {
 		const { store, read } = memoryConfig({ rootId: "root" });
 		const secrets = memoryStore({ "air-sync-googledrive-access-token": "A" });
 		const connection = createModuleConnection({
-			module: serviceModule("googledrive", "custom", revoked),
+			module: serviceModule("googledrive", true, revoked),
 			generation: 1,
 			isCurrentGeneration: () => true,
 			secrets,
@@ -271,7 +271,7 @@ describe("ModuleConnection.disconnect", () => {
 		const revoked: string[] = [];
 		const secrets = memoryStore({ "air-sync-dropbox-access-token": "OTHER" });
 		const connection = createModuleConnection({
-			module: serviceModule("googledrive", "default", revoked),
+			module: serviceModule("googledrive", false, revoked),
 			generation: 1,
 			isCurrentGeneration: () => true,
 			secrets,
@@ -288,7 +288,7 @@ describe("ModuleConnection.disconnect", () => {
 		const revoked: string[] = [];
 		const secrets = memoryStore({ "air-sync-googledrive-refresh-token-token": "STORED" });
 		const connection = createModuleConnection({
-			module: serviceModule("googledrive", "default", revoked),
+			module: serviceModule("googledrive", false, revoked),
 			generation: 1,
 			isCurrentGeneration: () => true,
 			secrets,
@@ -302,7 +302,7 @@ describe("ModuleConnection.disconnect", () => {
 
 	it("is idempotent when disposed twice", async () => {
 		const revoked: string[] = [];
-		const { connection } = connectionFor(serviceModule("dropbox", "default", revoked));
+		const { connection } = connectionFor(serviceModule("dropbox", false, revoked));
 		await connection.dispose();
 		await expect(connection.dispose()).resolves.toBeUndefined();
 	});

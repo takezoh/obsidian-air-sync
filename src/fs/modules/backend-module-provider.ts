@@ -54,8 +54,12 @@ export interface BackendModuleProviderDeps {
 	sink: RuntimeLogSink;
 }
 
+/**
+ * The ONE boundary deriving the legacy physical-profile name from the persisted
+ * boolean `authMode`: `true` = the user's own OAuth app, `false` = the built-in app.
+ */
 function authModeOf(config: Readonly<JsonObject>): LegacyAuthMode {
-	return config.authMode === "custom" ? "custom" : "default";
+	return config.authMode === true ? "custom" : "default";
 }
 
 function addressingOf(moduleId: string): RemoteAddressing {
@@ -375,15 +379,15 @@ export class BackendModuleProvider implements IBackendProvider {
 	}
 
 	/**
-	 * The disconnected config bag: preserve `authMode` plus the user's custom-OAuth
-	 * fields so a reconnect need not re-enter them. Google custom additionally keeps
-	 * its hand-typed folder id (it has no Picker). A built-in selection keeps only
-	 * `authMode`, matching the legacy reset.
+	 * The disconnected config bag: preserve `authMode` (boolean) plus the user's
+	 * custom-OAuth fields so a reconnect need not re-enter them. Google custom
+	 * additionally keeps its hand-typed folder id (it has no Picker). A built-in
+	 * selection keeps only `authMode`, matching the legacy reset.
 	 */
 	private disconnectedBag(): Record<string, unknown> {
 		const config = this.configStore.read();
 		const authMode = authModeOf(config);
-		const bag: Record<string, unknown> = { authMode };
+		const bag: Record<string, unknown> = { authMode: authMode === "custom" };
 		for (const field of this.module.settings?.fields ?? []) {
 			if (field.key === "authMode" || field.key === "remoteVaultFolderId") continue;
 			if (!field.key.startsWith("custom")) continue;

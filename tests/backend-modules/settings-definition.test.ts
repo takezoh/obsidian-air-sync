@@ -15,11 +15,17 @@ import type {
 const mode: BackendSettingField = {
 	key: "authMode",
 	label: "Mode",
+	type: "toggle",
+	defaultValue: false,
+};
+
+const choice: BackendSettingField = {
+	key: "choice",
+	label: "Choice",
 	type: "select",
-	defaultValue: "default",
 	options: [
-		{ value: "default", label: "Default" },
-		{ value: "custom", label: "Custom" },
+		{ value: "a", label: "A" },
+		{ value: "b", label: "B" },
 	],
 };
 
@@ -27,7 +33,7 @@ const clientId: BackendSettingField = {
 	key: "clientId",
 	label: "Client ID",
 	type: "text",
-	visibleWhen: { field: "authMode", equals: "custom" },
+	visibleWhen: { field: "authMode", equals: true },
 };
 
 const clientSecret: BackendSettingField = {
@@ -35,7 +41,7 @@ const clientSecret: BackendSettingField = {
 	label: "Client secret",
 	type: "secret_reference",
 	description: "Name of the SecretStorage entry.",
-	visibleWhen: { field: "authMode", equals: "custom" },
+	visibleWhen: { field: "authMode", equals: true },
 };
 
 const definition: BackendSettingsDefinition = {
@@ -45,8 +51,8 @@ const definition: BackendSettingsDefinition = {
 describe("settings-definition visibility", () => {
 	it("shows a field only when its condition currently holds", () => {
 		expect(isFieldVisible(mode, {})).toBe(true);
-		expect(isFieldVisible(clientId, { authMode: "default" })).toBe(false);
-		expect(isFieldVisible(clientId, { authMode: "custom" })).toBe(true);
+		expect(isFieldVisible(clientId, { authMode: false })).toBe(false);
+		expect(isFieldVisible(clientId, { authMode: true })).toBe(true);
 		expect(isFieldVisible(clientId, {})).toBe(false);
 	});
 
@@ -63,10 +69,10 @@ describe("settings-definition visibility", () => {
 	});
 
 	it("filters to the visibly-applicable fields in declaration order", () => {
-		expect(visibleFields(definition, { authMode: "default" }).map((f) => f.key)).toEqual([
+		expect(visibleFields(definition, { authMode: false }).map((f) => f.key)).toEqual([
 			"authMode",
 		]);
-		expect(visibleFields(definition, { authMode: "custom" }).map((f) => f.key)).toEqual([
+		expect(visibleFields(definition, { authMode: true }).map((f) => f.key)).toEqual([
 			"authMode",
 			"clientId",
 			"clientSecret",
@@ -76,8 +82,8 @@ describe("settings-definition visibility", () => {
 
 describe("resolveFieldValue", () => {
 	it("prefers the stored value and falls back to the declared default", () => {
-		expect(resolveFieldValue(mode, {})).toBe("default");
-		expect(resolveFieldValue(mode, { authMode: "custom" })).toBe("custom");
+		expect(resolveFieldValue(mode, {})).toBe(false);
+		expect(resolveFieldValue(mode, { authMode: true })).toBe(true);
 		expect(resolveFieldValue(clientId, {})).toBeUndefined();
 	});
 });
@@ -89,8 +95,8 @@ describe("validateSettingField", () => {
 	});
 
 	it("requires a select value to be declared", () => {
-		expect(validateSettingField(mode, "custom")).toBeNull();
-		expect(validateSettingField(mode, "other")).toMatch(/available options/);
+		expect(validateSettingField(choice, "a")).toBeNull();
+		expect(validateSettingField(choice, "other")).toMatch(/available options/);
 	});
 
 	it("requires toggle and text values of the right type", () => {
@@ -105,12 +111,12 @@ describe("validateSettingField", () => {
 
 describe("validateBackendSettings", () => {
 	it("validates only the visible fields, so a hidden stale value is ignored", () => {
-		const config: JsonObject = { authMode: "default", clientId: 99 };
+		const config: JsonObject = { authMode: false, clientId: 99 };
 		expect(validateBackendSettings(definition, config)).toEqual([]);
 	});
 
 	it("reports each invalid visible field with its key", () => {
-		const config: JsonObject = { authMode: "custom", clientId: 99, clientSecret: 5 };
+		const config: JsonObject = { authMode: true, clientId: 99, clientSecret: 5 };
 		const issues = validateBackendSettings(definition, config);
 		expect(issues.map((issue) => issue.key)).toEqual(["clientId", "clientSecret"]);
 		expect(issues.every((issue) => /must be text/.test(issue.message))).toBe(true);

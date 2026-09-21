@@ -78,7 +78,7 @@ export function createPkceBackendAuth(spec: PkceModuleSpec): BackendAuth {
 			await context.auth.openExternal(spec.authorizeUrl(clientId, codeChallenge, state, config));
 			return {
 				set: {
-					authMode: spec.isCustom(config) ? "custom" : "default",
+					authMode: spec.isCustom(config),
 					pendingAuthState: state,
 					pendingCodeVerifier: codeVerifier,
 				},

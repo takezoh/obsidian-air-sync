@@ -26,26 +26,22 @@ const definition: BackendSettingsDefinition = {
 		{
 			key: "authMode",
 			label: "Mode",
-			type: "select",
-			defaultValue: "default",
-			options: [
-				{ value: "default", label: "Default" },
-				{ value: "custom", label: "Custom" },
-			],
+			type: "toggle",
+			defaultValue: false,
 		},
 		{
 			key: "clientId",
 			label: "Client ID",
 			type: "text",
 			description: "The app's public client id.",
-			visibleWhen: { field: "authMode", equals: "custom" },
+			visibleWhen: { field: "authMode", equals: true },
 		},
 		{
 			key: "clientSecret",
 			label: "Client secret name",
 			type: "secret_reference",
 			description: "Name of the SecretStorage entry — not the secret itself.",
-			visibleWhen: { field: "authMode", equals: "custom" },
+			visibleWhen: { field: "authMode", equals: true },
 		},
 		{
 			key: "enabled",
@@ -67,46 +63,44 @@ beforeEach(() => {
 
 describe("renderBackendSettings", () => {
 	it("renders the visible fields with the Obsidian Setting controls", () => {
-		const { settingsHost } = host({ authMode: "custom", enabled: true });
+		const { settingsHost } = host({ authMode: true, enabled: true });
 		renderBackendSettings(container(), definition, settingsHost);
 
-		expect(__ui.dropdowns.map((d) => d.name)).toEqual(["Mode"]);
-		expect(__ui.dropdowns[0]?.options.map((o) => o.value)).toEqual(["default", "custom"]);
-		expect(__ui.dropdowns[0]?.value).toBe("custom");
+		expect(__ui.dropdowns).toHaveLength(0);
 		expect(__ui.texts.map((t) => t.name)).toEqual(["Client ID", "Client secret name"]);
-		expect(__ui.toggles.map((t) => t.name)).toEqual(["Enabled"]);
+		expect(__ui.toggles.map((t) => t.name)).toEqual(["Mode", "Enabled"]);
 		expect(__ui.toggles[0]?.value).toBe(true);
 	});
 
 	it("hides a field whose visibleWhen condition does not hold", () => {
-		const { settingsHost } = host({ authMode: "default" });
+		const { settingsHost } = host({ authMode: false });
 		renderBackendSettings(container(), definition, settingsHost);
 		expect(__ui.texts).toHaveLength(0);
-		expect(__ui.dropdowns).toHaveLength(1);
+		expect(__ui.toggles.map((t) => t.name)).toEqual(["Mode", "Enabled"]);
 	});
 
-	it("shows the declared default for an absent select value", () => {
+	it("shows the declared default (off) for an absent toggle value", () => {
 		const { settingsHost } = host({});
 		renderBackendSettings(container(), definition, settingsHost);
-		expect(__ui.dropdowns[0]?.value).toBe("default");
+		expect(__ui.toggles[0]?.value).toBe(false);
 	});
 
 	it("writes a changed value through the host and re-renders", async () => {
-		const { settingsHost, setValue, read } = host({ authMode: "default" });
+		const { settingsHost, setValue, read } = host({ authMode: false });
 		renderBackendSettings(container(), definition, settingsHost);
 
-		await __ui.dropdowns[0]?.change("custom");
+		await __ui.toggles[0]?.change(true);
 		await flush();
 
-		expect(setValue).toHaveBeenCalledWith("authMode", "custom");
-		expect(read().authMode).toBe("custom");
+		expect(setValue).toHaveBeenCalledWith("authMode", true);
+		expect(read().authMode).toBe(true);
 		// Re-render now reveals the custom-mode fields.
 		expect(__ui.texts.at(-2)?.name).toBe("Client ID");
 		expect(__ui.texts.at(-1)?.name).toBe("Client secret name");
 	});
 
 	it("renders a secret reference as a non-secret text field", () => {
-		const { settingsHost } = host({ authMode: "custom", clientSecret: "my-ref" });
+		const { settingsHost } = host({ authMode: true, clientSecret: "my-ref" });
 		renderBackendSettings(container(), definition, settingsHost);
 		const secretField = __ui.texts.find((t) => t.name === "Client secret name");
 		expect(secretField?.value).toBe("my-ref");
@@ -116,7 +110,7 @@ describe("renderBackendSettings", () => {
 	it("appends a validation issue to the field description", () => {
 		const { settingsHost } = host({ enabled: "not-a-boolean" });
 		renderBackendSettings(container(), definition, settingsHost);
-		const toggle = __ui.toggles[0];
+		const toggle = __ui.toggles.find((t) => t.name === "Enabled");
 		expect(toggle?.description).toContain("must be on or off");
 	});
 });

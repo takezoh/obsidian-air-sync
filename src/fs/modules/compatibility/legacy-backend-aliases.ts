@@ -26,11 +26,13 @@ export function isLegacyCustomAlias(backendType: string): boolean {
 }
 
 /**
- * The authMode a persisted `backendType` implies when the stored bag carries no
- * explicit `authMode`: an old `*-custom` alias means the user's own OAuth app; a
- * canonical id means the built-in app. A stored `authMode` always wins — this only
- * fills an absent field and never hides a real contradiction.
+ * The boolean `authMode` a persisted `backendType` implies when the stored bag
+ * carries no explicit `authMode`: an old `*-custom` alias means the user's own
+ * OAuth app (`true`); a canonical id means the built-in app (`false`). A stored
+ * `authMode` always wins — this only fills an absent field and never hides a real
+ * contradiction. The persisted representation is the boolean, not the legacy
+ * `LegacyAuthMode` profile name.
  */
-export function impliedAuthMode(backendType: string): LegacyAuthMode {
-	return isLegacyCustomAlias(backendType) ? "custom" : "default";
+export function impliedAuthMode(backendType: string): boolean {
+	return isLegacyCustomAlias(backendType);
 }

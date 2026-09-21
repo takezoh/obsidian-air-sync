@@ -21,13 +21,13 @@ function withBag(
 }
 
 describe("normalizeBackendModuleSettings — six legacy selections", () => {
-	const cases: readonly [string, string, "default" | "custom"][] = [
-		["googledrive", "googledrive", "default"],
-		["googledrive-custom", "googledrive", "custom"],
-		["onedrive", "onedrive", "default"],
-		["onedrive-custom", "onedrive", "custom"],
-		["dropbox", "dropbox", "default"],
-		["dropbox-custom", "dropbox", "custom"],
+	const cases: readonly [string, string, boolean][] = [
+		["googledrive", "googledrive", false],
+		["googledrive-custom", "googledrive", true],
+		["onedrive", "onedrive", false],
+		["onedrive-custom", "onedrive", true],
+		["dropbox", "dropbox", false],
+		["dropbox-custom", "dropbox", true],
 	];
 
 	for (const [legacy, canonical, authMode] of cases) {
@@ -52,17 +52,18 @@ describe("normalizeBackendModuleSettings — six legacy selections", () => {
 	});
 
 	it("never hides a stored authMode contradiction", () => {
-		// A canonical id whose bag already says custom keeps custom.
+		// A canonical id whose bag already says custom keeps custom (the string is
+		// converted, so the run reports a change).
 		const canonicalCustom = withBag("dropbox", { authMode: "custom" });
-		expect(normalizeBackendModuleSettings(canonicalCustom)).toBe(false);
-		expect(canonicalCustom.backendData.authMode).toBe("custom");
+		expect(normalizeBackendModuleSettings(canonicalCustom)).toBe(true);
+		expect(canonicalCustom.backendData.authMode).toBe(true);
 
 		// A legacy alias whose bag already says default keeps default (the
 		// contradiction is surfaced, not silently rewritten).
 		const aliasDefault = withBag("dropbox-custom", { authMode: "default" });
 		expect(normalizeBackendModuleSettings(aliasDefault)).toBe(true);
 		expect(aliasDefault.backendType).toBe("dropbox");
-		expect(aliasDefault.backendData.authMode).toBe("default");
+		expect(aliasDefault.backendData.authMode).toBe(false);
 	});
 
 	it("preserves user-managed secret references and other fields", () => {
@@ -75,13 +76,49 @@ describe("normalizeBackendModuleSettings — six legacy selections", () => {
 		});
 		normalizeBackendModuleSettings(settings);
 		expect(settings.backendData).toMatchObject({
-			authMode: "custom",
+			authMode: true,
 			customClientId: "my-client-secret-name",
 			customClientSecret: "my-secret-name",
 			customScope: "drive.file",
 			customRedirectUri: "obsidian://air-sync-auth",
 			accessTokenExpiry: 123,
 		});
+	});
+});
+
+describe("normalizeBackendModuleSettings — main-branch compatibility", () => {
+	// `main` stores `backendData.authMode` as the STRING "default" | "custom" and may
+	// still carry a legacy `*-custom` backendType. Both must reshape to the canonical
+	// id + boolean, leaving every other field intact, and be idempotent.
+	const cases: readonly [string, "custom" | "default", boolean][] = [
+		["dropbox-custom", "custom", true],
+		["dropbox-custom", "default", false],
+		["dropbox", "custom", true],
+		["dropbox", "default", false],
+	];
+
+	for (const [backendType, stored, expected] of cases) {
+		it(`${backendType} + authMode:${stored} -> dropbox/${expected}, idempotently`, () => {
+			const settings = withBag(backendType, {
+				authMode: stored,
+				remoteVaultFolderId: "id:abc",
+				customClientId: "APPKEY",
+			});
+			expect(normalizeBackendModuleSettings(settings)).toBe(true);
+			expect(settings.backendType).toBe("dropbox");
+			expect(settings.backendData.authMode).toBe(expected);
+			expect(settings.backendData).toMatchObject({
+				remoteVaultFolderId: "id:abc",
+				customClientId: "APPKEY",
+			});
+			expect(normalizeBackendModuleSettings(settings)).toBe(false);
+		});
+	}
+
+	it("leaves an already-boolean authMode unchanged", () => {
+		const settings = withBag("dropbox", { authMode: true, remoteVaultFolderId: "id:abc" });
+		expect(normalizeBackendModuleSettings(settings)).toBe(false);
+		expect(settings.backendData.authMode).toBe(true);
 	});
 });
 
@@ -101,7 +138,7 @@ describe("normalizeBackendModuleSettings — legacy nested bag", () => {
 		});
 		expect(normalizeBackendModuleSettings(settings)).toBe(true);
 		expect(settings.backendType).toBe("dropbox");
-		expect(settings.backendData).toMatchObject({ authMode: "custom", customClientId: "APPKEY" });
+		expect(settings.backendData).toMatchObject({ authMode: true, customClientId: "APPKEY" });
 	});
 });
 
@@ -137,7 +174,7 @@ describe("normalizeBackendModuleSettings — lastSyncedIdentity", () => {
 	});
 
 	it("does not rewrite an already-canonical identity", () => {
-		const settings = withBag("dropbox", { authMode: "default", remoteVaultFolderId: "id:abc" }, "dropbox:id:abc");
+		const settings = withBag("dropbox", { authMode: false, remoteVaultFolderId: "id:abc" }, "dropbox:id:abc");
 		expect(normalizeBackendModuleSettings(settings)).toBe(false);
 		expect(settings.lastSyncedIdentity).toBe("dropbox:id:abc");
 	});

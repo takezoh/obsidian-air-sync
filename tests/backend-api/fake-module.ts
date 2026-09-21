@@ -46,7 +46,7 @@ function fakeAdapter(): RemoteBackendAdapter {
 
 const FAKE_AUTH: BackendAuth = {
 	isAuthenticated: () => true,
-	start: () => Promise.resolve({ set: { authMode: "default" } }),
+	start: () => Promise.resolve({ set: { authMode: false } }),
 	complete: () => Promise.resolve({}),
 };
 

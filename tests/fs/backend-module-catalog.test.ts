@@ -74,12 +74,12 @@ describe("backend module auth matrix", () => {
 		}
 	});
 
-	it("each module declares an authMode select with both options", () => {
+	it("each module declares an authMode toggle defaulting to off", () => {
 		for (const moduleId of MANAGED_REMOTE_BACKEND_FAMILIES) {
 			const field = REMOTE_BACKEND_MODULES[moduleId].settings?.fields.find((f) => f.key === "authMode");
 			expect(field, `${moduleId} declares authMode`).toBeDefined();
-			expect(field?.type).toBe("select");
-			expect((field?.options ?? []).map((o) => o.value).sort()).toEqual(["custom", "default"]);
+			expect(field?.type).toBe("toggle");
+			expect(field?.defaultValue).toBe(false);
 		}
 	});
 });

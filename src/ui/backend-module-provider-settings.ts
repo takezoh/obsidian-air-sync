@@ -128,7 +128,7 @@ export class BackendModuleSettingsRenderer implements IBackendSettingsRenderer {
 	): false | void {
 		const module = this.provider.getModule();
 		const config = settings.backendData as JsonObject;
-		if (config.authMode !== "custom") {
+		if (config.authMode !== true) {
 			void actions.startAuth();
 			return;
 		}

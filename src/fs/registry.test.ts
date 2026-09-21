@@ -21,7 +21,7 @@ function connectedSettings(): AirSyncSettings {
 	return {
 		vaultId: "vault-1",
 		backendType: "googledrive",
-		backendData: { remoteVaultFolderId: "FID", authMode: "default" },
+		backendData: { remoteVaultFolderId: "FID", authMode: false },
 	} as unknown as AirSyncSettings;
 }
 

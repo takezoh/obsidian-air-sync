@@ -22,27 +22,23 @@ const SETTINGS: BackendSettingsDefinition = {
 	fields: [
 		{
 			key: "authMode",
-			label: "OAuth mode",
-			type: "select",
-			defaultValue: "default",
-			options: [
-				{ value: "default", label: "Air Sync's Microsoft app" },
-				{ value: "custom", label: "My own Microsoft app" },
-			],
+			label: "Use your own Microsoft app (custom OAuth)",
+			type: "toggle",
+			defaultValue: false,
 		},
 		{ key: "remoteVaultFolderId", label: "Remote folder id", type: "text" },
 		{
 			key: "customClientId",
 			label: "Application (client) ID",
 			type: "text",
-			visibleWhen: { field: "authMode", equals: "custom" },
+			visibleWhen: { field: "authMode", equals: true },
 		},
 		{
 			key: "customAuthority",
 			label: "Account authority",
 			type: "text",
 			defaultValue: DEFAULT_ONEDRIVE_AUTHORITY,
-			visibleWhen: { field: "authMode", equals: "custom" },
+			visibleWhen: { field: "authMode", equals: true },
 		},
 	],
 };
@@ -54,7 +50,7 @@ function authorityOf(config: Readonly<JsonObject>): string {
 const spec: PkceModuleSpec = {
 	displayName: "OneDrive",
 	defaultClientId: "71cd9a2a-a701-4ec2-b7d0-2352e0e84e9f",
-	isCustom: (config) => asString(config.authMode) === "custom",
+	isCustom: (config) => config.authMode === true,
 	customClientId: (config) => asString(config.customClientId),
 	createManager: (clientId, config, context) => new OneDriveAuth(clientId, createContextTransport(context.http), authorityOf(config), context.logger),
 	authorizeUrl: (clientId, codeChallenge, state, config) =>

@@ -4,10 +4,10 @@ import type { JsonObject } from "../../src/backend-api";
 
 describe("applyJsonPatch", () => {
 	it("sets and unsets top-level fields without mutating the input", () => {
-		const bag: JsonObject = { rootId: "old", authMode: "default" };
+		const bag: JsonObject = { rootId: "old", authMode: false };
 		const next = applyJsonPatch(bag, { set: { rootId: "new", token: "t" }, unset: ["authMode"] });
 		expect(next).toEqual({ rootId: "new", token: "t" });
-		expect(bag).toEqual({ rootId: "old", authMode: "default" });
+		expect(bag).toEqual({ rootId: "old", authMode: false });
 	});
 
 	it("replaces a whole nested field rather than merging it", () => {

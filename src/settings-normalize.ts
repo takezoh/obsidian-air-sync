@@ -55,17 +55,23 @@ export function liftActiveBackendData(
  * @returns true if `settings.conflictStrategy` was changed (caller should persist).
  */
 /**
- * Canonicalize the legacy backend selection onto a backend module id.
+ * Canonicalize the legacy backend selection onto a backend module id and reshape
+ * `authMode` to its boolean representation.
  *
  * WHY THIS EXISTS: the six legacy `backendType` values (three services, each with a
  * `-custom` OAuth variant) become three modules whose built-in/custom choice is the
- * `authMode` field inside the active `backendData` bag. A vault saved by an older
- * version still has a `*-custom` id and no `authMode`; left as-is it would select no
- * module. This maps the id to its canonical module and fills the absent `authMode`
- * (an old `*-custom` id means the user's own app; a canonical id means the built-in
- * app). A stored `authMode` always wins, so a real contradiction is not silently
- * hidden. It is idempotent — on a canonical id with a present `authMode` it is a
- * no-op (returns false).
+ * `authMode` field inside the active `backendData` bag. The persisted representation
+ * is now a BOOLEAN: `true` = the user's own OAuth app, `false` = the built-in app. A
+ * vault saved by an older version still has a `*-custom` id and, on `main`, the
+ * STRING `"custom"`/`"default"`; left as-is it would not drive the boolean readers.
+ * This maps the id to its canonical module, converts a stored string to the boolean,
+ * and fills an absent field (an old `*-custom` id means the user's own app; a
+ * canonical id means the built-in app). A stored value always wins over the id's
+ * implication, so a real contradiction is not silently hidden. It is idempotent — on
+ * an already-boolean value it is a no-op (returns false).
+ *
+ * This is the ONLY compatibility reshape for `authMode`; readers never fall back to
+ * the legacy string.
  *
  * `lastSyncedIdentity` is persisted as `<backendType>:<targetId>`. Canonicalizing its
  * prefix is ONLY safe when it provably describes the same connection: the part after
@@ -86,9 +92,18 @@ export function normalizeBackendModuleSettings(settings: AirSyncSettings): boole
 	}
 
 	const bag = settings.backendData;
-	if (isObject(bag) && bag.authMode === undefined) {
-		bag.authMode = impliedAuthMode(originalType);
-		changed = true;
+	if (isObject(bag)) {
+		const stored = bag.authMode;
+		if (stored === undefined) {
+			bag.authMode = impliedAuthMode(originalType);
+			changed = true;
+		} else if (stored === "custom") {
+			bag.authMode = true;
+			changed = true;
+		} else if (stored === "default") {
+			bag.authMode = false;
+			changed = true;
+		}
 	}
 
 	changed = canonicalizeStoredIdentity(settings, originalType) || changed;

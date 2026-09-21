@@ -51,7 +51,7 @@ function makeProvider(
 
 describe("BackendModuleProvider — identity and target", () => {
 	it("composes identity from the canonical module id and the bound target", () => {
-		const settings = settingsWith({ authMode: "default", remoteVaultFolderId: "FID" });
+		const settings = settingsWith({ authMode: false, remoteVaultFolderId: "FID" });
 		const { provider } = makeProvider("googledrive", settings, () => null);
 		expect(provider.type).toBe("googledrive");
 		expect(provider.getIdentity(settings)).toBe("googledrive:FID");
@@ -61,7 +61,7 @@ describe("BackendModuleProvider — identity and target", () => {
 describe("BackendModuleProvider — custom OAuth routing", () => {
 	it("Google custom resolves its client credentials as user-owned secret references", async () => {
 		const settings = settingsWith({
-			authMode: "custom",
+			authMode: true,
 			remoteVaultFolderId: "FID",
 			customClientId: "my-client-secret",
 			customClientSecret: "my-client-secret-2",
@@ -83,7 +83,7 @@ describe("BackendModuleProvider — custom OAuth routing", () => {
 
 	it("Dropbox custom treats its app key as a public value, not a SecretStorage reference", async () => {
 		const settings = settingsWith({
-			authMode: "custom",
+			authMode: true,
 			remoteVaultFolderId: "id:folder",
 			customClientId: "PUBLIC-APP-KEY",
 		});
@@ -101,7 +101,7 @@ describe("BackendModuleProvider — custom OAuth routing", () => {
 
 describe("BackendModuleProvider — token namespace", () => {
 	it("keeps OneDrive custom tokens under the legacy -custom keys", () => {
-		const settings = settingsWith({ authMode: "custom", remoteVaultFolderId: "id:folder" });
+		const settings = settingsWith({ authMode: true, remoteVaultFolderId: "id:folder" });
 		const getSecret = vi.fn((key: string) => (key === "air-sync-onedrive-custom-refresh-token" ? "RT" : null));
 		const setSecret = vi.fn();
 		const store: ISecretStore = { getSecret, setSecret };
@@ -127,7 +127,7 @@ describe("BackendModuleProvider — token namespace", () => {
 describe("BackendModuleProvider — disconnect config preservation", () => {
 	it("keeps custom Google credentials and its hand-typed folder id, dropping flow state", async () => {
 		const settings = settingsWith({
-			authMode: "custom",
+			authMode: true,
 			remoteVaultFolderId: "FID",
 			customClientId: "my-client-secret",
 			customClientSecret: "my-client-secret-2",
@@ -139,7 +139,7 @@ describe("BackendModuleProvider — disconnect config preservation", () => {
 		await provider.disconnect(settings);
 
 		expect(settings.backendData).toEqual({
-			authMode: "custom",
+			authMode: true,
 			customClientId: "my-client-secret",
 			customClientSecret: "my-client-secret-2",
 			customScope: "drive.file",
@@ -149,7 +149,7 @@ describe("BackendModuleProvider — disconnect config preservation", () => {
 
 	it("a built-in selection resets to authMode only", async () => {
 		const settings = settingsWith({
-			authMode: "default",
+			authMode: false,
 			remoteVaultFolderId: "FID",
 			pendingAuthState: "STATE",
 		});
@@ -157,7 +157,7 @@ describe("BackendModuleProvider — disconnect config preservation", () => {
 
 		await provider.disconnect(settings);
 
-		expect(settings.backendData).toEqual({ authMode: "default" });
+		expect(settings.backendData).toEqual({ authMode: false });
 	});
 });
 
@@ -222,7 +222,7 @@ function providerFor(module: BackendModule, settings: AirSyncSettings): BackendM
 
 describe("BackendModuleProvider — bound-folder display warning", () => {
 	it("passes a present-but-unusable target's warning through to the display", async () => {
-		const settings = settingsWith({ authMode: "default", remoteVaultFolderId: "T" });
+		const settings = settingsWith({ authMode: false, remoteVaultFolderId: "T" });
 		const provider = providerFor(fakeModule(), settings);
 		await expect(provider.getRemoteVaultDisplayPath(settings)).resolves.toEqual({
 			path: "/p/ath",
@@ -233,14 +233,14 @@ describe("BackendModuleProvider — bound-folder display warning", () => {
 
 describe("BackendModuleProvider — refreshed auth state persistence", () => {
 	it("carries the adapter's non-authoritative state into readBackendState", async () => {
-		const settings = settingsWith({ authMode: "default", remoteVaultFolderId: "T" });
+		const settings = settingsWith({ authMode: false, remoteVaultFolderId: "T" });
 		const provider = providerFor(fakeModule(() => ({ accessTokenExpiry: 123 })), settings);
 		await provider.prepare();
 		expect(provider.readBackendState()).toEqual({ accessTokenExpiry: 123 });
 	});
 
 	it("returns an empty bag when the adapter exposes no state", async () => {
-		const settings = settingsWith({ authMode: "default", remoteVaultFolderId: "T" });
+		const settings = settingsWith({ authMode: false, remoteVaultFolderId: "T" });
 		const provider = providerFor(fakeModule(), settings);
 		await provider.prepare();
 		expect(provider.readBackendState()).toEqual({});
@@ -249,7 +249,7 @@ describe("BackendModuleProvider — refreshed auth state persistence", () => {
 
 describe("BackendModuleProvider — prepared filesystem release", () => {
 	it("closes the prepared managed filesystem on close", async () => {
-		const settings = settingsWith({ authMode: "default", remoteVaultFolderId: "T" });
+		const settings = settingsWith({ authMode: false, remoteVaultFolderId: "T" });
 		const provider = providerFor(fakeModule(), settings);
 		await provider.prepare();
 		const closeSpy = vi.spyOn(ManagedRemoteFs.prototype, "close");
@@ -261,7 +261,7 @@ describe("BackendModuleProvider — prepared filesystem release", () => {
 	});
 
 	it("closes the prepared managed filesystem on disconnect", async () => {
-		const settings = settingsWith({ authMode: "default", remoteVaultFolderId: "T" });
+		const settings = settingsWith({ authMode: false, remoteVaultFolderId: "T" });
 		const provider = providerFor(fakeModule(), settings);
 		await provider.prepare();
 		const closeSpy = vi.spyOn(ManagedRemoteFs.prototype, "close");

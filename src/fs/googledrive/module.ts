@@ -26,44 +26,40 @@ const SETTINGS: BackendSettingsDefinition = {
 	fields: [
 		{
 			key: "authMode",
-			label: "OAuth mode",
-			type: "select",
-			defaultValue: "default",
-			options: [
-				{ value: "default", label: "Air Sync's Google app" },
-				{ value: "custom", label: "My own Google app" },
-			],
+			label: "Use your own Google app (custom OAuth)",
+			type: "toggle",
+			defaultValue: false,
 		},
 		{ key: "remoteVaultFolderId", label: "Remote folder id", type: "text" },
 		{
 			key: "customClientId",
 			label: "Client ID secret name",
 			type: "secret_reference",
-			visibleWhen: { field: "authMode", equals: "custom" },
+			visibleWhen: { field: "authMode", equals: true },
 		},
 		{
 			key: "customClientSecret",
 			label: "Client secret secret name",
 			type: "secret_reference",
-			visibleWhen: { field: "authMode", equals: "custom" },
+			visibleWhen: { field: "authMode", equals: true },
 		},
 		{
 			key: "customScope",
 			label: "OAuth scope",
 			type: "text",
-			visibleWhen: { field: "authMode", equals: "custom" },
+			visibleWhen: { field: "authMode", equals: true },
 		},
 		{
 			key: "customRedirectUri",
 			label: "Redirect URI",
 			type: "text",
-			visibleWhen: { field: "authMode", equals: "custom" },
+			visibleWhen: { field: "authMode", equals: true },
 		},
 	],
 };
 
 async function buildAuth(context: BackendRuntimeContext, config: Readonly<JsonObject>): Promise<IGoogleAuth> {
-	if (asString(config.authMode) === "custom") {
+	if (config.authMode === true) {
 		return new GoogleAuthDirect({
 			clientId: (await context.secrets.get("customClientId")) ?? "",
 			clientSecret: (await context.secrets.get("customClientSecret")) ?? "",
@@ -82,8 +78,8 @@ const auth: BackendAuth = {
 		const google = await buildAuth(context, config);
 		const url = await google.getAuthorizationUrl();
 		await context.auth.openExternal(url);
-		const patch: Record<string, string> = {
-			authMode: asString(config.authMode) || "default",
+		const patch: JsonObject = {
+			authMode: config.authMode === true,
 			pendingAuthState: google.getAuthState() ?? "",
 		};
 		const verifier = google.getCodeVerifier();
