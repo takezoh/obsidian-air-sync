@@ -272,3 +272,35 @@ describe("BackendModuleProvider — prepared filesystem release", () => {
 		closeSpy.mockRestore();
 	});
 });
+
+describe("BackendModuleProvider — a disposed connection is rebuilt for auth", () => {
+	it("opens the auth URL again after close() instead of reusing a dead connection", async () => {
+		const open = vi.fn();
+		vi.stubGlobal("window", { open, location: { href: "" } });
+		try {
+			const settings = settingsWith({ authMode: true, remoteVaultFolderId: "" });
+			const module: BackendModule = {
+				...fakeModule(),
+				auth: {
+					isAuthenticated: () => true,
+					start: (context) => {
+						void context.auth.openExternal("https://auth.example/start");
+						return Promise.resolve({});
+					},
+					complete: () => Promise.resolve({}),
+				},
+			};
+			const provider = providerFor(module, settings);
+
+			await provider.auth.startAuth({});
+			// Closing the provider disposes the connection; the next Connect must
+			// rebuild it rather than silently no-op on the dead generation.
+			provider.close();
+			await provider.auth.startAuth({});
+
+			expect(open).toHaveBeenCalledTimes(2);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+});

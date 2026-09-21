@@ -170,7 +170,11 @@ export class BackendModuleProvider implements IBackendProvider {
 
 	private ensureConnection(): ModuleConnection {
 		const authMode = authModeOf(this.configStore.read());
-		if (this.connection && this.connectionAuthMode === authMode) return this.connection;
+		// A disposed connection is never reusable: its generation gate rejects auth
+		// silently, so Connect would look like a no-op. Rebuild instead.
+		if (this.connection && this.connectionAuthMode === authMode && this.connection.isCurrent()) {
+			return this.connection;
+		}
 		return this.rebuildConnection(authMode);
 	}
 
