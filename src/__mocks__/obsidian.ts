@@ -74,6 +74,9 @@ class FakeEl {
 	empty(): void {
 		this.children = [];
 	}
+	addClass(_cls: string): FakeEl {
+		return this;
+	}
 	createEl(_tag: string, _opts?: { text?: string; cls?: string }): FakeEl {
 		const el = new FakeEl();
 		this.children.push(el);
