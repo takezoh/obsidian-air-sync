@@ -1,5 +1,5 @@
 /**
- * The normalized remote object model (Backend Module API v1).
+ * The normalized remote object model (Backend Module API v2).
  *
  * Provider-native DTOs must not leak into core persistence or the sync engine.
  * A module projects each provider object to this shape; core builds `FileEntity`,

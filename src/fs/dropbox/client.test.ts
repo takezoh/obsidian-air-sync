@@ -125,6 +125,23 @@ describe("DropboxClient.upload", () => {
 		expect(entry[".tag"]).toBe("file");
 	});
 
+	it("sends add mode for an exclusive create", async () => {
+		const spy = (await spyRequestUrl()).mockResolvedValue(mockRes(dbxFile("7", "/root/new.md")));
+		const client = await makeClient();
+		await client.upload("/root/new.md", new ArrayBuffer(1), 0, "add");
+		const arg = JSON.parse(String((spy.mock.calls[0]![0] as RequestUrlParam).headers?.["Dropbox-API-Arg"])) as Record<string, unknown>;
+		expect(arg.mode).toBe("add");
+	});
+
+	it("sends update(rev) mode and strict_conflict for a conditional overwrite", async () => {
+		const spy = (await spyRequestUrl()).mockResolvedValue(mockRes(dbxFile("5", "/root/note.md")));
+		const client = await makeClient();
+		await client.upload("/root/note.md", new ArrayBuffer(1), 0, { ".tag": "update", update: "rev-9" }, true);
+		const arg = JSON.parse(String((spy.mock.calls[0]![0] as RequestUrlParam).headers?.["Dropbox-API-Arg"])) as Record<string, unknown>;
+		expect(arg.mode).toEqual({ ".tag": "update", update: "rev-9" });
+		expect(arg.strict_conflict).toBe(true);
+	});
+
 	it("escapes non-ASCII path bytes in the Dropbox-API-Arg header", async () => {
 		const spy = (await spyRequestUrl()).mockResolvedValue(mockRes(dbxFile("6", "/root/日本語.md")));
 		const client = await makeClient();
@@ -148,6 +165,15 @@ describe("DropboxClient.download", () => {
 		const opts = spy.mock.calls[0]![0] as RequestUrlParam;
 		expect(opts.url).toContain("content.dropboxapi.com/2/files/download");
 		expect(JSON.parse(String(opts.headers?.["Dropbox-API-Arg"]))).toEqual({ path: "/root/x.md" });
+	});
+
+	it("binds the download to an exact rev when supplied", async () => {
+		const buf = new TextEncoder().encode("revised").buffer;
+		const spy = (await spyRequestUrl()).mockResolvedValue(mockRes(undefined, { arrayBuffer: buf }));
+		const client = await makeClient();
+		await client.download("/root/x.md", "rev-9");
+		const opts = spy.mock.calls[0]![0] as RequestUrlParam;
+		expect(JSON.parse(String(opts.headers?.["Dropbox-API-Arg"]))).toEqual({ path: "/root/x.md", rev: "rev-9" });
 	});
 });
 

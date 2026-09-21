@@ -1223,11 +1223,11 @@ describe("executePlan", () => {
 		function arrangeContention(ctx: ExecutionContext, withCapability = true) {
 			const remoteFs = ctx.remoteFs as MockFileSystem;
 			addFile(remoteFs, "Test.md", "keeper").identityKey = "keeper-id";
-			const byIdentity: { identityKey: string; newPath: string }[] = [];
+			const byIdentity: { identityKey: string; admittedPath: string; newPath: string }[] = [];
 			if (withCapability) {
 				remoteFs.identityRename = {
-					renameById: (identityKey: string, newPath: string) => {
-						byIdentity.push({ identityKey, newPath });
+					renameById: (identityKey: string, admittedPath: string, newPath: string) => {
+						byIdentity.push({ identityKey, admittedPath, newPath });
 						return Promise.resolve();
 					},
 				};
@@ -1252,7 +1252,7 @@ describe("executePlan", () => {
 			expect(result.blocked).toEqual([]);
 			expect(result.succeeded).toHaveLength(1);
 			expect(byIdentity).toEqual([
-				{ identityKey: "loser-id", newPath: "Test.conflict-id-loser-id.md" },
+				{ identityKey: "loser-id", admittedPath: "Test.md", newPath: "Test.conflict-id-loser-id.md" },
 			]);
 			expect(result.succeeded[0]?.terminalRecord).toBeUndefined();
 			expect(stateStore.records.size).toBe(0);

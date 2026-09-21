@@ -177,7 +177,7 @@ describe("OneDriveClient.upload (simple)", () => {
 			const o = typeof opts === "string" ? { url: opts } : opts;
 			calls.push(o);
 			if (o.method === "PATCH") return Promise.resolve(mockRes(odFile("f5", "note.md", ROOT)));
-			return Promise.resolve(mockRes(odFile("f5", "note.md", ROOT)));
+			return Promise.resolve(mockRes(odFile("f5", "note.md", ROOT, { eTag: "etag-put-1" })));
 		});
 		const client = await makeClient();
 		const content = new TextEncoder().encode("hello").buffer;
@@ -188,6 +188,7 @@ describe("OneDriveClient.upload (simple)", () => {
 		expect(String(put.headers?.["Content-Type"])).toBe("application/octet-stream");
 		const patch = calls.find((c) => c.method === "PATCH")!;
 		expect(String(patch.url)).toContain("/me/drive/items/f5");
+		expect(patch.headers?.["If-Match"]).toBe("etag-put-1");
 		const patchBody = JSON.parse(patch.body as string) as { fileSystemInfo: { lastModifiedDateTime: string } };
 		expect(patchBody.fileSystemInfo.lastModifiedDateTime).toBe(new Date(1_700_000_000_000).toISOString());
 		expect(item.id).toBe("f5");
@@ -226,6 +227,97 @@ describe("OneDriveClient.upload (session, ≥ 4 MiB)", () => {
 		expect(sessionAuth).toBe("Bearer tok");
 		expect(chunkAuths.length).toBeGreaterThan(0);
 		for (const a of chunkAuths) expect(a).toBeUndefined();
+	});
+});
+
+describe("OneDriveClient.upload (preconditions)", () => {
+	it("uses a simple PUT for a zero-byte create, with conflictBehavior in the URL and If-None-Match", async () => {
+		let put: RequestUrlParam | undefined;
+		(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
+			const o = typeof opts === "string" ? { url: opts } : opts;
+			if (o.method === "PUT") put = o;
+			return Promise.resolve(mockRes(odFile("z1", "empty.md", ROOT)));
+		});
+		const client = await makeClient();
+		await client.upload(ROOT, "empty.md", new ArrayBuffer(0), 0, { ifNoneMatch: "*", conflictBehavior: "fail" });
+		expect(put).toBeDefined();
+		expect(String(put!.url)).toContain("@microsoft.graph.conflictBehavior=fail");
+		expect(put!.headers?.["If-None-Match"]).toBe("*");
+	});
+
+	it("routes a preconditioned create through the upload session with If-None-Match + conflictBehavior", async () => {
+		let session: RequestUrlParam | undefined;
+		(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
+			const o = typeof opts === "string" ? { url: opts } : opts;
+			if (String(o.url).includes("createUploadSession")) {
+				session = o;
+				return Promise.resolve(mockRes({ uploadUrl: "https://upload.example/session" }));
+			}
+			return Promise.resolve(mockRes(odFile("n1", "note.md", ROOT)));
+		});
+		const client = await makeClient();
+		await client.upload(ROOT, "note.md", new ArrayBuffer(4), 0, { ifNoneMatch: "*", conflictBehavior: "fail" });
+		expect(session).toBeDefined();
+		expect(session!.headers?.["If-None-Match"]).toBe("*");
+		const body = JSON.parse(session!.body as string) as { item: { "@microsoft.graph.conflictBehavior": string } };
+		expect(body.item["@microsoft.graph.conflictBehavior"]).toBe("fail");
+	});
+
+	it("conditions the mtime PATCH on the eTag its own PUT returned", async () => {
+		let patch: RequestUrlParam | undefined;
+		(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
+			const o = typeof opts === "string" ? { url: opts } : opts;
+			if (o.method === "PATCH") {
+				patch = o;
+				return Promise.resolve(mockRes(odFile("z1", "empty.md", ROOT)));
+			}
+			return Promise.resolve(mockRes(odFile("z1", "empty.md", ROOT, { eTag: "etag-put-1" })));
+		});
+		const client = await makeClient();
+		await client.upload(ROOT, "empty.md", new ArrayBuffer(0), 0, { ifNoneMatch: "*", conflictBehavior: "fail" });
+		expect(patch).toBeDefined();
+		expect(patch!.headers?.["If-Match"]).toBe("etag-put-1");
+	});
+
+	it("surfaces the provider's rejection of a zero-byte exclusive create", async () => {
+		(await spyRequestUrl()).mockResolvedValue(
+			mockRes({ error: { code: "nameAlreadyExists" } }, { status: 412 }),
+		);
+		const client = await makeClient();
+		await expect(
+			client.upload(ROOT, "empty.md", new ArrayBuffer(0), 0, { ifNoneMatch: "*", conflictBehavior: "fail" }),
+		).rejects.toBeInstanceOf(GraphApiError);
+	});
+
+	it("sends If-Match on a non-empty content update routed through the upload session", async () => {
+		let session: RequestUrlParam | undefined;
+		(await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
+			const o = typeof opts === "string" ? { url: opts } : opts;
+			if (String(o.url).includes("createUploadSession")) {
+				session = o;
+				return Promise.resolve(mockRes({ uploadUrl: "https://upload.example/session" }));
+			}
+			return Promise.resolve(mockRes(odFile("f1", "note.md", ROOT)));
+		});
+		const client = await makeClient();
+		await client.upload(ROOT, "note.md", new ArrayBuffer(4), 0, { existingId: "f1", ifMatch: "etag-7", conflictBehavior: "replace" });
+		expect(session).toBeDefined();
+		expect(String(session!.url)).toContain("/items/f1/createUploadSession");
+		expect(session!.headers?.["If-Match"]).toBe("etag-7");
+	});
+
+	it("sends If-Match on move and delete when an etag is supplied", async () => {
+		const spy = (await spyRequestUrl()).mockResolvedValue(mockRes(odFile("f1", "n.md", ROOT)));
+		const client = await makeClient();
+		await client.move("f1", "n.md", undefined, "etag-7");
+		const move = spy.mock.calls[0]![0] as RequestUrlParam;
+		expect(move.headers?.["If-Match"]).toBe("etag-7");
+
+		spy.mockClear();
+		await client.deleteItem("f1", "etag-8");
+		const del = spy.mock.calls[0]![0] as RequestUrlParam;
+		expect(del.method).toBe("DELETE");
+		expect(del.headers?.["If-Match"]).toBe("etag-8");
 	});
 });
 

@@ -23,12 +23,13 @@ export const MANAGED_REMOTE_BACKEND_FAMILIES = Object.keys(
 	REMOTE_BACKEND_MODULES,
 ) as readonly RemoteBackendFamily[];
 
-/** The four contracts every backend module must satisfy through `ManagedRemoteFs`. */
+/** The five contracts every backend module must satisfy through `ManagedRemoteFs`. */
 export const REMOTE_BACKEND_CONTRACT_KINDS = [
 	"filesystem",
 	"caching",
 	"changeDetection",
 	"priorityObservation",
+	"concurrency",
 ] as const;
 
 export type RemoteBackendContractKind = (typeof REMOTE_BACKEND_CONTRACT_KINDS)[number];
@@ -49,7 +50,7 @@ export type RemoteBackendCatalog = Readonly<Record<RemoteBackendFamily, RemoteBa
 /**
  * Validate the conformance catalog: every required module is present and registerable
  * through the real registry, each cell names the module it exercises, and every cell
- * declares all four contracts. Returns human-readable issues (empty = valid). Kept
+ * declares all required contracts. Returns human-readable issues (empty = valid). Kept
  * pure so a mutation witness can assert the guard goes RED without a build.
  */
 export function validateRemoteBackendCatalog(catalog: RemoteBackendCatalog): readonly string[] {

@@ -78,6 +78,13 @@ function toDropboxTimestamp(mtime: number): string {
 }
 
 /**
+ * Dropbox file-write intent (`WriteMode`). `"add"` refuses to overwrite an
+ * existing file; the tagged `update` form overwrites only when the supplied
+ * revision matches the file's current one.
+ */
+export type DropboxWriteMode = "add" | "overwrite" | { ".tag": "update"; update: string };
+
+/**
  * Low-level Dropbox HTTP API v2 client.
  *
  * Uses Obsidian's `requestUrl` (never `fetch`) with `throw: false` so non-2xx
@@ -209,27 +216,40 @@ export class DropboxClient {
 		return this.rpc<DropboxEntry>("getMetadata", "files/get_metadata", { path });
 	}
 
-	/** Download file content. Metadata rides in the `Dropbox-API-Result` header (unused here). */
-	async download(path: string): Promise<ArrayBuffer> {
+	/** Download file content, optionally bound to an exact `rev`. Metadata rides in the `Dropbox-API-Result` header (unused here). */
+	async download(path: string, rev?: string): Promise<ArrayBuffer> {
 		const res = await this.request("download", {
 			url: `${CONTENT_API}/files/download`,
 			method: "POST",
-			headers: { "Dropbox-API-Arg": toApiArgHeader({ path }) },
+			headers: { "Dropbox-API-Arg": toApiArgHeader(rev ? { path, rev } : { path }) },
 		});
 		return res.arrayBuffer;
 	}
 
-	/** Upload (create/overwrite) a file. `mtime` (epoch ms) becomes `client_modified`. */
-	async upload(path: string, content: ArrayBuffer, mtime: number): Promise<DropboxEntry> {
+	/**
+	 * Upload a file. `mode` selects the conflict semantics: `"add"` refuses to
+	 * overwrite, `{".tag":"update","update":rev}` overwrites only when `rev`
+	 * matches. `strictConflict` forces a conflict even for identical contents, so a
+	 * stale `update` never silently succeeds. `mtime` (epoch ms) becomes
+	 * `client_modified`.
+	 */
+	async upload(
+		path: string,
+		content: ArrayBuffer,
+		mtime: number,
+		mode: DropboxWriteMode = "overwrite",
+		strictConflict = false,
+	): Promise<DropboxEntry> {
 		const res = await this.request("upload", {
 			url: `${CONTENT_API}/files/upload`,
 			method: "POST",
 			headers: {
 				"Dropbox-API-Arg": toApiArgHeader({
 					path,
-					mode: "overwrite",
+					mode,
 					autorename: false,
 					mute: false,
+					...(strictConflict ? { strict_conflict: true } : {}),
 					client_modified: toDropboxTimestamp(mtime),
 				}),
 				"Content-Type": "application/octet-stream",

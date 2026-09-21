@@ -20,6 +20,7 @@ import { clearManagedCheckpointStore, ManagedRemoteFs } from "../managed/managed
 import type { RemoteAddressing } from "../managed/mutation-bridge";
 import { createModuleConnection } from "./connection-host";
 import type { ModuleConfigStore, ModuleConnection } from "./connection-host";
+import { validateAdapterCapabilities } from "./validate-module";
 import type { RuntimeLogSink } from "./runtime-host";
 import type { PhysicalKeyResolver } from "./secret-host";
 import { BackendModuleSettingsRenderer } from "../../ui/backend-module-provider-settings";
@@ -210,6 +211,11 @@ export class BackendModuleProvider implements IBackendProvider {
 		const target = this.module.getTarget(config);
 		if (!target) return;
 		const adapter = await this.module.createAdapter(connection.context, config, target);
+		const capabilityCheck = validateAdapterCapabilities(adapter);
+		if (!capabilityCheck.ok) {
+			const paths = capabilityCheck.issues.map((issue) => issue.path || "capabilities").join(", ");
+			throw new Error(`Backend module ${this.module.id} returned an adapter with invalid capabilities: ${paths}`);
+		}
 		this.preparedAdapter = adapter;
 		this.preparedFs = new ManagedRemoteFs({
 			adapter,

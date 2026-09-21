@@ -38,10 +38,11 @@ function parseGraphTime(value: string | undefined): number | undefined {
 }
 
 function versionTokenOf(item: OneDriveItem): string | undefined {
-	const tag = item.cTag || item.eTag;
-	if (!tag) return undefined;
-	if (!isFolderEntry(item) && (!Number.isFinite(item.size) || !item.file?.hashes?.quickXorHash)) {
-		return undefined;
-	}
-	return `onedrive:${tag}`;
+	// `eTag` is the version of the ENTIRE item (metadata + content), so it advances on a
+	// metadata-only rename/move; `cTag` tracks content only and is absent on folders.
+	// Version evidence is the eTag ALONE: a missing size or QuickXorHash makes the
+	// checksum unknown, but it does not remove the item's version, and metadata mutation
+	// must still be guardable and fail closed on a mismatch.
+	const tag = item.eTag;
+	return tag ? `onedrive:${tag}` : undefined;
 }

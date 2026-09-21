@@ -1,6 +1,6 @@
 import "fake-indexeddb/auto";
 import { describe, expect, it, vi } from "vitest";
-import type { RemoteObject } from "../../../src/backend-api";
+import type { DestinationAddress, RemoteBackendCapabilities, RemoteObject } from "../../../src/backend-api";
 import type { DropboxEntry, DropboxListFolderResponse } from "../../../src/fs/dropbox/types";
 import { DropboxApiError } from "../../../src/fs/dropbox/types";
 import type { DropboxClient } from "../../../src/fs/dropbox/client";
@@ -12,6 +12,8 @@ import { runIFileSystemContract } from "../contracts/ifilesystem.contract";
 import { runRemoteFamilyCachingContract } from "../contracts/caching-remote-fs.contract";
 import type { RemoteFamilyCachingHarness } from "../contracts/caching-remote-fs.contract";
 import { bytes, statOrThrow, runRemoteChangeDetectionContract } from "../contracts/remote-change-detection.contract";
+import { runBackendConcurrencyContract } from "../contracts/backend-concurrency.contract";
+import type { BackendConcurrencyHarness } from "../contracts/backend-concurrency.contract";
 import {
 	runPriorityObservationContract,
 	type PriorityObservationContractHarness,
@@ -34,10 +36,13 @@ interface Node {
 class FakeDropbox {
 	private readonly byPath = new Map<string, Node>();
 	private readonly idToPath = new Map<string, string>();
+	private readonly revContents = new Map<string, ArrayBuffer>();
 	private readonly events: DropboxEntry[] = [];
 	private readonly outside = new Map<string, string[]>();
 	private idSeq = 0;
 	private failAfterFirstPage = false;
+	private afterRead?: (ref: string) => void;
+	private revSeq = 0;
 
 	private id(prefix: string): string {
 		return `id:${prefix}${++this.idSeq}`;
@@ -56,6 +61,7 @@ class FakeDropbox {
 	private put(entry: DropboxEntry, content?: ArrayBuffer): void {
 		this.byPath.set(entry.path_display, { entry, content });
 		if (entry.id) this.idToPath.set(entry.id, entry.path_display);
+		if (entry.rev && content) this.revContents.set(entry.rev, content.slice(0));
 	}
 
 	private removePath(path: string): void {
@@ -193,9 +199,14 @@ class FakeDropbox {
 			return Promise.resolve(this.folderEntry(ROOT_ID, ROOT_PATH));
 		}
 		const node = this.lookup(ref);
-		return node
-			? Promise.resolve(node.entry)
-			: Promise.reject(new DropboxApiError(`path/not_found: ${ref}`, 409, "path/not_found"));
+		if (!node) return Promise.reject(new DropboxApiError(`path/not_found: ${ref}`, 409, "path/not_found"));
+		// Capture the pre-change entry, then let a concurrent write land immediately
+		// after this observation.
+		const stale = node.entry;
+		const afterRead = this.afterRead;
+		this.afterRead = undefined;
+		afterRead?.(ref);
+		return Promise.resolve(stale);
 	}
 
 	getLatestCursor(): Promise<string> {
@@ -220,9 +231,27 @@ class FakeDropbox {
 		return Promise.resolve({ entries: this.events.slice(from), cursor: `c${this.events.length}`, has_more: false });
 	}
 
-	async upload(target: string, content: ArrayBuffer, mtime: number): Promise<DropboxEntry> {
+	async upload(
+		target: string,
+		content: ArrayBuffer,
+		mtime: number,
+		mode?: "add" | "overwrite" | { ".tag": "update"; update: string },
+		strictConflict = false,
+	): Promise<DropboxEntry> {
 		const absPath = this.toAbs(target);
 		const existing = this.byPath.get(absPath);
+		const conflict = new DropboxApiError("path/conflict/file", 409, "path/conflict/file");
+		if (mode === "add" && existing) return Promise.reject(conflict);
+		if (mode !== undefined && typeof mode === "object") {
+			const matchesRev = existing !== undefined && existing.entry.rev === mode.update;
+			if (!matchesRev) {
+				// Dropbox treats a write of identical contents as a no-op success; only
+				// strict_conflict forces the conflict. Modelling both is what makes the
+				// adapter's strict_conflict observable.
+				const sameContent = existing?.content !== undefined && buffersEqual(existing.content, content);
+				if (!(sameContent && !strictConflict)) return Promise.reject(conflict);
+			}
+		}
 		const id = existing?.entry.id ?? this.id("f");
 		const contentHash = await dropboxContentHash(content);
 		const entry: DropboxEntry = {
@@ -268,7 +297,13 @@ class FakeDropbox {
 		return Promise.resolve();
 	}
 
-	download(absOrId: string): Promise<ArrayBuffer> {
+	download(absOrId: string, rev?: string): Promise<ArrayBuffer> {
+		if (rev !== undefined) {
+			const stored = this.revContents.get(rev);
+			return stored
+				? Promise.resolve(stored.slice(0))
+				: Promise.reject(new Error(`not_found rev: ${rev}`));
+		}
 		const node = this.lookup(absOrId);
 		return node?.content !== undefined
 			? Promise.resolve(node.content.slice(0))
@@ -276,6 +311,39 @@ class FakeDropbox {
 	}
 
 	// ── Test-only ──
+
+	/** Simulate a concurrent remote write that keeps the id but advances the revision. */
+	concurrentWrite(id: string, content: string): void {
+		const path = this.idToPath.get(id);
+		const node = path === undefined ? undefined : this.byPath.get(path);
+		if (!node) return;
+		const data = bytes(content);
+		node.content = data;
+		node.entry = {
+			...node.entry,
+			rev: `rev-${id}-concurrent-${++this.revSeq}`,
+			size: data.byteLength,
+			content_hash: `hash-concurrent-${this.revSeq}`,
+		};
+		this.put(node.entry, data);
+	}
+
+	afterNextRead(ref: string, action: () => void): void {
+		this.afterRead = (observed) => {
+			if (observed === ref) action();
+		};
+	}
+
+	contentOf(id: string): string | null {
+		const path = this.idToPath.get(id);
+		const node = path === undefined ? undefined : this.byPath.get(path);
+		return node?.content === undefined ? null : new TextDecoder().decode(node.content);
+	}
+
+	nameOf(id: string): string | null {
+		const path = this.idToPath.get(id);
+		return path === undefined ? null : path.split("/").pop()!;
+	}
 
 	getRev(id: string): string | undefined {
 		const path = this.idToPath.get(id);
@@ -298,6 +366,15 @@ class FakeDropbox {
 		this.put(entry);
 		return id;
 	}
+}
+
+/** Byte-equality for the fake's identical-content no-op behaviour. */
+function buffersEqual(a: ArrayBuffer, b: ArrayBuffer): boolean {
+	if (a.byteLength !== b.byteLength) return false;
+	const av = new Uint8Array(a);
+	const bv = new Uint8Array(b);
+	for (let i = 0; i < av.length; i++) if (av[i] !== bv[i]) return false;
+	return true;
 }
 
 function clientOf(fake: FakeDropbox): DropboxClient {
@@ -362,6 +439,59 @@ export function registerDropboxManagedCachingContract(): void {
 	runRemoteFamilyCachingContract("ManagedRemoteFs<dropbox>", makeCachingHarness);
 }
 
+const DROPBOX_CONCURRENCY_CAPABILITIES: RemoteBackendCapabilities = {
+	exclusiveCreate: true,
+	conditionalContentUpdate: "all",
+	conditionalMetadataMutation: false,
+	versionBoundRead: "revision",
+};
+
+function makeConcurrencyHarness(): BackendConcurrencyHarness {
+	const client = new FakeDropbox();
+	const adapter = new DropboxAdapter(clientOf(client), ROOT_ID);
+	const observedToken = async (id: string): Promise<string> => (await adapter.getById(id))?.versionToken ?? "";
+	return {
+		adapter,
+		async seed(path, content) {
+			const entry = await client.upload(`${ROOT_PATH}/${path}`, bytes(content), Date.now());
+			return { id: entry.id!, versionToken: await observedToken(entry.id!) };
+		},
+		async seedFolder(path) {
+			const entry = await client.createFolder(`${ROOT_ID}/${path}`);
+			return { id: entry.id!, versionToken: await observedToken(entry.id!) };
+		},
+		write(id, content) {
+			client.concurrentWrite(id, content);
+			return Promise.resolve();
+		},
+		writeAfterNextObservation(id, content) {
+			client.afterNextRead(id, () => client.concurrentWrite(id, content));
+		},
+		writeMetadataAfterNextObservation() {
+			// Dropbox has no metadata-only version: a rename is a path change, not a rev change.
+		},
+		contentOf(id) {
+			return Promise.resolve(client.contentOf(id));
+		},
+		nameOf(id) {
+			return client.nameOf(id);
+		},
+		removeEvidence(id) {
+			client.dropRev(id);
+		},
+		removeVersionEvidenceKeepContent() {},
+		destination(name): DestinationAddress {
+			return { addressing: "provider_path", rootId: ROOT_ID, path: name };
+		},
+		directoryVersionEvidence: false,
+		providerDirectoryToken: () => undefined,
+	};
+}
+
+export function registerDropboxManagedConcurrencyContract(): void {
+	runBackendConcurrencyContract("dropbox adapter", DROPBOX_CONCURRENCY_CAPABILITIES, makeConcurrencyHarness);
+}
+
 export function registerDropboxManagedChangeDetectionContract(): void {
 	runRemoteChangeDetectionContract(
 		"ManagedRemoteFs<dropbox>",
@@ -417,7 +547,7 @@ async function makePriorityHarness(scenario: PriorityObservationScenario): Promi
 		expectedContent: content.slice(0),
 		replacementIdentityKey: replacementKey,
 		assertIdentityReadRoute: () => {
-			expect(download).toHaveBeenCalledWith(createdId);
+			expect(download).toHaveBeenCalledWith(createdId, expect.any(String));
 		},
 	};
 }

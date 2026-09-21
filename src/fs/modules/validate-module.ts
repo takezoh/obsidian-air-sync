@@ -40,6 +40,11 @@ const SETTING_FIELD_TYPES: ReadonlySet<string> = new Set([
 	"toggle",
 ]);
 
+/** The `conditionalContentUpdate` coverage values a v2 adapter may declare. */
+const CONTENT_UPDATE_COVERAGE: ReadonlySet<string> = new Set(["all", "none"]);
+/** The `versionBoundRead` binding modes a v2 adapter may declare. */
+const VERSION_BOUND_READ_MODES: ReadonlySet<string> = new Set(["revision", "reobserve"]);
+
 type Json = Readonly<Record<string, unknown>>;
 
 function isJson(value: unknown): value is Json {
@@ -191,5 +196,48 @@ export function validateBackendModule(candidate: unknown): ModuleValidationResul
 	validateAuth(issues, candidate);
 	validateBinding(issues, candidate);
 	validateSettings(issues, candidate);
+	return issues.result();
+}
+
+/**
+ * Runtime-validate the adapter a module returns, immediately after creation.
+ *
+ * `createAdapter` is declared to return a `RemoteBackendAdapter`, but a
+ * dynamically loaded JavaScript module is not bound by TypeScript: it can omit
+ * `capabilities` or use a value outside the declared enums. This checks the v2
+ * declaration before the adapter reaches `ManagedRemoteFs`.
+ */
+export function validateAdapterCapabilities(candidate: unknown): ModuleValidationResult {
+	const issues = new Issues();
+	if (!isJson(candidate)) {
+		issues.add("invalid_adapter", "", "an adapter must be a plain object");
+		return issues.result();
+	}
+	const capabilities = candidate.capabilities;
+	if (!isJson(capabilities)) {
+		issues.add("missing_capabilities", "capabilities", "adapter.capabilities is required");
+		return issues.result();
+	}
+	for (const key of ["exclusiveCreate", "conditionalMetadataMutation"]) {
+		if (typeof capabilities[key] !== "boolean") {
+			issues.add("invalid_capability", `capabilities.${key}`, `capabilities.${key} must be a boolean`);
+		}
+	}
+	const coverage = capabilities.conditionalContentUpdate;
+	if (typeof coverage !== "string" || !CONTENT_UPDATE_COVERAGE.has(coverage)) {
+		issues.add(
+			"invalid_capability",
+			"capabilities.conditionalContentUpdate",
+			"capabilities.conditionalContentUpdate must be all | none",
+		);
+	}
+	const readMode = capabilities.versionBoundRead;
+	if (typeof readMode !== "string" || !VERSION_BOUND_READ_MODES.has(readMode)) {
+		issues.add(
+			"invalid_capability",
+			"capabilities.versionBoundRead",
+			"capabilities.versionBoundRead must be revision | reobserve",
+		);
+	}
 	return issues.result();
 }

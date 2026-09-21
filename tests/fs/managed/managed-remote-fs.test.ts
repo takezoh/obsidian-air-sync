@@ -274,6 +274,32 @@ describe("ManagedRemoteFs — mutations through the bridge", () => {
 		expect(adapter.hasPath("docs")).toBe(false);
 	});
 
+	it("deletes each member of a merged folder with its OWN version, not the representative's", async () => {
+		// provider_path addressing: two same-named provider folders resolve to one
+		// vault path and merge, each keeping its own provider identity and version.
+		const adapter = new FakeRemoteAdapter("root", "provider_path");
+		const first = adapter.seedDirectory("docs");
+		const second = adapter.seedDirectory("docs");
+		adapter.bumpVersion(second);
+		const fs = makeFs(adapter, "merged-folder-delete", "provider_path");
+		await fs.list();
+
+		const firstToken = adapter.nodeById(first)!.versionToken;
+		const secondToken = adapter.nodeById(second)!.versionToken;
+		expect(firstToken).not.toBe(secondToken);
+
+		const del = vi.spyOn(adapter, "delete");
+		await fs.delete("docs");
+
+		expect(del).toHaveBeenCalledTimes(2);
+		const tokens = del.mock.calls.map(([input]) => input.expected.versionToken).sort();
+		// Before the fix, the merged member carried the representative's token and the
+		// provider CAS rejected the delete as `target_changed`.
+		expect(tokens).toEqual([firstToken, secondToken].sort());
+		expect(await fs.stat("docs")).toBeNull();
+		expect(adapter.hasPath("docs")).toBe(false);
+	});
+
 	it("creates and renames through provider_path destinations", async () => {
 		const adapter = new FakeRemoteAdapter("root", "provider_path");
 		adapter.seedFile("seed.md", "S");
@@ -327,19 +353,52 @@ describe("ManagedRemoteFs — validated boundaries", () => {
 		await fs.list();
 
 		vi.spyOn(adapter, "move").mockResolvedValue({ id: "bad" } as never);
-		await expect(fs.identityRename.renameById(id, "renamed.md")).rejects.toThrow(RemoteObjectValidationError);
+		await expect(fs.identityRename.renameById(id, "a.md", "renamed.md")).rejects.toThrow(RemoteObjectValidationError);
 	});
 
-	it("validates and applies an identity-addressed rename of a cached object", async () => {
+	it("validates and applies an identity-addressed rename of a cached object, carrying the expected version", async () => {
 		const adapter = new FakeRemoteAdapter("root", "parent_id");
 		const id = adapter.seedFile("a.md", "A");
 		const fs = makeFs(adapter, "identity-rename-ok");
 		await fs.list();
 
-		await fs.identityRename.renameById(id, "renamed.md");
+		const move = vi.spyOn(adapter, "move");
+		await fs.identityRename.renameById(id, "a.md", "renamed.md");
+		expect(move).toHaveBeenCalledTimes(1);
+		expect(move.mock.calls[0]![0].expected).toEqual({ id, versionToken: "v1" });
 		expect(adapter.hasPath("a.md")).toBe(false);
 		expect(adapter.hasPath("renamed.md")).toBe(true);
 		expect(await fs.stat("renamed.md")).not.toBeNull();
+	});
+
+	it("fails closed without a provider mutation when the object moved after Admission", async () => {
+		const adapter = new FakeRemoteAdapter("root", "parent_id");
+		const id = adapter.seedFile("a.md", "A");
+		const fs = makeFs(adapter, "identity-rename-moved");
+		await fs.list();
+		// The object Admission observed at a.md has since moved to b.md.
+		adapter.simulateRename("a.md", "b.md");
+
+		const move = vi.spyOn(adapter, "move");
+		await expect(fs.identityRename.renameById(id, "a.md", "renamed.md")).rejects.toThrow(/admitted path/);
+		expect(move).not.toHaveBeenCalled();
+		expect(adapter.hasPath("b.md")).toBe(true);
+		expect(adapter.hasPath("renamed.md")).toBe(false);
+	});
+
+	it("passes the re-observed version to the provider CAS when the version advanced at the same path", async () => {
+		const adapter = new FakeRemoteAdapter("root", "parent_id");
+		const id = adapter.seedFile("a.md", "A");
+		const fs = makeFs(adapter, "identity-rename-advanced");
+		await fs.list();
+		// Same address, newer version: the repair must CAS the version it re-observes.
+		adapter.simulateUpdate("a.md", "A2");
+
+		const move = vi.spyOn(adapter, "move");
+		await fs.identityRename.renameById(id, "a.md", "renamed.md");
+		expect(move).toHaveBeenCalledTimes(1);
+		expect(move.mock.calls[0]![0].expected).toEqual({ id, versionToken: "v2" });
+		expect(adapter.hasPath("renamed.md")).toBe(true);
 	});
 });
 

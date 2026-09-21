@@ -104,7 +104,7 @@ COLD loop is forbidden for a supported backend.
 
 ### Provider behavior vs core obligations (module boundary)
 
-Under the Backend Module API v1, this contract splits by owner. A backend **module**
+Under the Backend Module API v2, this contract splits by owner. A backend **module**
 implements provider operations through a `RemoteBackendAdapter` — it reports provider
 facts and performs provider mutations. Core owns the observable `IFileSystem`, the
 normalized metadata cache, topology/identity projection, the delta cursor, scope
@@ -140,12 +140,15 @@ provider version token:
 
 | Backend | No-download checksum projected to `remoteChecksum` | Detached version evidence |
 |---|---|---|
-| Google Drive | `md5Checksum` as `md5` | `md5Checksum` plus size; provider `version` is retained as metadata |
+| Google Drive | `md5Checksum` as `md5` | provider `version` (monotonic per server change, so a metadata-only rename/move is a version change), files and directories |
 | Dropbox | `content_hash` as the locally implemented `dropbox` algorithm | `rev` |
-| OneDrive | `quickXorHash` as the locally implemented `quickxor` algorithm | `cTag` or `eTag` |
+| OneDrive | `quickXorHash` as the locally implemented `quickxor` algorithm | full-item `eTag` (metadata + content, files and directories) |
 
 Their remote projections leave `FileEntity.hash` empty and carry the provider checksum
-separately. [`enrichHashesForInitialMatch()`](../../src/sync/change-hash-enrichment.ts)
+separately. The version token is independent of the checksum: a missing checksum leaves
+the checksum unknown, not the version. Each adapter declares the preconditions its
+provider enforces on `capabilities` (see
+[design-backend-module-api.md](design-backend-module-api.md)). [`enrichHashesForInitialMatch()`](../../src/sync/change-hash-enrichment.ts)
 then reads only the local file, computes the advertised remote algorithm, and compares
 it with `remoteChecksum`. This is the required direction of comparison. A provider
 version token may bind a later read to the observation, but is not a content digest.

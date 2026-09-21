@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import type { RequestUrlParam } from "obsidian";
 import { spyRequestUrl, mockRes, testTransport } from "./test-helpers.test";
 import type { Logger } from "../../logging/logger";
 
@@ -241,6 +242,35 @@ describe("GoogleDriveClient resumable upload", () => {
 		expect(callCount).toBe(2); // 1 init + 1 upload
 
 		mockRequestUrl.mockRestore();
+	});
+
+	it("requests version in the resumable create fields so the result carries version evidence", async () => {
+		const { GoogleDriveClient } = await import("./client");
+
+		let initUrl = "";
+		let callCount = 0;
+		const mockInit = (await spyRequestUrl()).mockImplementation((opts: string | RequestUrlParam) => {
+			const o = typeof opts === "string" ? { url: opts } : opts;
+			callCount++;
+			if (callCount === 1) {
+				initUrl = String(o.url);
+				return Promise.resolve(mockRes({}, { headers: { location: "https://upload.example.com/session" } }));
+			}
+			return Promise.resolve(mockRes({
+				id: "uploaded-file",
+				name: "large.bin",
+				mimeType: "application/octet-stream",
+				md5Checksum: "finalhash",
+				version: "7",
+			}));
+		});
+
+		const client = new GoogleDriveClient(() => Promise.resolve("access"), testTransport());
+		const result = await client.uploadFile("large.bin", "parent-id", new ArrayBuffer(12 * 1024 * 1024));
+		expect(initUrl).toContain("fields=");
+		expect(initUrl).toContain("version");
+		expect(result.version).toBe("7");
+		mockInit.mockRestore();
 	});
 
 	it("accepts Android-style title-case Location header from resumable init", async () => {

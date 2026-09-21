@@ -5,7 +5,7 @@ import type { GoogleDriveFile } from "./types";
 import { assertGoogleDriveFile, buildUploadMetadata } from "./types";
 
 const UPLOAD_API = "https://www.googleapis.com/upload/drive/v3";
-const FILE_FIELDS = "id,name,mimeType,size,modifiedTime,parents,md5Checksum";
+const FILE_FIELDS = "id,name,mimeType,size,modifiedTime,parents,md5Checksum,version";
 export const RESUMABLE_THRESHOLD = 5 * 1024 * 1024; // 5MB
 const MISSING_RESUMABLE_LOCATION_CODE = "googledrive.resumable_upload.missing_location";
 

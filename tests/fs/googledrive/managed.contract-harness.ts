@@ -1,6 +1,6 @@
 import "fake-indexeddb/auto";
 import { describe, expect, it, vi } from "vitest";
-import type { RemoteObject } from "../../../src/backend-api";
+import type { DestinationAddress, RemoteBackendCapabilities, RemoteObject } from "../../../src/backend-api";
 import type { GoogleDriveChange, GoogleDriveFile } from "../../../src/fs/googledrive/types";
 import { FOLDER_MIME } from "../../../src/fs/googledrive/types";
 import type { GoogleDriveClient } from "../../../src/fs/googledrive/client";
@@ -16,6 +16,8 @@ import type {
 	RemoteFamilyCachingHarness,
 } from "../contracts/caching-remote-fs.contract";
 import { bytes, statOrThrow, runRemoteChangeDetectionContract } from "../contracts/remote-change-detection.contract";
+import { runBackendConcurrencyContract } from "../contracts/backend-concurrency.contract";
+import type { BackendConcurrencyHarness } from "../contracts/backend-concurrency.contract";
 import {
 	runPriorityObservationContract,
 	type PriorityObservationContractHarness,
@@ -45,6 +47,8 @@ class FakeGoogleDrive {
 	private idSeq = 0;
 	private failAfterFirstPage = false;
 	private expireNextDelta = false;
+	private afterRead?: (ref: string) => void;
+	private readonly versionSeq = new Map<string, number>();
 	readonly rootId = ROOT;
 
 	private id(prefix: string): string {
@@ -91,6 +95,10 @@ class FakeGoogleDrive {
 	}
 
 	private place(file: GoogleDriveFile, content?: ArrayBuffer): void {
+		// Advance the provider's monotonic `version` on every server-side change,
+		// including metadata-only ones, exactly as Drive does.
+		file.version = String((this.versionSeq.get(file.id) ?? 0) + 1);
+		this.versionSeq.set(file.id, Number(file.version));
 		this.nodes.set(file.id, file);
 		if (content) this.contents.set(file.id, content.slice(0));
 	}
@@ -216,9 +224,14 @@ class FakeGoogleDrive {
 			return Promise.resolve({ id: ROOT, name: "", mimeType: FOLDER_MIME, parents: [], trashed: false });
 		}
 		const file = this.nodes.get(fileId);
-		return file
-			? Promise.resolve(this.copy(file))
-			: Promise.reject(Object.assign(new Error(`File not found: ${fileId}`), { status: 404 }));
+		if (!file) return Promise.reject(Object.assign(new Error(`File not found: ${fileId}`), { status: 404 }));
+		// Capture the pre-change file, then let a concurrent write land immediately
+		// after this observation.
+		const stale = this.copy(file);
+		const afterRead = this.afterRead;
+		this.afterRead = undefined;
+		afterRead?.(fileId);
+		return Promise.resolve(stale);
 	}
 
 	listChildrenByName(parentId: string, name: string): Promise<GoogleDriveFile[]> {
@@ -276,13 +289,44 @@ class FakeGoogleDrive {
 
 	// ── Test-only introspection ──
 
-	getChecksum(id: string): string | undefined {
-		return this.nodes.get(id)?.md5Checksum;
+	/** Simulate a concurrent server change: advance the file's version in place. */
+	touchVersion(id: string): void {
+		const file = this.nodes.get(id);
+		if (file) this.place({ ...file }, this.contents.get(id));
 	}
 
-	dropChecksum(id: string): void {
+	/** Simulate a provider that reports no version evidence. */
+	clearVersion(id: string): void {
 		const file = this.nodes.get(id);
-		if (file) this.place({ ...file, md5Checksum: undefined }, this.contents.get(id));
+		if (file) {
+			this.versionSeq.delete(id);
+			this.nodes.set(id, { ...file, version: undefined });
+		}
+	}
+
+	/** Simulate a concurrent remote write that advances the file's version. */
+	concurrentWrite(id: string, content: string): void {
+		const file = this.nodes.get(id);
+		if (file) this.place({ ...file }, bytes(content));
+	}
+
+	afterNextRead(ref: string, action: () => void): void {
+		this.afterRead = (observed) => {
+			if (observed === ref) action();
+		};
+	}
+
+	contentOf(id: string): string | null {
+		const content = this.contents.get(id);
+		return content === undefined ? null : new TextDecoder().decode(content);
+	}
+
+	nameOf(id: string): string | null {
+		return this.nodes.get(id)?.name ?? null;
+	}
+
+	rawVersion(id: string): string | undefined {
+		return this.nodes.get(id)?.version;
 	}
 
 	replaceWithNewId(path: string): string {
@@ -351,6 +395,62 @@ export function registerGoogleDriveManagedCachingContract(): void {
 	runRemoteFamilyCachingContract("ManagedRemoteFs<googledrive>", makeCachingHarness);
 }
 
+const GOOGLEDRIVE_CONCURRENCY_CAPABILITIES: RemoteBackendCapabilities = {
+	exclusiveCreate: false,
+	conditionalContentUpdate: "none",
+	conditionalMetadataMutation: false,
+	versionBoundRead: "reobserve",
+};
+
+function makeConcurrencyHarness(): BackendConcurrencyHarness {
+	const client = new FakeGoogleDrive();
+	const adapter = new GoogleDriveAdapter(clientOf(client), ROOT);
+	const observedToken = async (id: string): Promise<string> => (await adapter.getById(id))?.versionToken ?? "";
+	return {
+		adapter,
+		async seed(path, content) {
+			const file = await client.uploadFile(path, ROOT, bytes(content), "text/plain", undefined, Date.now());
+			return { id: file.id, versionToken: await observedToken(file.id) };
+		},
+		async seedFolder(path) {
+			const folder = await client.createFolder(path, ROOT);
+			return { id: folder.id, versionToken: await observedToken(folder.id) };
+		},
+		write(id, content) {
+			client.concurrentWrite(id, content);
+			return Promise.resolve();
+		},
+		writeAfterNextObservation(id, content) {
+			client.afterNextRead(id, () => client.concurrentWrite(id, content));
+		},
+		writeMetadataAfterNextObservation(id) {
+			client.afterNextRead(id, () => client.touchVersion(id));
+		},
+		contentOf(id) {
+			return Promise.resolve(client.contentOf(id));
+		},
+		nameOf(id) {
+			return client.nameOf(id);
+		},
+		removeEvidence(id) {
+			client.clearVersion(id);
+		},
+		removeVersionEvidenceKeepContent() {},
+		destination(name): DestinationAddress {
+			return { addressing: "parent_id", parentId: ROOT, name };
+		},
+		directoryVersionEvidence: true,
+		providerDirectoryToken: (id) => {
+			const version = client.rawVersion(id);
+			return version ? `googledrive:v:${version}` : undefined;
+		},
+	};
+}
+
+export function registerGoogleDriveManagedConcurrencyContract(): void {
+	runBackendConcurrencyContract("googledrive adapter", GOOGLEDRIVE_CONCURRENCY_CAPABILITIES, makeConcurrencyHarness);
+}
+
 export function registerGoogleDriveManagedChangeDetectionContract(): void {
 	runRemoteChangeDetectionContract(
 		"ManagedRemoteFs<googledrive>",
@@ -388,19 +488,17 @@ async function makePriorityHarness(scenario: PriorityObservationScenario): Promi
 	const created = await client.uploadFile("note.md", ROOT, content, "text/plain", undefined, Date.now());
 	const fs = makeFs(client, "managed-priority");
 	const download = vi.spyOn(client, "downloadFile");
-	if (scenario === "unverifiable") client.dropChecksum(created.id);
+	if (scenario === "unverifiable") client.clearVersion(created.id);
 	let replacementKey = "replacement";
 	if (scenario === "missing") void client.deleteFile(created.id);
 	if (scenario === "replacement") replacementKey = client.replaceWithNewId("note.md");
 	if (scenario === "changed-during-read") {
 		download.mockImplementation((id: string) => {
-			const original = client.getChecksum(id);
-			client.dropChecksum(id);
-			void original;
+			client.touchVersion(id);
 			return Promise.resolve(content.slice(0));
 		});
 	}
-	const expectedToken = `googledrive:md5:${created.md5Checksum!}:${content.byteLength}`;
+	const expectedToken = `googledrive:v:${created.version!}`;
 	return {
 		fs,
 		request: { path: "note.md", identityKey: created.id },

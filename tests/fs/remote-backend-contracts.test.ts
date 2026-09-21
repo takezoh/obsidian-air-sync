@@ -8,22 +8,25 @@ import {
 	registerGoogleDriveManagedCachingContract,
 	registerGoogleDriveManagedChangeDetectionContract,
 	registerGoogleDriveManagedPriorityObservationContract,
+	registerGoogleDriveManagedConcurrencyContract,
 } from "./googledrive/managed.contract-harness";
 import {
 	registerDropboxManagedIFileSystemContract,
 	registerDropboxManagedCachingContract,
 	registerDropboxManagedChangeDetectionContract,
 	registerDropboxManagedPriorityObservationContract,
+	registerDropboxManagedConcurrencyContract,
 } from "./dropbox/managed.contract-harness";
 import {
 	registerOneDriveManagedIFileSystemContract,
 	registerOneDriveManagedCachingContract,
 	registerOneDriveManagedChangeDetectionContract,
 	registerOneDriveManagedPriorityObservationContract,
+	registerOneDriveManagedConcurrencyContract,
 } from "./onedrive/managed.contract-harness";
 
 /**
- * The four contracts, for each backend's `BackendModule` + `RemoteBackendAdapter`
+ * The five contracts, for each backend's `BackendModule` + `RemoteBackendAdapter`
  * over core `ManagedRemoteFs`. This is the production path: the legacy
  * constructor-identity catalog and its direct-provider harnesses are gone (T13).
  */
@@ -35,6 +38,7 @@ const managedRemoteBackendCatalog = {
 			caching: registerGoogleDriveManagedCachingContract,
 			changeDetection: registerGoogleDriveManagedChangeDetectionContract,
 			priorityObservation: registerGoogleDriveManagedPriorityObservationContract,
+			concurrency: registerGoogleDriveManagedConcurrencyContract,
 		},
 	},
 	dropbox: {
@@ -44,6 +48,7 @@ const managedRemoteBackendCatalog = {
 			caching: registerDropboxManagedCachingContract,
 			changeDetection: registerDropboxManagedChangeDetectionContract,
 			priorityObservation: registerDropboxManagedPriorityObservationContract,
+			concurrency: registerDropboxManagedConcurrencyContract,
 		},
 	},
 	onedrive: {
@@ -53,6 +58,7 @@ const managedRemoteBackendCatalog = {
 			caching: registerOneDriveManagedCachingContract,
 			changeDetection: registerOneDriveManagedChangeDetectionContract,
 			priorityObservation: registerOneDriveManagedPriorityObservationContract,
+			concurrency: registerOneDriveManagedConcurrencyContract,
 		},
 	},
 } satisfies RemoteBackendCatalog;
@@ -66,7 +72,7 @@ for (const [family, cell] of Object.entries(managedRemoteBackendCatalog)) {
 }
 
 describe("backend module conformance catalog", () => {
-	it("covers all three modules × four contracts with validated modules", () => {
+	it("covers all three modules × five contracts with validated modules", () => {
 		expect(catalogIssues).toEqual([]);
 	});
 });

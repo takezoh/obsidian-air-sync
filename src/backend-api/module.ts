@@ -5,14 +5,20 @@ import type { RemoteBackendAdapter } from "./remote-adapter";
 import type { BackendRuntimeContext } from "./runtime";
 import type { BackendSettingsDefinition } from "./settings";
 
-/** The Backend Module API version this core implements. */
-export const BACKEND_MODULE_API_VERSION = 1;
+/**
+ * The Backend Module API version this core implements.
+ *
+ * `2` requires `RemoteBackendAdapter.capabilities`. There is one supported
+ * version; core rejects any other `apiVersion` at registration and validates the
+ * adapter's capability shape at creation.
+ */
+export const BACKEND_MODULE_API_VERSION = 2;
 
 export type BackendModuleApiVersion = typeof BACKEND_MODULE_API_VERSION;
 
 /**
  * A statically imported or (future) dynamically loaded backend module — the
- * public extension boundary (version 1).
+ * public extension boundary (version 2).
  *
  * One module represents exactly one backend. The module object is a plain data
  * carrier: it holds no mutable per-connection auth state, performs no I/O during

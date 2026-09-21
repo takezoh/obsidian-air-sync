@@ -5,7 +5,7 @@ import type { GoogleDriveFile } from "./types";
 
 /**
  * Project a provider-native Google Drive file DTO onto the normalized
- * {@link RemoteObject} (Backend Module API v1).
+ * {@link RemoteObject} (Backend Module API v2).
  *
  * Identity is the Drive file id (unchanged by a rename/move). Addressing is a
  * parent-id tree: `parentId === null` means the bound root. When the provider
@@ -30,15 +30,20 @@ export function normalizeGoogleDriveObject(file: GoogleDriveFile, rootId: string
 		mtimeMs: parseIsoTime(file.modifiedTime),
 	};
 
+	// Drive's `version` is monotonic and advances on every server-side change,
+	// including a metadata-only rename/move that leaves the bytes and checksum
+	// unchanged. That is the only evidence that detects those changes, so it is the
+	// version token for files AND directories (a folder rename must still move it).
+	const versionToken = file.version !== undefined && file.version !== ""
+		? `googledrive:v:${file.version}`
+		: undefined;
+
 	if (isDirectory) {
-		return { ...base, kind: "directory" };
+		return { ...base, kind: "directory", versionToken };
 	}
 
 	const size = parseSize(file.size);
 	const checksum = file.md5Checksum ? { algorithm: "md5", value: file.md5Checksum } : undefined;
-	const versionToken = checksum && size !== undefined
-		? `googledrive:md5:${checksum.value}:${size}`
-		: undefined;
 
 	return {
 		...base,

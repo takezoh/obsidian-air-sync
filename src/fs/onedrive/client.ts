@@ -9,6 +9,7 @@ import type {
 } from "./types";
 import { assertOk, GraphApiError, encodeRelPath } from "./types";
 import { uploadSession, SIMPLE_UPLOAD_MAX } from "./upload-session";
+import type { OneDriveUploadOptions } from "./upload-session";
 
 const GRAPH_API = "https://graph.microsoft.com/v1.0";
 
@@ -105,11 +106,20 @@ export class OneDriveClient {
 	};
 
 	/** Send a JSON request and return the parsed body. */
-	private async json<T>(op: string, url: string, method: string, body?: unknown): Promise<T> {
+	private async json<T>(
+		op: string,
+		url: string,
+		method: string,
+		body?: unknown,
+		headers?: Readonly<Record<string, string>>,
+	): Promise<T> {
 		const res = await this.request(op, {
 			url,
 			method,
-			headers: body === undefined ? {} : { "Content-Type": "application/json" },
+			headers: {
+				...(body === undefined ? {} : { "Content-Type": "application/json" }),
+				...headers,
+			},
 			body: body === undefined ? undefined : JSON.stringify(body),
 		});
 		return res.json as T;
@@ -237,33 +247,84 @@ export class OneDriveClient {
 	}
 
 	/**
-	 * Upload (create/overwrite) a file under `parentId` named `name`. Small files go
-	 * via a simple PUT then a PATCH to preserve mtime; large files via a resumable
-	 * upload session. `mtime` (epoch ms) becomes `fileSystemInfo.lastModifiedDateTime`.
+	 * Upload (create/overwrite) a file under `parentId` named `name`. Small files
+	 * with no precondition go via a simple PUT then a PATCH to preserve mtime; a
+	 * large file or any precondition (`opts`) uses a resumable upload session, which
+	 * is the documented carrier for `If-Match`/`If-None-Match` and
+	 * `@microsoft.graph.conflictBehavior`. `mtime` (epoch ms) becomes
+	 * `fileSystemInfo.lastModifiedDateTime`.
 	 */
-	async upload(parentId: string, name: string, content: ArrayBuffer, mtime: number): Promise<OneDriveItem> {
+	async upload(
+		parentId: string,
+		name: string,
+		content: ArrayBuffer,
+		mtime: number,
+		opts: OneDriveUploadOptions = {},
+	): Promise<OneDriveItem> {
 		const lastModifiedDateTime = new Date(mtime).toISOString();
-		if (content.byteLength >= SIMPLE_UPLOAD_MAX) {
-			return uploadSession({ request: this.request, graphApi: GRAPH_API }, parentId, name, content, lastModifiedDateTime);
+		const needsSession =
+			content.byteLength >= SIMPLE_UPLOAD_MAX
+			|| opts.existingId !== undefined
+			|| opts.ifMatch !== undefined
+			|| opts.ifNoneMatch !== undefined
+			|| opts.conflictBehavior !== undefined;
+		// A zero-byte file has no byte range for a resumable session (its chunk loop
+		// would never run), so it always takes the simple PUT, which carries
+		// `@microsoft.graph.conflictBehavior` in the URL and the precondition headers.
+		if (needsSession && content.byteLength > 0) {
+			return uploadSession(
+				{ request: this.request, graphApi: GRAPH_API },
+				parentId,
+				name,
+				content,
+				lastModifiedDateTime,
+				opts,
+			);
 		}
-		const url = `${GRAPH_API}/me/drive/items/${parentId}:/${encodeRelPath(name)}:/content`;
-		const res = await this.request("upload", {
-			url,
-			method: "PUT",
-			headers: { "Content-Type": "application/octet-stream" },
-			body: content,
-		});
-		const item = res.json as OneDriveItem;
-		// Preserve the local mtime: a plain content PUT stamps the server's clock, so
-		// PATCH fileSystemInfo afterwards (else every upload reads back as "changed").
-		return this.patchMtime(item.id, lastModifiedDateTime);
+		return this.simpleUpload(parentId, name, content, lastModifiedDateTime, opts);
 	}
 
-	/** PATCH an item's fileSystemInfo.lastModifiedDateTime and return the updated item. */
-	private patchMtime(id: string, lastModifiedDateTime: string): Promise<OneDriveItem> {
-		return this.json<OneDriveItem>("patchMtime", `${GRAPH_API}/me/drive/items/${id}`, "PATCH", {
-			fileSystemInfo: { lastModifiedDateTime },
-		});
+	/**
+	 * PUT content directly. `@microsoft.graph.conflictBehavior` is carried in the URL
+	 * (Graph's documented location for it), so a create can be made exclusive; the
+	 * `If-Match`/`If-None-Match` headers are forwarded for a guarded update.
+	 */
+	private async simpleUpload(
+		parentId: string,
+		name: string,
+		content: ArrayBuffer,
+		lastModifiedDateTime: string,
+		opts: OneDriveUploadOptions,
+	): Promise<OneDriveItem> {
+		const base = opts.existingId !== undefined
+			? `${GRAPH_API}/me/drive/items/${opts.existingId}/content`
+			: `${GRAPH_API}/me/drive/items/${parentId}:/${encodeRelPath(name)}:/content`;
+		const url = opts.conflictBehavior !== undefined
+			? `${base}?@microsoft.graph.conflictBehavior=${encodeURIComponent(opts.conflictBehavior)}`
+			: base;
+		const headers: Record<string, string> = { "Content-Type": "application/octet-stream" };
+		if (opts.ifMatch !== undefined) headers["If-Match"] = opts.ifMatch;
+		if (opts.ifNoneMatch !== undefined) headers["If-None-Match"] = opts.ifNoneMatch;
+		const res = await this.request("upload", { url, method: "PUT", headers, body: content });
+		const item = res.json as OneDriveItem;
+		// Preserve the local mtime: a plain content PUT stamps the server's clock, so
+		// PATCH fileSystemInfo afterwards. The PATCH is conditional on the eTag our own
+		// PUT returned (Graph documents If-Match for metadata updates), so a concurrent
+		// write that lands between the PUT and the PATCH is not overwritten: its 412
+		// becomes `target_changed` and the other writer's version survives. An item that
+		// reports no eTag is left at the server clock rather than PATCHed unconditionally.
+		return item.eTag ? this.patchMtime(item.id, lastModifiedDateTime, item.eTag) : item;
+	}
+
+	/** PATCH an item's fileSystemInfo.lastModifiedDateTime, guarded by `ifMatch` when supplied. */
+	private patchMtime(id: string, lastModifiedDateTime: string, ifMatch?: string): Promise<OneDriveItem> {
+		return this.json<OneDriveItem>(
+			"patchMtime",
+			`${GRAPH_API}/me/drive/items/${id}`,
+			"PATCH",
+			{ fileSystemInfo: { lastModifiedDateTime } },
+			ifMatch ? { "If-Match": ifMatch } : undefined,
+		);
 	}
 
 	/**
@@ -295,18 +356,28 @@ export class OneDriveClient {
 		);
 	}
 
-	/** Rename and/or move an item (PATCH name and/or parentReference). */
-	move(id: string, newName: string | undefined, newParentId: string | undefined): Promise<OneDriveItem> {
+	/** Rename and/or move an item (PATCH name and/or parentReference), guarded by `etag` when supplied. */
+	move(id: string, newName: string | undefined, newParentId: string | undefined, etag?: string): Promise<OneDriveItem> {
 		const body: { name?: string; parentReference?: { id: string } } = {};
 		if (newName !== undefined) body.name = newName;
 		if (newParentId !== undefined) body.parentReference = { id: newParentId };
-		return this.json<OneDriveItem>("move", `${GRAPH_API}/me/drive/items/${id}`, "PATCH", body);
+		return this.json<OneDriveItem>(
+			"move",
+			`${GRAPH_API}/me/drive/items/${id}`,
+			"PATCH",
+			body,
+			etag ? { "If-Match": etag } : undefined,
+		);
 	}
 
-	/** Delete an item by id (idempotent: a 404 already-gone item is a no-op success). */
-	async deleteItem(id: string): Promise<void> {
+	/** Delete an item by id, guarded by `etag` when supplied (idempotent: a 404 already-gone item is a no-op success). */
+	async deleteItem(id: string, etag?: string): Promise<void> {
 		try {
-			await this.request("deleteItem", { url: `${GRAPH_API}/me/drive/items/${id}`, method: "DELETE" });
+			await this.request("deleteItem", {
+				url: `${GRAPH_API}/me/drive/items/${id}`,
+				method: "DELETE",
+				headers: etag ? { "If-Match": etag } : {},
+			});
 		} catch (err) {
 			if (err instanceof GraphApiError && err.status === 404) return;
 			throw err;

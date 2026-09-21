@@ -180,6 +180,17 @@ export abstract class AbstractMetadataCache<TFile> {
 		return this.objectsAt(path).map(([id]) => id);
 	}
 
+	/**
+	 * The exact cached object with `id`: the representative at its path, or a folder
+	 * merged beside one. Path-level reads return the representative only, so a caller
+	 * that holds a member id (a merged folder's delete) must resolve by id here.
+	 */
+	objectById(id: string): TFile | undefined {
+		const path = this.idToPath.get(id);
+		if (path === undefined) return undefined;
+		return this.objectsAt(path).find(([candidate]) => candidate === id)?.[1];
+	}
+
 	/** Every object cached at `path`: the representative, then any merged folders. */
 	private objectsAt(path: string): [string, TFile][] {
 		const representative = this.pathToFile.get(path);

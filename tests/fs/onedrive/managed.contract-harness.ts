@@ -1,9 +1,10 @@
 import "fake-indexeddb/auto";
 import { describe, expect, it, vi } from "vitest";
-import type { RemoteObject } from "../../../src/backend-api";
+import type { DestinationAddress, RemoteBackendCapabilities, RemoteObject } from "../../../src/backend-api";
 import type { OneDriveItem, OneDriveDeltaResponse } from "../../../src/fs/onedrive/types";
 import { GraphApiError } from "../../../src/fs/onedrive/types";
 import type { OneDriveClient } from "../../../src/fs/onedrive/client";
+import type { OneDriveUploadOptions } from "../../../src/fs/onedrive/upload-session";
 import { OneDriveAdapter } from "../../../src/fs/onedrive/adapter";
 import { ManagedRemoteFs } from "../../../src/fs/managed/managed-remote-fs";
 import { MetadataStore } from "../../../src/store/metadata-store";
@@ -12,6 +13,8 @@ import { runIFileSystemContract } from "../contracts/ifilesystem.contract";
 import { runRemoteFamilyCachingContract } from "../contracts/caching-remote-fs.contract";
 import type { RemoteFamilyCachingHarness } from "../contracts/caching-remote-fs.contract";
 import { bytes, statOrThrow, runRemoteChangeDetectionContract } from "../contracts/remote-change-detection.contract";
+import { runBackendConcurrencyContract } from "../contracts/backend-concurrency.contract";
+import type { BackendConcurrencyHarness } from "../contracts/backend-concurrency.contract";
 import {
 	runPriorityObservationContract,
 	type PriorityObservationContractHarness,
@@ -35,6 +38,7 @@ interface Node {
 	mtime: string;
 	quickXorHash?: string;
 	cTag?: string;
+	eTag?: string;
 }
 
 /** A CRUD + delta faithful in-memory OneDrive client for the managed path. */
@@ -45,6 +49,8 @@ class FakeOneDrive {
 	private readonly outsideIds = new Set<string>();
 	private idSeq = 0;
 	private failAfterFirstPage = false;
+	private afterRead?: (ref: string) => void;
+	private tagSeq = 0;
 	readonly rootId = ROOT;
 
 	constructor() {
@@ -57,7 +63,7 @@ class FakeOneDrive {
 
 	private itemOf(node: Node): OneDriveItem {
 		return node.isFolder
-			? { id: node.id, name: node.name, parentReference: { id: node.parentId, path: "/drive/root:" }, folder: { childCount: 0 } }
+			? { id: node.id, name: node.name, parentReference: { id: node.parentId, path: "/drive/root:" }, folder: { childCount: 0 }, eTag: node.eTag }
 			: {
 					id: node.id,
 					name: node.name,
@@ -67,7 +73,7 @@ class FakeOneDrive {
 					fileSystemInfo: { lastModifiedDateTime: node.mtime },
 					lastModifiedDateTime: node.mtime,
 					cTag: node.cTag,
-					eTag: node.cTag,
+					eTag: node.eTag,
 				};
 	}
 
@@ -92,8 +98,8 @@ class FakeOneDrive {
 
 	private seed(id: string, name: string, parentId: string, folder = false): Node {
 		const node: Node = folder
-			? { id, name, parentId, isFolder: true, size: 0, mtime: "" }
-			: { id, name, parentId, isFolder: false, size: 0, mtime: MODIFIED, quickXorHash: `qxh-${id}`, cTag: `c-${id}` };
+			? { id, name, parentId, isFolder: true, size: 0, mtime: "", eTag: `e-${id}` }
+			: { id, name, parentId, isFolder: false, size: 0, mtime: MODIFIED, quickXorHash: `qxh-${id}`, cTag: `c-${id}`, eTag: `e-${id}` };
 		this.nodes.set(id, node);
 		return node;
 	}
@@ -151,6 +157,8 @@ class FakeOneDrive {
 		const node = [...this.nodes.values()].find(match);
 		if (!node) throw new Error(`stageRemoteRename: no such path "${oldPath}"`);
 		node.name = newPath.split("/").pop()!;
+		// A metadata-only rename advances the full-item eTag, not the content cTag.
+		node.eTag = `e-${node.id}-rename-${++this.tagSeq}`;
 		this.events.push(this.itemOf(node));
 	}
 
@@ -191,7 +199,14 @@ class FakeOneDrive {
 
 	getItem(id: string): Promise<OneDriveItem> {
 		const node = this.nodes.get(id);
-		return node ? Promise.resolve(this.itemOf(node)) : Promise.reject(new GraphApiError(`itemNotFound: ${id}`, 404, "itemNotFound"));
+		if (!node) return Promise.reject(new GraphApiError(`itemNotFound: ${id}`, 404, "itemNotFound"));
+		// Capture the pre-change item, then let a concurrent write land immediately
+		// after this observation.
+		const stale = this.itemOf(node);
+		const afterRead = this.afterRead;
+		this.afterRead = undefined;
+		afterRead?.(id);
+		return Promise.resolve(stale);
 	}
 
 	getChildByName(parentId: string, name: string): Promise<OneDriveItem> {
@@ -199,9 +214,16 @@ class FakeOneDrive {
 		return node ? Promise.resolve(this.itemOf(node)) : Promise.reject(new GraphApiError(`itemNotFound: ${name}`, 404, "itemNotFound"));
 	}
 
-	upload(parentId: string, name: string, content: ArrayBuffer, mtime: number): Promise<OneDriveItem> {
-		const existing = this.childByName(parentId, name);
+	upload(parentId: string, name: string, content: ArrayBuffer, mtime: number, opts?: OneDriveUploadOptions): Promise<OneDriveItem> {
+		const existing = opts?.existingId ? this.nodes.get(opts.existingId) : this.childByName(parentId, name);
+		const preconditionFailed = new GraphApiError("preconditionFailed", 412, "preconditionFailed");
+		// Graph documents `@microsoft.graph.conflictBehavior` as the create-conflict
+		// mechanism; the fake models ONLY it for creates, so losing it from the adapter
+		// (keeping If-None-Match) is caught rather than masked.
+		if (opts?.ifMatch && (!existing || existing.eTag !== opts.ifMatch)) return Promise.reject(preconditionFailed);
+		if (opts?.conflictBehavior === "fail" && existing) return Promise.reject(preconditionFailed);
 		const id = existing && !existing.isFolder ? existing.id : this.id("f");
+		const seq = ++this.tagSeq;
 		const node: Node = {
 			id,
 			name,
@@ -211,7 +233,8 @@ class FakeOneDrive {
 			size: content.byteLength,
 			mtime: new Date(mtime).toISOString(),
 			quickXorHash: quickXorHashBase64(content),
-			cTag: `c-${id}-${content.byteLength}`,
+			cTag: `c-${id}-${seq}`,
+			eTag: `e-${id}-${seq}`,
 		};
 		this.nodes.set(id, node);
 		return Promise.resolve(this.itemOf(node));
@@ -224,16 +247,23 @@ class FakeOneDrive {
 		return Promise.resolve(this.itemOf(node));
 	}
 
-	move(id: string, name: string | undefined, newParentId: string | undefined): Promise<OneDriveItem> {
+	move(id: string, name: string | undefined, newParentId: string | undefined, etag?: string): Promise<OneDriveItem> {
 		const node = this.nodes.get(id);
 		if (!node) return Promise.reject(new Error(`itemNotFound: ${id}`));
+		if (etag && node.eTag !== etag && node.cTag !== etag) return Promise.reject(new GraphApiError("preconditionFailed", 412, "preconditionFailed"));
 		if (name !== undefined) node.name = name;
 		if (newParentId !== undefined) node.parentId = newParentId;
+		// A move/rename is a metadata-only change: advance eTag, keep cTag.
+		node.eTag = `e-${node.id}-move-${++this.tagSeq}`;
 		return Promise.resolve(this.itemOf(node));
 	}
 
-	deleteItem(id: string): Promise<void> {
-		for (const node of [this.nodes.get(id), ...this.descendantsOf(id)]) {
+	deleteItem(id: string, etag?: string): Promise<void> {
+		const target = this.nodes.get(id);
+		if (etag && target && target.eTag !== etag && target.cTag !== etag) {
+			return Promise.reject(new GraphApiError("preconditionFailed", 412, "preconditionFailed"));
+		}
+		for (const node of [target, ...this.descendantsOf(id)]) {
 			if (node) this.nodes.delete(node.id);
 		}
 		return Promise.resolve();
@@ -248,13 +278,57 @@ class FakeOneDrive {
 
 	// ── Test-only ──
 
+	/** Simulate a metadata-only change: advance the full-item eTag, leave content cTag untouched. */
+	touchMetadata(id: string): void {
+		const node = this.nodes.get(id);
+		if (node) node.eTag = `e-${id}-meta-${++this.tagSeq}`;
+	}
+
+	/** Simulate a concurrent remote content write: advance both cTag and the full-item eTag. */
+	concurrentWrite(id: string, content: string): void {
+		const node = this.nodes.get(id);
+		if (!node) return;
+		const data = bytes(content);
+		node.content = data;
+		node.size = data.byteLength;
+		node.quickXorHash = quickXorHashBase64(data);
+		const seq = ++this.tagSeq;
+		node.cTag = `c-${id}-concurrent-${seq}`;
+		node.eTag = `e-${id}-concurrent-${seq}`;
+	}
+
+	afterNextRead(ref: string, action: () => void): void {
+		this.afterRead = (observed) => {
+			if (observed === ref) action();
+		};
+	}
+
+	contentOf(id: string): string | null {
+		const node = this.nodes.get(id);
+		return node?.content === undefined ? null : new TextDecoder().decode(node.content);
+	}
+
+	nameOf(id: string): string | null {
+		return this.nodes.get(id)?.name ?? null;
+	}
+
 	getVersionTag(id: string): string | undefined {
-		return this.nodes.get(id)?.cTag;
+		// The adapter's metadata authority is the full-item eTag.
+		return this.nodes.get(id)?.eTag;
 	}
 
 	dropVersionTag(id: string): void {
 		const node = this.nodes.get(id);
-		if (node) node.cTag = undefined;
+		if (node) {
+			node.eTag = undefined;
+			node.cTag = undefined;
+		}
+	}
+
+	/** Remove the full-item eTag but keep the content-only cTag (no-fallback probe). */
+	dropETagKeepCTag(id: string): void {
+		const node = this.nodes.get(id);
+		if (node) node.eTag = undefined;
 	}
 
 	replaceWithNewId(path: string): string {
@@ -326,6 +400,64 @@ export function registerOneDriveManagedIFileSystemContract(): void {
 
 export function registerOneDriveManagedCachingContract(): void {
 	runRemoteFamilyCachingContract("ManagedRemoteFs<onedrive>", makeCachingHarness);
+}
+
+const ONEDRIVE_CONCURRENCY_CAPABILITIES: RemoteBackendCapabilities = {
+	exclusiveCreate: true,
+	conditionalContentUpdate: "none",
+	conditionalMetadataMutation: true,
+	versionBoundRead: "reobserve",
+};
+
+function makeConcurrencyHarness(): BackendConcurrencyHarness {
+	const client = new FakeOneDrive();
+	const adapter = new OneDriveAdapter(clientOf(client), ROOT);
+	const observedToken = async (id: string): Promise<string> => (await adapter.getById(id))?.versionToken ?? "";
+	return {
+		adapter,
+		async seed(path, content) {
+			const item = await client.upload(ROOT, path, bytes(content), Date.now());
+			return { id: item.id, versionToken: await observedToken(item.id) };
+		},
+		async seedFolder(path) {
+			const item = await client.createFolder(ROOT, path);
+			return { id: item.id, versionToken: await observedToken(item.id) };
+		},
+		write(id, content) {
+			client.concurrentWrite(id, content);
+			return Promise.resolve();
+		},
+		writeAfterNextObservation(id, content) {
+			client.afterNextRead(id, () => client.concurrentWrite(id, content));
+		},
+		writeMetadataAfterNextObservation(id) {
+			client.afterNextRead(id, () => client.touchMetadata(id));
+		},
+		contentOf(id) {
+			return Promise.resolve(client.contentOf(id));
+		},
+		nameOf(id) {
+			return client.nameOf(id);
+		},
+		removeEvidence(id) {
+			client.dropVersionTag(id);
+		},
+		removeVersionEvidenceKeepContent(id) {
+			client.dropETagKeepCTag(id);
+		},
+		destination(name): DestinationAddress {
+			return { addressing: "parent_id", parentId: ROOT, name };
+		},
+		directoryVersionEvidence: true,
+		providerDirectoryToken: (id) => {
+			const tag = client.getVersionTag(id);
+			return tag ? `onedrive:${tag}` : undefined;
+		},
+	};
+}
+
+export function registerOneDriveManagedConcurrencyContract(): void {
+	runBackendConcurrencyContract("onedrive adapter", ONEDRIVE_CONCURRENCY_CAPABILITIES, makeConcurrencyHarness);
 }
 
 export function registerOneDriveManagedChangeDetectionContract(): void {

@@ -365,7 +365,7 @@ async function repairProviderNamespace(
 	if (!capability) {
 		throw new Error(`Remote filesystem cannot rename by provider identity: ${repair.action.path}`);
 	}
-	await capability.renameById(repair.identity, repair.action.path);
+	await capability.renameById(repair.identity, repair.action.oldPath, repair.action.path);
 	return {};
 }
 

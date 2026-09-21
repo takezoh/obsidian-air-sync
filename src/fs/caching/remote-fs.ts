@@ -13,6 +13,7 @@ import { normalizeSyncPath } from "../../utils/path";
 import type { AbstractMetadataCache, AddressDisplacement } from "./metadata-cache";
 import { projectedIdentityKey } from "./metadata-cache";
 import { observeDetachedPriority, readDetachedPriority } from "./detached-priority";
+import type { DetachedReadOutcome } from "./detached-priority";
 
 /**
  * A remote delta: paths added/modified, deleted, and renamed since the last cursor,
@@ -195,6 +196,14 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	protected abstract fetchChanges(cursor: string): Promise<IncrementalChangesResult>;
 	/** Download a file's content by its backend id. */
 	protected abstract downloadFile(fileId: string): Promise<ArrayBuffer>;
+	/**
+	 * Version-bound download for the priority path. The default defers to
+	 * {@link downloadFile}; a filesystem whose provider reports a typed read outcome
+	 * overrides this so a mid-read change is returned, never thrown away.
+	 */
+	protected async downloadForPriority(fileId: string): Promise<DetachedReadOutcome> {
+		return { kind: "content", content: await this.downloadFile(fileId) };
+	}
 	/** Delete a file/folder by its backend id (remote side only; cache is updated here). */
 	protected abstract deleteRemote(fileId: string): Promise<void>;
 	/** Request-local provider lookup only; priority observation must not touch the cache or delta cursor. */
@@ -636,7 +645,7 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	): Promise<PriorityReadResult> {
 		return readDetachedPriority(
 			observation,
-			(identityKey) => this.downloadFile(identityKey),
+			(identityKey) => this.downloadForPriority(identityKey),
 			(request) => this.observePriority(request),
 		);
 	}

@@ -135,6 +135,11 @@ export interface IdentityAddressedRename {
 	/**
 	 * Rename the object with `identityKey` so it is addressed by `newPath`.
 	 *
+	 * `admittedPath` is the source address Admission observed the object at when
+	 * it decided the repair. The call fails closed if the object is no longer
+	 * addressed there: a post-Admission move must not let a fresh observation
+	 * justify renaming an object at a different location.
+	 *
 	 * Only the final segment moves: the object keeps the provider parent it
 	 * already has, which is exactly what disambiguating two claimants of one
 	 * address needs. `newPath`'s parent segments are the caller's statement of
@@ -143,9 +148,10 @@ export interface IdentityAddressedRename {
 	 * The cache is updated from the provider's answer to this call and from
 	 * nothing else — the target address is never written in advance.
 	 *
-	 * @throws if the provider refuses the rename or the object no longer exists.
+	 * @throws if the provider refuses the rename, the object no longer exists, or
+	 * it is no longer addressed by `admittedPath`.
 	 */
-	renameById(identityKey: string, newPath: string): Promise<void>;
+	renameById(identityKey: string, admittedPath: string, newPath: string): Promise<void>;
 }
 
 /**

@@ -36,7 +36,7 @@ consequences:
     inheritance seam is forbidden.
   - Physical SecretStorage keys, remote object ids, existing checksum ids, and IndexedDB
     profile names are preserved; module ids are logical.
-  - The external dynamic loader is out of scope for this milestone; API v1 is implemented and
+  - The external dynamic loader is out of scope for this milestone; API v2 is implemented and
     tested for static built-ins without claiming external artifact compatibility.
 confirmation: >-
   `backend-module-boundary-guard.test.mjs` (in `npm run lint:bot-repro`) fails if
@@ -83,7 +83,7 @@ milestone and are not claimed here.
 ## Decision
 
 1. **`BackendModule` / `BackendRuntimeContext` / `RemoteBackendAdapter` are the public
-   boundary** (`src/backend-api/`, `apiVersion: 1`). One module is one backend. The module
+   boundary** (`src/backend-api/`, currently `apiVersion: 2`). One module is one backend. The module
    object carries no mutable per-connection auth state and performs no I/O during
    enumeration/validation. The `src/backend-api` boundary stays self-contained
    (guard-enforced), while a static built-in module implementation MAY use core-internal

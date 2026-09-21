@@ -322,6 +322,16 @@ export default defineConfig(
 		},
 	},
 	{
+		// Startup WARM acquisition: the durable record read now starts before the
+		// local listing is awaited, and one pass over that listing builds the
+		// observations, exact-entity map, observed-path set, and deletion path set.
+		// The sets exist only to feed the candidate loop a few lines below, so the
+		// pin keeps the acquisition step cohesive instead of splitting projections
+		// from their single use.
+		files: ["src/sync/change-detector.ts"],
+		rules: { "max-lines": ["error", { max: 312, skipBlankLines: true, skipComments: true }] },
+	},
+	{
 		// Per-file overrides above the 300 cap (known debt), each pinned at its
 		// current size so it cannot grow SILENTLY — the pin is a ratchet, not a
 		// reduction mandate. Ratchet down when a natural split presents itself;
@@ -379,8 +389,30 @@ export default defineConfig(
 		// the incremental drain does — a folder leaving or joining a same-named one is
 		// its contents' moves, not a folder rename — and so an empty committed view
 		// still reports what its scan decided. Both are this class's own diff.
+		// Re-pinned from 411 for `downloadForPriority`: the priority path must surface
+		// a version-bound read's typed `target_changed`/`unverifiable` instead of the
+		// throw `downloadFile` uses for `IFileSystem.read`, and that outcome seam
+		// belongs beside the abstract download it refines.
 		files: ["src/fs/caching/remote-fs.ts"],
-		rules: { "max-lines": ["error", { max: 411, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 416, skipBlankLines: true, skipComments: true }] },
+	},
+	{
+		// Re-pinned from under the 300 cap for the Dropbox content preconditions:
+		// `add` (exclusive create), `update(rev)` with `strict_conflict` (content CAS),
+		// the revision-bound download, and the fail-closed expected-evidence guard for
+		// move/delete are one cohesive provider-operation surface beside the
+		// case-only-rename mechanism already owned here. Re-pinned from 322 for the
+		// expected-identity guard shared by update/move/delete.
+		files: ["src/fs/dropbox/adapter.ts"],
+		rules: { "max-lines": ["error", { max: 330, skipBlankLines: true, skipComments: true }] },
+	},
+	{
+		// Re-pinned from under the 300 cap for the fail-closed expected-evidence guard:
+		// Google Drive has no provider metadata precondition, so update/move/delete must
+		// still compare-before-mutate and reject an empty/mismatched expected identity or
+		// version before any provider call.
+		files: ["src/fs/googledrive/adapter.ts"],
+		rules: { "max-lines": ["error", { max: 308, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Re-pinned from 303 for the top-level Google Picker callback. The
@@ -409,8 +441,10 @@ export default defineConfig(
 		// prepared adapter this class owns. Re-pinned from 319 for the bound-folder
 		// display warning passthrough, the module-side successor to the legacy
 		// `RemoteVaultDisplay.warning`.
+		// Re-pinned from 322 so prepare() validates the adapter's declared capabilities
+		// immediately after createAdapter, before the adapter reaches ManagedRemoteFs.
 		files: ["src/fs/modules/backend-module-provider.ts"],
-		rules: { "max-lines": ["error", { max: 322, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 328, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Re-pinned from 379 for `projectedIdentityKey`, the free function every rename
@@ -445,8 +479,10 @@ export default defineConfig(
 		// Re-pinned from 589 so the plain seat refuses to re-key a shared path, the same
 		// way it refuses to relocate across one: it can return only one fact, and an
 		// eviction there takes several.
+		// Re-pinned from 595 for `objectById`: resolving a merged folder's exact member
+		// by id is a cache query beside `foldersAt`/`idsAt`, not a caller-side re-derivation.
 		files: ["src/fs/caching/metadata-cache.ts"],
-		rules: { "max-lines": ["error", { max: 595, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 601, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Lint manifest.json for the words the Obsidian submission validator

@@ -7,6 +7,7 @@ import type {
 	ExpectedVersion,
 	MoveInput,
 	RemoteBackendAdapter,
+	RemoteBackendCapabilities,
 	RemoteChange,
 	RemoteChangeResult,
 	RemoteObject,
@@ -29,8 +30,14 @@ import { inspectGoogleDriveFolder } from "./folder-usability";
  *
  * It reports provider facts and performs provider mutations only: identity
  * (Drive file id), topology (`parents[0]`, with the bound root preferred), content
- * (md5), and version evidence (`googledrive:md5:<md5>:<size>`). Cursor lifecycle,
+ * (md5), and version evidence (`googledrive:v:<version>`). Cursor lifecycle,
  * the normalized cache, and checkpointing belong to core.
+ *
+ * Drive v3 exposes no provider-side precondition on `files.update`/`files.delete`
+ * (verified against the discovery document: no version/revision parameter and no
+ * documented `If-Match`), so the adapter declares those capabilities `false` and
+ * compares before mutating. `read` binds bytes by re-observing `version` after the
+ * download.
  *
  * A `changes.list` drain that reports a changed FOLDER may omit that folder's
  * unchanged descendants, so the adapter completes the delta by re-listing every
@@ -39,6 +46,12 @@ import { inspectGoogleDriveFolder } from "./folder-usability";
  * resulting upserts are idempotent for ids already in the working view.
  */
 export class GoogleDriveAdapter implements RemoteBackendAdapter {
+	readonly capabilities: RemoteBackendCapabilities = {
+		exclusiveCreate: false,
+		conditionalContentUpdate: "none",
+		conditionalMetadataMutation: false,
+		versionBoundRead: "reobserve" as const,
+	};
 	private readonly client: GoogleDriveClient;
 	private readonly rootId: string;
 
@@ -144,6 +157,14 @@ export class GoogleDriveAdapter implements RemoteBackendAdapter {
 			return { kind: "target_changed" };
 		}
 		const content = await this.map(() => this.client.downloadFile(input.id));
+		// Bind the bytes to the observed version: Drive has no revision-addressed
+		// media read on this route, so re-observe the monotonic `version` and fail
+		// closed if it advanced while the download ran.
+		const after = await this.fetchFile(input.id);
+		if (after === null) return { kind: "target_changed" };
+		if (normalizeGoogleDriveObject(after, this.rootId).versionToken !== observed.versionToken) {
+			return { kind: "target_changed" };
+		}
 		return { kind: "content", object: observed, content };
 	}
 
@@ -163,6 +184,7 @@ export class GoogleDriveAdapter implements RemoteBackendAdapter {
 	}
 
 	async updateFile(input: UpdateFileInput): Promise<RemoteObject> {
+		assertExpectedIdentity(input.expected, input.id);
 		const current = await this.fetchFile(input.id);
 		if (current === null) failBackend("not_found", `Google Drive file ${input.id} was not found`);
 		const observed = normalizeGoogleDriveObject(current, this.rootId);
@@ -194,13 +216,12 @@ export class GoogleDriveAdapter implements RemoteBackendAdapter {
 	}
 
 	async move(input: MoveInput): Promise<RemoteObject> {
+		assertExpectedIdentity(input.expected, input.id);
 		const destination = requireParentId(input.destination);
 		const current = await this.fetchFile(input.id);
 		if (current === null) failBackend("not_found", `Google Drive file ${input.id} was not found`);
 		const observed = normalizeGoogleDriveObject(current, this.rootId);
-		if (input.expected && observed.versionToken !== undefined && !matches(input.expected, observed.versionToken)) {
-			failBackend("target_changed", `Google Drive file ${input.id} changed before move`);
-		}
+		assertExpectedEvidence(input.expected, observed.versionToken, `Google Drive file ${input.id}`, "move");
 		const oldParents = current.parents ?? [];
 		const newParentId = destination.parentId ?? this.rootId;
 		const addParents = oldParents.includes(newParentId) ? undefined : newParentId;
@@ -213,12 +234,11 @@ export class GoogleDriveAdapter implements RemoteBackendAdapter {
 	}
 
 	async delete(input: DeleteInput): Promise<void> {
+		assertExpectedIdentity(input.expected, input.id);
 		const current = await this.fetchFile(input.id);
 		if (current === null) return;
 		const observed = normalizeGoogleDriveObject(current, this.rootId);
-		if (input.expected && observed.versionToken !== undefined && !matches(input.expected, observed.versionToken)) {
-			failBackend("target_changed", `Google Drive file ${input.id} changed before delete`);
-		}
+		assertExpectedEvidence(input.expected, observed.versionToken, `Google Drive file ${input.id}`, "delete");
 		await this.map(() => this.client.deleteFile(input.id));
 	}
 
@@ -277,6 +297,37 @@ function parentIdOf(object: RemoteObject, rootId: string): string {
 
 function matches(expected: ExpectedVersion, observedToken: string): boolean {
 	return expected.versionToken === observedToken;
+}
+
+/** A caller's expected version must name the object it is mutating. */
+function assertExpectedIdentity(expected: ExpectedVersion, id: string): void {
+	if (expected.id !== id) {
+		failBackend("target_changed", `Expected version names ${expected.id}, not ${id}`);
+	}
+}
+
+/**
+ * Fail closed before a provider mutation when core holds a real version expectation
+ * (`expected.versionToken !== ""`) that the current observation cannot re-prove. An
+ * empty expected token means core has no version to enforce (e.g. a folder), so the
+ * comparison is skipped as before.
+ */
+function assertExpectedEvidence(
+	expected: ExpectedVersion,
+	observedToken: string | undefined,
+	subject: string,
+	operation: string,
+): void {
+	// The provider has no metadata precondition here, so an empty expected token means
+	// core holds no version to enforce; a real token that cannot be re-proven still
+	// fails closed before any provider mutation.
+	if (expected.versionToken === "") return;
+	if (observedToken === undefined) {
+		failBackend("unverifiable", `${subject} has no version evidence for ${operation}`);
+	}
+	if (!matches(expected, observedToken)) {
+		failBackend("target_changed", `${subject} changed before ${operation}`);
+	}
 }
 
 function isStatus(err: unknown, status: number): boolean {

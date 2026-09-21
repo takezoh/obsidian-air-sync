@@ -7,6 +7,7 @@ import type {
 	ExpectedVersion,
 	MoveInput,
 	RemoteBackendAdapter,
+	RemoteBackendCapabilities,
 	RemoteChange,
 	RemoteChangeResult,
 	RemoteObject,
@@ -23,6 +24,8 @@ import type { DropboxEntry } from "./types";
 import { DropboxApiError, isDropboxResetError } from "./types";
 import { normalizeDropboxObject } from "./normalize-object";
 
+const REV_PREFIX = "dropbox:";
+
 /**
  * Dropbox {@link RemoteBackendAdapter} over the existing HTTP client.
  *
@@ -30,8 +33,19 @@ import { normalizeDropboxObject } from "./normalize-object";
  * plus a provider-resolved relative path. The adapter re-anchors that path from the
  * folder id on every operation (a remote move/rename is tracked for free) and reports
  * a delta tombstone as a path-addressed change, never a fabricated id.
+ *
+ * Provider preconditions: `upload` with `mode:add` refuses an occupied destination
+ * and `mode:update(rev)` (with `strict_conflict`) only overwrites the exact revision;
+ * `download` accepts the revision. `move_v2`/`delete_v2` carry no revision
+ * precondition, so conditionalMetadataMutation is `false`.
  */
 export class DropboxAdapter implements RemoteBackendAdapter {
+	readonly capabilities: RemoteBackendCapabilities = {
+		exclusiveCreate: true,
+		conditionalContentUpdate: "all",
+		conditionalMetadataMutation: false,
+		versionBoundRead: "revision" as const,
+	};
 	private readonly client: DropboxClient;
 	private readonly rootId: string;
 	private rootPath = "";
@@ -117,17 +131,22 @@ export class DropboxAdapter implements RemoteBackendAdapter {
 		if (input.versionToken === "" || observed.versionToken !== input.versionToken) {
 			return { kind: "target_changed" };
 		}
-		const content = await this.map(() => this.client.download(input.id));
+		const content = await this.map(() => this.client.download(input.id, revOf(input.versionToken)));
 		return { kind: "content", object: observed, content };
 	}
 
 	async createFile(input: CreateFileInput): Promise<RemoteObject> {
 		const destination = requirePath(input.destination);
-		const entry = await this.map(() => this.client.upload(this.addr(destination.path), input.content, input.mtimeMs));
+		// `add` refuses an occupied destination, so a concurrent create cannot be
+		// silently overwritten; Dropbox reports the conflict as a 409.
+		const entry = await this.map(() =>
+			this.client.upload(this.addr(destination.path), input.content, input.mtimeMs, "add"),
+		);
 		return normalizeDropboxObject(entry, this.rootId, destination.path);
 	}
 
 	async updateFile(input: UpdateFileInput): Promise<RemoteObject> {
+		assertExpectedIdentity(input.expected, input.id);
 		await this.refreshRootPath();
 		const current = await this.fetchEntry(input.id);
 		if (current === null) failBackend("not_found", `Dropbox entry ${input.id} was not found`);
@@ -140,7 +159,18 @@ export class DropboxAdapter implements RemoteBackendAdapter {
 		if (!matches(input.expected, observed.versionToken)) {
 			failBackend("target_changed", `Dropbox entry ${input.id} changed before update`);
 		}
-		const entry = await this.map(() => this.client.upload(this.addr(relative), input.content, input.mtimeMs));
+		const observedRev = revOf(observed.versionToken);
+		// Carry the revision to Dropbox itself: `update(rev)` overwrites only the
+		// exact revision, and `strict_conflict` refuses even identical contents.
+		const entry = await this.map(() =>
+			this.client.upload(
+				this.addr(relative),
+				input.content,
+				input.mtimeMs,
+				{ ".tag": "update", update: observedRev },
+				true,
+			),
+		);
 		return normalizeDropboxObject(entry, this.rootId, relative);
 	}
 
@@ -151,6 +181,7 @@ export class DropboxAdapter implements RemoteBackendAdapter {
 	}
 
 	async move(input: MoveInput): Promise<RemoteObject> {
+		assertExpectedIdentity(input.expected, input.id);
 		const destination = requirePath(input.destination);
 		await this.refreshRootPath();
 		const current = await this.fetchEntry(input.id);
@@ -158,9 +189,7 @@ export class DropboxAdapter implements RemoteBackendAdapter {
 		const relative = this.relativize(current.path_display);
 		if (relative === null) failBackend("target_changed", `Dropbox entry ${input.id} left the bound root`);
 		const observed = normalizeDropboxObject(current, this.rootId, relative);
-		if (input.expected && observed.versionToken !== undefined && !matches(input.expected, observed.versionToken)) {
-			failBackend("target_changed", `Dropbox entry ${input.id} changed before move`);
-		}
+		assertExpectedEvidence(input.expected, observed.versionToken, `Dropbox entry ${input.id}`, "move");
 		// Dropbox's `move_v2` does not perform a case-only rename, so a lower/upper
 		// spelling change runs as two moves through a deterministic intermediate
 		// sibling path. This is provider mechanism and lives on the adapter.
@@ -232,15 +261,14 @@ export class DropboxAdapter implements RemoteBackendAdapter {
 	}
 
 	async delete(input: DeleteInput): Promise<void> {
+		assertExpectedIdentity(input.expected, input.id);
 		await this.refreshRootPath();
 		const current = await this.fetchEntry(input.id);
 		if (current === null) return;
 		const relative = this.relativize(current.path_display);
 		if (relative === null) return;
 		const observed = normalizeDropboxObject(current, this.rootId, relative);
-		if (input.expected && observed.versionToken !== undefined && !matches(input.expected, observed.versionToken)) {
-			failBackend("target_changed", `Dropbox entry ${input.id} changed before delete`);
-		}
+		assertExpectedEvidence(input.expected, observed.versionToken, `Dropbox entry ${input.id}`, "delete");
 		await this.map(() => this.client.deletePath(this.addr(relative)));
 	}
 
@@ -291,6 +319,42 @@ function requirePath(destination: DestinationAddress): { rootId: string; path: s
 
 function matches(expected: ExpectedVersion, observedToken: string): boolean {
 	return expected.versionToken === observedToken;
+}
+
+/** A caller's expected version must name the object it is mutating. */
+function assertExpectedIdentity(expected: ExpectedVersion, id: string): void {
+	if (expected.id !== id) {
+		failBackend("target_changed", `Expected version names ${expected.id}, not ${id}`);
+	}
+}
+
+/**
+ * Fail closed before a provider mutation when core holds a real version expectation
+ * (`expected.versionToken !== ""`) that the current observation cannot re-prove. An
+ * empty expected token means core has no version to enforce (e.g. a folder with no
+ * provider version evidence), so the comparison is skipped as before.
+ */
+function assertExpectedEvidence(
+	expected: ExpectedVersion,
+	observedToken: string | undefined,
+	subject: string,
+	operation: string,
+): void {
+	// The provider has no metadata precondition here, so an empty expected token means
+	// core holds no version to enforce; a real token that cannot be re-proven still
+	// fails closed before any provider mutation.
+	if (expected.versionToken === "") return;
+	if (observedToken === undefined) {
+		failBackend("unverifiable", `${subject} has no version evidence for ${operation}`);
+	}
+	if (!matches(expected, observedToken)) {
+		failBackend("target_changed", `${subject} changed before ${operation}`);
+	}
+}
+
+/** The Dropbox revision encoded in a `dropbox:<rev>` version token. */
+function revOf(versionToken: string): string {
+	return versionToken.startsWith(REV_PREFIX) ? versionToken.slice(REV_PREFIX.length) : versionToken;
 }
 
 function isCaseOnlyPathChange(oldPath: string, newPath: string): boolean {

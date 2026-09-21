@@ -1,4 +1,4 @@
-import type { RemoteBackendAdapter, RemoteObject } from "../../backend-api";
+import type { RemoteBackendAdapter, RemoteObject, VersionBoundReadResult } from "../../backend-api";
 import { isRemoteDirectory } from "../../backend-api";
 import type { FileEntity } from "../types";
 import type { IdentityAddressedRename } from "../interface";
@@ -7,6 +7,7 @@ import type { MetadataStoreConfig } from "../../store/metadata-store";
 import { MetadataStore } from "../../store/metadata-store";
 import { CachingRemoteFs } from "../caching/remote-fs";
 import type { IncrementalChangesResult } from "../caching/remote-fs";
+import type { DetachedReadOutcome } from "../caching/detached-priority";
 import { INTERNAL_METADATA_PATH } from "../remote-vault-contract";
 import { resolveDetachedIdPath } from "../priority-observation";
 import { normalizeSyncPath, validateRename } from "../../utils/path";
@@ -127,9 +128,7 @@ export class ManagedRemoteFs extends CachingRemoteFs<RemoteObject> {
 	}
 
 	protected async downloadFile(fileId: string): Promise<ArrayBuffer> {
-		const object = await this.fetchCurrentFile(fileId);
-		if (object === null) throw new Error(`Remote object not found: ${fileId}`);
-		const result = await this.adapter.read({ id: object.id, versionToken: object.versionToken ?? "" });
+		const result = await this.readVersionBound(fileId);
 		switch (result.kind) {
 			case "content":
 				return result.content;
@@ -144,12 +143,28 @@ export class ManagedRemoteFs extends CachingRemoteFs<RemoteObject> {
 		}
 	}
 
+	/** Priority reads surface the adapter's typed outcome instead of throwing on a mid-read change. */
+	protected async downloadForPriority(fileId: string): Promise<DetachedReadOutcome> {
+		const result = await this.readVersionBound(fileId);
+		return result.kind === "content"
+			? { kind: "content", content: result.content }
+			: { kind: result.kind };
+	}
+
+	private async readVersionBound(fileId: string): Promise<VersionBoundReadResult> {
+		const object = await this.fetchCurrentFile(fileId);
+		if (object === null) return { kind: "unverifiable", reason: "object not found" };
+		return this.adapter.read({ id: object.id, versionToken: object.versionToken ?? "" });
+	}
+
 	protected async deleteRemote(fileId: string): Promise<void> {
-		const path = this.cache.getPathById(fileId);
-		const object = path === undefined ? undefined : this.cache.getFile(path);
-		await this.adapter.delete(object?.versionToken === undefined
-			? { id: fileId }
-			: { id: fileId, expected: { id: fileId, versionToken: object.versionToken } });
+		// Resolve by id, not by the representative at its path: a vault folder several
+		// provider folders make up shares one path, and each member has its own version.
+		const object = this.cache.objectById(fileId);
+		await this.adapter.delete({
+			id: fileId,
+			expected: { id: fileId, versionToken: object?.versionToken ?? "" },
+		});
 	}
 
 	protected async fetchCurrentFile(fileId: string): Promise<RemoteObject | null> {
@@ -238,11 +253,12 @@ export class ManagedRemoteFs extends CachingRemoteFs<RemoteObject> {
 	 * writer took is skipped rather than overwritten.
 	 */
 	readonly identityRename: IdentityAddressedRename = {
-		renameById: (identityKey, newPath) => this.renameById(identityKey, newPath),
+		renameById: (identityKey, admittedPath, newPath) => this.renameById(identityKey, admittedPath, newPath),
 	};
 
-	private async renameById(identityKey: string, newPath: string): Promise<void> {
+	private async renameById(identityKey: string, admittedPath: string, newPath: string): Promise<void> {
 		const target = normalizeSyncPath(newPath);
+		const admitted = normalizeSyncPath(admittedPath);
 		const name = target.split("/").pop() ?? "";
 		if (!identityKey || name === "" || name === "." || name === "..") {
 			throw new Error(`Invalid identity-addressed rename target: "${newPath}"`);
@@ -250,8 +266,21 @@ export class ManagedRemoteFs extends CachingRemoteFs<RemoteObject> {
 		await this.withCacheMutex({
 			operationName: "renameById",
 			// Nothing is resolved through the cache: the id is the address.
-			resolve: () => ({ identityKey, name, target }),
-			execute: (r) => this.bridge.performIdentityRename(r.identityKey, r.name),
+			resolve: () => ({ identityKey, name, target, admitted }),
+			execute: async (r) => {
+				// Re-observe at execution and require the object still be addressed where
+				// Admission saw it. A post-Admission move must fail closed rather than let
+				// the fresh observation justify renaming an object at another location.
+				const current = await this.fetchCurrentFile(r.identityKey);
+				if (current === null) throw new Error(`Remote object not found: ${r.identityKey}`);
+				const resolved = await this.resolveDetachedPath(current);
+				if (resolved === null || normalizeSyncPath(resolved) !== r.admitted) {
+					throw new Error(
+						`Remote object ${r.identityKey} is no longer addressed by the admitted path ${r.admitted}`,
+					);
+				}
+				return this.bridge.performIdentityRename(current, r.name);
+			},
 			staleGuard: (r) => ({ path: r.target, expectedId: undefined }),
 			update: (_r, object: RemoteObject) => {
 				this.cache.applyFileChange(object);

@@ -1,22 +1,22 @@
 ---
 id: design-backend-module-api
 kind: design
-title: Backend Module API v1
+title: Backend Module API v2
 status: active
 created: '2026-09-20'
 updated: '2026-09-20'
 relations:
 - {type: references, target: design-remote-backend-implementation-contract}
 - {type: references, target: adr-20260920-backend-module-boundary}
-summary: The public Backend Module API v1 contract a backend implements — module shape,
+summary: The public Backend Module API v2 contract a backend implements — module shape,
   runtime context, adapter operations, JSON-safe config, declarative auth/binding/settings,
   errors, and checksums.
 ---
 
-# Backend Module API v1
+# Backend Module API v2
 
 This document specifies the **public extension boundary** between Air Sync core and a
-backend. It is implemented in `src/backend-api/` and versioned as `apiVersion: 1`. A
+backend. It is implemented in `src/backend-api/` and versioned as `apiVersion: 2`. A
 backend implements provider operations only; core owns the filesystem, cache, cursor,
 scope, and checkpoint (see
 [design-core-backend-integration.md](design-core-backend-integration.md) and
@@ -33,7 +33,7 @@ capabilities.
 | `id` | Globally unique canonical id; equals persisted `settings.backendType`. |
 | `displayName` | Human-readable name. |
 | `version` | Module version (SemVer), independent of `apiVersion`. |
-| `apiVersion` | Must be `1`. |
+| `apiVersion` | Must be `2`. |
 | `auth` | `BackendAuth`: `isAuthenticated`, `start`, `complete`, optional `revoke`. |
 | `settings?` | Declarative field list (text / secret_reference / select / toggle). |
 | `binding` | `resolveDefault`, optional `beginPick`/`completePick`/`getDisplayPath`. |
@@ -68,12 +68,38 @@ from `config` alone; core never persists a `hasToken` flag as a second truth.
 - Detached facts: `getById(id)`, `getByPath(path)` (may report several occupants).
 - Version-bound `read`: returns content bound to an observed version, or
   `target_changed` / `unverifiable`. A version mismatch is never published as success.
-- Mutation: `createFile`, `updateFile`, `createDirectory`, `move`, `delete`, each with an
-  explicit destination/expected-version. Update and create are never merged into an
-  unversioned upsert. A copy+delete is not an identity-preserving `move`.
+- Mutation: `createFile`, `updateFile`, `createDirectory`, `move`, `delete`. `updateFile`,
+  `move`, and `delete` all carry a **required** `expected: ExpectedVersion`; a caller with
+  no version evidence passes an empty `versionToken`, and a provider that requires
+  metadata CAS rejects it. Each has an explicit destination/expected-version. Update and
+  create are never merged into an unversioned upsert. A copy+delete is not an
+  identity-preserving `move`.
 
 Every paginating method either returns a complete result or fails. A partial page, a
 partial object set, or an empty `nextCursor` is never published as complete.
+
+### Adapter capabilities (`RemoteBackendAdapter.capabilities`)
+
+Every adapter declares the preconditions its provider actually enforces. `expected` is
+always required input on update/move/delete; a capability only states whether the
+provider itself closes the check-to-use window, never that the adapter may skip the
+comparison. Where `conditionalMetadataMutation` is `true`, an empty expected token or a
+re-observation with no version evidence fails closed (`unverifiable`) before the
+provider is called.
+
+| Field | Value | Meaning |
+|---|---|---|
+| `exclusiveCreate` | boolean | The provider rejects a create at an occupied destination. |
+| `conditionalContentUpdate` | `"all"` \| `"none"` | Provider-enforced content-overwrite coverage. `"all"`: every content write carries an enforced version precondition. `"none"`: no provider content precondition that binds the commit; compare-before only. |
+| `conditionalMetadataMutation` | boolean | The provider enforces `expected` on move/rename and delete. |
+| `versionBoundRead` | `"revision"` \| `"reobserve"` | How `read` proves bytes belong to the requested version: download the exact revision, or re-observe the version after download and return `target_changed` if it moved. |
+
+Where a capability is `false`/`"none"` for an operation, the adapter still compares the
+expected version before mutating and fails closed on an observed mismatch, but the
+provider offers no guarantee against a change inside the check-to-use window. A provider
+with no directory version evidence declares no directory `versionToken`; one that has it
+must surface it (the concurrency contract pins both). `validateAdapterCapabilities`
+runtime-checks this shape immediately after `createAdapter`.
 
 ## Normalized object model
 
@@ -119,11 +145,13 @@ body download.
 `validateBackendModule` structurally validates a candidate (identity, interface version,
 required functions, settings, checksums, paired pickers) before registration. Duplicate
 ids, legacy alias ids, unknown API versions, and missing required functions are rejected
-before any adapter/auth is created. TypeScript compatibility alone is insufficient for a
+before any adapter/auth is created. `validateAdapterCapabilities` then validates the
+returned adapter's `capabilities` shape (missing or out-of-enum values are rejected)
+before it reaches `ManagedRemoteFs`. TypeScript compatibility alone is insufficient for a
 future dynamically loaded artifact.
 
 ## Scope
 
-This milestone implements and tests API v1 for **static built-ins**. No external artifact
+This milestone implements and tests API v2 for **static built-ins**. No external artifact
 discovery, dynamic import, install UI, integrity manifest, or hot reload is implemented or
 claimed. See [support-policy.md](../support-policy.md).

@@ -1,7 +1,7 @@
 import type { JsonValue } from "./json";
 
 /**
- * The narrow runtime capabilities core injects into a module (API v1).
+ * The narrow runtime capabilities core injects into a module (API v2).
  *
  * Deliberately absent: `App`, `AirSyncSettings`, the internal `Logger`, any
  * metadata/checkpoint store, and `IFileSystem`. A module sees only what it

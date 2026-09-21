@@ -140,7 +140,7 @@ main.ts and sync/ never import backend-specific modules directly. The provider's
 stable registry key and also indexes settings and per-backend secrets; the registry is the
 source of truth and is injected with the secret store once at plugin load.
 
-The backend extension boundary is now the **Backend Module API v1**
+The backend extension boundary is now the **Backend Module API v2**
 ([design-backend-module-api.md](docs/design/design-backend-module-api.md)): a
 `BackendModule` implements provider operations through a `RemoteBackendAdapter`, and core
 owns the filesystem, normalized cache, cursor, scope, and checkpoint through

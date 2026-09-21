@@ -14,6 +14,12 @@ export interface DetachedPrioritySeams<TFile> {
 	versionToken(file: TFile): string | null;
 }
 
+/** A version-bound download outcome; a provider-side change must not be thrown away. */
+export type DetachedReadOutcome =
+	| { readonly kind: "content"; readonly content: ArrayBuffer }
+	| { readonly kind: "target_changed" }
+	| { readonly kind: "unverifiable" };
+
 /** Pair an admitted identity with an independent authoritative path observation. */
 export async function observeDetachedPriority<TFile>(
 	request: PriorityObservationRequest,
@@ -51,13 +57,14 @@ export async function observeDetachedPriority<TFile>(
 /** Read an observed identity and verify that the paired observation did not change. */
 export async function readDetachedPriority(
 	observation: Extract<PriorityObservation, { kind: "current" }>,
-	download: (identityKey: string) => Promise<ArrayBuffer>,
+	download: (identityKey: string) => Promise<DetachedReadOutcome>,
 	reobserve: (request: PriorityObservationRequest) => Promise<PriorityObservation>,
 ): Promise<PriorityReadResult> {
-	const content = await download(observation.identityKey);
+	const downloaded = await download(observation.identityKey);
+	if (downloaded.kind !== "content") return { kind: downloaded.kind };
 	const after = await reobserve({ path: observation.path, identityKey: observation.identityKey });
 	if (after.kind !== "current" || after.token !== observation.token) return { kind: "target_changed" };
-	return { kind: "content", content };
+	return { kind: "content", content: downloaded.content };
 }
 
 function classifyPathOccupant<TFile>(

@@ -873,7 +873,7 @@ export function runCachingRemoteFsContract<TFile>(
 					await store.close();
 					return;
 				}
-				await capability.renameById("B2", target);
+				await capability.renameById("B2", "Test.md", target);
 
 				// In the vault: both reachable, the keeper still at the plain address.
 				expect(paths(await fs.list())).toEqual([target, "Test.md"].sort());

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateBackendModule } from "../../src/fs/modules/validate-module";
+import { validateAdapterCapabilities, validateBackendModule } from "../../src/fs/modules/validate-module";
 import type { ModuleValidationResult } from "../../src/fs/modules/validate-module";
 import { createFakeModule } from "./fake-module";
 
@@ -29,7 +29,7 @@ describe("validateBackendModule", () => {
 	});
 
 	it("rejects an unsupported API version", () => {
-		const result = validateBackendModule(asRecord({ apiVersion: 2 }));
+		const result = validateBackendModule(asRecord({ apiVersion: 3 }));
 		expect(codes(result)).toContain("unsupported_api_version");
 	});
 
@@ -81,5 +81,38 @@ describe("validateBackendModule", () => {
 			}),
 		);
 		expect(codes(result)).toContain("missing_options");
+	});
+});
+
+describe("validateAdapterCapabilities", () => {
+	const valid = {
+		capabilities: {
+			exclusiveCreate: true,
+			conditionalContentUpdate: "none",
+			conditionalMetadataMutation: true,
+			versionBoundRead: "reobserve",
+		},
+	};
+
+	it("accepts a v2 capability declaration", () => {
+		expect(validateAdapterCapabilities(valid).ok).toBe(true);
+	});
+
+	it("rejects an adapter with no capabilities", () => {
+		expect(codes(validateAdapterCapabilities({}))).toContain("missing_capabilities");
+	});
+
+	it("rejects a content-update value outside the declared enum", () => {
+		const result = validateAdapterCapabilities({
+			capabilities: { ...valid.capabilities, conditionalContentUpdate: "sometimes" },
+		});
+		expect(codes(result)).toContain("invalid_capability");
+	});
+
+	it("rejects an unknown enum value", () => {
+		const result = validateAdapterCapabilities({
+			capabilities: { ...valid.capabilities, versionBoundRead: "revision-pinned" },
+		});
+		expect(codes(result)).toContain("invalid_capability");
 	});
 });

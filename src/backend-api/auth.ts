@@ -3,7 +3,7 @@ import type { BackendRuntimeContext } from "./runtime";
 import type { JsonPatch } from "./binding";
 
 /**
- * A module's authentication lifecycle (API v1).
+ * A module's authentication lifecycle (API v2).
  *
  * `isAuthenticated` receives the runtime context because SecretStorage presence
  * cannot be checked from `config` alone — persisting a `hasToken` flag into

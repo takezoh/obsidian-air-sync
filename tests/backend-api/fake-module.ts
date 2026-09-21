@@ -28,6 +28,12 @@ function fakeAdapter(): RemoteBackendAdapter {
 		throw new Error("fake adapter method is not implemented");
 	};
 	return {
+		capabilities: {
+			exclusiveCreate: false,
+			conditionalContentUpdate: "none",
+			conditionalMetadataMutation: false,
+			versionBoundRead: "reobserve",
+		},
 		getStartCursor: () => Promise.resolve("fake-start"),
 		listAll: () => Promise.resolve([]),
 		assertRootAlive: () => Promise.resolve(),

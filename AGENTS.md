@@ -42,7 +42,7 @@ full set of enforced rules, the test-pinned principles, and how to declare an ex
 disabling a rule.**
 
 When adding or replacing a remote filesystem implementation, update the exact
-implementation-family catalog, all four shared `*.contract-harness.ts` registrations,
+implementation-family catalog, all five shared `*.contract-harness.ts` registrations,
 the central required-contract matrix, and that backend's opt-in live E2E; then verify
 that the generic registry guard passes. Extend a registry fixture only when the backend
 needs backend-specific construction data. Contract definitions and harnesses are test

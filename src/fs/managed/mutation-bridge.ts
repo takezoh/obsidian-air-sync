@@ -232,13 +232,15 @@ export class MutationBridge {
 	 * it works for an object the cache is unwilling to name (a withheld contended
 	 * claimant). Like every mutation, the provider's answer is validated before the
 	 * caller may write it to the cache.
+	 *
+	 * The subject is the object the caller re-observed at the admitted source path,
+	 * so `expected` is the version observed there — a fresh fetch is not allowed to
+	 * justify renaming an object that moved elsewhere after Admission.
 	 */
-	async performIdentityRename(identityKey: string, name: string): Promise<RemoteObject> {
-		const current = await this.adapter.getById(identityKey);
-		if (current === null) throw new Error(`Remote object not found: ${identityKey}`);
-		const object = validateRemoteObject(current);
+	async performIdentityRename(object: RemoteObject, name: string): Promise<RemoteObject> {
 		const input: MoveInput = {
-			id: identityKey,
+			id: object.id,
+			expected: this.expectedOf(object),
 			destination: this.destinationPreservingParent(object, name),
 		};
 		return validateRemoteObject(await this.adapter.move(input));

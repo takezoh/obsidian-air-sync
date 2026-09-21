@@ -8,7 +8,7 @@ const API_ROOT = join(ROOT, "src", "backend-api");
 const ENTRY = join(API_ROOT, "index.ts");
 
 /**
- * The Backend Module API is the public extension boundary (API v1). Its
+ * The Backend Module API is the public extension boundary (API v2). Its
  * transitive imports must stay free of core internals, Obsidian, stores, and
  * Node/Electron so a static fake module can be built from types alone and a
  * future dynamic loader can bundle it. This guard scans the production source

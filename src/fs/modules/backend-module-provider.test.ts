@@ -163,6 +163,12 @@ describe("BackendModuleProvider — disconnect config preservation", () => {
 
 function stubAdapter(): RemoteBackendAdapter {
 	return {
+		capabilities: {
+			exclusiveCreate: false,
+			conditionalContentUpdate: "none",
+			conditionalMetadataMutation: false,
+			versionBoundRead: "reobserve",
+		},
 		getStartCursor: () => Promise.resolve("cursor"),
 		listAll: () => Promise.resolve([]),
 		assertRootAlive: () => Promise.resolve(),
@@ -244,6 +250,38 @@ describe("BackendModuleProvider — refreshed auth state persistence", () => {
 		const provider = providerFor(fakeModule(), settings);
 		await provider.prepare();
 		expect(provider.readBackendState()).toEqual({});
+	});
+});
+
+describe("BackendModuleProvider — adapter capability validation", () => {
+	it("rejects a module whose adapter omits capabilities before building the filesystem", async () => {
+		const settings = settingsWith({ authMode: false, remoteVaultFolderId: "T" });
+		const malformed: BackendModule = {
+			...fakeModule(),
+			createAdapter: () => Promise.resolve({} as never),
+		};
+		const provider = providerFor(malformed, settings);
+		await expect(provider.prepare()).rejects.toThrow(/invalid capabilities/);
+		// A rejected adapter must not yield a filesystem.
+		expect(provider.createFs({} as never, settings)).toBeNull();
+	});
+
+	it("rejects a module whose adapter declares an out-of-enum capability", async () => {
+		const settings = settingsWith({ authMode: false, remoteVaultFolderId: "T" });
+		const malformed: BackendModule = {
+			...fakeModule(),
+			createAdapter: () => Promise.resolve({
+				capabilities: {
+					exclusiveCreate: true,
+					conditionalContentUpdate: "sometimes",
+					conditionalMetadataMutation: true,
+					versionBoundRead: "reobserve",
+				},
+			} as never),
+		};
+		const provider = providerFor(malformed, settings);
+		await expect(provider.prepare()).rejects.toThrow(/invalid capabilities/);
+		expect(provider.createFs({} as never, settings)).toBeNull();
 	});
 });
 

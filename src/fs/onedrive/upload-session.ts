@@ -23,10 +23,24 @@ interface CreateSessionResponse {
 }
 
 /**
- * Upload a large file via a Microsoft Graph resumable upload session: create the
- * session (which carries the conflict behaviour + the preserved mtime), then PUT
- * the content in 320 KiB-aligned chunks with `Content-Range` headers. The final
- * chunk's response carries the completed driveItem.
+ * Preconditions and conflict semantics for an upload. `existingId` targets the
+ * documented update route (`/items/{id}/createUploadSession`); `ifMatch` /
+ * `ifNoneMatch` become the request's `If-Match` / `If-None-Match` (Graph returns
+ * 412 on a mismatch); `conflictBehavior` selects what happens on a name conflict
+ * (`fail` gives an exclusive create).
+ */
+export interface OneDriveUploadOptions {
+	readonly existingId?: string;
+	readonly conflictBehavior?: "fail" | "replace" | "rename";
+	readonly ifMatch?: string;
+	readonly ifNoneMatch?: string;
+}
+
+/**
+ * Upload a file via a Microsoft Graph resumable upload session: create the
+ * session (which carries the conflict behaviour, precondition, and the preserved
+ * mtime), then PUT the content in 320 KiB-aligned chunks with `Content-Range`
+ * headers. The final chunk's response carries the completed driveItem.
  *
  * The session PUTs go to an absolute `uploadUrl` that is already pre-authenticated
  * (a SAS-style URL); Graph requires the bearer be OMITTED there, so the chunk PUTs
@@ -39,13 +53,23 @@ export async function uploadSession(
 	name: string,
 	content: ArrayBuffer,
 	lastModifiedDateTime: string,
+	opts: OneDriveUploadOptions = {},
 ): Promise<OneDriveItem> {
+	const sessionUrl = opts.existingId
+		? `${ctx.graphApi}/me/drive/items/${opts.existingId}/createUploadSession`
+		: `${ctx.graphApi}/me/drive/items/${parentId}:/${encodeRelPath(name)}:/createUploadSession`;
+	const headers: Record<string, string> = { "Content-Type": "application/json" };
+	if (opts.ifMatch) headers["If-Match"] = opts.ifMatch;
+	if (opts.ifNoneMatch) headers["If-None-Match"] = opts.ifNoneMatch;
 	const createRes = await ctx.request("createUploadSession", {
-		url: `${ctx.graphApi}/me/drive/items/${parentId}:/${encodeRelPath(name)}:/createUploadSession`,
+		url: sessionUrl,
 		method: "POST",
-		headers: { "Content-Type": "application/json" },
+		headers,
 		body: JSON.stringify({
-			item: { "@microsoft.graph.conflictBehavior": "replace", fileSystemInfo: { lastModifiedDateTime } },
+			item: {
+				"@microsoft.graph.conflictBehavior": opts.conflictBehavior ?? (opts.existingId ? "replace" : "fail"),
+				fileSystemInfo: { lastModifiedDateTime },
+			},
 		}),
 	});
 	const { uploadUrl } = createRes.json as CreateSessionResponse;

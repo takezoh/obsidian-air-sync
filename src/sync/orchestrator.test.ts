@@ -2387,7 +2387,7 @@ describe("SyncOrchestrator", () => {
 
 			expect(cycle.renameById).toHaveBeenCalledOnce();
 			expect(cycle.renameById).toHaveBeenCalledWith(
-				"moved-id", "docs/Note.conflict-id-moved-id.md");
+				"moved-id", "docs/Note.md", "docs/Note.conflict-id-moved-id.md");
 			// One runSync, two cycles: the repair cycle aborts its working view, and the
 			// cycle it queued — seeing the address settled — is the one that commits.
 			expect(cycle.getChangedPaths).toHaveBeenCalledTimes(2);
@@ -2471,7 +2471,7 @@ describe("SyncOrchestrator", () => {
 			remoteFs: MockFileSystem,
 			holder: { content: ArrayBuffer; entity: FileEntity },
 		) {
-			return vi.fn((_identity: string, target: string) => {
+			return vi.fn((_identity: string, _admittedPath: string, target: string) => {
 				const seated = remoteFs.files.get(CONTENDED)!;
 				remoteFs.files.set(target, { content: seated.content, entity: { ...seated.entity, path: target } });
 				remoteFs.files.set(CONTENDED, holder);
@@ -2560,7 +2560,7 @@ describe("SyncOrchestrator", () => {
 			const cycle = await newcomerWinsTheAddress();
 
 			expect(cycle.renameById).toHaveBeenCalledOnce();
-			expect(cycle.renameById).toHaveBeenCalledWith(NEWCOMER, TARGET);
+			expect(cycle.renameById).toHaveBeenCalledWith(NEWCOMER, CONTENDED, TARGET);
 			expect(cycle.abortWorkingView).toHaveBeenCalledOnce();
 			expect(cycle.commitCheckpoint).toHaveBeenCalledOnce();
 			expect(cycle.abortWorkingView.mock.invocationCallOrder[0]!)
@@ -2623,7 +2623,7 @@ describe("SyncOrchestrator", () => {
 
 			expect(readText(localFs, CONTENDED)).toBe("the user's file");
 			expect(renameById).toHaveBeenCalledOnce();
-			expect(renameById).toHaveBeenCalledWith(NEWCOMER, TARGET);
+			expect(renameById).toHaveBeenCalledWith(NEWCOMER, CONTENDED, TARGET);
 			// The follow-up is COLD again and lists what the repair left: it converges
 			// and commits, with the newcomer synced at its new address.
 			expect(commitCheckpoint).toHaveBeenCalledOnce();

@@ -4,6 +4,7 @@ import type {
 	DeleteInput,
 	MoveInput,
 	RemoteBackendAdapter,
+	RemoteBackendCapabilities,
 	RemoteChange,
 	RemoteChangeResult,
 	RemoteChecksum,
@@ -56,6 +57,12 @@ function providerError(kind: Parameters<typeof backendError>[0], message: string
  */
 export class FakeRemoteAdapter implements RemoteBackendAdapter {
 	readonly rootId: string;
+	readonly capabilities: RemoteBackendCapabilities = {
+		exclusiveCreate: true,
+		conditionalContentUpdate: "all",
+		conditionalMetadataMutation: true,
+		versionBoundRead: "reobserve" as const,
+	};
 	private readonly addressing: FakeAddressing;
 	private readonly nodes = new Map<string, FakeNode>();
 	private readonly changes: RemoteChange[] = [];
@@ -111,6 +118,12 @@ export class FakeRemoteAdapter implements RemoteBackendAdapter {
 		node.content = text(content);
 		node.version++;
 		return [{ kind: "upsert", object: this.objectOf(node) }];
+	}
+
+	/** Advance a node's version in place (test convenience; distinct id→token pairs). */
+	bumpVersion(id: string): void {
+		const node = this.nodes.get(id);
+		if (node) node.version++;
 	}
 
 	simulateCreate(path: string, content = path): RemoteChange[] {

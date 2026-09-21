@@ -7,6 +7,7 @@ import type {
 	ExpectedVersion,
 	MoveInput,
 	RemoteBackendAdapter,
+	RemoteBackendCapabilities,
 	RemoteChange,
 	RemoteChangeResult,
 	RemoteObject,
@@ -27,10 +28,22 @@ import { normalizeOneDriveObject } from "./normalize-object";
  * OneDrive {@link RemoteBackendAdapter} over the existing Microsoft Graph client.
  *
  * Identity is the driveItem id; topology is `parentReference.id`; content is the
- * QuickXorHash; version evidence is `onedrive:<cTag|eTag>`. Cursor lifecycle, the
+ * QuickXorHash; version evidence is `onedrive:<eTag>` (the version of the entire item,
+ * so a metadata-only rename/move is a version change). Cursor lifecycle, the
  * normalized cache, and checkpointing belong to core.
+ *
+ * Provider preconditions: `PATCH`/`DELETE` carry `If-Match` and content writes use
+ * an upload session with `If-Match` (update) or `If-None-Match: *` plus
+ * `conflictBehavior:fail` (exclusive create), so a stale version is rejected by
+ * Graph with 412. `read` binds bytes by re-observing the item's tag after download.
  */
 export class OneDriveAdapter implements RemoteBackendAdapter {
+	readonly capabilities: RemoteBackendCapabilities = {
+		exclusiveCreate: true,
+		conditionalContentUpdate: "none",
+		conditionalMetadataMutation: true,
+		versionBoundRead: "reobserve" as const,
+	};
 	private readonly client: OneDriveClient;
 	private readonly rootId: string;
 
@@ -118,18 +131,35 @@ export class OneDriveAdapter implements RemoteBackendAdapter {
 			return { kind: "target_changed" };
 		}
 		const content = await this.map(() => this.client.download(input.id));
+		// Bind the bytes to the observed tag: re-read the item and fail closed if its
+		// eTag advanced while the download ran.
+		const after = await this.fetchItem(input.id);
+		if (after === null) return { kind: "target_changed" };
+		if (normalizeOneDriveObject(after).versionToken !== observed.versionToken) {
+			return { kind: "target_changed" };
+		}
 		return { kind: "content", object: observed, content };
 	}
 
 	async createFile(input: CreateFileInput): Promise<RemoteObject> {
 		const destination = requireParentId(input.destination);
+		// Exclusive create: the upload session carries `If-None-Match: *` and
+		// `conflictBehavior:fail`, so a concurrently created name is a 412, not an
+		// overwrite.
 		const item = await this.map(() =>
-			this.client.upload(destination.parentId ?? this.rootId, destination.name, input.content, input.mtimeMs),
+			this.client.upload(
+				destination.parentId ?? this.rootId,
+				destination.name,
+				input.content,
+				input.mtimeMs,
+				{ ifNoneMatch: "*", conflictBehavior: "fail" },
+			),
 		);
 		return normalizeOneDriveObject(item);
 	}
 
 	async updateFile(input: UpdateFileInput): Promise<RemoteObject> {
+		assertExpectedIdentity(input.expected, input.id);
 		const current = await this.fetchItem(input.id);
 		if (current === null) failBackend("not_found", `OneDrive item ${input.id} was not found`);
 		const observed = normalizeOneDriveObject(current);
@@ -139,8 +169,15 @@ export class OneDriveAdapter implements RemoteBackendAdapter {
 		if (!matches(input.expected, observed.versionToken)) {
 			failBackend("target_changed", `OneDrive item ${input.id} changed before update`);
 		}
+		const observedTag = tagOf(observed.versionToken);
+		// Carry the tag to Graph: the upload session's `If-Match` rejects a stale
+		// version with 412 instead of overwriting it.
 		const item = await this.map(() =>
-			this.client.upload(parentIdOf(observed, this.rootId), observed.name, input.content, input.mtimeMs),
+			this.client.upload(parentIdOf(observed, this.rootId), observed.name, input.content, input.mtimeMs, {
+				existingId: input.id,
+				ifMatch: observedTag,
+				conflictBehavior: "replace",
+			}),
 		);
 		return normalizeOneDriveObject(item);
 	}
@@ -154,34 +191,27 @@ export class OneDriveAdapter implements RemoteBackendAdapter {
 	}
 
 	async move(input: MoveInput): Promise<RemoteObject> {
+		assertExpectedIdentity(input.expected, input.id);
 		const destination = requireParentId(input.destination);
 		const current = await this.fetchItem(input.id);
 		if (current === null) failBackend("not_found", `OneDrive item ${input.id} was not found`);
 		const observed = normalizeOneDriveObject(current);
-		// A directory's cTag/eTag tracks its CHILDREN too, so it is not a content
-		// version and must not gate a move — the legacy path sent no precondition for
-		// folders. Only a file's version is meaningful here.
-		if (input.expected && observed.kind === "file" && observed.versionToken !== undefined && !matches(input.expected, observed.versionToken)) {
-			failBackend("target_changed", `OneDrive item ${input.id} changed before move`);
-		}
 		const newParentId = destination.parentId ?? this.rootId;
 		const parentChanged = parentIdOf(observed, this.rootId) !== newParentId;
 		const name = current.name === destination.name ? undefined : destination.name;
+		const guardTag = guardTagOf(input.expected, observed);
 		const item = await this.map(() =>
-			this.client.move(input.id, name, parentChanged ? newParentId : undefined),
+			this.client.move(input.id, name, parentChanged ? newParentId : undefined, guardTag),
 		);
 		return normalizeOneDriveObject(item);
 	}
 
 	async delete(input: DeleteInput): Promise<void> {
+		assertExpectedIdentity(input.expected, input.id);
 		const current = await this.fetchItem(input.id);
 		if (current === null) return;
 		const observed = normalizeOneDriveObject(current);
-		// See move(): a directory's tag is not a content version.
-		if (input.expected && observed.kind === "file" && observed.versionToken !== undefined && !matches(input.expected, observed.versionToken)) {
-			failBackend("target_changed", `OneDrive item ${input.id} changed before delete`);
-		}
-		await this.map(() => this.client.deleteItem(input.id));
+		await this.map(() => this.client.deleteItem(input.id, guardTagOf(input.expected, observed)));
 	}
 
 	private async fetchItem(id: string): Promise<OneDriveItem | null> {
@@ -219,6 +249,37 @@ function matches(expected: ExpectedVersion, observedToken: string): boolean {
 	return expected.versionToken === observedToken;
 }
 
+/** A caller's expected version must name the object it is mutating. */
+function assertExpectedIdentity(expected: ExpectedVersion, id: string): void {
+	if (expected.id !== id) {
+		failBackend("target_changed", `Expected version names ${expected.id}, not ${id}`);
+	}
+}
+
+/** The Graph eTag encoded in an `onedrive:<eTag>` version token. */
+function tagOf(versionToken: string): string {
+	const prefix = "onedrive:";
+	return versionToken.startsWith(prefix) ? versionToken.slice(prefix.length) : versionToken;
+}
+
+/**
+ * The `If-Match` tag a move/delete carries.
+ *
+ * `conditionalMetadataMutation` is `true`, so ANY hole in the metadata version
+ * evidence fails closed BEFORE the provider is called: an empty expected token, or a
+ * re-observation that reports no `eTag`, is `unverifiable`, not an unguarded move.
+ * A non-empty token that disagrees with the observation is `target_changed`.
+ */
+function guardTagOf(expected: ExpectedVersion, observed: RemoteObject): string {
+	if (expected.versionToken === "" || observed.versionToken === undefined) {
+		failBackend("unverifiable", `OneDrive item ${expected.id} has no version evidence for mutation`);
+	}
+	if (!matches(expected, observed.versionToken)) {
+		failBackend("target_changed", `OneDrive item ${expected.id} changed before mutation`);
+	}
+	return tagOf(observed.versionToken);
+}
+
 /** Map a raw OneDrive client failure to the public error taxonomy. */
 export function translateOneDriveError(err: unknown): BackendErrorShape {
 	if (isBackendError(err)) return err;
@@ -231,7 +292,7 @@ export function translateOneDriveError(err: unknown): BackendErrorShape {
 		return backendErrorFromStatus(
 			err.status,
 			message,
-			{ 409: "target_changed", 410: "cursor_invalid" },
+			{ 409: "target_changed", 410: "cursor_invalid", 412: "target_changed" },
 			retryAfterMs,
 		);
 	}
