@@ -15,8 +15,15 @@ const META_STORE = "meta";
  * v6: the persisted record is the normalized `RemoteObject`; a cache written in an
  * earlier (provider-native) encoding is invalid, so the store is dropped and
  * recreated on open (no migration) — old records AND the old cursor disappear.
+ *
+ * v7: `RemoteObject.versionToken` became the provider's monotonic version
+ * (`googledrive:v:<version>`) for files AND directories; a v6 cache holds the old
+ * `googledrive:md5:<md5>:<size>` token, so every existing-file update compared a
+ * stale token against a fresh observation and failed closed as `target_changed`.
+ * A derived cache cannot be re-interpreted in place, so it is rebuilt by a full
+ * scan instead.
  */
-export const METADATA_CACHE_VERSION = 6;
+export const METADATA_CACHE_VERSION = 7;
 
 export interface FileRecord<T> {
 	path: string;
