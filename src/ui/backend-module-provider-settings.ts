@@ -44,9 +44,10 @@ export class BackendModuleSettingsRenderer implements IBackendSettingsRenderer {
 		const module = this.provider.getModule();
 
 		if (module.settings && module.settings.fields.length > 0) {
-			new Setting(containerEl).setName(`${module.displayName} settings`).setHeading();
+			// The settings tab owns the section heading ("{backend} connection"); this
+			// renderer draws only the module's declarative fields and connection status.
 			// `renderBackendSettings` owns only the subtree it creates, so it composes
-			// with the global sections drawn above it (conflict strategy, backend selector).
+			// with the other sections of the tab.
 			renderBackendSettings(containerEl, module.settings, {
 				config: () => settings.backendData as JsonObject,
 				setValue: (key, value) => onSave({ [key]: value }),
