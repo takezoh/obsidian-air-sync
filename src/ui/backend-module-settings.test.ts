@@ -5,7 +5,8 @@ import type { BackendSettingsHost } from "./backend-module-settings";
 import type { BackendSettingsDefinition, JsonObject, JsonValue } from "../backend-api";
 
 function container(): HTMLElement {
-	return { empty: () => undefined } as unknown as HTMLElement;
+	const root = { empty: () => undefined };
+	return { createDiv: () => root } as unknown as HTMLElement;
 }
 
 function host(initial: JsonObject) {

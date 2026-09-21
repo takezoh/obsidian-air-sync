@@ -45,11 +45,9 @@ export class BackendModuleSettingsRenderer implements IBackendSettingsRenderer {
 
 		if (module.settings && module.settings.fields.length > 0) {
 			new Setting(containerEl).setName(`${module.displayName} settings`).setHeading();
-			// A dedicated child container: `renderBackendSettings` empties what it is
-			// given on every re-render, so handing it the tab would erase the global
-			// sections drawn above it (conflict strategy, backend selector).
-			const fieldsEl = containerEl.createDiv();
-			renderBackendSettings(fieldsEl, module.settings, {
+			// `renderBackendSettings` owns only the subtree it creates, so it composes
+			// with the global sections drawn above it (conflict strategy, backend selector).
+			renderBackendSettings(containerEl, module.settings, {
 				config: () => settings.backendData as JsonObject,
 				setValue: (key, value) => onSave({ [key]: value }),
 			});

@@ -100,6 +100,9 @@ export class BackendModuleProvider implements IBackendProvider {
 				await this.deps.saveSettings();
 			},
 		};
+		// The connection host is the single owner of config patch application and
+		// persistence (generation-gated). These methods therefore return `{}`: the
+		// caller's merge is a no-op and the live bag is authoritative.
 		this.auth = {
 			isAuthenticated: () => this.isAuthenticated(),
 			startAuth: async () => {

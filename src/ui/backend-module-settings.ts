@@ -60,20 +60,25 @@ function renderControl(
 	}
 }
 
-/** Render `definition` into `containerEl`, re-rendering when a value changes. */
+/**
+ * Render `definition` into a fresh child of `parent`, re-rendering in place when a
+ * value changes. `parent` is never emptied: this owns only the subtree it creates,
+ * so a caller can compose it with other sections of the same settings tab.
+ */
 export function renderBackendSettings(
-	containerEl: HTMLElement,
+	parent: HTMLElement,
 	definition: BackendSettingsDefinition,
 	host: BackendSettingsHost,
 ): void {
+	const root = parent.createDiv();
 	const draw = (): void => {
 		const config = host.config();
 		const issues = new Map(
 			validateBackendSettings(definition, config).map((issue) => [issue.key, issue.message]),
 		);
-		containerEl.empty();
+		root.empty();
 		for (const field of visibleFields(definition, config)) {
-			const setting = new Setting(containerEl).setName(field.label);
+			const setting = new Setting(root).setName(field.label);
 			const issue = issues.get(field.key);
 			const help = field.description ?? "";
 			setting.setDesc(issue ? (help ? `${help} — ${issue}` : issue) : help);
