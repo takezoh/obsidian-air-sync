@@ -47,7 +47,7 @@ export class SecretComponent {
  * the UI renders; reset these between tests.
  */
 export const __ui: {
-	buttons: { name: string; click: () => void }[];
+	buttons: { name: string; label: string; click: () => void }[];
 	dropdowns: {
 		name: string;
 		description: string;
@@ -126,15 +126,20 @@ export class Setting {
 	}
 	addButton(cb: (b: unknown) => unknown) {
 		let handler: () => void = () => {};
+		let label = "";
 		const btn = {
-			setButtonText: (_t: string) => btn,
+			setButtonText: (text: string) => {
+				label = text;
+				return btn;
+			},
+			setCta: () => btn,
 			onClick: (h: () => void) => {
 				handler = h;
 				return btn;
 			},
 		};
 		cb(btn);
-		__ui.buttons.push({ name: this._name, click: () => handler() });
+		__ui.buttons.push({ name: this._name, label, click: () => handler() });
 		return this;
 	}
 	addText(cb: (t: unknown) => unknown) {

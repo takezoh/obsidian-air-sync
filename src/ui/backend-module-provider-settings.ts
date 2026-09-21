@@ -1,6 +1,7 @@
 import type { App } from "../platform/obsidian";
 import { Notice, Setting } from "../platform/obsidian";
 import type { AirSyncSettings } from "../settings";
+import { REMOTE_VAULT_ROOT } from "../backend-api";
 import type { JsonObject } from "../backend-api";
 import type {
 	BackendConnectionActions,
@@ -104,10 +105,16 @@ export class BackendModuleSettingsRenderer implements IBackendSettingsRenderer {
 			return;
 		}
 
-		folderSetting.setDesc("Choose where this vault syncs.");
+		// Show the actual default remote path (the convention every non-App-Folder
+		// module resolves), matching the legacy Google Drive renderer, instead of an
+		// opaque "use default" label the user cannot verify.
+		folderSetting.setDesc(
+			"Choose where this vault syncs: use the default folder, or pick an existing one.",
+		);
+		const defaultPath = `${REMOTE_VAULT_ROOT}/${app.vault.getName()}`;
 		folderSetting.addButton((button) =>
 			button
-				.setButtonText("Use default folder")
+				.setButtonText(defaultPath)
 				.setCta()
 				.onClick(() => void actions.bindDefaultFolder()),
 		);

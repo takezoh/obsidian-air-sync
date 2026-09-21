@@ -6,6 +6,7 @@ import type { BackendConnectionActions } from "../fs/settings-renderer";
 import type { AirSyncSettings } from "../settings";
 import { mockSettings } from "../__mocks__/sync-test-helpers";
 import { createFakeModule } from "../../tests/backend-api/fake-module";
+import { googleDriveModule } from "../backends/googledrive/module";
 
 vi.mock("obsidian");
 
@@ -91,6 +92,36 @@ describe("BackendModuleSettingsRenderer — container ownership", () => {
 		expect(childEmpty).toHaveBeenCalled();
 		// The tab itself is never cleared, so the global sections survive.
 		expect(rootEmpty).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * Regression: the unbound non-App-Folder binding row showed an opaque "Use default
+ * folder" label. It must show the actual default remote path so the user can verify
+ * where the vault will sync (the legacy Google Drive renderer did).
+ */
+describe("BackendModuleSettingsRenderer — unbound default folder", () => {
+	it("labels the default-folder CTA with the resolved default remote path", () => {
+		const provider = {
+			type: "googledrive",
+			getModule: () => googleDriveModule,
+			hasCredentials: () => true,
+			getRemoteVaultDisplayPath: () => Promise.resolve(null),
+		} as unknown as BackendModuleProvider;
+		const settings = mockSettings({ backendType: "googledrive", backendData: {} });
+		const app = { vault: { getName: () => "Personal" } };
+
+		new BackendModuleSettingsRenderer(provider).render(
+			container(),
+			settings,
+			() => Promise.resolve(),
+			actionsSpy().actions,
+			app as never,
+		);
+
+		const labels = __ui.buttons.map((button) => button.label);
+		expect(labels).toContain("obsidian-air-sync/Personal");
+		expect(labels).not.toContain("Use default folder");
 	});
 });
 
