@@ -29,7 +29,9 @@ export const requestUrl = (_opts: unknown): Promise<unknown> => {
 };
 
 export class Notice {
-	constructor(_message: string, _timeout?: number) {}
+	constructor(message: string, _timeout?: number) {
+		__ui.notices.push(message);
+	}
 }
 
 export class SecretComponent {
@@ -66,7 +68,8 @@ export const __ui: {
 		change: (value: boolean) => unknown;
 	}[];
 	lastModal: { close: () => void } | null;
-} = { buttons: [], dropdowns: [], texts: [], toggles: [], lastModal: null };
+	notices: string[];
+} = { buttons: [], dropdowns: [], texts: [], toggles: [], lastModal: null, notices: [] };
 
 /** Minimal stand-in for Obsidian's augmented HTMLElement (createEl/empty). */
 class FakeEl {

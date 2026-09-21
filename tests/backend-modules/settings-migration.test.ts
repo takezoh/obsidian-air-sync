@@ -89,23 +89,33 @@ describe("normalizeBackendModuleSettings — six legacy selections", () => {
 describe("normalizeBackendModuleSettings — main-branch compatibility", () => {
 	// `main` stores `backendData.authMode` as the STRING "default" | "custom" and may
 	// still carry a legacy `*-custom` backendType. Both must reshape to the canonical
-	// id + boolean, leaving every other field intact, and be idempotent.
-	const cases: readonly [string, "custom" | "default", boolean][] = [
-		["dropbox-custom", "custom", true],
-		["dropbox-custom", "default", false],
-		["dropbox", "custom", true],
-		["dropbox", "default", false],
+	// id + boolean, leaving every other field intact, and be idempotent. Every service
+	// is covered, with both the legacy alias and the canonical id, so a misimplementation
+	// that only converts one backend cannot pass.
+	const cases: readonly [string, string, "custom" | "default", boolean][] = [
+		["googledrive-custom", "googledrive", "custom", true],
+		["googledrive-custom", "googledrive", "default", false],
+		["googledrive", "googledrive", "custom", true],
+		["googledrive", "googledrive", "default", false],
+		["onedrive-custom", "onedrive", "custom", true],
+		["onedrive-custom", "onedrive", "default", false],
+		["onedrive", "onedrive", "custom", true],
+		["onedrive", "onedrive", "default", false],
+		["dropbox-custom", "dropbox", "custom", true],
+		["dropbox-custom", "dropbox", "default", false],
+		["dropbox", "dropbox", "custom", true],
+		["dropbox", "dropbox", "default", false],
 	];
 
-	for (const [backendType, stored, expected] of cases) {
-		it(`${backendType} + authMode:${stored} -> dropbox/${expected}, idempotently`, () => {
+	for (const [backendType, canonical, stored, expected] of cases) {
+		it(`${backendType} + authMode:${stored} -> ${canonical}/${expected}, idempotently`, () => {
 			const settings = withBag(backendType, {
 				authMode: stored,
 				remoteVaultFolderId: "id:abc",
 				customClientId: "APPKEY",
 			});
 			expect(normalizeBackendModuleSettings(settings)).toBe(true);
-			expect(settings.backendType).toBe("dropbox");
+			expect(settings.backendType).toBe(canonical);
 			expect(settings.backendData.authMode).toBe(expected);
 			expect(settings.backendData).toMatchObject({
 				remoteVaultFolderId: "id:abc",

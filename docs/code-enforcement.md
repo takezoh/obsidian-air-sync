@@ -136,13 +136,18 @@ and registers them and wraps each in the core `BackendModuleProvider` (connectio
 ### Limited compatibility exception (settings reshape)
 
 The "no migration code" rule in `AGENTS.md` has one bounded exception for the backend
-module migration: the settings normalizations in `settings-normalize.ts`. They reshape
-(or discard) an incompatible old settings shape so a vault upgrading stays connected;
-they do not transform data field-by-field. A change to a persisted *metadata-record*
-format is handled by ordinary cold-start — a `MetadataStore` version bump drops and
-re-creates the derived checkpoint cache on open, so the old records and cursor disappear
-together, and same-generation corrupt/foreign records fail `bulkLoad` validation and
-re-scan — never by a codec. See
+module migration: the three settings normalizations in `settings-normalize.ts` —
+`liftActiveBackendData`, `normalizeConflictStrategy`, and
+`normalizeBackendModuleSettings`. They reshape (or discard) an incompatible old
+settings shape so a vault upgrading stays connected; they do not transform data
+field-by-field. `normalizeBackendModuleSettings` canonicalizes a legacy `*-custom`
+backend id to its module id and coerces the one `authMode` representation — a stored
+`"custom"`/`"default"` string, or the boolean implied by a legacy alias — to the
+persisted boolean, leaving every other field intact; it is idempotent. A change to a
+persisted *metadata-record* format is handled by ordinary cold-start — a `MetadataStore`
+version bump drops and re-creates the derived checkpoint cache on open, so the old
+records and cursor disappear together, and same-generation corrupt/foreign records fail
+`bulkLoad` validation and re-scan — never by a codec. See
 [adr-20260920-backend-module-boundary.md](adr/adr-20260920-backend-module-boundary.md).
 
 ## 5. Pipeline as data (Principle #4)

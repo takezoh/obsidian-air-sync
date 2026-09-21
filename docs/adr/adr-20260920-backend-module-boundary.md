@@ -150,9 +150,12 @@ milestone and are not claimed here.
 Those rules conflict for the settings/aliases. The resolution is a **bounded exception**, not a
 general migration framework:
 
-- **Settings normalizations** (`liftActiveBackendData`, `normalizeConflictStrategy`, plus the
-  new legacy-alias/canonical-id normalization) reshape-or-discard an incompatible old shape.
-  They are idempotent and never invent data.
+- **Settings normalizations** (`liftActiveBackendData`, `normalizeConflictStrategy`, and
+  `normalizeBackendModuleSettings`) reshape-or-discard an incompatible old shape.
+  `normalizeBackendModuleSettings` canonicalizes a legacy `*-custom` backend id to its module
+  id and coerces the one `authMode` representation — a stored `"custom"`/`"default"` string,
+  or the boolean implied by a legacy alias — to the persisted boolean, preserving every other
+  field. They are idempotent and never invent data.
 - **A change to the persisted metadata-record format is NOT a compatibility case.** The
   metadata checkpoint cache is a derived projection of the remote (ADR 0001), never an
   authority. A record-format change bumps `METADATA_CACHE_VERSION`, so on upgrade the

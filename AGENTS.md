@@ -102,15 +102,19 @@ central `tests/fs/remote-backend-contracts.test.ts` unit composition root.
 - No migration code — on IndexedDB schema changes, cold-start (drop all stores and
   recreate). Settings schema changes use sensible defaults for missing fields via
   `Object.assign({}, DEFAULT_SETTINGS, stored)`.
-  - **Sanctioned exception: `settings-normalize.ts`.** Two one-time *normalizations*
+  - **Sanctioned exception: `settings-normalize.ts`.** Three one-time *normalizations*
     run on load: `liftActiveBackendData` (lifts the active backend out of the old
     nested per-type `backendData` map into the flat single-bag shape, discarding the
-    rest) and `normalizeConflictStrategy` (coerces the removed `"ask"` strategy to its
-    effective `"duplicate"`). These reshape-or-discard an incompatible old shape rather
-    than transforming data field-by-field, and exist so a vault upgrading from the old
-    shape stays connected instead of silently breaking the resolver / stranding
-    foreign-backend params. Both are idempotent (a no-op on the current shape). Do not
-    grow this list without the same "reshape/discard, not transform" justification.
+    rest), `normalizeConflictStrategy` (coerces the removed `"ask"` strategy to its
+    effective `"duplicate"`), and `normalizeBackendModuleSettings` (canonicalizes a
+    legacy `*-custom` id to its module id and coerces the one `authMode` representation
+    — a stored `"custom"`/`"default"` string, or the boolean implied by a legacy alias —
+    to the persisted boolean, preserving every other field). These reshape-or-discard an
+    incompatible old shape rather than transforming data field-by-field, and exist so a
+    vault upgrading from the old shape stays connected instead of silently breaking the
+    resolver / stranding foreign-backend params. All three are idempotent (a no-op on the
+    current shape). Do not grow this list without the same "reshape/discard, not
+    transform" justification.
 - Sync correctness has exactly two durable publication points: a file's `SyncRecord`
   after that admitted action succeeds, and the remote cursor/derived cache/scope
   checkpoint after a wholly clean cycle. Do not persist operation intent, rename

@@ -1095,4 +1095,43 @@ describe("BackendManager — module auth patches survive the connect boundary", 
 
 		expect(settings.backendData.pendingAuthState).toBe("STATE");
 	});
+
+	it("does not restore a pending flow state the module cleared during completeAuth", async () => {
+		const settings = mockSettings();
+		settings.backendType = "test";
+		settings.backendData = {
+			pendingAuthState: "STALE-STATE",
+			pendingCodeVerifier: "STALE-VERIFIER",
+		};
+		// Snapshot the bag at every persist so the old snapshot-merge bug (which wrote
+		// the pre-await bag back over the module's own commit) is caught even though
+		// resetAll later runs and saveSettings takes no argument.
+		const persisted: Record<string, unknown>[] = [];
+		const saveSettings = vi.fn(() => {
+			persisted.push({ ...settings.backendData });
+			return Promise.resolve();
+		});
+		const deps = createDeps(settings, { saveSettings });
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend();
+		saveSettings.mockClear();
+		persisted.length = 0;
+
+		vi.spyOn(fakeProvider.auth, "completeAuth").mockImplementation(() => {
+			// The module connection commit REPLACES the live bag, clearing the flow
+			// state it just consumed, and returns no additional patch.
+			settings.backendData = { authMode: false, accessTokenExpiry: 123 };
+			return Promise.resolve({});
+		});
+
+		await mgr.completeBackendConnect("auth-code");
+
+		expect(persisted.length).toBeGreaterThan(0);
+		for (const snapshot of persisted) {
+			expect(snapshot).not.toHaveProperty("pendingAuthState");
+			expect(snapshot).not.toHaveProperty("pendingCodeVerifier");
+		}
+		expect(settings.backendData).not.toHaveProperty("pendingAuthState");
+		expect(settings.backendData).not.toHaveProperty("pendingCodeVerifier");
+	});
 });
