@@ -1,5 +1,5 @@
 /**
- * The normalized remote object model (Backend Module API v2).
+ * The normalized remote object model (Backend Module API v3).
  *
  * Provider-native DTOs must not leak into core persistence or the sync engine.
  * A module projects each provider object to this shape; core builds `FileEntity`,
@@ -32,6 +32,14 @@ export interface RemoteChecksum {
 export type RemoteLocation =
 	| { readonly addressing: "parent_id"; readonly parentId: string | null }
 	| { readonly addressing: "provider_path"; readonly rootId: string; readonly path: string };
+
+/**
+ * The one addressing scheme a provider uses. An adapter declares it so core
+ * builds destinations without inferring the scheme from a backend id or waiting
+ * for an observed object; the same union discriminant appears on every
+ * {@link RemoteLocation} and every {@link DestinationAddress}.
+ */
+export type RemoteAddressing = RemoteLocation["addressing"];
 
 interface RemoteObjectBase {
 	/** Stable provider identity: unchanged by an identity-preserving rename/move. */

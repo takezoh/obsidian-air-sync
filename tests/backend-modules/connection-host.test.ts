@@ -56,7 +56,7 @@ function serviceModule(service: string, mode: boolean, revoked: string[]): Backe
 		version: "1.0.0",
 		apiVersion: BACKEND_MODULE_API_VERSION,
 		auth: {
-			isAuthenticated: (_context, config) => typeof config.accessToken === "string",
+			credentialKeys: ["access"],
 			start: async (context) => {
 				await context.auth.openExternal(`https://auth.test/${service}?state=${state}`);
 				return { set: { pendingAuthState: state, authMode: mode } };
@@ -122,7 +122,6 @@ describe("createModuleConnection — declarative auth across services", () => {
 			const { connection, opened, read } = connectionFor(serviceModule(service, mode, revoked));
 
 			expect(connection.context.auth).toBe(connection.auth);
-			expect(connection.isAuthenticated()).toBe(false);
 
 			expect(await connection.startAuth()).toBe(true);
 			expect(opened).toEqual([`https://auth.test/${service}?state=${service}-${mode}-state`]);
@@ -133,7 +132,6 @@ describe("createModuleConnection — declarative auth across services", () => {
 
 			expect(await connection.completeAuth("code")).toBe(true);
 			expect(read().accessToken).toBe(`token-${service}-${mode}`);
-			expect(connection.isAuthenticated()).toBe(true);
 		});
 	});
 });

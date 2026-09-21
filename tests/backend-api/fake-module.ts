@@ -34,6 +34,7 @@ function fakeAdapter(): RemoteBackendAdapter {
 			conditionalMetadataMutation: false,
 			versionBoundRead: "reobserve",
 		},
+		addressing: "parent_id",
 		getStartCursor: () => Promise.resolve("fake-start"),
 		listAll: () => Promise.resolve([]),
 		assertRootAlive: () => Promise.resolve(),
@@ -51,7 +52,7 @@ function fakeAdapter(): RemoteBackendAdapter {
 }
 
 const FAKE_AUTH: BackendAuth = {
-	isAuthenticated: () => true,
+	credentialKeys: ["refresh", "access"],
 	start: () => Promise.resolve({ set: { authMode: false } }),
 	complete: () => Promise.resolve({}),
 };

@@ -1,5 +1,5 @@
 /**
- * Backend Module API v2 — the public contract between core and a backend module.
+ * Backend Module API v3 — the public contract between core and a backend module.
  *
  * This entry point is imported by core and by backend modules. Its transitive
  * imports must stay free of core internals, Obsidian, stores, and Node/Electron:
@@ -26,6 +26,7 @@ export type {
 	RemoteChecksum,
 	RemotePathAuthority,
 	RemoteLocation,
+	RemoteAddressing,
 } from "./remote-object";
 export { isRemoteDirectory } from "./remote-object";
 

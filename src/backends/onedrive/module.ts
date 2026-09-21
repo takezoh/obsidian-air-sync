@@ -115,6 +115,14 @@ export const oneDriveModule: BackendModule = {
 	settings: SETTINGS,
 	binding,
 	getTarget: resolveFolderTarget,
+	disconnectConfig: (config) => {
+		const bag: JsonObject = { authMode: config.authMode === true };
+		for (const key of ["customClientId", "customAuthority"]) {
+			const value = config[key];
+			if (typeof value === "string" && value !== "") bag[key] = value;
+		}
+		return bag;
+	},
 	createAdapter: async (context, config, target): Promise<RemoteBackendAdapter> => {
 		const { client, readExpiry } = await buildClientState(context, config);
 		return withAdapterState(new OneDriveAdapter(client, target.id), () => ({

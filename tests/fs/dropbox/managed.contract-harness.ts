@@ -393,7 +393,6 @@ function makeFs(
 		vaultId,
 		store: STORE,
 		metadataStore,
-		addressing: "provider_path",
 	});
 }
 

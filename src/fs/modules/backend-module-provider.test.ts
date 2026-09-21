@@ -2,6 +2,7 @@ import "fake-indexeddb/auto";
 import { describe, expect, it, vi } from "vitest";
 import type {
 	BackendModule,
+	JsonObject,
 	RemoteBackendAdapter,
 } from "../../backend-api";
 import { BACKEND_MODULE_API_VERSION, backendError } from "../../backend-api";
@@ -124,6 +125,130 @@ describe("BackendModuleProvider — token namespace", () => {
 	});
 });
 
+describe("BackendModuleProvider — declared credential keys", () => {
+	const depsWith = (
+		settings: AirSyncSettings,
+		getSecretImpl: (key: string) => string | null,
+		setSecret = vi.fn(),
+	): BackendModuleProviderDeps => {
+		const secretStore: ISecretStore = { getSecret: vi.fn(getSecretImpl), setSecret };
+		return {
+			getSettings: () => settings,
+			saveSettings: vi.fn().mockResolvedValue(undefined),
+			getApp: (() => ({})) as BackendModuleProviderDeps["getApp"],
+			getLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }) as never,
+			getVaultName: () => "Vault",
+			secretStore,
+			platform: PLATFORM,
+			sink: vi.fn(),
+		};
+	};
+	const moduleWithKeys = (keys: readonly string[]): BackendModule => ({
+		...fakeModule(),
+		auth: { credentialKeys: keys, start: () => Promise.resolve({}), complete: () => Promise.resolve({}) },
+	});
+
+	it("treats an empty declaration as ready so a secret-less backend can connect", () => {
+		const settings = settingsWith({ remoteVaultFolderId: "T" });
+		const provider = new BackendModuleProvider(moduleWithKeys([]), depsWith(settings, () => null));
+
+		expect(provider.hasCredentials()).toBe(true);
+		expect(provider.isConnected(settings)).toBe(true);
+	});
+
+	it("reads and clears exactly the declared non-standard key", () => {
+		const settings = settingsWith({ remoteVaultFolderId: "T" });
+		const setSecret = vi.fn();
+		const getSecret = (key: string) => (key === "air-sync-fakebackend-session-token" ? "S" : null);
+		const provider = new BackendModuleProvider(
+			moduleWithKeys(["session"]),
+			depsWith(settings, getSecret, setSecret),
+		);
+
+		expect(provider.hasCredentials()).toBe(true);
+		provider.clearPluginSecrets();
+		expect(setSecret).toHaveBeenCalledWith("air-sync-fakebackend-session-token", "");
+		expect(setSecret).not.toHaveBeenCalledWith("air-sync-fakebackend-refresh-token", "");
+	});
+});
+
+describe("BackendModuleProvider — addressing comes from the adapter, not the module id", () => {
+	it("builds provider_path destinations for an arbitrary module id", async () => {
+		const destinations: string[] = [];
+		const adapter: RemoteBackendAdapter = {
+			...stubAdapter(),
+			addressing: "provider_path",
+			createFile: (input) => {
+				if (input.destination.addressing !== "provider_path") {
+					throw new Error(`expected provider_path, got ${input.destination.addressing}`);
+				}
+				destinations.push(input.destination.path);
+				return Promise.resolve({
+					id: "new-id",
+					name: "a.md",
+					kind: "file",
+					location: { addressing: "provider_path", rootId: "T", path: input.destination.path },
+					size: 2,
+					mtimeMs: 1,
+					versionToken: "v1",
+				});
+			},
+		};
+		const module: BackendModule = {
+			...fakeModule(),
+			id: "mockcloud",
+			createAdapter: () => Promise.resolve(adapter),
+		};
+		const settings = settingsWith({ remoteVaultFolderId: "T" });
+		const provider = providerFor(module, settings);
+		await provider.prepare();
+
+		const fs = provider.createFs({} as never, settings);
+		expect(fs).not.toBeNull();
+		await fs!.write("a.md", new TextEncoder().encode("hi").buffer, 1);
+
+		expect(destinations).toEqual(["a.md"]);
+	});
+});
+
+describe("BackendModuleProvider — module-owned disconnect config", () => {
+	it("keeps exactly the bag disconnectConfig returns, dropping a custom* field it omits", async () => {
+		const settings = settingsWith({
+			authMode: false,
+			customLegacyField: "drop-even-though-custom-prefixed",
+			tenant: "acme",
+			region: "eu",
+			pendingAuthState: "STATE",
+		});
+		const module: BackendModule = {
+			...fakeModule(),
+			disconnectConfig: (config) =>
+				({
+					authMode: config.authMode === true,
+					tenant: config.tenant,
+					region: config.region,
+				}) as JsonObject,
+		};
+		const provider = providerFor(module, settings);
+
+		await provider.disconnect(settings);
+
+		expect(settings.backendData).toEqual({ authMode: false, tenant: "acme", region: "eu" });
+	});
+
+	it("refuses a disconnectConfig result that is not a JSON object", async () => {
+		const settings = settingsWith({ authMode: false });
+		const module: BackendModule = {
+			...fakeModule(),
+			// A dynamically loaded module is plain JS: the declared type is not enforced.
+			disconnectConfig: () => null as unknown as JsonObject,
+		};
+		const provider = providerFor(module, settings);
+
+		await expect(provider.disconnect(settings)).rejects.toThrow(/must return a JSON object/);
+	});
+});
+
 describe("BackendModuleProvider — disconnect config preservation", () => {
 	it("keeps custom Google credentials and its hand-typed folder id, dropping flow state", async () => {
 		const settings = settingsWith({
@@ -169,6 +294,7 @@ function stubAdapter(): RemoteBackendAdapter {
 			conditionalMetadataMutation: false,
 			versionBoundRead: "reobserve",
 		},
+		addressing: "parent_id",
 		getStartCursor: () => Promise.resolve("cursor"),
 		listAll: () => Promise.resolve([]),
 		assertRootAlive: () => Promise.resolve(),
@@ -194,7 +320,7 @@ function fakeModule(readState?: () => Record<string, unknown>): BackendModule {
 		version: "1.0.0",
 		apiVersion: BACKEND_MODULE_API_VERSION,
 		auth: {
-			isAuthenticated: () => true,
+			credentialKeys: ["refresh", "access"],
 			start: () => Promise.resolve({}),
 			complete: () => Promise.resolve({}),
 		},
@@ -217,7 +343,8 @@ function providerFor(module: BackendModule, settings: AirSyncSettings): BackendM
 		getSettings: () => settings,
 		saveSettings: vi.fn().mockResolvedValue(undefined),
 		getApp: (() => ({})) as BackendModuleProviderDeps["getApp"],
-		getLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }) as never,
+		getLogger: () =>
+			({ enabled: () => false, debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }) as never,
 		getVaultName: () => "Vault",
 		secretStore: { getSecret: () => null, setSecret: vi.fn() },
 		platform: PLATFORM,
@@ -261,7 +388,7 @@ describe("BackendModuleProvider — adapter capability validation", () => {
 			createAdapter: () => Promise.resolve({} as never),
 		};
 		const provider = providerFor(malformed, settings);
-		await expect(provider.prepare()).rejects.toThrow(/invalid capabilities/);
+		await expect(provider.prepare()).rejects.toThrow(/invalid adapter/);
 		// A rejected adapter must not yield a filesystem.
 		expect(provider.createFs({} as never, settings)).toBeNull();
 	});
@@ -280,7 +407,7 @@ describe("BackendModuleProvider — adapter capability validation", () => {
 			} as never),
 		};
 		const provider = providerFor(malformed, settings);
-		await expect(provider.prepare()).rejects.toThrow(/invalid capabilities/);
+		await expect(provider.prepare()).rejects.toThrow(/invalid adapter/);
 		expect(provider.createFs({} as never, settings)).toBeNull();
 	});
 });
@@ -338,7 +465,7 @@ describe("BackendModuleProvider — a disposed connection is rebuilt for auth", 
 			const module: BackendModule = {
 				...fakeModule(),
 				auth: {
-					isAuthenticated: () => true,
+					credentialKeys: ["refresh", "access"],
 					start: (context) => {
 						void context.auth.openExternal("https://auth.example/start");
 						return Promise.resolve({});

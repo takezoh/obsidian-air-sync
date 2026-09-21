@@ -104,7 +104,7 @@ COLD loop is forbidden for a supported backend.
 
 ### Provider behavior vs core obligations (module boundary)
 
-Under the Backend Module API v2, this contract splits by owner. A backend **module**
+Under the Backend Module API v3, this contract splits by owner. A backend **module**
 implements provider operations through a `RemoteBackendAdapter` — it reports provider
 facts and performs provider mutations. Core owns the observable `IFileSystem`, the
 normalized metadata cache, topology/identity projection, the delta cursor, scope

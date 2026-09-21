@@ -1,4 +1,11 @@
-import type { RemoteChange, RemoteChecksum, RemoteLocation, RemoteObject, RemotePathAuthority } from "../../backend-api";
+import type {
+	RemoteAddressing,
+	RemoteChange,
+	RemoteChecksum,
+	RemoteLocation,
+	RemoteObject,
+	RemotePathAuthority,
+} from "../../backend-api";
 
 /**
  * Runtime validation of a `RemoteObject` at the adapter boundary.
@@ -84,8 +91,13 @@ function validateLocation(value: unknown, context: string): RemoteLocation {
 /**
  * Validate one adapter-reported object. Returns the same value narrowed to
  * `RemoteObject`; throws {@link RemoteObjectValidationError} otherwise.
+ *
+ * `expectedAddressing` is the adapter's own declaration. When given, an object
+ * whose `location.addressing` disagrees is a permanent failure: the cache/topology
+ * would otherwise be built on a different scheme than the mutation destination
+ * derived from the declaration.
  */
-export function validateRemoteObject(value: unknown): RemoteObject {
+export function validateRemoteObject(value: unknown, expectedAddressing?: RemoteAddressing): RemoteObject {
 	if (!isRecord(value)) fail("remote object must be an object");
 	const id = requireString(value, "id", "remote object");
 	const context = `remote object "${id}"`;
@@ -93,6 +105,12 @@ export function validateRemoteObject(value: unknown): RemoteObject {
 	const kind = value["kind"];
 	if (kind !== "file" && kind !== "directory") fail(`${context}: "kind" must be "file" or "directory"`);
 	const location = validateLocation(value["location"], context);
+	if (expectedAddressing !== undefined && location.addressing !== expectedAddressing) {
+		fail(
+			`${context}: location.addressing "${location.addressing}" does not match the adapter's declared ` +
+				`"${expectedAddressing}"`,
+		);
+	}
 	const rawAuthority = value["pathAuthority"];
 	if (rawAuthority !== undefined && rawAuthority !== "provider_resolved" && rawAuthority !== "requested_echo") {
 		fail(`${context}: "pathAuthority" is not a known authority`);
@@ -123,10 +141,13 @@ export function validateRemoteObject(value: unknown): RemoteObject {
  * the persisted checkpoint. Delete changes carry only an id or path and have no
  * object to validate; upserts are validated in place.
  */
-export function validateRemoteChanges(changes: readonly RemoteChange[]): RemoteChange[] {
+export function validateRemoteChanges(
+	changes: readonly RemoteChange[],
+	expectedAddressing?: RemoteAddressing,
+): RemoteChange[] {
 	return changes.map((change) =>
 		change.kind === "upsert"
-			? { ...change, object: validateRemoteObject(change.object) }
+			? { ...change, object: validateRemoteObject(change.object, expectedAddressing) }
 			: change,
 	);
 }

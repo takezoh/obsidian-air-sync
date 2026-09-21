@@ -10,7 +10,7 @@ import { isJsonValue } from "../../src/backend-api/json";
 import { isRemoteFile } from "../../src/backend-api/remote-object";
 import type { RemoteObject } from "../../src/backend-api";
 
-describe("Backend Module API v2 — JSON boundary", () => {
+describe("Backend Module API v3 — JSON boundary", () => {
 	it("accepts only finite, plain JSON values", () => {
 		expect(isJsonValue(null)).toBe(true);
 		expect(isJsonValue("x")).toBe(true);
@@ -40,7 +40,7 @@ describe("Backend Module API v2 — JSON boundary", () => {
 	});
 });
 
-describe("Backend Module API v2 — error contract", () => {
+describe("Backend Module API v3 — error contract", () => {
 	it("recognizes a structurally valid boundary error", () => {
 		const error = backendError("rate_limit", "slow down", { retryAfterMs: 1000 });
 		expect(isBackendErrorShape(error)).toBe(true);
@@ -55,7 +55,7 @@ describe("Backend Module API v2 — error contract", () => {
 	});
 });
 
-describe("Backend Module API v2 — normalized object helpers", () => {
+describe("Backend Module API v3 — normalized object helpers", () => {
 	const file: RemoteObject = {
 		id: "f1",
 		name: "a.md",
@@ -83,6 +83,6 @@ describe("Backend Module API v2 — normalized object helpers", () => {
 	});
 
 	it("versions the API constant", () => {
-		expect(BACKEND_MODULE_API_VERSION).toBe(2);
+		expect(BACKEND_MODULE_API_VERSION).toBe(3);
 	});
 });

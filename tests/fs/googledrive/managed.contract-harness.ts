@@ -354,7 +354,6 @@ function makeFs(
 		vaultId,
 		store: STORE,
 		metadataStore,
-		addressing: "parent_id",
 	});
 }
 

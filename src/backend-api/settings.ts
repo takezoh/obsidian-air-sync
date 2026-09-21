@@ -1,7 +1,7 @@
 import type { JsonValue } from "./json";
 
 /**
- * A declarative settings field (API v2). Core renders these with Obsidian
+ * A declarative settings field (API v3). Core renders these with Obsidian
  * `Setting`/modal/Notice; a module must not import DOM, `App`, or a settings tab.
  */
 export type BackendSettingFieldType =

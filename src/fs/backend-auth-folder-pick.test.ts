@@ -39,7 +39,6 @@ function createContext(
 		params: { id: "FID", state: "STATE-1" },
 		settings: mockSettings({ enableLogging: true, logLevel: "debug" }),
 		auth: {
-			isAuthenticated: () => true,
 			startAuth: vi.fn(),
 			completeAuth: vi.fn().mockResolvedValue({}),
 		},
@@ -73,7 +72,6 @@ describe("completeAuthFolderPick", () => {
 		// flushes it. The Notice shows and the line silently stays in memory.
 		const { context, adapter, notify } = createContext({
 			auth: {
-				isAuthenticated: () => false,
 				startAuth: vi.fn(),
 				completeAuth: vi.fn().mockRejectedValue(new Error("bad code")),
 			},

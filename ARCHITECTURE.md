@@ -141,7 +141,7 @@ main.ts and sync/ never import backend-specific modules directly. The provider's
 stable registry key and also indexes settings and per-backend secrets; the registry is the
 source of truth and is injected with the secret store once at plugin load.
 
-The backend extension boundary is now the **Backend Module API v2**
+The backend extension boundary is now the **Backend Module API v3**
 ([design-backend-module-api.md](docs/design/design-backend-module-api.md)): a
 `BackendModule` implements provider operations through a `RemoteBackendAdapter`, and core
 owns the filesystem, normalized cache, cursor, scope, and checkpoint through
@@ -158,6 +158,7 @@ Key non-obvious decisions (full contracts in `fs/backend.ts` and `fs/auth.ts`):
 - OAuth completion and refresh-token rotation publish credentials only when the same SecretStorage key immediately reads back the exact candidate. This is an API-level postcondition, not proof of an OS-level flush. Custom PKCE attempts snapshot their nonsecret client/authority beside the pending verifier so callback exchange cannot drift with later settings edits.
 - Remote-vault binding is **explicit**, not automatic on connect: the user binds the convention folder or picks one. The folder is the sole binding; there is no `.airsync/metadata.json`. See [docs/google-drive-backend.md](docs/google-drive-backend.md).
 - The provider registry validates the built-in `BackendModule`s and wraps each in a core `BackendModuleProvider` (connection host + single `ManagedRemoteFs`); it is the production composition root and is initialized once at plugin load. See [adr-20260920-backend-module-boundary.md](docs/adr/adr-20260920-backend-module-boundary.md).
+- Core holds no per-backend knowledge: an adapter declares its `addressing` (`parent_id` | `provider_path`), an auth block declares its owned `credentialKeys`, and a module declares the `disconnectConfig` bag it keeps. Credential readiness and target presence are separate axes, so core never guesses a secret key name or branches on a module id. See [adr-20260921-backend-module-api-v3.md](docs/adr/adr-20260921-backend-module-api-v3.md).
 
 ## Detailed documentation
 

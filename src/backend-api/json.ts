@@ -1,5 +1,5 @@
 /**
- * JSON-safe data carried across the Backend Module boundary (API v2).
+ * JSON-safe data carried across the Backend Module boundary (API v3).
  *
  * The runtime is JavaScript — a module may return data that TypeScript would
  * reject. Core therefore validates every JSON boundary value structurally: only
@@ -46,7 +46,7 @@ export function isJsonObject(value: unknown, depth = 0): value is JsonObject {
 	return true;
 }
 
-/** Whether `value` is a JSON-safe value per the API v2 contract. */
+/** Whether `value` is a JSON-safe value per the API v3 contract. */
 export function isJsonValue(value: unknown, depth = 0): value is JsonValue {
 	if (depth > MAX_DEPTH) return false;
 	switch (typeof value) {

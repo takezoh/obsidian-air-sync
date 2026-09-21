@@ -73,7 +73,7 @@ async function buildAuth(context: BackendRuntimeContext, config: Readonly<JsonOb
 }
 
 const auth: BackendAuth = {
-	isAuthenticated: (_context, config) => asString(config.remoteVaultFolderId).length > 0,
+	credentialKeys: ["refresh", "access"],
 	start: async (context, config) => {
 		const google = await buildAuth(context, config);
 		const url = await google.getAuthorizationUrl();
@@ -198,6 +198,18 @@ export const googleDriveModule: BackendModule = {
 	settings: SETTINGS,
 	binding,
 	getTarget: resolveFolderTarget,
+	disconnectConfig: (config) => {
+		const bag: JsonObject = { authMode: config.authMode === true };
+		for (const key of ["customClientId", "customClientSecret", "customScope", "customRedirectUri"]) {
+			const value = config[key];
+			if (typeof value === "string" && value !== "") bag[key] = value;
+		}
+		// Google custom has no Picker: a hand-typed folder id survives a reconnect.
+		if (config.authMode === true && typeof config.remoteVaultFolderId === "string") {
+			bag.remoteVaultFolderId = config.remoteVaultFolderId;
+		}
+		return bag;
+	},
 	createAdapter: async (context, config, target): Promise<RemoteBackendAdapter> => {
 		const { client, readExpiry } = await buildClientState(context, config);
 		return withAdapterState(new GoogleDriveAdapter(client, target.id), () => ({

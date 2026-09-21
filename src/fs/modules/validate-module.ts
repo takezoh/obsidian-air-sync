@@ -42,8 +42,10 @@ const SETTING_FIELD_TYPES: ReadonlySet<string> = new Set([
 
 /** The `conditionalContentUpdate` coverage values a v2 adapter may declare. */
 const CONTENT_UPDATE_COVERAGE: ReadonlySet<string> = new Set(["all", "none"]);
-/** The `versionBoundRead` binding modes a v2 adapter may declare. */
+/** The `versionBoundRead` binding modes a v3 adapter may declare. */
 const VERSION_BOUND_READ_MODES: ReadonlySet<string> = new Set(["revision", "reobserve"]);
+/** The addressing schemes a v3 adapter may declare. */
+const REMOTE_ADDRESSING_MODES: ReadonlySet<string> = new Set(["parent_id", "provider_path"]);
 
 type Json = Readonly<Record<string, unknown>>;
 
@@ -105,10 +107,61 @@ function validateAuth(issues: Issues, module: Json): void {
 		issues.add("missing_object", "auth", "auth must be an object");
 		return;
 	}
-	validateFunction(issues, auth, "isAuthenticated", "auth.isAuthenticated", true);
 	validateFunction(issues, auth, "start", "auth.start", true);
 	validateFunction(issues, auth, "complete", "auth.complete", true);
 	validateFunction(issues, auth, "revoke", "auth.revoke", false);
+	validateCredentialKeys(issues, auth);
+}
+
+/**
+ * Core derives credential readiness from the keys a module DECLARES, and clears
+ * exactly those on disconnect. Validate the declaration so a malformed module
+ * cannot smuggle an unreadable key into that derivation.
+ */
+function validateCredentialKeys(issues: Issues, auth: Json): void {
+	const keys = auth.credentialKeys;
+	if (!Array.isArray(keys)) {
+		issues.add("missing_credential_keys", "auth.credentialKeys", "auth.credentialKeys must be an array");
+		return;
+	}
+	const seen = new Set<string>();
+	keys.forEach((key: unknown, index: number) => {
+		const path = `auth.credentialKeys[${index}]`;
+		if (typeof key !== "string" || key.length === 0) {
+			issues.add("invalid_credential_key", path, `${path} must be a non-empty string`);
+			return;
+		}
+		if (seen.has(key)) issues.add("duplicate_credential_key", path, `duplicate credential key ${key}`);
+		seen.add(key);
+	});
+}
+
+/**
+ * A logical key cannot be both a module-owned credential and a user-owned secret
+ * reference. Core's readiness reads the plugin-owned physical key while the
+ * module reads the referenced secret, so an overlap strands the module
+ * permanently unauthenticated. Reject the collision at registration.
+ */
+function validateCredentialReferenceCollision(issues: Issues, module: Json): void {
+	const auth = module.auth;
+	const settings = module.settings;
+	if (!isJson(auth) || !Array.isArray(auth.credentialKeys)) return;
+	if (!isJson(settings) || !Array.isArray(settings.fields)) return;
+	const references = new Set(
+		settings.fields
+			.filter((field): field is Json => isJson(field) && field.type === "secret_reference")
+			.map((field) => field.key)
+			.filter((key): key is string => typeof key === "string"),
+	);
+	for (const key of auth.credentialKeys) {
+		if (typeof key === "string" && references.has(key)) {
+			issues.add(
+				"credential_reference_collision",
+				"auth.credentialKeys",
+				`"${key}" is declared both as a credential key and a secret_reference field`,
+			);
+		}
+	}
 }
 
 function validateBinding(issues: Issues, module: Json): void {
@@ -193,9 +246,11 @@ export function validateBackendModule(candidate: unknown): ModuleValidationResul
 	validateModuleIdentity(issues, candidate);
 	validateFunction(issues, candidate, "getTarget", "getTarget", true);
 	validateFunction(issues, candidate, "createAdapter", "createAdapter", true);
+	validateFunction(issues, candidate, "disconnectConfig", "disconnectConfig", false);
 	validateAuth(issues, candidate);
 	validateBinding(issues, candidate);
 	validateSettings(issues, candidate);
+	validateCredentialReferenceCollision(issues, candidate);
 	return issues.result();
 }
 
@@ -204,14 +259,22 @@ export function validateBackendModule(candidate: unknown): ModuleValidationResul
  *
  * `createAdapter` is declared to return a `RemoteBackendAdapter`, but a
  * dynamically loaded JavaScript module is not bound by TypeScript: it can omit
- * `capabilities` or use a value outside the declared enums. This checks the v2
- * declaration before the adapter reaches `ManagedRemoteFs`.
+ * `capabilities`/`addressing` or use a value outside the declared enums. This
+ * checks the v3 declaration before the adapter reaches `ManagedRemoteFs`.
  */
-export function validateAdapterCapabilities(candidate: unknown): ModuleValidationResult {
+export function validateAdapter(candidate: unknown): ModuleValidationResult {
 	const issues = new Issues();
 	if (!isJson(candidate)) {
 		issues.add("invalid_adapter", "", "an adapter must be a plain object");
 		return issues.result();
+	}
+	const addressing = candidate.addressing;
+	if (typeof addressing !== "string" || !REMOTE_ADDRESSING_MODES.has(addressing)) {
+		issues.add(
+			"invalid_addressing",
+			"addressing",
+			"addressing must be parent_id | provider_path",
+		);
 	}
 	const capabilities = candidate.capabilities;
 	if (!isJson(capabilities)) {

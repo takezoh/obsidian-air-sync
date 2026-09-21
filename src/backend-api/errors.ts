@@ -1,6 +1,6 @@
 /**
  * The backend-neutral error taxonomy every module translates to at its
- * boundary (Backend Module API v2). Core owns retry/backoff policy; a module
+ * boundary (Backend Module API v3). Core owns retry/backoff policy; a module
  * only classifies and may attach a bounded retry hint.
  *
  * This is a structural contract, not a class: a module may throw a plain

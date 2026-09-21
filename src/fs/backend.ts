@@ -55,8 +55,15 @@ export interface IBackendProvider {
 	 */
 	prepare?(app: App, settings: AirSyncSettings, logger?: Logger): Promise<void>;
 
-	/** Whether credentials are present and the backend is ready to sync */
+	/** Whether a bound target AND the backend's credentials are present. */
 	isConnected(settings: AirSyncSettings): boolean;
+
+	/**
+	 * Whether the backend's credentials are present, independent of whether a
+	 * target is bound. The settings UI uses this as the auth gate: after auth but
+	 * before a folder is chosen the user still needs the folder controls.
+	 */
+	hasCredentials(): boolean;
 
 	/** Return a string uniquely identifying the current remote target (e.g. folder ID) */
 	getIdentity(settings: AirSyncSettings): string | null;

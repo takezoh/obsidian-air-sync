@@ -63,8 +63,9 @@ export class FakeRemoteAdapter implements RemoteBackendAdapter {
 		conditionalMetadataMutation: true,
 		versionBoundRead: "reobserve" as const,
 	};
-	private readonly addressing: FakeAddressing;
+	readonly addressing: FakeAddressing;
 	private readonly nodes = new Map<string, FakeNode>();
+
 	private readonly changes: RemoteChange[] = [];
 	private readonly root: FakeNode;
 	private rootAlive = true;
@@ -397,6 +398,14 @@ export class FakeRemoteAdapter implements RemoteBackendAdapter {
 	}
 
 	private resolveDestination(destination: CreateFileInput["destination"]): { parent: FakeNode; name: string } {
+		// Mirror the real adapters, which reject a destination whose form is not the
+		// one this adapter reports: a bridge that guessed/addressed wrongly must fail
+		// here instead of silently landing under the fake's own scheme.
+		if (destination.addressing !== this.addressing) {
+			throw new Error(
+				`fake adapter requires ${this.addressing} addressing, got ${destination.addressing}`,
+			);
+		}
 		if (destination.addressing === "parent_id") {
 			const parent = destination.parentId === null ? this.root : this.nodes.get(destination.parentId);
 			if (!parent) throw new Error(`destination parent "${destination.parentId}" not found`);

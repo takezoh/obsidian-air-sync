@@ -107,7 +107,7 @@ corresponding `tests/fs/<backend>/` directory. Production coverage includes only
 while the central `tests/fs/remote-backend-contracts.test.ts` composition root remains a
 discovered unit test.
 
-### Backend Module API boundary (v2)
+### Backend Module API boundary (v3)
 
 The public extension boundary is `src/backend-api/` (`BackendModule`,
 `BackendRuntimeContext`, `RemoteBackendAdapter`). A backend module implements provider

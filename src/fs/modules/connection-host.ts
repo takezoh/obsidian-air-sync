@@ -55,7 +55,6 @@ export interface ModuleConnection {
 	startAuth(): Promise<boolean>;
 	/** Run `auth.complete`; persists its patch. `false` if the generation is stale. */
 	completeAuth(input: string): Promise<boolean>;
-	isAuthenticated(): boolean;
 	beginPick(): Promise<boolean>;
 	completePick(params: Readonly<Record<string, string>>): Promise<BackendTarget | null>;
 	/** Folder names directly under an App-Folder root, for the core in-app picker. */
@@ -142,7 +141,11 @@ export function createModuleConnection(options: ModuleConnectionOptions): Module
 	};
 
 	const clearSecrets = async (): Promise<void> => {
-		const keys = new Set([...secrets.touchedKeys, ...declaredSecretKeys(module)]);
+		const keys = new Set([
+			...secrets.touchedKeys,
+			...declaredSecretKeys(module),
+			...module.auth.credentialKeys,
+		]);
 		const references = secretReferenceKeys(module);
 		for (const key of keys) {
 			// A `secret_reference` value is a user-owned secret name, never a
@@ -168,7 +171,6 @@ export function createModuleConnection(options: ModuleConnectionOptions): Module
 		startAuth: () => beginAuth(() => module.auth.start(runtime.context, options.config.read())),
 		completeAuth: (input) =>
 			beginAuth(() => module.auth.complete(runtime.context, input, options.config.read())),
-		isAuthenticated: () => module.auth.isAuthenticated(runtime.context, options.config.read()),
 		beginPick: () =>
 			beginFolderPick({
 				binding: module.binding,

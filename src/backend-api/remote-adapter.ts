@@ -1,5 +1,5 @@
 import type { JsonObject } from "./json";
-import type { RemoteObject } from "./remote-object";
+import type { RemoteAddressing, RemoteObject } from "./remote-object";
 
 /**
  * The provider-enforced preconditions an adapter can actually carry to the wire.
@@ -35,7 +35,7 @@ export interface RemoteBackendCapabilities {
 }
 
 /**
- * The provider operation boundary a module implements (Backend Module API v2).
+ * The provider operation boundary a module implements (Backend Module API v3).
  *
  * A module does NOT implement the filesystem, metadata cache, cursor lifecycle,
  * scope fingerprint, or checkpoint. It reports provider facts and performs
@@ -48,6 +48,11 @@ export interface RemoteBackendCapabilities {
 export interface RemoteBackendAdapter {
 	/** The provider preconditions this adapter can enforce (see {@link RemoteBackendCapabilities}). */
 	readonly capabilities: RemoteBackendCapabilities;
+	/**
+	 * The one addressing scheme this adapter reports. Core builds mutation
+	 * destinations from it, so a new provider_path backend needs no core change.
+	 */
+	readonly addressing: RemoteAddressing;
 	/** The provider's current start cursor, taken BEFORE any full scan. */
 	getStartCursor(): Promise<string>;
 	/** A complete recursive snapshot of the bound root. */

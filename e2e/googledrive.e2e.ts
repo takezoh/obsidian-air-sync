@@ -161,7 +161,6 @@ if (!creds) {
 			rootFolderId: rootId,
 			vaultId: crypto.randomUUID(),
 			store: { dbNamePrefix, version: 1 },
-			addressing: "parent_id",
 		});
 	}
 

@@ -1,4 +1,4 @@
-import type { RemoteObject } from "../../backend-api";
+import type { RemoteAddressing, RemoteObject } from "../../backend-api";
 import { isRemoteDirectory } from "../../backend-api";
 import type { FileEntity, PathAuthority } from "../types";
 import type { Logger } from "../../logging/logger";
@@ -65,7 +65,17 @@ export class NormalizedMetadataCache extends AbstractMetadataCache<RemoteObject>
 	/** Object id → provider-resolved path, so the forward entry can be retired. */
 	private idToProviderPath = new Map<string, string>();
 
-	constructor(rootFolderId: string, logger?: Logger) {
+	/**
+	 * `expectedAddressing` is the adapter's declaration. It is applied to
+	 * checkpoint records in {@link bulkLoad}: a committed generation written under
+	 * a different scheme is refused, so the caller re-scans instead of restoring a
+	 * cursor whose cache addresses differently than the adapter mutates.
+	 */
+	constructor(
+		rootFolderId: string,
+		logger?: Logger,
+		private readonly expectedAddressing?: RemoteAddressing,
+	) {
 		super(rootFolderId, logger);
 	}
 
@@ -153,7 +163,7 @@ export class NormalizedMetadataCache extends AbstractMetadataCache<RemoteObject>
 	override bulkLoad(items: Iterable<[string, RemoteObject, PathAuthority?]>): readonly AddressDisplacement[] {
 		const validated: [string, RemoteObject, PathAuthority?][] = [];
 		for (const [path, file, authority] of items) {
-			validated.push([path, validateRemoteObject(file), authority]);
+			validated.push([path, validateRemoteObject(file, this.expectedAddressing), authority]);
 		}
 		return super.bulkLoad(validated);
 	}

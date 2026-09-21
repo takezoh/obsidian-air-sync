@@ -1,4 +1,4 @@
-import { errorMessage, toError } from "../../backend-api";
+import { errorMessage, isJsonObject, toError } from "../../backend-api";
 import type {
 	BackendModule,
 	BackendTarget,
@@ -18,10 +18,9 @@ import type { IBackendSettingsRenderer } from "../settings-renderer";
 import type { RemoteVaultResolution } from "../../backend-api/remote-vault-contract";
 import { METADATA_CACHE_VERSION } from "../../store/metadata-store";
 import { clearManagedCheckpointStore, ManagedRemoteFs } from "../managed/managed-remote-fs";
-import type { RemoteAddressing } from "../managed/mutation-bridge";
 import { createModuleConnection } from "./connection-host";
 import type { ModuleConfigStore, ModuleConnection } from "./connection-host";
-import { validateAdapterCapabilities } from "./validate-module";
+import { validateAdapter } from "./validate-module";
 import type { RuntimeLogSink } from "./runtime-host";
 import type { PhysicalKeyResolver } from "./secret-host";
 import { BackendModuleSettingsRenderer } from "../../ui/backend-module-provider-settings";
@@ -62,10 +61,6 @@ export interface BackendModuleProviderDeps {
  */
 function authModeOf(config: Readonly<JsonObject>): LegacyAuthMode {
 	return config.authMode === true ? "custom" : "default";
-}
-
-function addressingOf(moduleId: string): RemoteAddressing {
-	return moduleId === "dropbox" ? "provider_path" : "parent_id";
 }
 
 function stringParams(params: Record<string, string | undefined>): Record<string, string> {
@@ -110,7 +105,6 @@ export class BackendModuleProvider implements IBackendProvider {
 		// persistence (generation-gated). These methods therefore return `{}`: the
 		// caller's merge is a no-op and the live bag is authoritative.
 		this.auth = {
-			isAuthenticated: () => this.isAuthenticated(),
 			startAuth: async () => {
 				this.ensureConnection();
 				await this.connection!.startAuth();
@@ -160,12 +154,18 @@ export class BackendModuleProvider implements IBackendProvider {
 		return this.module.getTarget(this.configStore.read());
 	}
 
-	private hasToken(authMode: LegacyAuthMode): boolean {
+	/**
+	 * Whether the module's declared credential secrets are present for the current
+	 * auth mode. Core derives this from `credentialKeys`; it never guesses a key
+	 * name, so a new backend's credentials are understood without a core change.
+	 * An empty declaration means the module owns no plugin secret, so readiness
+	 * follows the bound target alone (it must not be permanently unconnectable).
+	 */
+	private credentialsReady(authMode: LegacyAuthMode): boolean {
+		const keys = this.module.auth.credentialKeys;
+		if (keys.length === 0) return true;
 		const physical = createLegacyPhysicalKeyResolver(authMode);
-		return Boolean(
-			this.deps.secretStore.getSecret(physical(this.module.id, "refresh")) ||
-			this.deps.secretStore.getSecret(physical(this.module.id, "access")),
-		);
+		return keys.some((key) => Boolean(this.deps.secretStore.getSecret(physical(this.module.id, key))));
 	}
 
 	// ── Connection/FS preparation ──
@@ -212,10 +212,10 @@ export class BackendModuleProvider implements IBackendProvider {
 		const target = this.module.getTarget(config);
 		if (!target) return;
 		const adapter = await this.module.createAdapter(connection.context, config, target);
-		const capabilityCheck = validateAdapterCapabilities(adapter);
-		if (!capabilityCheck.ok) {
-			const paths = capabilityCheck.issues.map((issue) => issue.path || "capabilities").join(", ");
-			throw new Error(`Backend module ${this.module.id} returned an adapter with invalid capabilities: ${paths}`);
+		const adapterCheck = validateAdapter(adapter);
+		if (!adapterCheck.ok) {
+			const paths = adapterCheck.issues.map((issue) => issue.path || "adapter").join(", ");
+			throw new Error(`Backend module ${this.module.id} returned an invalid adapter: ${paths}`);
 		}
 		this.preparedAdapter = adapter;
 		this.preparedFs = new ManagedRemoteFs({
@@ -224,7 +224,6 @@ export class BackendModuleProvider implements IBackendProvider {
 			rootFolderId: target.id,
 			vaultId: `${this.deps.getSettings().vaultId}-${target.id}`,
 			store: { dbNamePrefix: legacyDbNamePrefix(this.module.id, authMode), version: METADATA_CACHE_VERSION },
-			addressing: addressingOf(this.module.id),
 			logger: this.deps.getLogger(),
 		});
 	}
@@ -242,20 +241,19 @@ export class BackendModuleProvider implements IBackendProvider {
 		return this.preparedFs;
 	}
 
+	/**
+	 * Syncable = a target is bound AND the module's declared credentials are
+	 * present. The two axes are independent: after auth but before a folder is
+	 * bound, `hasCredentials` is true while `isConnected` is false.
+	 */
 	isConnected(_settings: AirSyncSettings): boolean {
 		if (!this.target()) return false;
-		return this.hasToken(authModeOf(this.configStore.read()));
+		return this.hasCredentials();
 	}
 
-	/** Whether a plugin-owned token exists for the current auth mode (auth gate). */
+	/** Whether the module's declared credential secrets are present (auth gate). */
 	hasCredentials(): boolean {
-		return this.hasToken(authModeOf(this.configStore.read()));
-	}
-
-	isAuthenticated(): boolean {
-		const config = this.configStore.read();
-		if (!this.module.auth.isAuthenticated(this.ensureConnection().context, config)) return false;
-		return this.hasToken(authModeOf(config));
+		return this.credentialsReady(authModeOf(this.configStore.read()));
 	}
 
 	getIdentity(_settings: AirSyncSettings): string | null {
@@ -374,11 +372,11 @@ export class BackendModuleProvider implements IBackendProvider {
 		return { ...this.configStore.read() };
 	}
 
-	/** Sweep this module's plugin-owned tokens under every auth-mode profile. */
+	/** Sweep this module's declared plugin-owned secrets under every auth-mode profile. */
 	clearPluginSecrets(): void {
 		for (const authMode of ["default", "custom"] as const) {
 			const physical = createLegacyPhysicalKeyResolver(authMode);
-			for (const key of ["refresh", "access"]) {
+			for (const key of this.module.auth.credentialKeys) {
 				this.deps.secretStore.setSecret(physical(this.module.id, key), "");
 			}
 		}
@@ -390,23 +388,26 @@ export class BackendModuleProvider implements IBackendProvider {
 	}
 
 	/**
-	 * The disconnected config bag: preserve `authMode` (boolean) plus the user's
-	 * custom-OAuth fields so a reconnect need not re-enter them. Google custom
-	 * additionally keeps its hand-typed folder id (it has no Picker). A built-in
-	 * selection keeps only `authMode`, matching the legacy reset.
+	 * The disconnected config bag. The module owns which of its parameters survive
+	 * a disconnect (`disconnectConfig`); core no longer knows a backend's custom
+	 * field names or special-cases a folder id. Omitted = keep `authMode` only.
 	 */
 	private disconnectedBag(): Record<string, unknown> {
 		const config = this.configStore.read();
-		const authMode = authModeOf(config);
-		const bag: Record<string, unknown> = { authMode: authMode === "custom" };
-		for (const field of this.module.settings?.fields ?? []) {
-			if (field.key === "authMode" || field.key === "remoteVaultFolderId") continue;
-			if (!field.key.startsWith("custom")) continue;
-			if (config[field.key] !== undefined) bag[field.key] = config[field.key];
+		// A present `disconnectConfig` owns the answer even when it returns nullish;
+		// only an ABSENT hook falls back to the default bag. Using `??` here would
+		// silently accept a null return instead of validating it.
+		const candidate = this.module.disconnectConfig
+			? this.module.disconnectConfig(config)
+			: { authMode: config.authMode === true };
+		// A dynamically loaded module is plain JavaScript: its declared return type
+		// is not enforced. Validate before persisting, so a non-JSON bag (array,
+		// null, Date, function, cycle) cannot reach settings.
+		if (!isJsonObject(candidate)) {
+			throw new Error(
+				`Backend module ${this.module.id} disconnectConfig must return a JSON object`,
+			);
 		}
-		if (authMode === "custom" && this.module.id === "googledrive" && typeof config.remoteVaultFolderId === "string") {
-			bag.remoteVaultFolderId = config.remoteVaultFolderId;
-		}
-		return bag;
+		return candidate;
 	}
 }

@@ -47,6 +47,7 @@ export class DropboxAdapter implements RemoteBackendAdapter {
 		conditionalMetadataMutation: false,
 		versionBoundRead: "revision" as const,
 	};
+	readonly addressing = "provider_path" as const;
 	private readonly client: DropboxClient;
 	private readonly rootId: string;
 	private rootPath = "";

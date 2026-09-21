@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateAdapterCapabilities, validateBackendModule } from "../../src/fs/modules/validate-module";
+import { validateAdapter, validateBackendModule } from "../../src/fs/modules/validate-module";
 import type { ModuleValidationResult } from "../../src/fs/modules/validate-module";
 import { createFakeModule } from "./fake-module";
 
@@ -29,8 +29,51 @@ describe("validateBackendModule", () => {
 	});
 
 	it("rejects an unsupported API version", () => {
-		const result = validateBackendModule(asRecord({ apiVersion: 3 }));
+		const result = validateBackendModule(asRecord({ apiVersion: 2 }));
 		expect(codes(result)).toContain("unsupported_api_version");
+	});
+
+	it("requires a well-formed credential-key declaration", () => {
+		const missing = asRecord({
+			auth: {
+				start: () => Promise.resolve({}),
+				complete: () => Promise.resolve({}),
+			},
+		});
+		expect(codes(validateBackendModule(missing))).toContain("missing_credential_keys");
+
+		const bad = asRecord({
+			auth: {
+				credentialKeys: ["refresh", "refresh", 5],
+				start: () => Promise.resolve({}),
+				complete: () => Promise.resolve({}),
+			},
+		});
+		expect(codes(validateBackendModule(bad))).toContain("duplicate_credential_key");
+		expect(codes(validateBackendModule(bad))).toContain("invalid_credential_key");
+	});
+
+	it("rejects a non-function disconnectConfig", () => {
+		const result = validateBackendModule(asRecord({ disconnectConfig: "nope" }));
+		expect(codes(result)).toContain("invalid_function");
+	});
+
+	it("rejects a credential key that is also a secret_reference field", () => {
+		const result = validateBackendModule(
+			asRecord({
+				auth: {
+					credentialKeys: ["refresh", "clientSecret"],
+					start: () => Promise.resolve({}),
+					complete: () => Promise.resolve({}),
+				},
+				settings: {
+					fields: [
+						{ key: "clientSecret", label: "Client secret", type: "secret_reference" },
+					],
+				},
+			}),
+		);
+		expect(codes(result)).toContain("credential_reference_collision");
 	});
 
 	it("rejects missing required functions", () => {
@@ -84,8 +127,9 @@ describe("validateBackendModule", () => {
 	});
 });
 
-describe("validateAdapterCapabilities", () => {
+describe("validateAdapter", () => {
 	const valid = {
+		addressing: "parent_id",
 		capabilities: {
 			exclusiveCreate: true,
 			conditionalContentUpdate: "none",
@@ -94,23 +138,32 @@ describe("validateAdapterCapabilities", () => {
 		},
 	};
 
-	it("accepts a v2 capability declaration", () => {
-		expect(validateAdapterCapabilities(valid).ok).toBe(true);
+	it("accepts a v3 adapter declaration", () => {
+		expect(validateAdapter(valid).ok).toBe(true);
 	});
 
-	it("rejects an adapter with no capabilities", () => {
-		expect(codes(validateAdapterCapabilities({}))).toContain("missing_capabilities");
+	it("rejects an adapter with no capabilities or addressing", () => {
+		const result = validateAdapter({});
+		expect(codes(result)).toContain("missing_capabilities");
+		expect(codes(result)).toContain("invalid_addressing");
+	});
+
+	it("rejects an addressing scheme outside the declared enum", () => {
+		const result = validateAdapter({ ...valid, addressing: "inode" });
+		expect(codes(result)).toContain("invalid_addressing");
 	});
 
 	it("rejects a content-update value outside the declared enum", () => {
-		const result = validateAdapterCapabilities({
+		const result = validateAdapter({
+			...valid,
 			capabilities: { ...valid.capabilities, conditionalContentUpdate: "sometimes" },
 		});
 		expect(codes(result)).toContain("invalid_capability");
 	});
 
 	it("rejects an unknown enum value", () => {
-		const result = validateAdapterCapabilities({
+		const result = validateAdapter({
+			...valid,
 			capabilities: { ...valid.capabilities, versionBoundRead: "revision-pinned" },
 		});
 		expect(codes(result)).toContain("invalid_capability");

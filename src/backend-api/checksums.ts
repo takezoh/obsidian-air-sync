@@ -1,5 +1,5 @@
 /**
- * A content-checksum algorithm a module can reproduce locally (API v2).
+ * A content-checksum algorithm a module can reproduce locally (API v3).
  *
  * Core uses the registered algorithm to compare local bytes against a
  * `RemoteObject.checksum` WITHOUT downloading remote content. A provider version

@@ -1,22 +1,23 @@
 ---
 id: design-backend-module-api
 kind: design
-title: Backend Module API v2
+title: Backend Module API v3
 status: active
 created: '2026-09-20'
-updated: '2026-09-20'
+updated: '2026-09-21'
 relations:
 - {type: references, target: design-remote-backend-implementation-contract}
 - {type: references, target: adr-20260920-backend-module-boundary}
-summary: The public Backend Module API v2 contract a backend implements — module shape,
+- {type: references, target: adr-20260921-backend-module-api-v3}
+summary: The public Backend Module API v3 contract a backend implements — module shape,
   runtime context, adapter operations, JSON-safe config, declarative auth/binding/settings,
   errors, and checksums.
 ---
 
-# Backend Module API v2
+# Backend Module API v3
 
 This document specifies the **public extension boundary** between Air Sync core and a
-backend. It is implemented in `src/backend-api/` and versioned as `apiVersion: 2`. A
+backend. It is implemented in `src/backend-api/` and versioned as `apiVersion: 3`. A
 backend implements provider operations only; core owns the filesystem, cache, cursor,
 scope, and checkpoint (see
 [design-core-backend-integration.md](design-core-backend-integration.md) and
@@ -33,12 +34,13 @@ capabilities.
 | `id` | Globally unique canonical id; equals persisted `settings.backendType`. |
 | `displayName` | Human-readable name. |
 | `version` | Module version (SemVer), independent of `apiVersion`. |
-| `apiVersion` | Must be `2`. |
-| `auth` | `BackendAuth`: `isAuthenticated`, `start`, `complete`, optional `revoke`. |
+| `apiVersion` | Must be `3`. |
+| `auth` | `BackendAuth`: `credentialKeys`, `start`, `complete`, optional `revoke`. |
 | `settings?` | Declarative field list (text / secret_reference / select / toggle). |
 | `binding` | `resolveDefault`, optional `beginPick`/`completePick`/`getDisplayPath`. |
 | `getTarget(config)` | Stable target from config, **no network**; `null` if unbound. |
 | `createAdapter(context, config, target)` | Builds the provider adapter for a bound connection. |
+| `disconnectConfig?(config)` | The config bag to keep after a disconnect; omit to keep only `authMode`. |
 
 `id` is canonical: `googledrive` / `onedrive` / `dropbox`. The legacy `*-custom` ids are
 settings aliases only and are refused as module ids by the registry.
@@ -65,8 +67,16 @@ Core builds a per-connection `BackendRuntimeContext`; a module never receives `A
 | `logger` | `debug`/`info`/`warn`/`error`; core applies module attribution and redaction. |
 | `auth` | Open an external auth screen and accept callback/manual input. Not a general core API. |
 
-`isAuthenticated` receives the context because SecretStorage presence cannot be proven
-from `config` alone; core never persists a `hasToken` flag as a second truth.
+A module declares the logical secret keys it owns as provider credentials
+(`auth.credentialKeys`); core derives credential readiness from their presence and clears
+exactly those on disconnect. A key may not also be a `secret_reference` field (the module
+would read a user-owned secret while core reads a plugin-owned key), and the
+`disconnectConfig` result is runtime-validated as a `JsonObject` before it is persisted. Core never guesses a key name, and there is no
+`isAuthenticated` verdict to keep in sync with the secret store: a provider credential's
+presence cannot be proven synchronously from `config` alone, and persisting a `hasToken`
+flag would create a second truth. Readiness and target presence are separate axes —
+after auth but before a folder is bound, credentials are present while the backend is not
+syncable.
 
 ## Adapter operations
 
@@ -88,7 +98,16 @@ from `config` alone; core never persists a `hasToken` flag as a second truth.
 Every paginating method either returns a complete result or fails. A partial page, a
 partial object set, or an empty `nextCursor` is never published as complete.
 
-### Adapter capabilities (`RemoteBackendAdapter.capabilities`)
+### Adapter addressing and capabilities
+
+Every adapter declares its one addressing scheme (`RemoteBackendAdapter.addressing`:
+`parent_id` or `provider_path`) next to `capabilities`. Core builds mutation destinations
+from that declaration, so a new `provider_path` backend needs no core change and an empty
+remote still resolves the correct destination. Core also cross-checks every
+adapter-reported object (`listAll`, `getChanges`, `getById`/`getByPath`, version-bound
+`read`, and create/update/move results) against the declaration; a mismatch is a
+permanent failure, and a checkpoint written under a different scheme is refused so the
+cycle re-scans instead of restoring a differently-addressed cache.
 
 Every adapter declares the preconditions its provider actually enforces. `expected` is
 always required input on update/move/delete; a capability only states whether the
@@ -108,8 +127,8 @@ Where a capability is `false`/`"none"` for an operation, the adapter still compa
 expected version before mutating and fails closed on an observed mismatch, but the
 provider offers no guarantee against a change inside the check-to-use window. A provider
 with no directory version evidence declares no directory `versionToken`; one that has it
-must surface it (the concurrency contract pins both). `validateAdapterCapabilities`
-runtime-checks this shape immediately after `createAdapter`.
+must surface it (the concurrency contract pins both). `validateAdapter`
+runtime-checks the `addressing` and `capabilities` shape immediately after `createAdapter`.
 
 ## Normalized object model
 
@@ -133,10 +152,10 @@ A module declares fields and workflows; core renders Obsidian `Setting`/modals a
 the connection lifecycle. Built-in vs custom OAuth is an `authMode` **inside** a module.
 Protocol names `air-sync-auth` / `air-sync-folder` are unchanged; callback state must
 match the originating module/authMode/generation. Core owns the disconnect sequence:
-revoke (best effort) → clear the module's plugin-owned secret namespace → clear config →
-clear the target checkpoint → reset baseline → dispose the connection (closing the prepared
-filesystem). User-owned secret
-references are never deleted.
+revoke (best effort) → clear the module's declared `credentialKeys` and any touched secret
+keys → clear config to the module's `disconnectConfig` bag → clear the target checkpoint →
+reset baseline → dispose the connection (closing the prepared filesystem). User-owned
+secret references are never deleted.
 
 ## Errors and checksums
 
@@ -155,13 +174,13 @@ body download.
 `validateBackendModule` structurally validates a candidate (identity, interface version,
 required functions, settings, checksums, paired pickers) before registration. Duplicate
 ids, legacy alias ids, unknown API versions, and missing required functions are rejected
-before any adapter/auth is created. `validateAdapterCapabilities` then validates the
-returned adapter's `capabilities` shape (missing or out-of-enum values are rejected)
-before it reaches `ManagedRemoteFs`. TypeScript compatibility alone is insufficient for a
-future dynamically loaded artifact.
+before any adapter/auth is created. `validateAdapter` then validates the returned
+adapter's `addressing` and `capabilities` shape (missing or out-of-enum values are
+rejected) before it reaches `ManagedRemoteFs`. TypeScript compatibility alone is
+insufficient for a future dynamically loaded artifact.
 
 ## Scope
 
-This milestone implements and tests API v2 for **static built-ins**. No external artifact
+This milestone implements and tests API v3 for **static built-ins**. No external artifact
 discovery, dynamic import, install UI, integrity manifest, or hot reload is implemented or
 claimed. See [support-policy.md](../support-policy.md).

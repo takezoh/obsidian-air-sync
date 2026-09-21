@@ -62,14 +62,13 @@ function clientIdOf(spec: PkceModuleSpec, config: Readonly<JsonObject>): string 
  * The declarative {@link BackendAuth} for an in-plugin PKCE backend. `config` carries
  * only non-secret flow state; tokens live in the module-scoped secret store.
  *
- * `isAuthenticated` can only read `config` (the contract makes it synchronous), so it
- * reports the binding that a connected backend always has; a stale token surfaces from
+ * The module declares its two credential keys so core derives readiness from their
+ * presence and clears exactly them; a stale token still surfaces from
  * `createAdapter`/provider I/O, which classifies it as `auth` for a reconnect.
  */
 export function createPkceBackendAuth(spec: PkceModuleSpec): BackendAuth {
 	return {
-		isAuthenticated: (_context, config) =>
-			typeof config.remoteVaultFolderId === "string" && config.remoteVaultFolderId.length > 0,
+		credentialKeys: [REFRESH_SECRET, ACCESS_SECRET],
 		start: async (context, config): Promise<JsonPatch> => {
 			const clientId = clientIdOf(spec, config);
 			const codeVerifier = generateRandomString(64);

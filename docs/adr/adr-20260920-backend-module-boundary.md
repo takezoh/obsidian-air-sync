@@ -9,6 +9,8 @@ decision_makers:
 - project owner
 consulted:
 - implementation plan obsidian-air-sync-issue-89-static-built-in-plan
+relations:
+- {type: refinedBy, target: adr-20260921-backend-module-api-v3}
 consequences:
   positive:
   - A backend module implements only provider operations (RemoteBackendAdapter); core owns
@@ -84,7 +86,9 @@ milestone and are not claimed here.
 ## Decision
 
 1. **`BackendModule` / `BackendRuntimeContext` / `RemoteBackendAdapter` are the public
-   boundary** (`src/backend-api/`, currently `apiVersion: 2`). One module is one backend. The module
+   boundary** (`src/backend-api/`, currently `apiVersion: 3`; see
+   [adr-20260921-backend-module-api-v3.md](adr-20260921-backend-module-api-v3.md) for the
+   addressing/credential-key/disconnect declarations added since). One module is one backend. The module
    object carries no mutable per-connection auth state and performs no I/O during
    enumeration/validation. The `src/backend-api` boundary stays self-contained
    (guard-enforced) and also carries the provider-neutral runtime helpers a module

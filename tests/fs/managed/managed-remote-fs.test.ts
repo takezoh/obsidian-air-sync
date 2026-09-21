@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 import type { RemoteChange, RemoteObject } from "../../../src/backend-api";
 import { ManagedRemoteFs } from "../../../src/fs/managed/managed-remote-fs";
 import { RemoteObjectValidationError } from "../../../src/fs/managed/remote-object-validation";
-import type { RemoteAddressing } from "../../../src/fs/managed/mutation-bridge";
 import { MetadataStore } from "../../../src/store/metadata-store";
 import { FakeRemoteAdapter } from "./fake-adapter";
 
@@ -11,14 +10,13 @@ const STORE = { dbNamePrefix: "air-sync-managed-test", version: 1 };
 const bytes = (value: string): ArrayBuffer => new TextEncoder().encode(value).buffer;
 const decode = (value: ArrayBuffer): string => new TextDecoder().decode(value);
 
-function makeFs(adapter: FakeRemoteAdapter, vaultId: string, addressing?: RemoteAddressing): ManagedRemoteFs {
+function makeFs(adapter: FakeRemoteAdapter, vaultId: string): ManagedRemoteFs {
 	return new ManagedRemoteFs({
 		adapter,
 		name: "fake",
 		rootFolderId: adapter.rootId,
 		vaultId,
 		store: STORE,
-		addressing,
 	});
 }
 
@@ -67,7 +65,7 @@ describe("ManagedRemoteFs — complete snapshot", () => {
 		adapter.seedDirectory("docs");
 		adapter.seedDirectory("docs/sub");
 		adapter.seedFile("docs/sub/a.md", "A");
-		const fs = makeFs(adapter, "snapshot-pp", "provider_path");
+		const fs = makeFs(adapter, "snapshot-pp");
 
 		expect((await fs.list()).map((entry) => entry.path).sort())
 			.toEqual(["docs", "docs/sub", "docs/sub/a.md"]);
@@ -131,7 +129,7 @@ describe("ManagedRemoteFs — delta convergence", () => {
 		const adapter = new FakeRemoteAdapter("root", "provider_path");
 		adapter.seedFile("a.md", "A");
 		adapter.seedFile("keep.md", "K");
-		const fs = makeFs(adapter, "path-delete", "provider_path");
+		const fs = makeFs(adapter, "path-delete");
 		await fs.list();
 		await fs.commitCheckpoint();
 
@@ -145,7 +143,7 @@ describe("ManagedRemoteFs — delta convergence", () => {
 	it("treats a same-path recreate as a modification, not a deletion", async () => {
 		const adapter = new FakeRemoteAdapter("root", "provider_path");
 		adapter.seedFile("a.md", "old");
-		const fs = makeFs(adapter, "recreate", "provider_path");
+		const fs = makeFs(adapter, "recreate");
 		await fs.list();
 		await fs.commitCheckpoint();
 
@@ -281,7 +279,7 @@ describe("ManagedRemoteFs — mutations through the bridge", () => {
 		const first = adapter.seedDirectory("docs");
 		const second = adapter.seedDirectory("docs");
 		adapter.bumpVersion(second);
-		const fs = makeFs(adapter, "merged-folder-delete", "provider_path");
+		const fs = makeFs(adapter, "merged-folder-delete");
 		await fs.list();
 
 		const firstToken = adapter.nodeById(first)!.versionToken;
@@ -303,7 +301,7 @@ describe("ManagedRemoteFs — mutations through the bridge", () => {
 	it("creates and renames through provider_path destinations", async () => {
 		const adapter = new FakeRemoteAdapter("root", "provider_path");
 		adapter.seedFile("seed.md", "S");
-		const fs = makeFs(adapter, "mutations-pp", "provider_path");
+		const fs = makeFs(adapter, "mutations-pp");
 		await fs.list();
 
 		await fs.mkdir("docs/nested");
@@ -312,6 +310,18 @@ describe("ManagedRemoteFs — mutations through the bridge", () => {
 		await fs.rename("seed.md", "docs/renamed.md");
 		expect(adapter.hasPath("seed.md")).toBe(false);
 		expect(adapter.hasPath("docs/renamed.md")).toBe(true);
+	});
+
+	it("uses the adapter's declared provider_path addressing on an empty remote", async () => {
+		// The adapter, not a caller override or an observed object, owns the form.
+		// With no object to infer from, a parent_id fallback would be rejected by the
+		// fake adapter (and by a real one), so this pins the single declaration.
+		const adapter = new FakeRemoteAdapter("root", "provider_path");
+		const fs = makeFs(adapter, "empty-remote-pp-write");
+
+		await fs.write("a.md", bytes("hi"), 1);
+
+		expect(adapter.hasPath("a.md")).toBe(true);
 	});
 
 	it("refuses to clobber an existing rename destination", async () => {
@@ -333,6 +343,21 @@ describe("ManagedRemoteFs — mutations through the bridge", () => {
 });
 
 describe("ManagedRemoteFs — validated boundaries", () => {
+	it("rejects an adapter object whose addressing disagrees with the adapter's declaration", async () => {
+		const adapter = new FakeRemoteAdapter("root", "parent_id");
+		vi.spyOn(adapter, "listAll").mockResolvedValue([
+			{
+				id: "x",
+				name: "a.md",
+				kind: "file",
+				location: { addressing: "provider_path", rootId: "root", path: "a.md" },
+			} satisfies RemoteObject,
+		]);
+		const fs = makeFs(adapter, "addressing-mismatch");
+
+		await expect(fs.list()).rejects.toBeInstanceOf(RemoteObjectValidationError);
+	});
+
 	it("rejects a malformed object in an adapter delta before it reaches the cache", async () => {
 		const adapter = new FakeRemoteAdapter("root", "parent_id");
 		adapter.seedFile("a.md", "A");
@@ -402,6 +427,132 @@ describe("ManagedRemoteFs — validated boundaries", () => {
 	});
 });
 
+describe("ManagedRemoteFs — addressing agreement at every adapter seam", () => {
+	/** A well-formed object claiming the WRONG scheme for a `parent_id` adapter. */
+	const wrongAddressed = (id: string): RemoteObject => ({
+		id,
+		name: "a.md",
+		kind: "file",
+		location: { addressing: "provider_path", rootId: "root", path: "a.md" },
+	});
+
+	it("rejects a mismatched full-scan object", async () => {
+		const adapter = new FakeRemoteAdapter("root", "parent_id");
+		vi.spyOn(adapter, "listAll").mockResolvedValue([wrongAddressed("x")]);
+		const fs = makeFs(adapter, "seam-list-all");
+
+		await expect(fs.list()).rejects.toBeInstanceOf(RemoteObjectValidationError);
+	});
+
+	it("rejects a mismatched delta upsert object", async () => {
+		const adapter = new FakeRemoteAdapter("root", "parent_id");
+		adapter.seedFile("a.md", "A");
+		const fs = makeFs(adapter, "seam-delta");
+		await fs.list();
+		await fs.commitCheckpoint();
+
+		adapter.enqueueChanges([{ kind: "upsert", object: wrongAddressed("y") }]);
+		await expect(fs.getChangedPaths()).rejects.toBeInstanceOf(RemoteObjectValidationError);
+	});
+
+	it("rejects a mismatched getById object", async () => {
+		const adapter = new FakeRemoteAdapter("root", "parent_id");
+		adapter.seedFile("a.md", "A");
+		vi.spyOn(adapter, "getById").mockResolvedValue(wrongAddressed("x"));
+		const fs = makeFs(adapter, "seam-get-by-id");
+		await fs.list();
+
+		await expect(fs.read("a.md")).rejects.toBeInstanceOf(RemoteObjectValidationError);
+	});
+
+	it("rejects a mismatched getByPath object", async () => {
+		const adapter = new FakeRemoteAdapter("root", "parent_id");
+		adapter.seedFile("a.md", "A");
+		vi.spyOn(adapter, "getByPath").mockResolvedValue([wrongAddressed("x")]);
+		const fs = makeFs(adapter, "seam-get-by-path");
+		await fs.list();
+
+		await expect(fs.priority.observe({ path: "a.md" })).rejects.toBeInstanceOf(
+			RemoteObjectValidationError,
+		);
+	});
+
+	it("rejects a mismatched version-bound read object", async () => {
+		const adapter = new FakeRemoteAdapter("root", "parent_id");
+		adapter.seedFile("a.md", "A");
+		vi.spyOn(adapter, "read").mockResolvedValue({
+			kind: "content",
+			object: wrongAddressed("x"),
+			content: bytes("A"),
+		});
+		const fs = makeFs(adapter, "seam-read");
+		await fs.list();
+
+		await expect(fs.read("a.md")).rejects.toBeInstanceOf(RemoteObjectValidationError);
+	});
+
+	it("rejects a mismatched createDirectory object", async () => {
+		const adapter = new FakeRemoteAdapter("root", "parent_id");
+		vi.spyOn(adapter, "createDirectory").mockResolvedValue(wrongAddressed("x"));
+		const fs = makeFs(adapter, "seam-mkdir");
+
+		await expect(fs.mkdir("docs")).rejects.toBeInstanceOf(RemoteObjectValidationError);
+	});
+
+	it("rejects a mismatched createFile object", async () => {
+		const adapter = new FakeRemoteAdapter("root", "parent_id");
+		vi.spyOn(adapter, "createFile").mockResolvedValue(wrongAddressed("x"));
+		const fs = makeFs(adapter, "seam-create-file");
+
+		await expect(fs.write("a.md", bytes("hi"), 1)).rejects.toBeInstanceOf(
+			RemoteObjectValidationError,
+		);
+	});
+
+	it("rejects a mismatched updateFile object", async () => {
+		const adapter = new FakeRemoteAdapter("root", "parent_id");
+		adapter.seedFile("a.md", "A");
+		vi.spyOn(adapter, "updateFile").mockResolvedValue(wrongAddressed("x"));
+		const fs = makeFs(adapter, "seam-update-file");
+		await fs.list();
+
+		await expect(fs.write("a.md", bytes("A2"), 2)).rejects.toBeInstanceOf(
+			RemoteObjectValidationError,
+		);
+	});
+
+	it("rejects a mismatched move object", async () => {
+		const adapter = new FakeRemoteAdapter("root", "parent_id");
+		adapter.seedFile("a.md", "A");
+		vi.spyOn(adapter, "move").mockResolvedValue(wrongAddressed("x"));
+		const fs = makeFs(adapter, "seam-move");
+		await fs.list();
+
+		await expect(fs.rename("a.md", "b.md")).rejects.toBeInstanceOf(RemoteObjectValidationError);
+	});
+
+	it("refuses a checkpoint written under a different addressing and full-scans", async () => {
+		const parented = new FakeRemoteAdapter("root", "parent_id");
+		parented.seedFile("a.md", "A");
+		const first = makeFs(parented, "seam-checkpoint-addressing");
+		await first.list();
+		await first.commitCheckpoint();
+		await first.close();
+
+		const pathed = new FakeRemoteAdapter("root", "provider_path");
+		pathed.seedFile("a.md", "A");
+		const listAll = vi.spyOn(pathed, "listAll");
+		const second = makeFs(pathed, "seam-checkpoint-addressing");
+
+		const entities = await second.list();
+
+		// A restored parent_id checkpoint must be refused, forcing a full scan whose
+		// provider_path objects are re-validated against the current declaration.
+		expect(listAll).toHaveBeenCalledTimes(1);
+		expect(entities.map((entity) => entity.path)).toEqual(["a.md"]);
+	});
+});
+
 describe("ManagedRemoteFs — priority observation", () => {
 	it("observes and reads a current identity without consuming the delta", async () => {
 		const adapter = new FakeRemoteAdapter("root", "parent_id");
@@ -433,7 +584,7 @@ describe("ManagedRemoteFs — priority observation", () => {
 		const adapter = new FakeRemoteAdapter("root", "provider_path");
 		adapter.seedDirectory("docs");
 		const id = adapter.seedFile("docs/a.md", "pp");
-		const fs = makeFs(adapter, "priority-pp", "provider_path");
+		const fs = makeFs(adapter, "priority-pp");
 		await fs.list();
 		const observation = await fs.priority.observe({ path: "docs/a.md", identityKey: id });
 		expect(observation.kind).toBe("current");

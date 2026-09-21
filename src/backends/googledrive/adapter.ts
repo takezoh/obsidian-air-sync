@@ -52,6 +52,7 @@ export class GoogleDriveAdapter implements RemoteBackendAdapter {
 		conditionalMetadataMutation: false,
 		versionBoundRead: "reobserve" as const,
 	};
+	readonly addressing = "parent_id" as const;
 	private readonly client: GoogleDriveClient;
 	private readonly rootId: string;
 

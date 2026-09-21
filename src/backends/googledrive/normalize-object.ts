@@ -5,7 +5,7 @@ import type { GoogleDriveFile } from "./types";
 
 /**
  * Project a provider-native Google Drive file DTO onto the normalized
- * {@link RemoteObject} (Backend Module API v2).
+ * {@link RemoteObject} (Backend Module API v3).
  *
  * Identity is the Drive file id (unchanged by a rename/move). Addressing is a
  * parent-id tree: `parentId === null` means the bound root. When the provider

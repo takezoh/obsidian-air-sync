@@ -105,6 +105,12 @@ export const dropboxModule: BackendModule = {
 	settings: SETTINGS,
 	binding,
 	getTarget: resolveFolderTarget,
+	disconnectConfig: (config) => {
+		const bag: JsonObject = { authMode: config.authMode === true };
+		const value = config.customClientId;
+		if (typeof value === "string" && value !== "") bag.customClientId = value;
+		return bag;
+	},
 	createAdapter: async (context, config, target): Promise<RemoteBackendAdapter> => {
 		const { client, readExpiry } = await buildClientState(context, config);
 		return withAdapterState(new DropboxAdapter(client, target.id), () => ({

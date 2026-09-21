@@ -44,6 +44,7 @@ export class OneDriveAdapter implements RemoteBackendAdapter {
 		conditionalMetadataMutation: true,
 		versionBoundRead: "reobserve" as const,
 	};
+	readonly addressing = "parent_id" as const;
 	private readonly client: OneDriveClient;
 	private readonly rootId: string;
 

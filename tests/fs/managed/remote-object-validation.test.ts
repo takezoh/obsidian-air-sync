@@ -64,6 +64,24 @@ describe("validateRemoteObject", () => {
 		expect(() => validateRemoteObject(value)).toThrow(RemoteObjectValidationError);
 	});
 
+	it("accepts an object whose location matches the adapter's declared addressing", () => {
+		expect(validateRemoteObject(fileObject(), "parent_id").location).toEqual({
+			addressing: "parent_id",
+			parentId: "d1",
+		});
+	});
+
+	it("rejects an object whose location disagrees with the adapter's declared addressing", () => {
+		try {
+			validateRemoteObject(fileObject(), "provider_path");
+			expect.unreachable();
+		} catch (err) {
+			expect(err).toBeInstanceOf(RemoteObjectValidationError);
+			expect((err as RemoteObjectValidationError).permanent).toBe(true);
+			expect((err as Error).message).toMatch(/does not match the adapter's declared/);
+		}
+	});
+
 	it("marks a malformed object permanent so the retry policy does not spin", () => {
 		try {
 			validateRemoteObject(null);

@@ -12,15 +12,10 @@ import { AbstractMetadataCache } from "../caching/metadata-cache";
 import type { NormalizedMetadataCache } from "./normalized-metadata-cache";
 import { validateRemoteObject } from "./remote-object-validation";
 
-/** Which location form the adapter reports, hence which destination core builds. */
-export type RemoteAddressing = "parent_id" | "provider_path";
-
 export interface MutationBridgeOptions {
 	adapter: RemoteBackendAdapter;
 	cache: NormalizedMetadataCache;
 	rootFolderId: string;
-	/** The module's declared location form; inferred from observed objects when absent. */
-	addressing?: RemoteAddressing;
 }
 
 /** Everything a write needs resolved under the cache mutex before the network call. */
@@ -70,20 +65,19 @@ export class MutationBridge {
 	private readonly adapter: RemoteBackendAdapter;
 	private readonly cache: NormalizedMetadataCache;
 	private readonly rootFolderId: string;
-	private readonly addressingOverride: RemoteAddressing | undefined;
 
 	constructor(options: MutationBridgeOptions) {
 		this.adapter = options.adapter;
 		this.cache = options.cache;
 		this.rootFolderId = options.rootFolderId;
-		this.addressingOverride = options.addressing;
 	}
 
-	/** The declared form, else the first form observed in the working view, else parent-id. */
-	private addressing(): RemoteAddressing {
-		if (this.addressingOverride !== undefined) return this.addressingOverride;
-		for (const [, file] of this.cache.entries()) return file.location.addressing;
-		return "parent_id";
+	/**
+	 * The adapter's declared location form is the single owner; core never infers
+	 * it from observations (wrong on an empty remote) or from a backend id.
+	 */
+	private addressing(): RemoteBackendAdapter["addressing"] {
+		return this.adapter.addressing;
 	}
 
 	private destination(parent: RemoteObject | null, name: string, parentPath: string): DestinationAddress {
@@ -148,7 +142,10 @@ export class MutationBridge {
 				continue;
 			}
 			const destination = this.destination(current, part, currentPath);
-			const created = validateRemoteObject(await this.adapter.createDirectory({ destination }));
+			const created = validateRemoteObject(
+				await this.adapter.createDirectory({ destination }),
+				this.adapter.addressing,
+			);
 			const applied = this.cache.applyFileChange(created);
 			currentPath = applied ? requested : this.cache.getPathById(created.id) ?? requested;
 			if (!applied) this.cache.setFile(currentPath, created, "requested_echo");
@@ -185,7 +182,7 @@ export class MutationBridge {
 		const object = plan.existingId !== undefined && plan.expected !== undefined
 			? await this.adapter.updateFile(input as UpdateFileInput)
 			: await this.adapter.createFile(input as CreateFileInput);
-		return validateRemoteObject(object);
+		return validateRemoteObject(object, this.adapter.addressing);
 	}
 
 	async planRename(oldPath: string, newPath: string): Promise<RenamePlan> {
@@ -222,7 +219,7 @@ export class MutationBridge {
 				expected: this.expectedOf(subject.object),
 				destination: subject.destination,
 			};
-			moved.push(validateRemoteObject(await this.adapter.move(input)));
+			moved.push(validateRemoteObject(await this.adapter.move(input), this.adapter.addressing));
 		}
 		return moved;
 	}
@@ -243,7 +240,7 @@ export class MutationBridge {
 			expected: this.expectedOf(object),
 			destination: this.destinationPreservingParent(object, name),
 		};
-		return validateRemoteObject(await this.adapter.move(input));
+		return validateRemoteObject(await this.adapter.move(input), this.adapter.addressing);
 	}
 
 	private expectedOf(object: RemoteObject): ExpectedVersion {

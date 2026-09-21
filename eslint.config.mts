@@ -402,9 +402,11 @@ export default defineConfig(
 		// the revision-bound download, and the fail-closed expected-evidence guard for
 		// move/delete are one cohesive provider-operation surface beside the
 		// case-only-rename mechanism already owned here. Re-pinned from 322 for the
-		// expected-identity guard shared by update/move/delete.
+		// expected-identity guard shared by update/move/delete. Re-pinned from 330 for
+		// the `addressing: "provider_path"` declaration (API v3), which belongs on the
+		// adapter that reports provider_path locations.
 		files: ["src/backends/dropbox/adapter.ts"],
-		rules: { "max-lines": ["error", { max: 330, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 331, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Re-pinned from under the 300 cap for the fail-closed expected-evidence guard:

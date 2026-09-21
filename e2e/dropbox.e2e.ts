@@ -136,7 +136,6 @@ if (!creds) {
 			rootFolderId: childId,
 			vaultId: crypto.randomUUID(),
 			store: { dbNamePrefix, version: 1 },
-			addressing: "provider_path",
 		});
 	}
 

@@ -16,7 +16,7 @@ import { NormalizedMetadataCache, toFileEntity } from "./normalized-metadata-cac
 import { validateRemoteObject, validateRemoteChanges } from "./remote-object-validation";
 import { applyRemoteChanges } from "./delta-projection";
 import { MutationBridge } from "./mutation-bridge";
-import type { RemoteAddressing, RenamePlan, WritePlan } from "./mutation-bridge";
+import type { RenamePlan, WritePlan } from "./mutation-bridge";
 
 export interface ManagedRemoteFsOptions {
 	adapter: RemoteBackendAdapter;
@@ -34,8 +34,6 @@ export interface ManagedRemoteFsOptions {
 	 */
 	metadataStore?: MetadataStore<RemoteObject>;
 	logger?: Logger;
-	/** The module's declared location form; inferred from observations when absent. */
-	addressing?: RemoteAddressing;
 }
 
 /**
@@ -81,7 +79,11 @@ export class ManagedRemoteFs extends CachingRemoteFs<RemoteObject> {
 	protected declare cache: NormalizedMetadataCache;
 
 	constructor(options: ManagedRemoteFsOptions) {
-		const cache = new NormalizedMetadataCache(options.rootFolderId, options.logger);
+		const cache = new NormalizedMetadataCache(
+			options.rootFolderId,
+			options.logger,
+			options.adapter.addressing,
+		);
 		super(
 			options.rootFolderId,
 			cache,
@@ -94,7 +96,6 @@ export class ManagedRemoteFs extends CachingRemoteFs<RemoteObject> {
 			adapter: options.adapter,
 			cache,
 			rootFolderId: options.rootFolderId,
-			addressing: options.addressing,
 		});
 	}
 
@@ -105,7 +106,9 @@ export class ManagedRemoteFs extends CachingRemoteFs<RemoteObject> {
 	}
 
 	protected async fullList(): Promise<RemoteObject[]> {
-		return (await this.adapter.listAll()).map(validateRemoteObject);
+		return (await this.adapter.listAll()).map((object) =>
+			validateRemoteObject(object, this.adapter.addressing),
+		);
 	}
 
 	protected assertRootAlive(): Promise<void> {
@@ -117,7 +120,10 @@ export class ManagedRemoteFs extends CachingRemoteFs<RemoteObject> {
 		if (result.kind === "cursor_invalid") {
 			return { needsFullScan: true, changedPaths: new Set<string>() };
 		}
-		const projected = applyRemoteChanges(this.cache, validateRemoteChanges(result.changes));
+		const projected = applyRemoteChanges(
+			this.cache,
+			validateRemoteChanges(result.changes, this.adapter.addressing),
+		);
 		return {
 			needsFullScan: false,
 			newToken: result.nextCursor,
@@ -154,7 +160,10 @@ export class ManagedRemoteFs extends CachingRemoteFs<RemoteObject> {
 	private async readVersionBound(fileId: string): Promise<VersionBoundReadResult> {
 		const object = await this.fetchCurrentFile(fileId);
 		if (object === null) return { kind: "unverifiable", reason: "object not found" };
-		return this.adapter.read({ id: object.id, versionToken: object.versionToken ?? "" });
+		const result = await this.adapter.read({ id: object.id, versionToken: object.versionToken ?? "" });
+		return result.kind === "content"
+			? { ...result, object: validateRemoteObject(result.object, this.adapter.addressing) }
+			: result;
 	}
 
 	protected async deleteRemote(fileId: string): Promise<void> {
@@ -169,12 +178,12 @@ export class ManagedRemoteFs extends CachingRemoteFs<RemoteObject> {
 
 	protected async fetchCurrentFile(fileId: string): Promise<RemoteObject | null> {
 		const object = await this.adapter.getById(fileId);
-		return object === null ? null : validateRemoteObject(object);
+		return object === null ? null : validateRemoteObject(object, this.adapter.addressing);
 	}
 
 	protected async fetchCurrentPath(path: string): Promise<RemoteObject[] | null> {
 		const objects = await this.adapter.getByPath(normalizeSyncPath(path));
-		return objects.map(validateRemoteObject);
+		return objects.map((object) => validateRemoteObject(object, this.adapter.addressing));
 	}
 
 	protected async resolveDetachedPath(file: RemoteObject): Promise<string | null> {

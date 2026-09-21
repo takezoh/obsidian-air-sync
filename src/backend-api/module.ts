@@ -8,17 +8,19 @@ import type { BackendSettingsDefinition } from "./settings";
 /**
  * The Backend Module API version this core implements.
  *
- * `2` requires `RemoteBackendAdapter.capabilities`. There is one supported
- * version; core rejects any other `apiVersion` at registration and validates the
- * adapter's capability shape at creation.
+ * `3` requires `RemoteBackendAdapter.capabilities` and a declared
+ * `RemoteBackendAdapter.addressing`, moves credential presence to
+ * `BackendAuth.credentialKeys`, and drops `BackendAuth.isAuthenticated`. There is
+ * one supported version; core rejects any other `apiVersion` at registration and
+ * validates the adapter shape at creation.
  */
-export const BACKEND_MODULE_API_VERSION = 2;
+export const BACKEND_MODULE_API_VERSION = 3;
 
 export type BackendModuleApiVersion = typeof BACKEND_MODULE_API_VERSION;
 
 /**
  * A statically imported or (future) dynamically loaded backend module — the
- * public extension boundary (version 2).
+ * public extension boundary (version 3).
  *
  * One module represents exactly one backend. The module object is a plain data
  * carrier: it holds no mutable per-connection auth state, performs no I/O during
@@ -49,4 +51,12 @@ export interface BackendModule {
 		config: Readonly<JsonObject>,
 		target: BackendTarget,
 	): Promise<RemoteBackendAdapter>;
+
+	/**
+	 * The config bag to keep after a disconnect. Core persists exactly this, so a
+	 * module owns which of its parameters (e.g. custom OAuth references and a
+	 * hand-typed folder id) survive a reconnect. Omit to keep only `authMode`.
+	 * Must be a pure function of `config`; core never adds fields of its own.
+	 */
+	disconnectConfig?(config: Readonly<JsonObject>): JsonObject;
 }
