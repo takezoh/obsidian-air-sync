@@ -305,9 +305,11 @@ export class BackendManager {
 			return;
 		}
 		try {
-			const current = settings.backendData;
-			const updates = await this.backendProvider.auth.startAuth(current);
-			settings.backendData = { ...current, ...updates };
+			// The module-backed provider commits its auth patch (e.g. `pendingAuthState`,
+			// `pendingCodeVerifier`) to the live bag during `startAuth`. Re-read the bag
+			// AFTER the await so a pre-await snapshot cannot clobber that committed state.
+			const updates = await this.backendProvider.auth.startAuth(settings.backendData);
+			settings.backendData = { ...settings.backendData, ...updates };
 			await this.deps.saveSettings();
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
@@ -329,12 +331,11 @@ export class BackendManager {
 		const provider = this.backendProvider;
 
 		try {
-			const backendData = settings.backendData;
-			const updates = await provider.auth.completeAuth(
-				code,
-				backendData,
-			);
-			settings.backendData = { ...backendData, ...updates };
+			// `completeAuth` commits its patch (clears the pending flow state, records the
+			// token expiry) to the live bag itself; re-read AFTER the await so the
+			// pre-await snapshot cannot restore the flow state it just cleared.
+			const updates = await provider.auth.completeAuth(code, settings.backendData);
+			settings.backendData = { ...settings.backendData, ...updates };
 			await this.deps.saveSettings();
 
 			// Start cold on connect: a reconnect to a still-bound target (e.g. custom OAuth

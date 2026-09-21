@@ -1077,3 +1077,22 @@ describe("BackendManager — onRemoteBound (initial sync after a mid-session bin
 		);
 	});
 });
+
+describe("BackendManager — module auth patches survive the connect boundary", () => {
+	it("keeps a pending-auth state the module committed during startAuth", async () => {
+		const settings = mockSettings();
+		settings.backendType = "test";
+		settings.backendData = {};
+		const mgr = new BackendManager(createDeps(settings));
+		vi.spyOn(fakeProvider.auth, "startAuth").mockImplementation((bag) => {
+			// A module-backed connection replaces the live bag with its committed patch;
+			// BackendManager must not overwrite it with a pre-await snapshot.
+			settings.backendData = { ...bag, pendingAuthState: "STATE" };
+			return Promise.resolve({});
+		});
+
+		await mgr.startBackendConnect();
+
+		expect(settings.backendData.pendingAuthState).toBe("STATE");
+	});
+});
