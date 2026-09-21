@@ -2,7 +2,7 @@
 import type { ChangeSet } from "./change-detector";
 import type { AirSyncSettings } from "../settings";
 import { getEffectiveIgnorePatterns, getEffectiveSyncDotPaths } from "../config-sync";
-import { INTERNAL_METADATA_PATH } from "../fs/remote-vault-contract";
+import { INTERNAL_METADATA_PATH } from "../backend-api/remote-vault-contract";
 import { isIgnored, isSystemJunkFile } from "../utils/ignore";
 import { isDotPathOutOfScope } from "../utils/path";
 import type {

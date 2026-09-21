@@ -206,7 +206,7 @@ descendants. Only provider-resolved metadata or the successful endpoint of an ex
 provider rename may change cached topology.
 
 RB-FS-004 — The backend MUST hide and reject writes to
-[`INTERNAL_METADATA_PATH`](../../src/fs/remote-vault-contract.ts) if that reserved path
+[`INTERNAL_METADATA_PATH`](../../src/backend-api/remote-vault-contract.ts) if that reserved path
 can appear through the provider. It MUST NOT invent backend-specific sync exclusion
 policy; dot-path and ignore policy remains owned by the orchestrator.
 
@@ -279,14 +279,15 @@ the selected folder, and returns only non-secret backend updates. A local vault 
 may or may not rename the remote root; the stable root binding MUST remain unchanged.
 
 RB-PROV-003 — Plugin-owned access/refresh credentials MUST use the stable
-`air-sync-<type>-<name>-token` SecretStorage keys through
-[`token-store.ts`](../../src/fs/token-store.ts). Raw access/refresh tokens and client
-secrets MUST NOT enter `settings.backendData`, logs, URLs not mandated by the
+`air-sync-<type>-<name>-token` SecretStorage keys. A module reaches them only through
+the injected `context.secrets`, which core maps from a logical key to that physical key
+(`src/fs/modules/secret-host.ts`) and which proves immediate exact readback on every
+non-empty write before dependent state becomes reusable. Raw access/refresh tokens and
+client secrets MUST NOT enter `settings.backendData`, logs, URLs not mandated by the
 authorization protocol, or checkpoint storage. A user-managed SecretStorage key name
-MAY appear in `backendData` as a reference; its secret value may not. Required refresh
-credentials MUST be published with immediate exact readback before dependent state
-becomes reusable. `backendData` holds only the active backend's non-secret binding,
-expiry, region, pending CSRF, public-client configuration, or secret-name reference.
+MAY appear in `backendData` as a reference; its secret value may not. `backendData`
+holds only the active backend's non-secret binding, expiry, region, pending CSRF,
+public-client configuration, or secret-name reference.
 
 RB-PROV-004 — Disconnect MUST clear every plugin-owned secret and reset backend data.
 If `fs.checkpoint` exists, `clearCheckpointStore(settings)` MUST also exist so disconnect
@@ -367,9 +368,10 @@ exist, without requiring identical filenames:
 - a settings renderer owns only backend-specific UI;
 - tests own faithful fake behaviour and conformance evidence.
 
-Use existing shared helpers before introducing another owner: `CachingRemoteFs`,
-`AbstractMetadataCache`, `resolveDetachedIdPath`, token-store helpers, PKCE helpers,
-backend-neutral error classification, and `MetadataStore`.
+Use existing shared helpers before introducing another owner: the public API runtime
+helpers (error classification, HTTP transport, OAuth/PKCE, headers, error logging) for
+a module, and core's `CachingRemoteFs`, `AbstractMetadataCache`, `resolveDetachedIdPath`,
+and `MetadataStore` for the managed integration.
 
 ## Failure Responsibility
 

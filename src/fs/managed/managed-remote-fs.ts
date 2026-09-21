@@ -8,7 +8,7 @@ import { MetadataStore } from "../../store/metadata-store";
 import { CachingRemoteFs } from "../caching/remote-fs";
 import type { IncrementalChangesResult } from "../caching/remote-fs";
 import type { DetachedReadOutcome } from "../caching/detached-priority";
-import { INTERNAL_METADATA_PATH } from "../remote-vault-contract";
+import { INTERNAL_METADATA_PATH } from "../../backend-api/remote-vault-contract";
 import { resolveDetachedIdPath } from "../priority-observation";
 import { normalizeSyncPath, validateRename } from "../../utils/path";
 import { sha256 } from "../../utils/hash";

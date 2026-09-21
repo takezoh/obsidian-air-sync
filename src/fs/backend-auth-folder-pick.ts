@@ -1,3 +1,4 @@
+import { errorMessage } from "../backend-api";
 import type { AirSyncSettings } from "../settings";
 import type { Logger } from "../logging/logger";
 import type { IAuthProvider } from "./auth";
@@ -44,7 +45,7 @@ export async function completeAuthFolderPick(
 		context.notify("Remote folder updated");
 		return true;
 	} catch (err) {
-		const msg = err instanceof Error ? err.message : String(err);
+		const msg = errorMessage(err);
 		const prefix = authCompleted ? "Folder selection failed" : "Authorization failed";
 		context.logger.error(prefix, { message: msg });
 		context.notify(`${prefix}: ${msg}`);

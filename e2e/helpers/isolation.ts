@@ -1,6 +1,6 @@
-import type { GoogleDriveClient } from "../../src/fs/googledrive/client";
-import type { DropboxClient } from "../../src/fs/dropbox/client";
-import type { OneDriveClient } from "../../src/fs/onedrive/client";
+import type { GoogleDriveClient } from "../../src/backends/googledrive/client";
+import type { DropboxClient } from "../../src/backends/dropbox/client";
+import type { OneDriveClient } from "../../src/backends/onedrive/client";
 
 /**
  * Per-test isolation for the real-cloud contract run.

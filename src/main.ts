@@ -5,6 +5,7 @@ import { getEffectiveSyncDotPaths } from "./config-sync";
 import { AirSyncSettingTab } from "./ui/settings";
 import { LocalFs } from "./fs/local/index";
 import { BackendManager } from "./fs/backend-manager";
+import { errorMessage } from "./backend-api";
 import { initRegistry } from "./fs/registry";
 import { CANONICAL_BACKEND_IDS, LEGACY_BACKEND_ALIASES } from "./fs/modules/validate-module";
 import { createChecksumRegistry } from "./fs/modules/checksum-registry";
@@ -223,7 +224,7 @@ export default class AirSyncPlugin extends Plugin {
 		this.backendManager.close();
 		this.scheduler.destroy();
 		this.orchestrator.close().catch((e) => {
-			this.logger.error("Failed to close orchestrator", { message: e instanceof Error ? e.message : String(e) });
+			this.logger.error("Failed to close orchestrator", { message: errorMessage(e) });
 		});
 	}
 
@@ -283,7 +284,7 @@ export default class AirSyncPlugin extends Plugin {
 			}
 			await this.orchestrator.runSync();
 		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
+			const msg = errorMessage(err);
 			this.syncStatus = "error";
 			this.updateStatusBar();
 			new Notice(`Sync error: ${msg}`);

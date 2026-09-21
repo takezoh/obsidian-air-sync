@@ -3,11 +3,11 @@ import { executePlan, toConflictRecords, DESKTOP_TRANSFER_POOL, MOBILE_TRANSFER_
 import type { ExecutionContext, ResolvedConflict } from "./plan-executor";
 import type { CandidateFact, ConflictAction, PathObservation, SyncAction, SyncRecord } from "./types";
 import { createMockLocalFs, createMockRemoteFs, type MockFileSystem, createMockStateStore, addFile, readText, deferred, flush } from "../__mocks__/sync-test-helpers";
-import { AuthError, classifyHttpError } from "../fs/errors";
+import { AuthError, classifyHttpError } from "../backend-api/error-classification";
 import { backendError } from "../backend-api";
-import { toBackendError, backendErrorFromStatus } from "../fs/modules/error-shape";
+import { toBackendError, backendErrorFromStatus } from "../backends/shared/error-shape";
 import { classifyBackendError } from "../fs/modules/error-bridge";
-import { AdaptivePool } from "../queue/async-queue";
+import { AdaptivePool } from "../backend-api/async-queue";
 import {
 	admitBatchObservation,
 	type AuthorizedSyncPlan,
@@ -851,6 +851,67 @@ describe("executePlan", () => {
 				remote,
 			}]), ctx)).rejects.toThrow("expired");
 			expect(order).toEqual(["fatal-published", "release"]);
+		});
+
+		it("aborts the cycle on a plain structural auth shape from a remote read (no Error identity)", async () => {
+			const fatal = vi.fn();
+			const ctx = makeCtx({ onActionFatal: fatal });
+			addFile(ctx.remoteFs as MockFileSystem, "fatal-shape.md", "x");
+			const remote = (await ctx.remoteFs.stat("fatal-shape.md"))!;
+			// A separately bundled module throws a plain BackendErrorShape object;
+			// content capture wraps it, and the executor must still abort the cycle.
+			vi.spyOn(ctx.remoteFs, "read").mockRejectedValue(backendError("auth", "credentials expired"));
+
+			await expect(executePlan(makePlan([{
+				path: "fatal-shape.md", action: "pull",
+				remote,
+			}]), ctx)).rejects.toThrow("credentials expired");
+			expect(fatal).toHaveBeenCalledTimes(1);
+		});
+
+		it("retries and signals the transfer pool on a plain structural rate_limit shape from a remote read", async () => {
+			const noteSpy = vi.spyOn(AdaptivePool.prototype, "noteRateLimit");
+			const ctx = makeCtx({
+				classifyError: (err) => classifyBackendError(err) ?? classifyHttpError(err),
+			});
+			addFile(ctx.remoteFs as MockFileSystem, "throttled.md", "x");
+			const remote = (await ctx.remoteFs.stat("throttled.md"))!;
+			const readSpy = vi.spyOn(ctx.remoteFs, "read")
+				.mockRejectedValue(backendError("rate_limit", "slow down", { retryAfterMs: 1 }));
+
+			const result = await executePlan(makePlan([{
+				path: "throttled.md", action: "pull",
+				remote,
+			}]), ctx);
+
+			// Rate-limit (not a generic transient) is what drives the retry and the
+			// adaptive-pool signal; a wrapper that hid the plain shape would classify
+			// as transient and never signal.
+			expect(noteSpy).toHaveBeenCalled();
+			expect(readSpy).toHaveBeenCalledTimes(3);
+			expect(result.failed).toHaveLength(1);
+			// The safe provider diagnostic survives the final throw; it must not
+			// collapse to "[object Object]".
+			expect(result.failed[0]!.error.message).toBe("slow down");
+		});
+
+		it("preserves a plain structural not_found message on the final failure", async () => {
+			const ctx = makeCtx({
+				classifyError: (err) => classifyBackendError(err) ?? classifyHttpError(err),
+			});
+			addFile(ctx.remoteFs as MockFileSystem, "missing.md", "x");
+			const remote = (await ctx.remoteFs.stat("missing.md"))!;
+			const readSpy = vi.spyOn(ctx.remoteFs, "read")
+				.mockRejectedValue(backendError("not_found", "the object is gone"));
+
+			const result = await executePlan(makePlan([{
+				path: "missing.md", action: "pull",
+				remote,
+			}]), ctx);
+
+			expect(readSpy).toHaveBeenCalledTimes(1); // notFound → no retry
+			expect(result.failed).toHaveLength(1);
+			expect(result.failed[0]!.error.message).toBe("the object is gone");
 		});
 	});
 

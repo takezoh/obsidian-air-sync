@@ -4,13 +4,13 @@ import type {
 	BackendModule,
 	RemoteBackendAdapter,
 } from "../../backend-api";
-import { BACKEND_MODULE_API_VERSION } from "../../backend-api";
+import { BACKEND_MODULE_API_VERSION, backendError } from "../../backend-api";
 import type { AirSyncSettings } from "../../settings";
 import type { ISecretStore } from "../secret-store";
 import type { BackendPlatformInfo } from "../backend";
-import { googleDriveModule } from "../googledrive/module";
-import { dropboxModule } from "../dropbox/module";
-import { oneDriveModule } from "../onedrive/module";
+import { googleDriveModule } from "../../backends/googledrive/module";
+import { dropboxModule } from "../../backends/dropbox/module";
+import { oneDriveModule } from "../../backends/onedrive/module";
 import { BackendModuleProvider } from "./backend-module-provider";
 import type { BackendModuleProviderDeps } from "./backend-module-provider";
 import { ManagedRemoteFs } from "../managed/managed-remote-fs";
@@ -308,6 +308,24 @@ describe("BackendModuleProvider — prepared filesystem release", () => {
 
 		expect(closeSpy).toHaveBeenCalled();
 		closeSpy.mockRestore();
+	});
+
+	it("rethrows a plain structural root-validation error with its message", async () => {
+		const adapter = Object.assign(stubAdapter(), {
+			// A module may reject with a plain BackendErrorShape object; the cast keeps
+			// the lint rule satisfied while the runtime value stays a plain shape.
+			assertRootAlive: () =>
+				Promise.reject(backendError("permission", "folder denied") as unknown as Error),
+		});
+		const module: BackendModule = {
+			...fakeModule(),
+			createAdapter: () => Promise.resolve(adapter),
+		};
+		const settings = settingsWith({ authMode: false, remoteVaultFolderId: "T" });
+		const provider = providerFor(module, settings);
+		await provider.prepare();
+
+		await expect(provider.validateRemoteVault(settings)).rejects.toThrow("folder denied");
 	});
 });
 

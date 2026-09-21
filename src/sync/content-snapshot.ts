@@ -1,4 +1,4 @@
-import { AuthError } from "../fs/errors";
+import { isAuthFailure } from "../backend-api/error-classification";
 import type { IFileSystem } from "../fs/interface";
 import type { ChecksumRegistry } from "../fs/modules/checksum-registry";
 import type { FileEntity, RemoteChecksum } from "../fs/types";
@@ -69,7 +69,7 @@ export async function captureContentSnapshot(
 		return snapshot(path, final, second, { kind: "exact_bytes", size: second.byteLength });
 	} catch (error) {
 		if (error instanceof ContentProofError) throw error;
-		const kind = error instanceof AuthError ? "external_auth_failure" : "external_io_failure";
+		const kind = isAuthFailure(error) ? "external_auth_failure" : "external_io_failure";
 		throw new ContentProofError(kind, `Content source unreadable: ${path}`, { cause: error });
 	}
 }

@@ -1,9 +1,9 @@
 import "fake-indexeddb/auto";
 import { afterAll, beforeAll, describe } from "vitest";
-import { OneDriveAuth } from "../src/fs/onedrive/auth";
-import { OneDriveClient } from "../src/fs/onedrive/client";
+import { OneDriveAuth } from "../src/backends/onedrive/auth";
+import { OneDriveClient } from "../src/backends/onedrive/client";
 import { createPlatformTransport } from "../src/fs/platform-http-transport";
-import { OneDriveAdapter } from "../src/fs/onedrive/adapter";
+import { OneDriveAdapter } from "../src/backends/onedrive/adapter";
 import { ManagedRemoteFs } from "../src/fs/managed/managed-remote-fs";
 import { runIFileSystemContract } from "../tests/fs/contracts/ifilesystem.contract";
 import { readCreds } from "./helpers/env";
@@ -19,7 +19,7 @@ import type { MovedObjectIdentity } from "../tests/fs/contracts/caching-remote-f
 /**
  * What OneDrive's own entity projection makes of a moved object's identity, against the
  * LIVE API. Same disposition the family declares to the fake-backed managed contract
- * (`tests/fs/onedrive/managed.contract-harness.ts`) — stated separately here
+ * (`tests/backends/onedrive/managed.contract-harness.ts`) — stated separately here
  * because a fake that always hands over a complete driveItem cannot establish it for
  * `/delta`, which is the whole point of ADR 0003.
  */

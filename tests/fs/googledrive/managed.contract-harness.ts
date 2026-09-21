@@ -1,10 +1,10 @@
 import "fake-indexeddb/auto";
 import { describe, expect, it, vi } from "vitest";
 import type { DestinationAddress, RemoteBackendCapabilities, RemoteObject } from "../../../src/backend-api";
-import type { GoogleDriveChange, GoogleDriveFile } from "../../../src/fs/googledrive/types";
-import { FOLDER_MIME } from "../../../src/fs/googledrive/types";
-import type { GoogleDriveClient } from "../../../src/fs/googledrive/client";
-import { GoogleDriveAdapter } from "../../../src/fs/googledrive/adapter";
+import type { GoogleDriveChange, GoogleDriveFile } from "../../../src/backends/googledrive/types";
+import { FOLDER_MIME } from "../../../src/backends/googledrive/types";
+import type { GoogleDriveClient } from "../../../src/backends/googledrive/client";
+import { GoogleDriveAdapter } from "../../../src/backends/googledrive/adapter";
 import { ManagedRemoteFs } from "../../../src/fs/managed/managed-remote-fs";
 import { MetadataStore } from "../../../src/store/metadata-store";
 import { sha256 } from "../../../src/utils/hash";

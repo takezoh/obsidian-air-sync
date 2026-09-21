@@ -65,21 +65,21 @@ decision_bindings:
 - src/fs/modules/backend-module-provider.ts
 - src/fs/managed/mutation-bridge.ts
 - src/fs/managed/managed-remote-fs.ts
-- src/fs/dropbox/client.ts
-- src/fs/dropbox/adapter.ts
-- src/fs/onedrive/client.ts
-- src/fs/onedrive/upload-session.ts
-- src/fs/onedrive/adapter.ts
-- src/fs/googledrive/normalize-object.ts
-- src/fs/googledrive/adapter.ts
+- src/backends/dropbox/client.ts
+- src/backends/dropbox/adapter.ts
+- src/backends/onedrive/client.ts
+- src/backends/onedrive/upload-session.ts
+- src/backends/onedrive/adapter.ts
+- src/backends/googledrive/normalize-object.ts
+- src/backends/googledrive/adapter.ts
 - tests/fs/contracts/backend-concurrency.contract.ts
 source_paths:
 - src/backend-api
 - src/fs/modules
 - src/fs/managed
-- src/fs/dropbox
-- src/fs/onedrive
-- src/fs/googledrive
+- src/backends/dropbox
+- src/backends/onedrive
+- src/backends/googledrive
 - tests/fs/contracts
 ---
 

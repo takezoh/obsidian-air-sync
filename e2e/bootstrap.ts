@@ -1,9 +1,9 @@
 import { stdout } from "node:process";
-import { GoogleAuthDirect } from "../src/fs/googledrive/auth";
-import { buildDropboxAuthorizeUrl, DropboxAuth } from "../src/fs/dropbox/auth";
-import { DROPBOX_AUTH } from "../src/fs/auth-config";
-import { buildOneDriveAuthorizeUrl, OneDriveAuth } from "../src/fs/onedrive/auth";
-import { buildOAuthState, computeS256Challenge, generateRandomString } from "../src/fs/oauth-pkce";
+import { GoogleAuthDirect } from "../src/backends/googledrive/auth";
+import { buildDropboxAuthorizeUrl, DropboxAuth } from "../src/backends/dropbox/auth";
+import { DROPBOX_AUTH } from "../src/backends/shared/auth-config";
+import { buildOneDriveAuthorizeUrl, OneDriveAuth } from "../src/backends/onedrive/auth";
+import { buildOAuthState, computeS256Challenge, generateRandomString } from "../src/backend-api/oauth-pkce";
 import { createPlatformTransport } from "../src/fs/platform-http-transport";
 import { loadDotEnvE2e } from "./helpers/env";
 import { announceAuthorizeUrl, loopbackPort, startLoopback, writeEnvE2e } from "./helpers/loopback";

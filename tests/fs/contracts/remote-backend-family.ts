@@ -1,7 +1,7 @@
 import type { BackendModule } from "../../../src/backend-api";
-import { googleDriveModule } from "../../../src/fs/googledrive/module";
-import { oneDriveModule } from "../../../src/fs/onedrive/module";
-import { dropboxModule } from "../../../src/fs/dropbox/module";
+import { googleDriveModule } from "../../../src/backends/googledrive/module";
+import { oneDriveModule } from "../../../src/backends/onedrive/module";
+import { dropboxModule } from "../../../src/backends/dropbox/module";
 import { BackendModuleRegistry } from "../../../src/fs/modules/registry";
 
 /**

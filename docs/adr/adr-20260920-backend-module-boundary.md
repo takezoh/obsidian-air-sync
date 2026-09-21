@@ -54,6 +54,7 @@ decision_bindings:
 - backend-module-boundary-guard.test.mjs
 source_paths:
 - src/backend-api
+- src/backends
 - src/fs/modules
 - tests/backend-api
 ---
@@ -86,9 +87,17 @@ milestone and are not claimed here.
    boundary** (`src/backend-api/`, currently `apiVersion: 2`). One module is one backend. The module
    object carries no mutable per-connection auth state and performs no I/O during
    enumeration/validation. The `src/backend-api` boundary stays self-contained
-   (guard-enforced), while a static built-in module implementation MAY use core-internal
-   helpers (`http-transport`, `error-shape`, `pkce-module-auth`, `oauth-pkce`) that are not
-   part of the public API.
+   (guard-enforced) and also carries the provider-neutral runtime helpers a module
+   bundles (error classification, HTTP transport, OAuth/PKCE, headers, error logging,
+   remote-vault contract, and the concurrency primitive), so a module needs nothing
+   else. The static built-in module implementations are consolidated under
+   `src/backends/` (three service directories plus `shared/` for the
+   provider-neutral helpers `error-shape`, `adapter-state`, `module-utils`,
+   `pkce-module-auth`, and `auth-config`). A backend implementation imports only
+   `src/backend-api/**` and files inside `src/backends/**`; it must not import the
+   internal backend-module API (`src/fs/modules/**`), core state, or the plain
+   `src/fs/**` helpers, so the same implementation-ready boundary can later back an
+   external artifact.
 
 2. **Module ids are canonical.** `module.id === settings.backendType`, one of
    `googledrive`/`onedrive`/`dropbox`. The `*-custom` ids are legacy settings aliases only; they

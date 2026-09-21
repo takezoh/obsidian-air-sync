@@ -1,11 +1,11 @@
 import "fake-indexeddb/auto";
 import { describe, expect, it, vi } from "vitest";
 import type { DestinationAddress, RemoteBackendCapabilities, RemoteObject } from "../../../src/backend-api";
-import type { OneDriveItem, OneDriveDeltaResponse } from "../../../src/fs/onedrive/types";
-import { GraphApiError } from "../../../src/fs/onedrive/types";
-import type { OneDriveClient } from "../../../src/fs/onedrive/client";
-import type { OneDriveUploadOptions } from "../../../src/fs/onedrive/upload-session";
-import { OneDriveAdapter } from "../../../src/fs/onedrive/adapter";
+import type { OneDriveItem, OneDriveDeltaResponse } from "../../../src/backends/onedrive/types";
+import { GraphApiError } from "../../../src/backends/onedrive/types";
+import type { OneDriveClient } from "../../../src/backends/onedrive/client";
+import type { OneDriveUploadOptions } from "../../../src/backends/onedrive/upload-session";
+import { OneDriveAdapter } from "../../../src/backends/onedrive/adapter";
 import { ManagedRemoteFs } from "../../../src/fs/managed/managed-remote-fs";
 import { MetadataStore } from "../../../src/store/metadata-store";
 import { quickXorHashBase64 } from "../../../src/utils/quickxor";

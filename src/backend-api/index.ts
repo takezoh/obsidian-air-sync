@@ -69,3 +69,62 @@ export type { BackendChecksumAlgorithm } from "./checksums";
 
 export type { BackendModule } from "./module";
 export { BACKEND_MODULE_API_VERSION } from "./module";
+
+// Runtime helpers a module bundles. They are provider-neutral, browser-safe,
+// and free of core internals so a static built-in and an external artifact can
+// both use them.
+export {
+	AuthError,
+	isAuthFailure,
+	toError,
+	toAuthError,
+	errorMessage,
+	getErrorInfo,
+	classifyHttpError,
+	decideRetry,
+	sleep,
+} from "./error-classification";
+export type {
+	ErrorKind,
+	ErrorClassification,
+	ErrorInfo,
+	RetryDecision,
+} from "./error-classification";
+
+export { getHeader, headerKeys } from "./headers";
+export type { HeaderBag } from "./headers";
+
+export { createContextTransport } from "./http-transport";
+export type {
+	HttpTransport,
+	HttpTransportRequest,
+	HttpTransportResponse,
+} from "./http-transport";
+
+export {
+	MAX_LOGGED_BODY_CHARS,
+	MAX_MESSAGE_BODY_CHARS,
+	describeErrorBody,
+	logBackendErrorResponse,
+} from "./backend-error-log";
+
+export {
+	base64ToBase64Url,
+	buildOAuthState,
+	computeS256Challenge,
+	extractThrownErrorDetail,
+	extractTokenErrorDetail,
+	generateRandomString,
+	parsePkceCallback,
+} from "./oauth-pkce";
+export { BaseOAuthTokenManager } from "./oauth-pkce";
+export type { OAuthTokenResponse, PkceCallbackParams } from "./oauth-pkce";
+
+export {
+	REMOTE_VAULT_ROOT,
+	INTERNAL_METADATA_PATH,
+} from "./remote-vault-contract";
+export type { RemoteVaultResolution } from "./remote-vault-contract";
+
+export { AsyncMutex, AsyncPool, AdaptivePool } from "./async-queue";
+export type { AdaptivePoolOpts } from "./async-queue";

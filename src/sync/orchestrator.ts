@@ -3,7 +3,7 @@ import type { IFileSystem } from "../fs/interface";
 import type { ChecksumRegistry } from "../fs/modules/checksum-registry";
 import type { IBackendProvider } from "../fs/backend";
 import type { Logger } from "../logging/logger";
-import { AsyncMutex } from "../queue/async-queue";
+import { AsyncMutex } from "../backend-api/async-queue";
 import { captureScopePolicy, isExcludedFromScope } from "./scope-projection";
 import { SyncStateStore } from "./state";
 import { LocalChangeTracker, type TrackerSnapshot } from "./local-tracker";
@@ -12,7 +12,7 @@ import type { AddressDisplacement } from "../fs/caching/claim-set-assignment";
 import { computeScopeFingerprint } from "./scope-fingerprint";
 import { executePlan, toConflictRecords, DESKTOP_TRANSFER_POOL, MOBILE_TRANSFER_POOL } from "./plan-executor";
 import type { ExecutionContext } from "./plan-executor";
-import { classifyHttpError } from "../fs/errors";
+import { classifyHttpError, errorMessage, toError } from "../backend-api/error-classification";
 import { decideRetry, sleep } from "./error";
 import type { ConflictRecord, ConflictStrategy, SyncStatus } from "./types";
 import {
@@ -280,8 +280,11 @@ export class SyncOrchestrator {
 					conflicts: execution.conflicts.length,
 				};
 			} catch (err) {
-				if (err instanceof WorkingViewAbortError) throw err.original;
-				const original = err;
+				if (err instanceof WorkingViewAbortError) throw toError(err.original);
+				// Normalize once so classification, logging, the retained last error,
+				// and the final notice all carry the safe diagnostic message even when
+				// a module threw a plain BackendErrorShape object.
+				const original = toError(err);
 				lastError = original;
 				// Classification is the backend's job (it knows its own error shapes,
 				// e.g. that Google 403 can mean rate-limit); the retry POLICY is the
@@ -291,7 +294,7 @@ export class SyncOrchestrator {
 				const classification = provider?.classifyError?.(original) ?? classifyHttpError(original);
 				this.deps.logger?.error(
 					`Sync error (attempt ${attempt}/${MAX_RETRIES})`,
-					{ kind: classification.kind, message: original instanceof Error ? original.message : String(original) },
+					{ kind: classification.kind, message: original.message },
 				);
 
 				const decision = decideRetry(classification, attempt, MAX_RETRIES, Math.random);
@@ -310,7 +313,7 @@ export class SyncOrchestrator {
 		}
 
 		this.deps.onStatusChange("error");
-		const msg = lastError instanceof Error ? lastError.message : "Unknown error";
+		const msg = lastError === null ? "Unknown error" : errorMessage(lastError);
 		this.deps.notify(`Sync error: ${msg}`);
 		this.deps.logger?.error("Sync failed after retries", { message: msg });
 		await this.deps.logger?.flush();

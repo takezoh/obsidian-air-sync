@@ -1,6 +1,6 @@
 import type { BackendErrorKind } from "../../backend-api";
 import { isBackendErrorShape } from "../../backend-api";
-import type { ErrorClassification, ErrorKind } from "../errors";
+import type { ErrorClassification, ErrorKind } from "../../backend-api/error-classification";
 
 /**
  * Translation from the public backend error taxonomy to the sync engine's

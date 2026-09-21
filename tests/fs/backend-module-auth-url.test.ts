@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { BackendModule, BackendRuntimeContext, JsonObject } from "../../src/backend-api";
-import { DROPBOX_AUTH, GOOGLE_DRIVE_AUTH, ONEDRIVE_AUTH } from "../../src/fs/auth-config";
-import { DEFAULT_ONEDRIVE_AUTHORITY } from "../../src/fs/onedrive/auth";
-import { dropboxModule } from "../../src/fs/dropbox/module";
-import { oneDriveModule } from "../../src/fs/onedrive/module";
-import { googleDriveModule } from "../../src/fs/googledrive/module";
+import { DROPBOX_AUTH, GOOGLE_DRIVE_AUTH, ONEDRIVE_AUTH } from "../../src/backends/shared/auth-config";
+import { DEFAULT_ONEDRIVE_AUTHORITY } from "../../src/backends/onedrive/auth";
+import { dropboxModule } from "../../src/backends/dropbox/module";
+import { oneDriveModule } from "../../src/backends/onedrive/module";
+import { googleDriveModule } from "../../src/backends/googledrive/module";
 
 /**
  * These tests run the REAL modules' `auth.start` and inspect the authorization URL

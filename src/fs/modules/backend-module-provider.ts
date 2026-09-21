@@ -1,3 +1,4 @@
+import { errorMessage, toError } from "../../backend-api";
 import type {
 	BackendModule,
 	BackendTarget,
@@ -10,11 +11,11 @@ import type { Logger } from "../../logging/logger";
 import type { IFileSystem } from "../interface";
 import type { IAuthProvider } from "../auth";
 import type { ISecretStore } from "../secret-store";
-import type { ErrorClassification } from "../errors";
-import { classifyHttpError } from "../errors";
+import type { ErrorClassification } from "../../backend-api/error-classification";
+import { classifyHttpError } from "../../backend-api/error-classification";
 import type { BackendPlatformInfo, IBackendProvider, RemoteVaultDisplay, WebFolderPicker } from "../backend";
 import type { IBackendSettingsRenderer } from "../settings-renderer";
-import type { RemoteVaultResolution } from "../remote-vault-contract";
+import type { RemoteVaultResolution } from "../../backend-api/remote-vault-contract";
 import { METADATA_CACHE_VERSION } from "../../store/metadata-store";
 import { clearManagedCheckpointStore, ManagedRemoteFs } from "../managed/managed-remote-fs";
 import type { RemoteAddressing } from "../managed/mutation-bridge";
@@ -349,11 +350,11 @@ export class BackendModuleProvider implements IBackendProvider {
 				classification.kind === "transient"
 			) {
 				logger?.warn("Could not validate the bound remote folder; continuing", {
-					message: err instanceof Error ? err.message : String(err),
+					message: errorMessage(err),
 				});
 				return;
 			}
-			throw err instanceof Error ? err : new Error(String(err));
+			throw toError(err);
 		}
 	}
 

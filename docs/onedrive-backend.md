@@ -7,7 +7,7 @@
 > [design-backend-module-api.md](design/design-backend-module-api.md). The former direct
 > `OneDriveFs` class and its provider layer were removed.
 
-The OneDrive backend (`fs/onedrive/`) syncs against a folder inside the app's **App
+The OneDrive backend (`backends/onedrive/`) syncs against a folder inside the app's **App
 Folder**. It is worker-less: authentication is in-plugin Authorization Code + PKCE, and the
 vault is addressed entirely by its **stable driveItem id** so a remote move/rename of the
 folder needs no migration.

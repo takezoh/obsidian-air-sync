@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { backendError, isBackendErrorShape } from "../../src/backend-api";
-import { AuthError, decideRetry } from "../../src/fs/errors";
+import { AuthError, decideRetry } from "../../src/backend-api/error-classification";
 import { classifyBackendError } from "../../src/fs/modules/error-bridge";
-import { toBackendError, backendErrorFromStatus } from "../../src/fs/modules/error-shape";
-import { translateGoogleDriveError } from "../../src/fs/googledrive/adapter";
-import { translateOneDriveError } from "../../src/fs/onedrive/adapter";
-import { translateDropboxError } from "../../src/fs/dropbox/adapter";
-import { GraphApiError } from "../../src/fs/onedrive/types";
-import { DropboxApiError } from "../../src/fs/dropbox/types";
+import { toBackendError, backendErrorFromStatus } from "../../src/backends/shared/error-shape";
+import { translateGoogleDriveError } from "../../src/backends/googledrive/adapter";
+import { translateOneDriveError } from "../../src/backends/onedrive/adapter";
+import { translateDropboxError } from "../../src/backends/dropbox/adapter";
+import { GraphApiError } from "../../src/backends/onedrive/types";
+import { DropboxApiError } from "../../src/backends/dropbox/types";
 
 const retryAfter = { "Retry-After": "7" };
 

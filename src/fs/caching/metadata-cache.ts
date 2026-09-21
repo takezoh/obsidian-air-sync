@@ -1,6 +1,6 @@
 import type { FileEntity, PathAuthority } from "../types";
 import type { Logger } from "../../logging/logger";
-import { INTERNAL_METADATA_PATH } from "../remote-vault-contract";
+import { INTERNAL_METADATA_PATH } from "../../backend-api/remote-vault-contract";
 import { resolveCachedPathAuthority, resolvePathAuthority, resolveStoredPathAuthority } from "./path-authority";
 import { arbitrateAddress, mergesAsOneFolder, type AddressClaim } from "./address-arbitration";
 import {
@@ -203,7 +203,7 @@ export abstract class AbstractMetadataCache<TFile> {
 	/**
 	 * Reserved backend paths (e.g. the metadata file) are never tracked by the
 	 * cache, so they stay invisible to every cache-backed reader
-	 * (list/stat/read/listDir/getChangedPaths). See fs/remote-vault-contract.ts.
+	 * (list/stat/read/listDir/getChangedPaths). See backend-api/remote-vault-contract.ts.
 	 */
 	private isReserved(path: string): boolean {
 		return path === INTERNAL_METADATA_PATH;

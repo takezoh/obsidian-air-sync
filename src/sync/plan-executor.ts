@@ -1,4 +1,4 @@
-/* eslint max-lines: ["error", 1020] -- the executor owns all fixed protocols, direction-specific transfer proof, immediate pre-effect observation, and proof-gated commit routing. Re-pinned from 970 for the identity-addressed namespace repair: which addressing a rename uses, and the fact that the repair route runs none of the publication machinery, must be readable against the path-addressed protocol it deliberately bypasses. */
+/* eslint max-lines: ["error", 1034] -- the executor owns all fixed protocols, direction-specific transfer proof, immediate pre-effect observation, and proof-gated commit routing. Re-pinned from 970 for the identity-addressed namespace repair: which addressing a rename uses, and the fact that the repair route runs none of the publication machinery, must be readable against the path-addressed protocol it deliberately bypasses. Re-pinned from 1020 for the structural auth-failure normalization (a separately bundled module's AuthError class identity is not authoritative and its plain shape may arrive wrapped by ContentProofError), which adds the unwrap/normalize at each cycle-abort site. */
 import type { IFileSystem } from "../fs/interface";
 import type { ChecksumRegistry } from "../fs/modules/checksum-registry";
 import type { FileEntity } from "../fs/types";
@@ -18,10 +18,10 @@ import type { VerifiedConflictOutput } from "./conflict";
 import type { Logger } from "../logging/logger";
 import { commitAction, commitExactCleanup } from "./state-committer";
 import { resolveConflict } from "./conflict-resolver";
-import { AuthError, classifyHttpError } from "../fs/errors";
-import type { ErrorClassification } from "../fs/errors";
-import { AsyncPool, AdaptivePool } from "../queue/async-queue";
-import type { AdaptivePoolOpts } from "../queue/async-queue";
+import { classifyHttpError, isAuthFailure, toAuthError, toError } from "../backend-api/error-classification";
+import type { ErrorClassification } from "../backend-api/error-classification";
+import { AsyncPool, AdaptivePool } from "../backend-api/async-queue";
+import type { AdaptivePoolOpts } from "../backend-api/async-queue";
 import { decideRetry, sleep } from "./error";
 import type { CompletedAction, ExecutionResult, SupersededAction } from "./execution-result";
 import { orderedChildReceipts } from "./execution-result";
@@ -241,11 +241,18 @@ async function withIoRetry<T>(
 		try {
 			return await io();
 		} catch (err) {
-			const failure = err instanceof ContentProofError && err.kind !== "proof_mismatch" && err.cause instanceof Error ? err.cause : err;
-			if (failure instanceof AuthError || failure instanceof ContentProofError) throw failure;
+			// A non-proof ContentProofError wraps the external failure that caused it.
+			// That cause may be a plain structural BackendErrorShape (a module is
+			// allowed to throw one), so unwrap on any defined cause — not only an
+			// `Error` — before the fatal/retry decision.
+			const failure = err instanceof ContentProofError && err.kind !== "proof_mismatch" && err.cause !== undefined
+				? err.cause
+				: err;
+			if (failure instanceof ContentProofError) throw failure;
+			if (isAuthFailure(failure)) throw toAuthError(failure);
 			const classification = classify(failure);
 			const decision = decideRetry(classification, attempt, MAX_ACTION_RETRIES, rng);
-			if (decision.action !== "retry") throw failure;
+			if (decision.action !== "retry") throw toError(failure);
 			if (classification.kind === "rateLimit") onRateLimit?.();
 			await doSleep(decision.delayMs);
 		}
@@ -287,11 +294,19 @@ async function executeAction(
 			result.blocked.push({ action, reason: err.message });
 			return;
 		}
-		if (err instanceof AuthError) {
-			ctx.onActionFatal?.(action, err);
-			throw err;
+		if (err instanceof ContentProofError && err.kind === "external_auth_failure") {
+			// The wrapped cause may be a plain structural BackendErrorShape, so
+			// normalize it rather than depending on `instanceof AuthError`.
+			const fatal = toAuthError(err.cause ?? { message: err.message, kind: "auth" });
+			ctx.onActionFatal?.(action, fatal);
+			throw fatal;
 		}
-		const error = err instanceof Error ? err : new Error(String(err));
+		if (isAuthFailure(err)) {
+			const fatal = toAuthError(err);
+			ctx.onActionFatal?.(action, fatal);
+			throw fatal;
+		}
+		const error = toError(err);
 		ctx.logger?.error("executePlan: action failed", {
 			path: action.path,
 			action: action.action,
@@ -890,17 +905,16 @@ async function executeConflictAction(
 		}
 		if (err instanceof ContentProofError && err.kind === "external_auth_failure") {
 			result.blocked.push({ action, reason: err.message });
-			const cause = err.cause instanceof AuthError
-				? err.cause
-				: new AuthError(err.message, 401);
+			const cause = toAuthError(err.cause ?? { message: err.message, kind: "auth" });
 			ctx.onActionFatal?.(action, cause);
 			throw cause;
 		}
-		if (err instanceof AuthError) {
-			ctx.onActionFatal?.(action, err);
-			throw err;
+		if (isAuthFailure(err)) {
+			const fatal = toAuthError(err);
+			ctx.onActionFatal?.(action, fatal);
+			throw fatal;
 		}
-		const error = err instanceof Error ? err : new Error(String(err));
+		const error = toError(err);
 		ctx.logger?.error("executePlan: conflict action failed", {
 			path: action.path,
 			error: error.message,

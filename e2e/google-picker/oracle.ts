@@ -1,4 +1,4 @@
-import { FOLDER_MIME } from "../../src/fs/googledrive/types";
+import { FOLDER_MIME } from "../../src/backends/googledrive/types";
 
 export const PRODUCTION_WORKER_ORIGIN = "https://auth-airsync.takezo.dev";
 export const OBSIDIAN_CALLBACK_ORIGIN = "obsidian://air-sync-auth";

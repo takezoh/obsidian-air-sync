@@ -7,9 +7,9 @@
 > `GoogleDriveFs` class and its provider layer were removed.
 
 This document owns the Google Drive-specific design judgements. Wire protocols, cache
-internals, and method-level algorithms live in `fs/googledrive/`.
+internals, and method-level algorithms live in `backends/googledrive/`.
 
-The Google Drive backend (`fs/googledrive/`) syncs a vault against a folder inside the
+The Google Drive backend (`backends/googledrive/`) syncs a vault against a folder inside the
 user's Drive. It avoids downloading file content during `list()`/`stat()`: core
 `ManagedRemoteFs` maintains the in-memory cache from the adapter's metadata, and content is
 downloaded only on `read()`.

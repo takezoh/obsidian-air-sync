@@ -1,3 +1,4 @@
+import { errorMessage } from "../backend-api";
 import type { IFileSystem } from "../fs/interface";
 import type { ExecutionResult } from "./execution-result";
 import type { AdmissionFailureComponent, AdmissionResult } from "./plan-admission";
@@ -41,7 +42,7 @@ export function awaitsRepair(component: AdmissionFailureComponent): boolean {
 /** Abort failure escapes classification/retry without attempting another abort. */
 export class WorkingViewAbortError extends Error {
 	constructor(readonly original: unknown) {
-		super(original instanceof Error ? original.message : String(original));
+		super(errorMessage(original));
 		this.name = "WorkingViewAbortError";
 	}
 }

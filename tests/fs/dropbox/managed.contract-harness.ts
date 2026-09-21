@@ -1,10 +1,10 @@
 import "fake-indexeddb/auto";
 import { describe, expect, it, vi } from "vitest";
 import type { DestinationAddress, RemoteBackendCapabilities, RemoteObject } from "../../../src/backend-api";
-import type { DropboxEntry, DropboxListFolderResponse } from "../../../src/fs/dropbox/types";
-import { DropboxApiError } from "../../../src/fs/dropbox/types";
-import type { DropboxClient } from "../../../src/fs/dropbox/client";
-import { DropboxAdapter } from "../../../src/fs/dropbox/adapter";
+import type { DropboxEntry, DropboxListFolderResponse } from "../../../src/backends/dropbox/types";
+import { DropboxApiError } from "../../../src/backends/dropbox/types";
+import type { DropboxClient } from "../../../src/backends/dropbox/client";
+import { DropboxAdapter } from "../../../src/backends/dropbox/adapter";
 import { ManagedRemoteFs } from "../../../src/fs/managed/managed-remote-fs";
 import { MetadataStore } from "../../../src/store/metadata-store";
 import { dropboxContentHash } from "../../../src/utils/hash";

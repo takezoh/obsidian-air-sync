@@ -1,5 +1,5 @@
-import type { IGoogleAuth } from "../../src/fs/googledrive/auth";
-import { GoogleAuth, GoogleAuthDirect } from "../../src/fs/googledrive/auth";
+import type { IGoogleAuth } from "../../src/backends/googledrive/auth";
+import { GoogleAuth, GoogleAuthDirect } from "../../src/backends/googledrive/auth";
 import { createPlatformTransport } from "../../src/fs/platform-http-transport";
 import type { BackendCreds } from "./env";
 import { loadDotEnvE2e, readCreds } from "./env";

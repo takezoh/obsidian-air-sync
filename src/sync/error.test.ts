@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { decideRetry } from "./error";
-import type { ErrorClassification } from "../fs/errors";
+import type { ErrorClassification } from "../backend-api/error-classification";
 
 const MAX = 3;
 // Fixed rng so backoff is deterministic: base * (0.5 + 0.5) = base.

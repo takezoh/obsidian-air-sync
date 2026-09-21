@@ -1,5 +1,5 @@
 import { requestUrl } from "../platform/obsidian";
-import type { HttpTransport, HttpTransportResponse } from "./http-transport";
+import type { HttpTransport, HttpTransportResponse } from "../backend-api/http-transport";
 
 /**
  * The shipped/core-side transport: Obsidian's `requestUrl` (mobile-compatible,

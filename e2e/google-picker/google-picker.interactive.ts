@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { GoogleAuth } from "../../src/fs/googledrive/auth";
-import { GoogleDriveClient } from "../../src/fs/googledrive/client";
+import { GoogleAuth } from "../../src/backends/googledrive/auth";
+import { GoogleDriveClient } from "../../src/backends/googledrive/client";
 import { createPlatformTransport } from "../../src/fs/platform-http-transport";
-import { FOLDER_MIME } from "../../src/fs/googledrive/types";
+import { FOLDER_MIME } from "../../src/backends/googledrive/types";
 import { captureExternalNavigation } from "./chrome";
 import { parseCallbackEnvelope, safeFailure, validateAuthorizationUrl, PickerE2EError } from "./oracle";
 import { preflight } from "./preflight";

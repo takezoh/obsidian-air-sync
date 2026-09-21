@@ -2,7 +2,8 @@ import type { IFileSystem, IncrementalCheckpoint } from "../interface";
 import type { FileEntity, PathAuthority, RenamePair } from "../types";
 import type { MetadataStore } from "../../store/metadata-store";
 import type { Logger } from "../../logging/logger";
-import { AsyncMutex } from "../../queue/async-queue";
+import { errorMessage } from "../../backend-api/error-classification";
+import { AsyncMutex } from "../../backend-api/async-queue";
 import type {
 	PriorityObservation,
 	PriorityObservationCapability,
@@ -370,7 +371,7 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 			return true;
 		} catch (err) {
 			this.logger?.warn("Failed to load cache from IndexedDB, will full scan", {
-				message: err instanceof Error ? err.message : String(err),
+				message: errorMessage(err),
 			});
 			return false;
 		}

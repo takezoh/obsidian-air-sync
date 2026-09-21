@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import "fake-indexeddb/auto";
 import { SyncOrchestrator } from "./orchestrator";
 import type { SyncOrchestratorDeps } from "./orchestrator";
+import { backendError } from "../backend-api";
 import { collectChanges } from "./change-detector";
 import { createChecksumRegistry } from "../fs/modules/checksum-registry";
 import { prepareSyncCycleSnapshot } from "./sync-cycle-planning";
@@ -18,7 +19,7 @@ import {
 import type { AirSyncSettings } from "../settings";
 import type { AddressDisplacement } from "../fs/caching/claim-set-assignment";
 import type { FileEntity } from "../fs/types";
-import { AuthError } from "../fs/errors";
+import { AuthError } from "../backend-api/error-classification";
 import { sha256 } from "../utils/hash";
 import type { Logger } from "../logging/logger";
 import type { PriorityObservation, PriorityObservationRequest } from "../fs/priority-observation";
@@ -26,7 +27,7 @@ import type { PriorityObservation, PriorityObservationRequest } from "../fs/prio
 // Make retry backoff instant: the retry tests assert behaviour (retry count,
 // status), not wall-clock timing, and real exponential backoff + jitter added
 // ~4s to the suite. `sleep` is the only export stubbed; the retry policy
-// (decideRetry) and the error classifier (fs/errors classifyHttpError) stay real.
+// (decideRetry) and the error classifier (backend-api/error-classification classifyHttpError) stay real.
 // Mocking sleep — rather than fake timers — avoids interfering with
 // fake-indexeddb's async scheduling.
 vi.mock("./error", async (importOriginal) => {
@@ -1446,6 +1447,25 @@ describe("SyncOrchestrator", () => {
 			expect(deps.notify).toHaveBeenCalledWith(
 				expect.stringContaining("Sync error:"),
 			);
+			await orchestrator.close();
+		});
+
+		it("preserves a plain structural error message through retry exhaustion", async () => {
+			const deps = createDeps();
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			deps.localFs = () => localFs;
+			deps.remoteFs = () => remoteFs;
+
+			// A module may throw a plain BackendErrorShape object (no Error identity);
+			// the cycle notice must carry its safe diagnostic, not "Unknown error".
+			vi.spyOn(localFs, "list").mockRejectedValue(backendError("transient", "network blip"));
+
+			const orchestrator = new SyncOrchestrator(deps);
+			await orchestrator.runSync();
+
+			expect(deps.onStatusChange).toHaveBeenCalledWith("error");
+			expect(deps.notify).toHaveBeenCalledWith("Sync error: network blip");
 			await orchestrator.close();
 		});
 

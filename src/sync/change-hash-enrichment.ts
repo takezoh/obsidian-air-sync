@@ -1,7 +1,7 @@
 import type { IFileSystem } from "../fs/interface";
 import type { ChecksumRegistry } from "../fs/modules/checksum-registry";
 import type { FileEntity } from "../fs/types";
-import { AsyncPool } from "../queue/async-queue";
+import { AsyncPool } from "../backend-api/async-queue";
 import { sha256 } from "../utils/hash";
 import { exactEntity, observePath, replaceObservation } from "./path-observation";
 import type { CandidateFact, IdentityEvidence, MixedEntity, PathObservation } from "./types";

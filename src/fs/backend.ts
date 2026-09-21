@@ -3,8 +3,8 @@ import type { IFileSystem } from "./interface";
 import type { IAuthProvider } from "./auth";
 import type { AirSyncSettings } from "../settings";
 import type { Logger } from "../logging/logger";
-import type { RemoteVaultResolution } from "./remote-vault-contract";
-import type { ErrorClassification } from "./errors";
+import type { RemoteVaultResolution } from "../backend-api/remote-vault-contract";
+import type { ErrorClassification } from "../backend-api/error-classification";
 import type { IBackendSettingsRenderer } from "./settings-renderer";
 
 /**

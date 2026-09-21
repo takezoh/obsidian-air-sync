@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { backendError } from "../../src/backend-api";
 import { classifyBackendError } from "../../src/fs/modules/error-bridge";
-import { decideRetry } from "../../src/fs/errors";
+import { decideRetry } from "../../src/backend-api/error-classification";
 
 describe("classifyBackendError", () => {
 	it("maps the public taxonomy to internal kinds", () => {

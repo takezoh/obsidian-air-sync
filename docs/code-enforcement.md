@@ -41,7 +41,7 @@ Practical patterns:
 `as any` is forbidden in tests too — use the project's typed helpers instead of casting
 `vi.spyOn` targets or hand-rolling partial objects:
 
-- `spyRequestUrl()` (`src/fs/googledrive/test-helpers.ts`) — type-safe spy on obsidian's `requestUrl`.
+- `spyRequestUrl()` (`src/backends/googledrive/test-helpers.ts`) — type-safe spy on obsidian's `requestUrl`.
 - `mockSettings()` (`src/__mocks__/sync-test-helpers.ts`) — returns a complete `AirSyncSettings` default.
 - `createMockStateStore()` (`src/__mocks__/sync-test-helpers.ts`) — pass it directly; its intersection type satisfies `SyncStateStore`.
 
@@ -107,7 +107,7 @@ corresponding `tests/fs/<backend>/` directory. Production coverage includes only
 while the central `tests/fs/remote-backend-contracts.test.ts` composition root remains a
 discovered unit test.
 
-### Backend Module API boundary (v1)
+### Backend Module API boundary (v2)
 
 The public extension boundary is `src/backend-api/` (`BackendModule`,
 `BackendRuntimeContext`, `RemoteBackendAdapter`). A backend module implements provider
@@ -115,21 +115,30 @@ operations only; it does not implement `IFileSystem`, the metadata cache, the de
 scope, checkpoint commit/abort, or stores — core owns those (see
 [adr-20260920-backend-module-boundary.md](adr/adr-20260920-backend-module-boundary.md)).
 
+The backend implementation family is consolidated under `src/backends/`: the three
+built-ins (`googledrive/`, `dropbox/`, `onedrive/`) plus `shared/` for the
+provider-neutral helpers they build on. One module is one backend: a provider file may
+import only the public `src/backend-api/**`, `shared/`, and its own provider
+directory — never another provider — and `shared/` may import only the public API and
+itself. Every browser-safe shared helper now lives in the public API, so a backend
+cannot reach into the internal backend-module API (`src/fs/modules/**`), core state,
+or the plain `src/fs/**` helpers. That keeps it a provider integration and an exact
+candidate for the future external-artifact boundary.
+
 | | |
 |---|---|
-| **Prevents** | `src/backend-api/**` importing `obsidian`, Node/Electron, or any path outside `src/backend-api/` |
+| **Prevents** | (a) `src/backend-api/**` importing `obsidian`, Node/Electron, or any path outside `src/backend-api/`; (b) a `src/backends/**` file importing outside `src/backend-api/**`, `src/backends/shared/**`, and its own provider directory — including a cross-provider import, a plain `src/fs/**`/`src/queue/**` helper, `obsidian`/`electron`, or a bare Node builtin (not only `node:*`) |
 | **Where** | `backend-module-boundary-guard.test.mjs`, run by `npm run lint:bot-repro` |
-| **How** | textual import scan over `src/backend-api/**/*.ts`; `tests/backend-api/fake-module.ts` is the compile fixture that builds a module with only the public API |
-| **Exception** | none. The boundary is types-only and must stay buildable without `App`, settings, or stores |
+| **How** | textual import scan over `src/backend-api/**/*.ts` and all non-test `src/backends/**/*.ts`; `tests/backend-api/fake-module.ts` is the compile fixture that builds a module with only the public API |
+| **Exception** | none. The public API carries the provider-neutral runtime helpers a module bundles; nothing under `src/fs/**` or `src/queue/` is reachable from a backend |
 
 Runtime validation (`src/fs/modules/validate-module.ts`) is authoritative for a candidate
 module shape; TypeScript compatibility alone is insufficient for a future dynamically loaded
 JavaScript artifact. `*-custom` ids are legacy settings aliases and are rejected as module
 ids; built-in vs custom OAuth is an `authMode` within a module.
 
-Provider modules may import the public API plus browser-safe shared helpers. The single
-built-in import root (`src/fs/modules/builtin-modules.ts`) is the only place that
-imports the backend-specific module implementations; `src/fs/registry.ts` validates
+The single built-in import root (`src/fs/modules/builtin-modules.ts`) is the only place
+that imports the backend-specific module implementations; `src/fs/registry.ts` validates
 and registers them and wraps each in the core `BackendModuleProvider` (connection host
 + `ManagedRemoteFs`) used in production.
 
@@ -226,7 +235,7 @@ ratchet: it stops *silent* growth and flags the file as split-when-convenient �
 is not a mandate to shrink the file by force.
 
 Seven modules currently carry such overrides as known debt in `eslint.config.mts`:
-`fs/googledrive/auth.ts` (337), `sync/orchestrator.ts` (444), `sync/plan-executor.ts`
+`backends/googledrive/auth.ts` (337), `sync/orchestrator.ts` (444), `sync/plan-executor.ts`
 (334), `fs/caching/remote-fs.ts` (411), `fs/backend-manager.ts` (373),
 `fs/modules/backend-module-provider.ts` (322), and `fs/caching/metadata-cache.ts` (595).
 Ratchet them down when a natural responsibility split presents itself.
@@ -234,7 +243,7 @@ Ratchet them down when a natural responsibility split presents itself.
 Four modules instead carry a **file-header `/* eslint max-lines */` comment**, which
 overrides the config entry for that file: `sync/scope-projection.ts` (340),
 `sync/conflict-resolver.ts` (350), `sync/identity-component-decision.ts` (822), and
-`sync/plan-executor.ts` (1020 — so its 334 config entry above is inert). Same ratchet,
+`sync/plan-executor.ts` (1034 — so its 334 config entry above is inert). Same ratchet,
 same obligation to justify the pin in the comment; the inline form keeps the reason
 next to the code it is about.
 

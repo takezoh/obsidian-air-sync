@@ -6,7 +6,7 @@ import {
 import { hasRemoteChanged } from "./change-compare";
 import { buildSyncRecord } from "./state-committer";
 import type { ConflictExecutionPolicy, SyncRecord } from "./types";
-import { AuthError } from "../fs/errors";
+import { AuthError } from "../backend-api/error-classification";
 import {
 	createMockLocalFs, createMockRemoteFs, type MockFileSystem,
 	createMockStateStore,

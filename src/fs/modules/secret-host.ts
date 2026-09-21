@@ -16,7 +16,16 @@ export type PhysicalKeyResolver = (moduleId: string, logicalKey: string) => stri
 export const defaultPhysicalKey: PhysicalKeyResolver = (moduleId, logicalKey) =>
 	`air-sync-${moduleId}-${logicalKey}-token`;
 
-/** Build a module-scoped secret store over the host's physical SecretStorage. */
+/**
+ * Build a module-scoped secret store over the host's physical SecretStorage.
+ *
+ * A non-empty write proves the same API-level postcondition the OAuth completion
+ * and refresh-token rotation already promise: the value just written reads back
+ * exactly from the stable physical key before the module exposes dependent state.
+ * Obsidian's API is synchronous but does not promise OS-level flush semantics, so
+ * this proves only what the API exposes. A failed readback fails closed; the
+ * module never continues with a credential it cannot re-read.
+ */
 export function createSecretHost(
 	store: ISecretStore,
 	moduleId: string,
@@ -26,8 +35,18 @@ export function createSecretHost(
 	return {
 		get: (logicalKey) => Promise.resolve(store.getSecret(physical(logicalKey))),
 		set: (logicalKey, value) => {
-			store.setSecret(physical(logicalKey), value);
-			return Promise.resolve();
+			const key = physical(logicalKey);
+			try {
+				store.setSecret(key, value);
+				if (value && store.getSecret(key) !== value) {
+					throw new Error("readback mismatch");
+				}
+				return Promise.resolve();
+			} catch {
+				return Promise.reject(
+					new Error("Secret credential could not be saved securely. Please try connecting again."),
+				);
+			}
 		},
 		delete: (logicalKey) => {
 			store.setSecret(physical(logicalKey), "");

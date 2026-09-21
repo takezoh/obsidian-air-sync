@@ -43,6 +43,16 @@ capabilities.
 `id` is canonical: `googledrive` / `onedrive` / `dropbox`. The legacy `*-custom` ids are
 settings aliases only and are refused as module ids by the registry.
 
+## Bundled runtime helpers
+
+Besides the types, `src/backend-api/` exposes the provider-neutral, browser-safe
+runtime helpers a module may bundle instead of reaching into core: error
+classification and retry decisions (`AuthError`, `classifyHttpError`, `decideRetry`),
+the HTTP transport seam, OAuth/PKCE primitives, response-header access, lossless
+backend error logging, the remote-vault contract constants, and the concurrency
+primitive. A backend imports only the public API and its own `src/backends/` tree; the
+boundary guard fails any other relative import.
+
 ## Runtime context
 
 Core builds a per-connection `BackendRuntimeContext`; a module never receives `App`,

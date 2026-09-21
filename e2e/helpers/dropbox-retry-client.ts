@@ -1,6 +1,6 @@
-import { DropboxClient } from "../../src/fs/dropbox/client";
-import { DropboxApiError } from "../../src/fs/dropbox/types";
-import type { DropboxEntry } from "../../src/fs/dropbox/types";
+import { DropboxClient } from "../../src/backends/dropbox/client";
+import { DropboxApiError } from "../../src/backends/dropbox/types";
+import type { DropboxEntry } from "../../src/backends/dropbox/types";
 
 /**
  * e2e-only `DropboxClient` that retries the FRESH-FOLDER-ID propagation transient.

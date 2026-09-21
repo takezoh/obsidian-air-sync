@@ -4,7 +4,7 @@ export default defineConfig({
 	test: {
 		include: ["src/**/*.test.ts", "tests/**/*.test.ts"],
 		exclude: [
-			"src/fs/googledrive/test-helpers.test.ts",
+			"src/backends/googledrive/test-helpers.test.ts",
 		],
 		coverage: {
 			provider: "v8",

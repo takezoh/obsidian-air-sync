@@ -2,12 +2,12 @@
 // IndexedDB shim rather than inheriting it from a helper imported for another scenario.
 import "fake-indexeddb/auto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { GoogleDriveClient } from "../src/fs/googledrive/client";
+import { GoogleDriveClient } from "../src/backends/googledrive/client";
 import { createPlatformTransport } from "../src/fs/platform-http-transport";
-import { GoogleDriveAdapter } from "../src/fs/googledrive/adapter";
+import { GoogleDriveAdapter } from "../src/backends/googledrive/adapter";
 import { ManagedRemoteFs } from "../src/fs/managed/managed-remote-fs";
 import type { IFileSystem } from "../src/fs/interface";
-import type { GoogleDriveFile } from "../src/fs/googledrive/types";
+import type { GoogleDriveFile } from "../src/backends/googledrive/types";
 import type { IncrementalCheckpoint } from "../src/fs/interface";
 import { bytes, decode, runIFileSystemContract } from "../tests/fs/contracts/ifilesystem.contract";
 import { insertConflictSuffix } from "../src/sync/conflict";
@@ -29,7 +29,7 @@ import type { MovedObjectIdentity } from "../tests/fs/contracts/caching-remote-f
 /**
  * What Google Drive's own entity projection makes of a moved object's identity, against
  * the LIVE API. Same disposition the family declares to the fake-backed managed contract
- * (`tests/fs/googledrive/managed.contract-harness.ts`) — stated separately here
+ * (`tests/backends/googledrive/managed.contract-harness.ts`) — stated separately here
  * because a fake that always hands over a complete resource cannot establish it for
  * `changes.list`, which is the whole point of ADR 0003.
  */

@@ -339,7 +339,7 @@ export default defineConfig(
 		// count down with churn (see docs/code-enforcement.md §6).
 		// (googledrive/index.ts was here at 397; A1 lifted its cache/checkpoint
 		// machinery into fs/caching/, dropping it back under the standard 300 cap.)
-		files: ["src/fs/googledrive/auth.ts"],
+		files: ["src/backends/googledrive/auth.ts"],
 		rules: { "max-lines": ["error", { max: 337, skipBlankLines: true, skipComments: true }] },
 	},
 	{
@@ -403,7 +403,7 @@ export default defineConfig(
 		// move/delete are one cohesive provider-operation surface beside the
 		// case-only-rename mechanism already owned here. Re-pinned from 322 for the
 		// expected-identity guard shared by update/move/delete.
-		files: ["src/fs/dropbox/adapter.ts"],
+		files: ["src/backends/dropbox/adapter.ts"],
 		rules: { "max-lines": ["error", { max: 330, skipBlankLines: true, skipComments: true }] },
 	},
 	{
@@ -411,7 +411,7 @@ export default defineConfig(
 		// Google Drive has no provider metadata precondition, so update/move/delete must
 		// still compare-before-mutate and reject an empty/mismatched expected identity or
 		// version before any provider call.
-		files: ["src/fs/googledrive/adapter.ts"],
+		files: ["src/backends/googledrive/adapter.ts"],
 		rules: { "max-lines": ["error", { max: 308, skipBlankLines: true, skipComments: true }] },
 	},
 	{

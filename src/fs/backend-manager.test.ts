@@ -4,7 +4,8 @@ import type { IBackendProvider } from "./backend";
 import type { AirSyncSettings } from "../settings";
 import type { IFileSystem } from "./interface";
 import type { Logger } from "../logging/logger";
-import { AuthError } from "./errors";
+import { backendError } from "../backend-api";
+import { AuthError } from "../backend-api/error-classification";
 import { mockSettings } from "../__mocks__/sync-test-helpers";
 
 // Mock the registry to return our fake provider
@@ -706,6 +707,21 @@ describe("BackendManager — web folder pick", () => {
 
 		expect(notify).toHaveBeenCalledWith("Folder selection failed: inaccessible folder");
 		expect(onConnected).not.toHaveBeenCalled();
+	});
+
+	it("preserves a plain structural binding error message in the notice", async () => {
+		const settings = mockSettings();
+		// A module may throw a plain BackendErrorShape object (no Error identity);
+		// the notice must carry its safe diagnostic, not "[object Object]".
+		fakeProvider.picker!.completeWebFolderPick = vi.fn()
+			.mockRejectedValue(backendError("permission", "folder denied"));
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend();
+
+		await mgr.completeBackendFolderPick({ id: "id:bad", state: "S" });
+
+		expect(deps.notify).toHaveBeenCalledWith("Folder selection failed: folder denied");
 	});
 });
 

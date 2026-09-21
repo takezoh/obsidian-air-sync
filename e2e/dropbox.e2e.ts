@@ -1,11 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { DropboxAuth } from "../src/fs/dropbox/auth";
-import { DROPBOX_AUTH } from "../src/fs/auth-config";
+import { DropboxAuth } from "../src/backends/dropbox/auth";
+import { DROPBOX_AUTH } from "../src/backends/shared/auth-config";
 import { createPlatformTransport } from "../src/fs/platform-http-transport";
-import { DropboxAdapter } from "../src/fs/dropbox/adapter";
+import { DropboxAdapter } from "../src/backends/dropbox/adapter";
 import { ManagedRemoteFs } from "../src/fs/managed/managed-remote-fs";
 import type { IFileSystem } from "../src/fs/interface";
-import type { DropboxEntry } from "../src/fs/dropbox/types";
+import type { DropboxEntry } from "../src/backends/dropbox/types";
 import { runIFileSystemContract, bytes } from "../tests/fs/contracts/ifilesystem.contract";
 import { RetryingDropboxClient } from "./helpers/dropbox-retry-client";
 import { readCreds } from "./helpers/env";
@@ -21,7 +21,7 @@ import type { MovedObjectIdentity } from "../tests/fs/contracts/caching-remote-f
 /**
  * What Dropbox's own entity projection makes of a moved object's identity, against the
  * LIVE API. Same disposition the family declares to the fake-backed managed contract
- * (`tests/fs/dropbox/managed.contract-harness.ts`), and the family where it is least
+ * (`tests/backends/dropbox/managed.contract-harness.ts`), and the family where it is least
  * obvious: `DropboxEntry.id` is declared OPTIONAL, while `normalizeDropboxObject`
  * projects the normalized `RemoteObject` with `id: entry.id` and NO path fallback. A
  * faithful fake always hands over a complete entry; only the live feed can show whether

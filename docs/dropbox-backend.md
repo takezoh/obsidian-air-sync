@@ -6,13 +6,13 @@
 > [design-backend-module-api.md](design/design-backend-module-api.md). The former direct
 > `DropboxFs` class and its provider layer were removed.
 
-The Dropbox backend (`fs/dropbox/`) syncs against a folder inside the app's **App
+The Dropbox backend (`backends/dropbox/`) syncs against a folder inside the app's **App
 Folder** (`/Apps/<App>/`). It is worker-less: authentication is in-plugin Authorization
 Code + PKCE, and the vault is addressed entirely by its **stable folder id** so a remote
 move/rename of the folder needs no migration.
 
 This document owns the Dropbox-specific design judgements. Wire protocols, cache internals,
-and method-level algorithms live in `fs/dropbox/`.
+and method-level algorithms live in `backends/dropbox/`.
 
 ## DropboxAdapter
 
