@@ -1,6 +1,5 @@
-import { requestUrl } from "../../platform/obsidian";
-import type { RequestUrlParam } from "../../platform/obsidian";
-import type { Logger } from "../../logging/logger";
+import type { BackendLogger } from "../../backend-api";
+import type { HttpTransport, HttpTransportRequest, HttpTransportResponse } from "../http-transport";
 import { describeErrorBody, logBackendErrorResponse, MAX_MESSAGE_BODY_CHARS } from "../backend-error-log";
 import type { GoogleDriveFile, GoogleDriveFileList, GoogleDriveChangeList } from "./types";
 import {
@@ -28,11 +27,17 @@ export { LIST_PAGE_CAP } from "./types";
  */
 export class GoogleDriveClient {
 	private getToken: (forceRefresh?: boolean) => Promise<string>;
-	private logger?: Logger;
+	private transport: HttpTransport;
+	private logger?: BackendLogger;
 	private resumableUploader: ResumableUploader;
 
-	constructor(getToken: (forceRefresh?: boolean) => Promise<string>, logger?: Logger) {
+	constructor(
+		getToken: (forceRefresh?: boolean) => Promise<string>,
+		transport: HttpTransport,
+		logger?: BackendLogger,
+	) {
 		this.getToken = getToken;
+		this.transport = transport;
 		this.logger = logger;
 		this.resumableUploader = new ResumableUploader({
 			getToken,
@@ -41,15 +46,15 @@ export class GoogleDriveClient {
 		});
 	}
 
-	/** Wrap requestUrl with operation-name context, inject auth header, and preserve status/headers for retry logic */
+	/** Inject the auth header through the transport and preserve status/headers for retry logic */
 	private async request(
 		operation: string,
-		opts: RequestUrlParam,
+		opts: HttpTransportRequest,
 		retried = false
-	): Promise<Awaited<ReturnType<typeof requestUrl>>> {
+	): Promise<HttpTransportResponse> {
 		const token = await this.getToken(retried);
 		try {
-			return await requestUrl({
+			return await this.transport.request({
 				...opts,
 				headers: { ...opts.headers, Authorization: `Bearer ${token}` },
 			});

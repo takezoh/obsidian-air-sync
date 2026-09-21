@@ -1,7 +1,8 @@
 import type { FileEntity } from "../types";
-import type { Logger } from "../../logging/logger";
+import type { BackendLogger } from "../../backend-api";
 import { AuthError } from "../errors";
 import { describeErrorBody, logBackendErrorResponse, MAX_MESSAGE_BODY_CHARS } from "../backend-error-log";
+import { parseIsoTime } from "../modules/module-utils";
 
 /**
  * A Dropbox file/folder metadata entry (the subset Air Sync uses).
@@ -90,6 +91,8 @@ export class DropboxApiError extends Error {
 		message: string,
 		readonly status: number,
 		readonly summary: string,
+		/** Response headers, retained so a 429/503 `Retry-After` survives translation. */
+		readonly headers?: Record<string, string>,
 	) {
 		super(message);
 		this.name = "DropboxApiError";
@@ -121,7 +124,7 @@ const AUTH_ERROR_TAGS = new Set([
 export function assertOk(
 	res: { status: number; json?: unknown; text?: string; headers?: Record<string, string> },
 	op: string,
-	logger?: Logger,
+	logger?: BackendLogger,
 ): void {
 	if (res.status >= 200 && res.status < 300) return;
 	// Log the whole response first — `error_summary` is a distillation, and a
@@ -142,7 +145,7 @@ export function assertOk(
 	if (res.status === 401 || AUTH_ERROR_TAGS.has(tag)) {
 		throw new AuthError(message, 401);
 	}
-	throw new DropboxApiError(message, res.status, summary);
+	throw new DropboxApiError(message, res.status, summary, res.headers);
 }
 
 /** Whether an error is a Dropbox cursor-`reset` (incremental state must be rebuilt). */
@@ -157,9 +160,7 @@ export function isFolderEntry(entry: DropboxEntry): boolean {
 
 /** Parse a Dropbox `server_modified`/`client_modified` time to epoch ms (0 if absent). */
 export function parseDropboxTime(value: string | undefined): number {
-	if (!value) return 0;
-	const ms = Date.parse(value);
-	return Number.isNaN(ms) ? 0 : ms;
+	return parseIsoTime(value) ?? 0;
 }
 
 /**

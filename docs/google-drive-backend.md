@@ -1,12 +1,27 @@
 # Google Drive Backend
 
+> **Backend module.** The canonical id is `googledrive` (the old `googledrive-custom` id is
+> a settings alias, folded into `authMode: custom`). The backend is implemented as
+> `module.ts` + `adapter.ts` and runs over core `ManagedRemoteFs`; see
+> [design-backend-module-api.md](design/design-backend-module-api.md). The former direct
+> `GoogleDriveFs` class and its provider layer were removed.
+
 This document owns the Google Drive-specific design judgements. Wire protocols, cache
 internals, and method-level algorithms live in `fs/googledrive/`.
 
-## GoogleDriveFs
+The Google Drive backend (`fs/googledrive/`) syncs a vault against a folder inside the
+user's Drive. It avoids downloading file content during `list()`/`stat()`: core
+`ManagedRemoteFs` maintains the in-memory cache from the adapter's metadata, and content is
+downloaded only on `read()`.
 
-The Google Drive filesystem implements `IFileSystem`. It avoids downloading content during
-listing/stat by maintaining an in-memory metadata cache; content is only downloaded on read.
+## GoogleDriveAdapter
+
+`GoogleDriveAdapter` (`adapter.ts`) implements the `RemoteBackendAdapter` over the REST v3
+`GoogleDriveClient`. It reports provider facts (identity, topology, content checksum,
+version evidence) and performs provider mutations only; the cursor lifecycle, the
+normalized cache, address arbitration, the delta projection, and the checkpoint belong to
+core `ManagedRemoteFs`. Provider-specific cache logic now lives in `fs/managed/` and
+`fs/caching/`.
 
 ### Initialization lifecycle
 
@@ -134,14 +149,19 @@ never pushed/pulled/deleted locally: remote-side hiding alone would be unsafe (a
 could be pushed and later deleted as a phantom remote deletion), so the orchestrator
 exclusion is the authoritative guarantee and the cache-level skip is enumeration hygiene.
 
-## GoogleDriveMetadataCache
+## Metadata cache
 
-The metadata cache holds path↔file mappings in memory. Its design judgements:
-
-- It builds from a flat file list, resolving relative paths from parent chains, then runs one **claim-set assignment** over the whole resolved set before loading: every multiply-claimed path is arbitrated, and the loss cascades down the resolved parent-id chain — not by string prefix — so a loser's subtree is never bound under the winner in any listing order.
-- A single incremental change resolves the path, handles renames/moves, and maintains the indexes. It arbitrates before writing when the resolved path is already held by a different live ID, so it may end up *withholding* the claim. A move takes the object's subtree out whole and re-seats each descendant at its new address, arbitrated there too — only a folder moving into a same-named folder can collide — and every loss beyond the one named is returned as its own fact.
-- Loading returns whatever a write displaced. It still throws on a duplicate **stable ID** (one id maps to exactly one path), while duplicate *paths* are arbitrated, never thrown for, because a deterministic throw classifies as transient and would burn full enumerations.
-- Cached metadata converts to a filesystem entity without downloading; Drive files surface their md5 as the remote checksum, which is what makes hash-enrichment and remote change detection work without a download.
+Core `ManagedRemoteFs` owns the normalized metadata cache; the adapter only reports provider
+facts. Its design judgements: it builds from a flat file list, resolving relative paths from
+parent chains, then runs one **claim-set assignment** over the whole resolved set before
+loading — every multiply-claimed path is arbitrated, and the loss cascades down the resolved
+parent-id chain, not by string prefix, so a loser's subtree is never bound under the winner
+in any listing order. An incremental change resolves and arbitrates before writing, so it
+may end up *withholding* a claim already held by a different live ID. Loading still throws on
+a duplicate **stable ID** (one id maps to exactly one path), while duplicate *paths* are
+arbitrated, never thrown for, because a deterministic throw classifies as transient and
+would burn full enumerations. Drive files surface their md5 as the remote checksum, which is
+what makes hash-enrichment and remote change detection work without a download.
 
 ## Incremental sync
 
@@ -229,15 +249,12 @@ stable code, so in-cycle retry does not repeat a structurally invalid protocol r
 quarantine does not depend on human-readable diagnostics. A failed PUT is retried as a fresh
 upload next cycle; the session is only an envelope, not a byte-range resume.
 
-## Provider model
+## Module composition
 
-- **Built-in** (`googledrive`): uses the server-side auth; its resolver finds or creates `obsidian-air-sync/<Vault Name>`. It is invoked **explicitly** when the user binds the default folder, not automatically on connect.
-- **Custom** (`googledrive-custom`): uses the PKCE auth with user-provided credentials and requires the remote vault folder id to be set manually; its resolver throws when unset. Because the hand-typed id never passes through the Picker, it is validated at the connect boundary: after auth and before filesystem creation, a rejection tears the session down to disconnected with no filesystem. Custom disconnect preserves its credential refs and folder id, so the id becomes editable again without a manual disconnect; because no token survives the teardown, a later init/sync cannot resurrect the rejected target. Validation fails closed only on a *definite* unusable verdict; a transport/auth/rate-limit failure fails open so a temporarily unreachable Drive does not reject a correct binding. A target trashed *after* a successful connect, or while the plugin is closed, is caught by the sync-time root liveness check, which re-observes every cycle and recovers automatically once restored.
-
-Both extend a provider base handling filesystem creation, non-secret token-state persistence
-(the cursor is committed atomically with the cache by the checkpoint, not here), checkpoint
-forwarding, and disconnect (which also clears the per-target metadata store). The
-checkpoint-existence query and reset live on the filesystem.
+`module.ts` declares the backend module: its declarative settings (auth mode, remote folder
+id, custom-OAuth fields), the built-in/folder-picker auth seams, and binding. Core
+`BackendModuleProvider` wraps the module, owns the connection host, and builds the single
+`ManagedRemoteFs` from the module's adapter.
 
 ### Remote vault resolution
 
@@ -245,20 +262,14 @@ Layout: `<Google Drive root>/obsidian-air-sync/<Vault Name>` — the folder **na
 vault name**; there is no `.airsync/metadata.json`. Binding is always explicit; nothing is
 auto-bound on connect.
 
-- If the remote folder id is cached, the resolver confirms bindability through the shared folder-usability seam. Drive's normal single-click delete moves a folder to Trash rather than erasing it, so a plain fetch would keep succeeding against a folder the user can no longer see — the trashed classification fails closed instead of binding to it forever. The settings display uses the same seam, showing a Trash warning. A 403 that is actually a rate limit is rethrown rather than classified inaccessible, keeping its retry classification.
+- If the remote folder id is cached, the resolver confirms bindability through the shared folder-usability seam (`inspectGoogleDriveFolder`, which classifies not-found / inaccessible / not-a-folder / trashed from the metadata already requested). Drive's normal single-click delete moves a folder to Trash rather than erasing it, so a plain fetch would keep succeeding against a folder the user can no longer see — the trashed classification fails closed instead of binding to it forever. The settings display uses the same seam, showing a Trash warning. A 403 that is actually a rate limit is rethrown rather than classified inaccessible, keeping its retry classification.
 - Otherwise it find-or-creates the root `obsidian-air-sync` folder, then the vault-named folder, and binds it.
 
 Bound folders picked via either Picker flow are addressed purely by id, independent of this
 layout. Every binding path — Picker, cached-id rebind, default folder, custom typed id, and
-settings display — decides usability through one seam classifying not-found / inaccessible /
-not-a-folder / trashed from the metadata already requested, leaving wording and throw-vs-null
+settings display — decides usability through that one seam, leaving wording and throw-vs-null
 to each caller. The Picker and rebind both fail closed on a trashed folder because an
 arbitrary id can reach them. The built-in top-level flow completes authorization and binding
-under one connecting gate so no filesystem is exposed between those steps.
-
-### createFs() contract
-
-Filesystem creation returns nothing unless both a refresh token (SecretStorage) and a remote
-vault folder id exist. It instantiates a per-target metadata store and seeds the auth with
-the stored tokens and expiry. It does **not** seed the cursor — the filesystem restores it
-with the file map from the metadata store on first init.
+under one connecting gate so no filesystem is exposed between those steps. Live Google Drive
+verification is covered by the opt-in e2e (`e2e/googledrive.e2e.ts`) — see
+[docs/e2e-testing.md](e2e-testing.md).

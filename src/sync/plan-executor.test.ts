@@ -4,6 +4,9 @@ import type { ExecutionContext, ResolvedConflict } from "./plan-executor";
 import type { CandidateFact, ConflictAction, PathObservation, SyncAction, SyncRecord } from "./types";
 import { createMockLocalFs, createMockRemoteFs, type MockFileSystem, createMockStateStore, addFile, readText, deferred, flush } from "../__mocks__/sync-test-helpers";
 import { AuthError, classifyHttpError } from "../fs/errors";
+import { backendError } from "../backend-api";
+import { toBackendError, backendErrorFromStatus } from "../fs/modules/error-shape";
+import { classifyBackendError } from "../fs/modules/error-bridge";
 import { AdaptivePool } from "../queue/async-queue";
 import {
 	admitBatchObservation,
@@ -17,6 +20,9 @@ import { buildSyncRecord } from "./state-committer";
 import { insertConflictSuffix } from "./conflict";
 import { sha256 } from "../utils/hash";
 import { conflictContractViolation } from "./conflict-action-contract";
+import { createChecksumRegistry } from "../fs/modules/checksum-registry";
+
+const checksumRegistry = createChecksumRegistry();
 
 function makeCtx(
 	overrides: Partial<ExecutionContext> = {},
@@ -39,6 +45,7 @@ function makeCtx(
 		sleep: () => Promise.resolve(),
 		rng: () => 0,
 		...overrides,
+		checksumRegistry,
 	};
 }
 
@@ -2520,6 +2527,23 @@ describe("withIoRetry (per-action in-cycle retry)", () => {
 		expect(writeSpy).toHaveBeenCalledTimes(1); // AuthError is rethrown immediately
 	});
 
+	it("aborts the cycle on a module-path auth BackendErrorShape", async () => {
+		const fatal = vi.fn();
+		const ctx = makeCtx({ onActionFatal: fatal });
+		const localFs = ctx.localFs as MockFileSystem;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
+		addFile(localFs, "x.md", "content");
+		// The module provider throws its structural shape through toBackendError; an
+		// auth failure must still abort (onActionFatal) and reject as an AuthError.
+		const writeSpy = vi.spyOn(remoteFs, "write").mockRejectedValue(
+			toBackendError(backendError("auth", "credentials expired")),
+		);
+
+		await expect(executePlan(pushPlan(), ctx)).rejects.toThrow(AuthError);
+		expect(fatal).toHaveBeenCalledTimes(1);
+		expect(writeSpy).toHaveBeenCalledTimes(1);
+	});
+
 	it("gives up after MAX_ACTION_RETRIES (3) → failed, without a cycle abort", async () => {
 		const ctx = makeCtx();
 		const localFs = ctx.localFs as MockFileSystem;
@@ -2547,6 +2571,36 @@ describe("withIoRetry (per-action in-cycle retry)", () => {
 
 		expect(result.succeeded).toHaveLength(1); // retried — proves ctx.classifyError is used
 		expect(writeSpy).toHaveBeenCalledTimes(2);
+	});
+
+	it("treats a module-thrown permanent error with a permanentCode like an HTTP-derived permanent (no in-cycle retry)", async () => {
+		// The production classifier for a module-backed provider: the public boundary
+		// shape first, then the transport/HTTP fallback.
+		const classify = (err: unknown) => classifyBackendError(err) ?? classifyHttpError(err);
+		const cases: ReadonlyArray<readonly [string, Error]> = [
+			[
+				"module permanent",
+				toBackendError(backendError("permanent", "Resumable upload: no upload URL in response", {
+					permanentCode: "googledrive.resumable_upload.missing_location",
+				})),
+			],
+			// The adapter's status-derived permanent (a non-5xx HTTP status), with no code.
+			["http-derived permanent", toBackendError(backendErrorFromStatus(400, "bad request"))],
+		];
+
+		for (const [label, error] of cases) {
+			const ctx = makeCtx({ classifyError: classify });
+			const localFs = ctx.localFs as MockFileSystem;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
+			addFile(localFs, "x.md", "content");
+			const writeSpy = vi.spyOn(remoteFs, "write").mockRejectedValue(error);
+
+			const result = await executePlan(pushPlan(), ctx);
+
+			// `stop` for `permanent`: the same failing action is not retried in-cycle.
+			expect(writeSpy, label).toHaveBeenCalledTimes(1);
+			expect(result.failed, label).toHaveLength(1);
+		}
 	});
 
 	it("signals the transfer pool (noteRateLimit) BEFORE sleeping, on a 429", async () => {

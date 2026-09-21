@@ -58,6 +58,27 @@ export function classifyFetchedGoogleDriveFolder(
 }
 
 /**
+ * The display warning for a bound folder the seam found present but not usable.
+ * Exhaustive over the fetched-file problems, so a new one cannot fall through to a
+ * silent ordinary path. Lives with the seam so the legacy provider and the module
+ * binding phrase it identically.
+ */
+export function describeFetchedGoogleDriveFolderProblem(
+	problem: GoogleDriveFetchedFolderProblem,
+): string {
+	switch (problem) {
+		case "not_folder":
+			return "The bound location is not a folder.";
+		case "trashed":
+			return "This folder is in Google Drive's Trash.";
+		default: {
+			const exhaustive: never = problem;
+			return `The bound location is not usable (${String(exhaustive)}).`;
+		}
+	}
+}
+
+/**
  * Read a folder by id and classify it. A 404 (gone / not granted) and a genuine 403
  * permission failure are returned as problems with the original error on `cause`.
  * A 403 that is actually a rate limit, and every other failure (auth, transient,

@@ -1,5 +1,6 @@
 import type { AirSyncSettings } from "../settings";
 import type { IFileSystem } from "../fs/interface";
+import type { ChecksumRegistry } from "../fs/modules/checksum-registry";
 import type { IBackendProvider } from "../fs/backend";
 import type { Logger } from "../logging/logger";
 import { AsyncMutex } from "../queue/async-queue";
@@ -43,6 +44,8 @@ export interface SyncOrchestratorDeps {
 	localFs: () => IFileSystem | null;
 	remoteFs: () => IFileSystem | null;
 	backendProvider: () => IBackendProvider | null;
+	/** The single checksum resolver shared by change detection, planning, and execution. */
+	checksumRegistry: ChecksumRegistry;
 	onStatusChange: (status: SyncStatus) => void;
 	onProgress: (text: string) => void;
 	notify: (message: string, durationMs?: number) => void;
@@ -387,6 +390,7 @@ export class SyncOrchestrator {
 				localFs,
 				remoteFs,
 				stateStore: this.stateStore,
+				checksumRegistry: this.deps.checksumRegistry,
 				changes: snapshot,
 				onRemoteContention: (announced) => contentions.push(...announced),
 			}, {
@@ -401,6 +405,7 @@ export class SyncOrchestrator {
 			conflictStrategy,
 			localFs,
 			remoteFs,
+			this.deps.checksumRegistry,
 			this.deps.logger,
 		);
 		const visiblePaths = new Set(planning.snapshot.scope.byEndpoint.keys());
@@ -459,6 +464,7 @@ export class SyncOrchestrator {
 		const ctx: ExecutionContext = {
 			localFs,
 			remoteFs,
+			checksumRegistry: this.deps.checksumRegistry,
 			committer: {
 				stateStore: this.stateStore,
 				enableThreeWayMerge: settings.enableThreeWayMerge,

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { spyRequestUrl, mockRes } from "./test-helpers.test";
+import { spyRequestUrl, mockRes, testTransport } from "./test-helpers.test";
 import type { Logger } from "../../logging/logger";
 
 vi.mock("obsidian");
@@ -12,7 +12,7 @@ describe("GoogleDriveClient error wrapping", () => {
 
 		const { GoogleDriveClient } = await import("./client");
 
-		const client = new GoogleDriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"), testTransport());
 		await expect(client.listFiles("folder-id")).rejects.toThrow(
 			"Google Drive API listFiles failed: Request failed"
 		);
@@ -29,7 +29,7 @@ describe("GoogleDriveClient error wrapping", () => {
 
 		const { GoogleDriveClient } = await import("./client");
 
-		const client = new GoogleDriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"), testTransport());
 		try {
 			await client.downloadFile("file-id");
 			expect.fail("should have thrown");
@@ -62,7 +62,7 @@ describe("GoogleDriveClient error wrapping", () => {
 		const mockRequestUrl = (await spyRequestUrl()).mockRejectedValue(originalError);
 
 		const { GoogleDriveClient } = await import("./client");
-		const client = new GoogleDriveClient(() => Promise.resolve("access"), logger);
+		const client = new GoogleDriveClient(() => Promise.resolve("access"), testTransport(), logger);
 		try {
 			await client.listFiles("folder-id");
 			expect.fail("should have thrown");
@@ -89,7 +89,7 @@ describe("GoogleDriveClient.uploadFile modifiedTime default", () => {
 
 		const { GoogleDriveClient } = await import("./client");
 
-		const client = new GoogleDriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"), testTransport());
 		const content = new TextEncoder().encode("hello").buffer.slice(0);
 
 		// Call without modifiedTime parameter
@@ -146,7 +146,7 @@ describe("GoogleDriveClient.listAllFiles parallelization", () => {
 			});
 		});
 
-		const client = new GoogleDriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"), testTransport());
 		const result = await client.listAllFiles("root");
 
 		// 3 folders + 3 files = 6 total
@@ -178,7 +178,7 @@ describe("GoogleDriveClient.listAllFiles parallelization", () => {
 			return Promise.resolve(mockRes({ files }));
 		});
 
-		const client = new GoogleDriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"), testTransport());
 		const result = await client.listAllFiles("root");
 
 		expect(result).toHaveLength(3);
@@ -199,7 +199,7 @@ describe("GoogleDriveClient.listAllFiles parallelization", () => {
 			return Promise.resolve(mockRes({ files: [], nextPageToken: "more" }));
 		});
 
-		const client = new GoogleDriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"), testTransport());
 		await expect(client.listAllFiles("root")).rejects.toThrow(/pagination exceeded/);
 		// Bounded at the cap rather than spinning forever.
 		expect(calls).toBe(LIST_PAGE_CAP);
@@ -226,7 +226,7 @@ describe("GoogleDriveClient resumable upload", () => {
 			}));
 		});
 
-		const client = new GoogleDriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"), testTransport());
 		const content = new ArrayBuffer(12 * 1024 * 1024);
 		const result = await client.uploadFile(
 			"large.bin",
@@ -260,7 +260,7 @@ describe("GoogleDriveClient resumable upload", () => {
 			}));
 		});
 
-		const client = new GoogleDriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"), testTransport());
 		const content = new ArrayBuffer(12 * 1024 * 1024);
 		const result = await client.uploadFile(
 			"large.bin",
@@ -288,7 +288,7 @@ describe("GoogleDriveClient resumable upload", () => {
 			mockRes({}, { status: 200, headers: { "X-Goog-Upload-Status": "active" } })
 		);
 
-		const client = new GoogleDriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"), testTransport());
 		const content = new ArrayBuffer(12 * 1024 * 1024);
 
 		try {
@@ -325,7 +325,7 @@ describe("GoogleDriveClient resumable upload", () => {
 			}));
 		});
 
-		const client = new GoogleDriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"), testTransport());
 		const content = new ArrayBuffer(6 * 1024 * 1024);
 
 		await expect(
@@ -351,7 +351,7 @@ describe("GoogleDriveClient resumable upload", () => {
 			}));
 		});
 
-		const client = new GoogleDriveClient(() => Promise.resolve("access"));
+		const client = new GoogleDriveClient(() => Promise.resolve("access"), testTransport());
 		const content = new ArrayBuffer(5 * 1024 * 1024 + 1);
 		const result = await client.uploadFile("medium.bin", "parent", content);
 
@@ -376,7 +376,7 @@ describe("GoogleDriveClient 401 retry", () => {
 
 		const { GoogleDriveClient } = await import("./client");
 		const getToken = vi.fn().mockResolvedValue("access");
-		const client = new GoogleDriveClient(getToken);
+		const client = new GoogleDriveClient(getToken, testTransport());
 
 		const result = await client.getChangesStartToken();
 		expect(result).toBe("token123");
@@ -395,7 +395,7 @@ describe("GoogleDriveClient 401 retry", () => {
 
 		const { GoogleDriveClient } = await import("./client");
 		const getToken = vi.fn().mockResolvedValue("access");
-		const client = new GoogleDriveClient(getToken);
+		const client = new GoogleDriveClient(getToken, testTransport());
 
 		await expect(client.getChangesStartToken()).rejects.toThrow("Google Drive API getChangesStartToken failed");
 		expect(getToken).toHaveBeenCalledTimes(2);
@@ -410,7 +410,7 @@ describe("GoogleDriveClient 401 retry", () => {
 
 		const { GoogleDriveClient } = await import("./client");
 		const getToken = vi.fn().mockResolvedValue("access");
-		const client = new GoogleDriveClient(getToken);
+		const client = new GoogleDriveClient(getToken, testTransport());
 
 		await expect(client.getChangesStartToken()).rejects.toThrow("Google Drive API getChangesStartToken failed");
 		expect(getToken).toHaveBeenCalledTimes(1);

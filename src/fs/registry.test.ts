@@ -3,72 +3,68 @@ import { initRegistry, getAllBackendProviders } from "./registry";
 import type { ISecretStore } from "./secret-store";
 import type { AirSyncSettings } from "../settings";
 import type { App } from "obsidian";
-import { remoteBackendFamilyOf } from "../../tests/fs/contracts/remote-backend-family";
-import { GoogleDriveFs } from "./googledrive";
+import type { Logger } from "../logging/logger";
+import { ManagedRemoteFs } from "./managed/managed-remote-fs";
+import { MANAGED_REMOTE_BACKEND_FAMILIES } from "../../tests/fs/contracts/remote-backend-family";
 
 vi.mock("obsidian");
 
-// A secret store that satisfies any backend's token lookup, so each provider's
-// createFs() can build its FS for the pairing check below (createFs returns null
-// without a refresh token).
+// A secret store that satisfies every module's token lookup, so each provider's
+// `isConnected`/`prepare` can build its managed FS.
 const connectedSecretStore: ISecretStore = {
 	getSecret: (id: string) =>
 		id.includes("refresh") ? "RT" : id.includes("access") ? "AT" : null,
 	setSecret: () => {},
 };
 
-// A "connected" settings: a bound folder + a future token expiry, plus custom-OAuth
-// fields so the custom backend builds too. Generic enough for every Google Drive-family
-// backend; extend it when a backend needs more to produce a non-null createFs().
 function connectedSettings(): AirSyncSettings {
 	return {
 		vaultId: "vault-1",
-		backendData: {
-			remoteVaultFolderId: "FID",
-			accessTokenExpiry: Date.now() + 3_600_000,
-			customClientId: "CID",
-			customClientSecret: "CS",
-		},
+		backendType: "googledrive",
+		backendData: { remoteVaultFolderId: "FID", authMode: "default" },
 	} as unknown as AirSyncSettings;
 }
 
 const mockApp = {} as App;
+const platform = { mobile: false };
+const settings = connectedSettings();
 
-describe("backend registry ↔ checkpoint-store pairing", () => {
+describe("backend module registry composition", () => {
 	beforeAll(() => {
-		initRegistry(connectedSecretStore);
+		initRegistry(connectedSecretStore, {
+			getSettings: () => settings,
+			saveSettings: () => Promise.resolve(),
+			getApp: () => mockApp,
+			getLogger: () => ({}) as unknown as Logger,
+			getVaultName: () => "Vault",
+			platform,
+			sink: () => undefined,
+		});
+	});
+
+	it("registers exactly the three canonical module ids and no legacy alias", () => {
+		const types = getAllBackendProviders().map((p) => p.type).sort();
+		expect(types).toEqual([...MANAGED_REMOTE_BACKEND_FAMILIES].sort());
+		for (const alias of ["googledrive-custom", "onedrive-custom", "dropbox-custom"]) {
+			expect(getAllBackendProviders().some((p) => p.type === alias)).toBe(false);
+		}
 	});
 
 	// The FS-side incremental checkpoint (`fs.checkpoint`) and the provider-side
 	// `clearCheckpointStore` are two halves of one durable store: the live FS clears it
 	// via resetCheckpoint, but the disconnect/switch path with NO live FS (expired auth)
 	// falls back to `provider.clearCheckpointStore(settings)`. They live on different
-	// types joined only at runtime (provider.createFs), so TS can't enforce that a
-	// checkpoint-bearing backend also ships the by-key clear. Pin it here: a backend that
-	// forgets clearCheckpointStore would silently orphan its store on a no-live-FS
-	// disconnect, leaving a stale checkpoint to mislead a later reconnect.
-	it("registers the built-in and custom-app variants of every backend", () => {
-		const types = getAllBackendProviders().map((p) => p.type);
-		expect(types).toEqual(
-			expect.arrayContaining([
-				"googledrive", "googledrive-custom",
-				"onedrive", "onedrive-custom",
-				"dropbox", "dropbox-custom",
-			]),
-		);
-	});
-
-	it("a backend ships clearCheckpointStore iff its FS carries a checkpoint", () => {
+	// types joined only at runtime, so TS can't enforce that a checkpoint-bearing
+	// backend also ships the by-key clear. Pin it here.
+	it("a module provider ships clearCheckpointStore iff its FS carries a checkpoint", async () => {
 		const providers = getAllBackendProviders();
-		expect(providers.length).toBeGreaterThan(0);
+		expect(providers.length).toBe(MANAGED_REMOTE_BACKEND_FAMILIES.length);
 
 		for (const provider of providers) {
-			const fs = provider.createFs(mockApp, connectedSettings(), undefined);
-			expect(
-				fs,
-				`createFs returned null for "${provider.type}" — extend connectedSettings() ` +
-					`so this backend builds an FS and the pairing can be checked.`,
-			).not.toBeNull();
+			expect(provider.isConnected(settings), `isConnected false for "${provider.type}"`).toBe(true);
+			await provider.prepare?.(mockApp, settings, undefined);
+			const fs = provider.createFs(mockApp, settings, undefined);
+			expect(fs, `createFs returned null for "${provider.type}"`).toBeInstanceOf(ManagedRemoteFs);
 
 			const hasCheckpoint = !!fs?.checkpoint;
 			const hasClear = !!provider.clearCheckpointStore;
@@ -84,21 +80,19 @@ describe("backend registry ↔ checkpoint-store pairing", () => {
 		}
 	});
 
-	it("every registered provider creates a filesystem covered by a remote contract family", () => {
+	it("maps every provider to a managed contract family through ManagedRemoteFs", async () => {
 		for (const provider of getAllBackendProviders()) {
-			const fs = provider.createFs(mockApp, connectedSettings(), undefined);
-			expect(fs, `createFs returned null for "${provider.type}"`).not.toBeNull();
+			expect(MANAGED_REMOTE_BACKEND_FAMILIES).toContain(
+				provider.type as (typeof MANAGED_REMOTE_BACKEND_FAMILIES)[number],
+			);
+			await provider.prepare?.(mockApp, settings, undefined);
+			const fs = provider.createFs(mockApp, settings, undefined);
 			expect(
-				fs && remoteBackendFamilyOf(fs),
-				`Backend "${provider.type}" creates an uncontracted filesystem implementation`,
-			).toBeDefined();
+				fs && fs instanceof ManagedRemoteFs,
+				`Backend "${provider.type}" does not expose the managed remote filesystem`,
+			).toBe(true);
 			void fs?.close?.();
 		}
 	});
 
-	it("does not treat an uncatalogued subclass as its parent contract family", () => {
-		class UncontractedGoogleDriveFs extends GoogleDriveFs {}
-		const fs = Object.create(UncontractedGoogleDriveFs.prototype) as GoogleDriveFs;
-		expect(remoteBackendFamilyOf(fs)).toBeUndefined();
-	});
 });

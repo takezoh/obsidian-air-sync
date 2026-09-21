@@ -1,6 +1,5 @@
-import { requestUrl } from "../../platform/obsidian";
-import type { RequestUrlParam, RequestUrlResponse } from "../../platform/obsidian";
-import type { Logger } from "../../logging/logger";
+import type { BackendLogger } from "../../backend-api";
+import type { HttpTransport, HttpTransportRequest, HttpTransportResponse } from "../http-transport";
 import { getHeader } from "../headers";
 import type {
 	OneDriveItem,
@@ -32,7 +31,7 @@ export type SleepFn = (ms: number) => Promise<void>;
 const defaultSleep: SleepFn = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
 /** Backoff for a 429: honor `Retry-After` (seconds) when present, else exponential; always capped. */
-function rateLimitDelayMs(res: RequestUrlResponse, attempt: number): number {
+function rateLimitDelayMs(res: HttpTransportResponse, attempt: number): number {
 	const header = getHeader(res.headers, "retry-after");
 	const retryAfter = header ? Number(header) : NaN;
 	const raw = Number.isFinite(retryAfter) && retryAfter >= 0 ? retryAfter * 1000 : 500 * 2 ** attempt;
@@ -51,7 +50,8 @@ function rateLimitDelayMs(res: RequestUrlResponse, attempt: number): number {
 export class OneDriveClient {
 	constructor(
 		private getToken: (forceRefresh?: boolean) => Promise<string>,
-		private logger?: Logger,
+		private transport: HttpTransport,
+		private logger?: BackendLogger,
 		private sleep: SleepFn = defaultSleep,
 	) {}
 
@@ -68,10 +68,10 @@ export class OneDriveClient {
 	 */
 	request = async (
 		op: string,
-		opts: RequestUrlParam,
+		opts: HttpTransportRequest,
 		state: { auth401Retried: boolean; rateLimitRetries: number } = { auth401Retried: false, rateLimitRetries: 0 },
 		skipAuth = false,
-	): Promise<RequestUrlResponse> => {
+	): Promise<HttpTransportResponse> => {
 		// `skipAuth` is for the resumable upload-session chunk PUTs: their `uploadUrl` is
 		// already pre-authenticated (a SAS-style URL), and Graph requires the bearer be
 		// OMITTED there. Every other call injects it (and can refresh+retry on a 401).
@@ -80,9 +80,9 @@ export class OneDriveClient {
 			const token = await this.getToken(state.auth401Retried);
 			headers = { ...opts.headers, Authorization: `Bearer ${token}` };
 		}
-		let res: RequestUrlResponse;
+		let res: HttpTransportResponse;
 		try {
-			res = await requestUrl({ ...opts, throw: false, headers });
+			res = await this.transport.request({ ...opts, throw: false, headers });
 		} catch (err) {
 			throw this.wrapTransport(op, err);
 		}

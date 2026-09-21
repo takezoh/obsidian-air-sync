@@ -1,7 +1,7 @@
 import { AuthError } from "../fs/errors";
 import type { IFileSystem } from "../fs/interface";
+import type { ChecksumRegistry } from "../fs/modules/checksum-registry";
 import type { FileEntity, RemoteChecksum } from "../fs/types";
-import { digest, isLocallyComputable } from "../utils/hash";
 import { checksumsEqual, contentKey } from "./content-identity";
 
 /** Attempt-local exact content capture shared by transfer and conflict execution. */
@@ -28,13 +28,22 @@ export class ContentProofError extends Error {
 	}
 }
 
-export async function bytesMatch(content: ArrayBuffer, entity: FileEntity): Promise<boolean> {
+export async function bytesMatch(
+	content: ArrayBuffer,
+	entity: FileEntity,
+	registry: ChecksumRegistry,
+): Promise<boolean> {
 	const key = contentKey(entity);
-	return content.byteLength === entity.size && key !== null && isLocallyComputable(key.algo) &&
-		await digest(content, key.algo) === key.value;
+	return content.byteLength === entity.size && key !== null && registry.has(key.algo) &&
+		await registry.compute(content, key.algo) === key.value;
 }
 
-export async function captureContentSnapshot(fs: IFileSystem, path: string, observed: FileEntity): Promise<ExactSnapshot> {
+export async function captureContentSnapshot(
+	fs: IFileSystem,
+	path: string,
+	observed: FileEntity,
+	registry: ChecksumRegistry,
+): Promise<ExactSnapshot> {
 	try {
 		const before = await fs.stat(path);
 		assertSameIdentity(before, observed, path);
@@ -42,8 +51,8 @@ export async function captureContentSnapshot(fs: IFileSystem, path: string, obse
 		const after = await fs.stat(path);
 		assertSameIdentity(after, before, path);
 		const key = stableContentKey(observed, before, after, path);
-		if (first.byteLength !== observed.size || (key && isLocallyComputable(key.algo) &&
-			await digest(first, key.algo) !== key.value)) {
+		if (first.byteLength !== observed.size || (key && registry.has(key.algo) &&
+			await registry.compute(first, key.algo) !== key.value)) {
 			throw new ContentProofError("proof_mismatch", `Content source bytes contradict admitted content: ${path}`);
 		}
 		if (key) return snapshot(path, after, first, { kind: "content_key", key });

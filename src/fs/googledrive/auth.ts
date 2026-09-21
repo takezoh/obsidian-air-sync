@@ -1,5 +1,5 @@
-import { requestUrl } from "../../platform/obsidian";
-import type { Logger } from "../../logging/logger";
+import type { BackendLogger } from "../../backend-api";
+import type { HttpTransport } from "../http-transport";
 import { assertTokenResponse } from "./types";
 import {
 	BaseOAuthTokenManager,
@@ -44,8 +44,14 @@ export interface IGoogleAuth {
  * provide the auth URL, callback handling, and refresh strategy.
  */
 abstract class GoogleAuthBase extends BaseOAuthTokenManager implements IGoogleAuth {
+	protected readonly transport: HttpTransport;
 	private authState: string | null = null;
 	private codeVerifier: string | null = null;
+
+	constructor(transport: HttpTransport) {
+		super();
+		this.transport = transport;
+	}
 
 	protected notAuthenticatedMessage(): string {
 		return "Not authenticated. Please connect to Google Drive first.";
@@ -76,7 +82,7 @@ abstract class GoogleAuthBase extends BaseOAuthTokenManager implements IGoogleAu
 		if (!token) return;
 
 		try {
-			await requestUrl({
+			await this.transport.request({
 				url: `https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(token)}`,
 				method: "POST",
 				headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -114,8 +120,8 @@ abstract class GoogleAuthBase extends BaseOAuthTokenManager implements IGoogleAu
  * CSRF state verification and token storage.
  */
 export class GoogleAuth extends GoogleAuthBase {
-	constructor(logger?: Logger) {
-		super();
+	constructor(transport: HttpTransport, logger?: BackendLogger) {
+		super(transport);
 		this.logger = logger;
 	}
 
@@ -186,7 +192,7 @@ export class GoogleAuth extends GoogleAuthBase {
 	protected async performRefresh(): Promise<string> {
 		this.logger?.info("Refreshing access token");
 		try {
-			const response = await requestUrl({
+			const response = await this.transport.request({
 				url: GOOGLE_DRIVE_AUTH.tokenRefreshUrl,
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
@@ -211,7 +217,8 @@ export class GoogleAuth extends GoogleAuthBase {
 export interface GoogleAuthDirectOptions {
 	clientId: string;
 	clientSecret: string;
-	logger?: Logger;
+	transport: HttpTransport;
+	logger?: BackendLogger;
 	scope?: string;
 	redirectUri?: string;
 	includeGrantedScopes?: boolean;
@@ -225,7 +232,7 @@ export class GoogleAuthDirect extends GoogleAuthBase {
 	private includeGrantedScopes: boolean;
 
 	constructor(options: GoogleAuthDirectOptions) {
-		super();
+		super(options.transport);
 		this.clientId = options.clientId;
 		this.clientSecret = options.clientSecret;
 		this.scope = options.scope || SCOPES;
@@ -278,7 +285,7 @@ export class GoogleAuthDirect extends GoogleAuthBase {
 		});
 
 		try {
-			const response = await requestUrl({
+			const response = await this.transport.request({
 				url: GOOGLE_TOKEN_URL,
 				method: "POST",
 				headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -307,7 +314,7 @@ export class GoogleAuthDirect extends GoogleAuthBase {
 	protected async performRefresh(): Promise<string> {
 		this.logger?.info("Refreshing access token (direct)");
 		try {
-			const response = await requestUrl({
+			const response = await this.transport.request({
 				url: GOOGLE_TOKEN_URL,
 				method: "POST",
 				headers: { "Content-Type": "application/x-www-form-urlencoded" },

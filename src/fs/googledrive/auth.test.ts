@@ -1,13 +1,12 @@
 import { describe, it, expect, vi } from "vitest";
-import { spyRequestUrl, mockRes, createMockSecretStore } from "./test-helpers.test";
-import type { GoogleDriveAuthProviderInternal, GoogleDriveCustomAuthProviderInternal } from "./test-helpers.test";
+import { spyRequestUrl, mockRes, testTransport } from "./test-helpers.test";
 
 vi.mock("obsidian");
 
 describe("GoogleAuth.handleAuthCallback", () => {
 	it("stores tokens when state matches", async () => {
 		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth();
+		const auth = new GoogleAuth(testTransport());
 		auth.setAuthState("my-csrf");
 
 		await auth.handleAuthCallback({
@@ -25,7 +24,7 @@ describe("GoogleAuth.handleAuthCallback", () => {
 
 	it("throws when authState is null", async () => {
 		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth();
+		const auth = new GoogleAuth(testTransport());
 
 		await expect(
 			auth.handleAuthCallback({
@@ -38,7 +37,7 @@ describe("GoogleAuth.handleAuthCallback", () => {
 
 	it("throws when state does not match", async () => {
 		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth();
+		const auth = new GoogleAuth(testTransport());
 		auth.setAuthState("correct-state");
 
 		await expect(
@@ -52,7 +51,7 @@ describe("GoogleAuth.handleAuthCallback", () => {
 
 	it("throws when state parameter is omitted", async () => {
 		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth();
+		const auth = new GoogleAuth(testTransport());
 		auth.setAuthState("expected-state");
 
 		await expect(
@@ -65,7 +64,7 @@ describe("GoogleAuth.handleAuthCallback", () => {
 
 	it("clears authState after successful callback", async () => {
 		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth();
+		const auth = new GoogleAuth(testTransport());
 		auth.setAuthState("csrf");
 
 		await auth.handleAuthCallback({
@@ -81,7 +80,7 @@ describe("GoogleAuth.handleAuthCallback", () => {
 describe("GoogleAuth.getAuthorizationUrl", () => {
 	it("returns a Google OAuth URL with state but no PKCE", async () => {
 		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth();
+		const auth = new GoogleAuth(testTransport());
 
 		const url = await auth.getAuthorizationUrl();
 
@@ -93,7 +92,7 @@ describe("GoogleAuth.getAuthorizationUrl", () => {
 
 	it("produces a URL-safe (base64url) state that survives redirect hops", async () => {
 		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth();
+		const auth = new GoogleAuth(testTransport());
 		await auth.getAuthorizationUrl();
 
 		const state = auth.getAuthState();
@@ -111,7 +110,7 @@ describe("GoogleAuth.getAuthorizationUrl", () => {
 
 	it("builds the top-level Google Picker OAuth flow for folder selection", async () => {
 		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth();
+		const auth = new GoogleAuth(testTransport());
 
 		const url = new URL(await auth.getFolderPickerAuthorizationUrl());
 
@@ -140,7 +139,7 @@ describe("GoogleAuth.getAccessToken concurrency", () => {
 		);
 
 		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth();
+		const auth = new GoogleAuth(testTransport());
 		auth.setTokens("refresh-token", "", 0);
 
 		const [t1, t2, t3] = await Promise.all([
@@ -169,7 +168,7 @@ describe("GoogleAuth.getAccessToken concurrency", () => {
 		);
 
 		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth();
+		const auth = new GoogleAuth(testTransport());
 		auth.setTokens("refresh-token", "", 0);
 
 		await expect(auth.getAccessToken()).rejects.toThrow("status 400");
@@ -202,7 +201,7 @@ describe("GoogleAuth.getAccessToken concurrency", () => {
 		);
 
 		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth();
+		const auth = new GoogleAuth(testTransport());
 		auth.setTokens("refresh-token", "", 0);
 
 		const now = Date.now();
@@ -245,7 +244,7 @@ describe("GoogleAuth.getAccessToken concurrency", () => {
 		);
 
 		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth();
+		const auth = new GoogleAuth(testTransport());
 		auth.setTokens("refresh-token", "", 0);
 
 		await expect(auth.getAccessToken()).rejects.toThrow("status 400");
@@ -259,145 +258,12 @@ describe("GoogleAuth.getAccessToken concurrency", () => {
 	});
 });
 
-describe("GoogleDriveProvider.completeAuth", () => {
-	it("rejects a fresh built-in OAuth callback that has no durable refresh token", async () => {
-		const { GoogleDriveProvider } = await import("./provider");
-		const { GoogleAuth } = await import("./auth");
-		const secretStore = createMockSecretStore();
-		const provider = new GoogleDriveProvider(secretStore);
-		const authInternal = provider.auth as unknown as GoogleDriveAuthProviderInternal;
-
-		authInternal.googleAuth = new GoogleAuth();
-		authInternal.googleAuth.setAuthState("saved-state");
-
-		await expect(provider.auth.completeAuth(
-			"https://callback?access_token=new-access&expires_in=3600&state=saved-state",
-			{ pendingAuthState: "saved-state" },
-		)).rejects.toThrow(/refresh token/i);
-	});
-
-	it("does not report success when SecretStorage drops the fresh refresh-token write", async () => {
-		const { GoogleDriveProvider } = await import("./provider");
-		const { GoogleAuth } = await import("./auth");
-		const provider = new GoogleDriveProvider({
-			getSecret: () => null,
-			setSecret: () => {},
-		});
-		const authInternal = provider.auth as unknown as GoogleDriveAuthProviderInternal;
-
-		authInternal.googleAuth = new GoogleAuth();
-		authInternal.googleAuth.setAuthState("saved-state");
-
-		await expect(provider.auth.completeAuth(
-			"https://callback?access_token=new-access&refresh_token=new-refresh&expires_in=3600&state=saved-state",
-			{ pendingAuthState: "saved-state" },
-		)).rejects.toThrow(/secret|refresh token/i);
-	});
-
-	it("keeps an existing durable refresh token when a reauthorization callback omits it", async () => {
-		const { GoogleDriveProvider } = await import("./provider");
-		const { GoogleAuth } = await import("./auth");
-		const secretStore = createMockSecretStore({
-			"air-sync-googledrive-refresh-token": "existing-refresh",
-		});
-		const provider = new GoogleDriveProvider(secretStore);
-		const authInternal = provider.auth as unknown as GoogleDriveAuthProviderInternal;
-
-		authInternal.googleAuth = new GoogleAuth();
-		authInternal.googleAuth.setTokens("existing-refresh", "", 0);
-		authInternal.googleAuth.setAuthState("saved-state");
-
-		await provider.auth.completeAuth(
-			"https://callback?access_token=new-access&expires_in=3600&state=saved-state",
-			{ pendingAuthState: "saved-state" },
-		);
-
-		expect(secretStore.getSecret("air-sync-googledrive-refresh-token"))
-			.toBe("existing-refresh");
-	});
-
-	it("restores CSRF state on existing auth that lacks it", async () => {
-		const { GoogleDriveProvider } = await import("./provider");
-		const { GoogleAuth } = await import("./auth");
-		const secretStore = createMockSecretStore();
-		const provider = new GoogleDriveProvider(secretStore);
-		const authInternal = provider.auth as unknown as GoogleDriveAuthProviderInternal;
-
-		const backendData = {
-			pendingAuthState: "saved-state",
-		};
-
-		authInternal.googleAuth = new GoogleAuth();
-		expect(authInternal.googleAuth.getAuthState()).toBeNull();
-
-		const result = await provider.auth.completeAuth(
-			"https://callback?access_token=new-access&refresh_token=new-refresh&expires_in=3600&state=saved-state",
-			backendData,
-		);
-
-		// Tokens are stored in SecretStorage, not returned in the result
-		expect(result.refreshToken).toBeUndefined();
-		expect(secretStore.getSecret("air-sync-googledrive-refresh-token")).toBe("new-refresh");
-		expect(result.accessTokenExpiry).toBeGreaterThan(0);
-		expect(authInternal.googleAuth.getAuthState()).toBeNull();
-	});
-
-	it("rejects empty callback", async () => {
-		const { GoogleDriveProvider } = await import("./provider");
-		const secretStore = createMockSecretStore();
-		const provider = new GoogleDriveProvider(secretStore);
-
-		await expect(
-			provider.auth.completeAuth("", {})
-		).rejects.toThrow("Auth callback is empty");
-	});
-});
-
-describe("GoogleDriveAuthProvider.getOrCreateGoogleAuth", () => {
-	it("reuses existing auth instance", async () => {
-		const { GoogleDriveProvider } = await import("./provider");
-		const { GoogleAuth } = await import("./auth");
-		const secretStore = createMockSecretStore();
-		const provider = new GoogleDriveProvider(secretStore);
-		const authInternal = provider.auth as unknown as GoogleDriveAuthProviderInternal;
-
-		const existingAuth = new GoogleAuth();
-		authInternal.googleAuth = existingAuth;
-
-		const data = {
-			accessTokenExpiry: 0,
-			remoteVaultFolderId: "folder",
-			pendingAuthState: "",
-			pendingFolderPickState: "",
-		};
-
-		const auth = provider.auth.getOrCreateGoogleAuth(data);
-		expect(auth).toBe(existingAuth);
-	});
-
-	it("creates auth when none exists", async () => {
-		const { GoogleDriveProvider } = await import("./provider");
-		const secretStore = createMockSecretStore();
-		const provider = new GoogleDriveProvider(secretStore);
-
-		const data = {
-			accessTokenExpiry: 0,
-			remoteVaultFolderId: "folder",
-			pendingAuthState: "",
-			pendingFolderPickState: "",
-		};
-
-		const auth = provider.auth.getOrCreateGoogleAuth(data);
-		expect(auth).toBeDefined();
-	});
-});
-
 describe("GoogleAuth.revokeToken", () => {
 	it("calls Google revoke endpoint", async () => {
 		const mockRequestUrl = (await spyRequestUrl()).mockResolvedValue(mockRes({}));
 
 		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth();
+		const auth = new GoogleAuth(testTransport());
 		auth.setTokens("my-refresh-token", "", 0);
 
 		await auth.revokeToken();
@@ -416,7 +282,7 @@ describe("GoogleAuth.revokeToken", () => {
 		);
 
 		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth();
+		const auth = new GoogleAuth(testTransport());
 		auth.setTokens("token", "", 0);
 
 		await expect(auth.revokeToken()).resolves.toBeUndefined();
@@ -428,7 +294,7 @@ describe("GoogleAuth.revokeToken", () => {
 		const mockRequestUrl = await spyRequestUrl();
 
 		const { GoogleAuth } = await import("./auth");
-		const auth = new GoogleAuth();
+		const auth = new GoogleAuth(testTransport());
 
 		await auth.revokeToken();
 		expect(mockRequestUrl).not.toHaveBeenCalled();
@@ -440,7 +306,7 @@ describe("GoogleAuth.revokeToken", () => {
 describe("GoogleAuthDirect.getAuthorizationUrl", () => {
 	it("uses custom client_id and includes PKCE S256 challenge", async () => {
 		const { GoogleAuthDirect } = await import("./auth");
-		const auth = new GoogleAuthDirect({ clientId: "custom-client-id", clientSecret: "custom-secret" });
+		const auth = new GoogleAuthDirect({ transport: testTransport(), clientId: "custom-client-id", clientSecret: "custom-secret" });
 
 		const url = await auth.getAuthorizationUrl();
 
@@ -465,7 +331,7 @@ describe("GoogleAuthDirect.getAuthorizationUrl", () => {
 describe("GoogleAuthDirect.getAuthorizationUrl with includeGrantedScopes", () => {
 	it("includes include_granted_scopes when enabled", async () => {
 		const { GoogleAuthDirect } = await import("./auth");
-		const auth = new GoogleAuthDirect({ clientId: "cid", clientSecret: "csecret", includeGrantedScopes: true });
+		const auth = new GoogleAuthDirect({ transport: testTransport(), clientId: "cid", clientSecret: "csecret", includeGrantedScopes: true });
 
 		const url = await auth.getAuthorizationUrl();
 
@@ -474,7 +340,7 @@ describe("GoogleAuthDirect.getAuthorizationUrl with includeGrantedScopes", () =>
 
 	it("omits include_granted_scopes when disabled", async () => {
 		const { GoogleAuthDirect } = await import("./auth");
-		const auth = new GoogleAuthDirect({ clientId: "cid", clientSecret: "csecret", includeGrantedScopes: false });
+		const auth = new GoogleAuthDirect({ transport: testTransport(), clientId: "cid", clientSecret: "csecret", includeGrantedScopes: false });
 
 		const url = await auth.getAuthorizationUrl();
 
@@ -483,7 +349,7 @@ describe("GoogleAuthDirect.getAuthorizationUrl with includeGrantedScopes", () =>
 
 	it("omits include_granted_scopes by default", async () => {
 		const { GoogleAuthDirect } = await import("./auth");
-		const auth = new GoogleAuthDirect({ clientId: "cid", clientSecret: "csecret" });
+		const auth = new GoogleAuthDirect({ transport: testTransport(), clientId: "cid", clientSecret: "csecret" });
 
 		const url = await auth.getAuthorizationUrl();
 
@@ -503,7 +369,7 @@ describe("GoogleAuthDirect.handleAuthCallback", () => {
 		);
 
 		const { GoogleAuthDirect } = await import("./auth");
-		const auth = new GoogleAuthDirect({ clientId: "my-client-id", clientSecret: "my-secret" });
+		const auth = new GoogleAuthDirect({ transport: testTransport(), clientId: "my-client-id", clientSecret: "my-secret" });
 		auth.setAuthState("csrf-state");
 		auth.setCodeVerifier("test-verifier-string");
 
@@ -534,7 +400,7 @@ describe("GoogleAuthDirect.handleAuthCallback", () => {
 
 	it("throws when code is missing", async () => {
 		const { GoogleAuthDirect } = await import("./auth");
-		const auth = new GoogleAuthDirect({ clientId: "id", clientSecret: "secret" });
+		const auth = new GoogleAuthDirect({ transport: testTransport(), clientId: "id", clientSecret: "secret" });
 		auth.setAuthState("state");
 		auth.setCodeVerifier("verifier");
 
@@ -545,7 +411,7 @@ describe("GoogleAuthDirect.handleAuthCallback", () => {
 
 	it("throws when code verifier is missing", async () => {
 		const { GoogleAuthDirect } = await import("./auth");
-		const auth = new GoogleAuthDirect({ clientId: "id", clientSecret: "secret" });
+		const auth = new GoogleAuthDirect({ transport: testTransport(), clientId: "id", clientSecret: "secret" });
 		auth.setAuthState("state");
 
 		await expect(
@@ -568,7 +434,7 @@ describe("GoogleAuthDirect.handleAuthCallback", () => {
 		const mockRequestUrl = (await spyRequestUrl()).mockRejectedValue(err);
 
 		const { GoogleAuthDirect } = await import("./auth");
-		const auth = new GoogleAuthDirect({ clientId: "id", clientSecret: "secret" });
+		const auth = new GoogleAuthDirect({ transport: testTransport(), clientId: "id", clientSecret: "secret" });
 		auth.setAuthState("state");
 		auth.setCodeVerifier("verifier");
 
@@ -587,7 +453,7 @@ describe("GoogleAuthDirect.handleAuthCallback", () => {
 		);
 
 		const { GoogleAuthDirect } = await import("./auth");
-		const auth = new GoogleAuthDirect({ clientId: "id", clientSecret: "secret" });
+		const auth = new GoogleAuthDirect({ transport: testTransport(), clientId: "id", clientSecret: "secret" });
 		auth.setAuthState("state");
 		auth.setCodeVerifier("verifier");
 
@@ -610,7 +476,7 @@ describe("GoogleAuthDirect._refreshToken", () => {
 		);
 
 		const { GoogleAuthDirect } = await import("./auth");
-		const auth = new GoogleAuthDirect({ clientId: "my-client", clientSecret: "my-secret" });
+		const auth = new GoogleAuthDirect({ transport: testTransport(), clientId: "my-client", clientSecret: "my-secret" });
 		auth.setTokens("my-refresh", "", 0);
 
 		const token = await auth.getAccessToken();
@@ -628,80 +494,4 @@ describe("GoogleAuthDirect._refreshToken", () => {
 	});
 });
 
-describe("GoogleDriveCustomProvider.completeAuth", () => {
-	it("exchanges code via GoogleAuthDirect with PKCE", async () => {
-		const mockRequestUrl = (await spyRequestUrl()).mockResolvedValue(
-			mockRes({
-				access_token: "custom-access",
-				refresh_token: "custom-refresh",
-				expires_in: 3600,
-				token_type: "Bearer",
-			})
-		);
 
-		const { GoogleDriveCustomProvider } = await import("./provider-custom");
-		const { GoogleAuthDirect } = await import("./auth");
-		const secretStore = createMockSecretStore({ cid: "cid-value", csecret: "csecret-value" });
-		const provider = new GoogleDriveCustomProvider(secretStore);
-		const authInternal = provider.auth as unknown as GoogleDriveCustomAuthProviderInternal;
-
-		authInternal.googleAuth = new GoogleAuthDirect({ clientId: "cid", clientSecret: "csecret" });
-		authInternal.googleAuth.setAuthState("csrf");
-		authInternal.googleAuth.setCodeVerifier("my-verifier");
-
-		const result = await provider.auth.completeAuth(
-			"https://callback?code=my-code&state=csrf",
-			{ customClientId: "cid", customClientSecret: "csecret" },
-		);
-
-		// Tokens are stored in SecretStorage, not returned in the result
-		expect(result.refreshToken).toBeUndefined();
-		expect(secretStore.getSecret("air-sync-googledrive-custom-refresh-token")).toBe("custom-refresh");
-		expect(secretStore.getSecret("air-sync-googledrive-custom-access-token")).toBe("custom-access");
-		expect(result.accessTokenExpiry).toBeGreaterThan(0);
-
-		// Verify code_verifier was sent in token exchange
-		const callBody = mockRequestUrl.mock.calls[0]?.[0];
-		const body = typeof callBody === "object" && callBody !== null && "body" in callBody
-			? (callBody as { body: string }).body : "";
-		expect(body).toContain("code_verifier=my-verifier");
-
-		mockRequestUrl.mockRestore();
-	});
-
-	it("restores code verifier from backendData on plugin reload", async () => {
-		const mockRequestUrl = (await spyRequestUrl()).mockResolvedValue(
-			mockRes({
-				access_token: "access",
-				refresh_token: "refresh",
-				expires_in: 3600,
-				token_type: "Bearer",
-			})
-		);
-
-		const { GoogleDriveCustomProvider } = await import("./provider-custom");
-		const secretStore = createMockSecretStore({ cid: "cid-value", csecret: "csecret-value" });
-		const provider = new GoogleDriveCustomProvider(secretStore);
-
-		// Simulate plugin reload: no in-memory auth, but backendData has persisted state
-		const result = await provider.auth.completeAuth(
-			"https://callback?code=code&state=persisted-state",
-			{
-				customClientId: "cid",
-				customClientSecret: "csecret",
-				pendingAuthState: "persisted-state",
-				pendingCodeVerifier: "persisted-verifier",
-			},
-		);
-
-		// Tokens stored in SecretStorage
-		expect(result.refreshToken).toBeUndefined();
-		expect(secretStore.getSecret("air-sync-googledrive-custom-refresh-token")).toBe("refresh");
-		const callBody = mockRequestUrl.mock.calls[0]?.[0];
-		const body = typeof callBody === "object" && callBody !== null && "body" in callBody
-			? (callBody as { body: string }).body : "";
-		expect(body).toContain("code_verifier=persisted-verifier");
-
-		mockRequestUrl.mockRestore();
-	});
-});

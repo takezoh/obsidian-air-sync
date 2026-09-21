@@ -1,4 +1,4 @@
-import type { Logger } from "../../logging/logger";
+import type { BackendLogger } from "../../backend-api";
 import type { OneDriveClient } from "./client";
 import type { OneDriveItem } from "./types";
 import { GraphApiError } from "./types";
@@ -12,7 +12,7 @@ import { GraphApiError } from "./types";
 export async function findOrCreateAppRootFolder(
 	client: OneDriveClient,
 	name: string,
-	logger?: Logger,
+	logger?: BackendLogger,
 ): Promise<OneDriveItem> {
 	const trimmed = name.trim();
 	if (!trimmed) {

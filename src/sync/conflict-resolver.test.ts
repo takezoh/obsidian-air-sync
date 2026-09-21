@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { prepareConflict, resolveConflict } from "./conflict-resolver";
+import {
+	prepareConflict as prepareConflictRaw, resolveConflict as resolveConflictRaw,
+	type ConflictResolverContext,
+} from "./conflict-resolver";
 import { hasRemoteChanged } from "./change-compare";
 import { buildSyncRecord } from "./state-committer";
 import type { ConflictExecutionPolicy, SyncRecord } from "./types";
@@ -10,6 +13,16 @@ import {
 	addFile,
 	readText,
 } from "../__mocks__/sync-test-helpers";
+import { createChecksumRegistry } from "../fs/modules/checksum-registry";
+
+const checksumRegistry = createChecksumRegistry();
+type ResolverContext = Omit<ConflictResolverContext, "checksumRegistry">;
+
+const prepareConflict = (ctx: ResolverContext) =>
+	prepareConflictRaw({ ...ctx, checksumRegistry });
+
+const resolveConflict = (ctx: ResolverContext, policy: ConflictExecutionPolicy) =>
+	resolveConflictRaw({ ...ctx, checksumRegistry }, policy);
 
 const AUTO_MERGE_POLICY: ConflictExecutionPolicy = { mode: "auto_merge", strategy: "auto_merge" };
 const DUPLICATE_POLICY: ConflictExecutionPolicy = { mode: "preserve", strategy: "duplicate" };

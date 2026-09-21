@@ -60,6 +60,16 @@ central `tests/fs/remote-backend-contracts.test.ts` unit composition root.
 - Mobile compatible (`isDesktopOnly: false`) — no Node/Electron APIs (lint-enforced).
 - Minimize network calls; require explicit disclosure. Use `requestUrl()`, never `fetch`.
 - Command IDs are immutable once published.
+- **The Backend Module API is the backend extension boundary.** `src/backend-api/`
+  (`BackendModule` / `BackendRuntimeContext` / `RemoteBackendAdapter`) is the public
+  contract; its imports must stay inside itself (guarded by
+  `backend-module-boundary-guard.test.mjs` in `npm run lint:bot-repro`). A backend
+  module implements provider operations only — never `IFileSystem`, the metadata cache,
+  cursor, scope, checkpoint, or stores; core owns those via `ManagedRemoteFs`. Module
+  runtime shape is validated (`src/fs/modules/validate-module.ts`), not merely typed.
+  Canonical ids are `googledrive`/`onedrive`/`dropbox`; `*-custom` are settings aliases
+  only and are never registered as modules. See
+  [adr-20260920-backend-module-boundary.md](docs/adr/adr-20260920-backend-module-boundary.md).
 - **Sync durable authority is closed to two states:** the remote delta cursor commits
   only after a wholly clean cycle, and each file's `SyncRecord` commits only after its
   admitted I/O succeeds. The remote metadata cache is a derived projection, written as

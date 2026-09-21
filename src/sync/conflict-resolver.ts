@@ -1,5 +1,6 @@
 /* eslint max-lines: ["error", 350] -- one resolver owns stable version capture, selected-strategy resolution, and verified preservation of those exact inputs. */
 import type { IFileSystem } from "../fs/interface";
+import type { ChecksumRegistry } from "../fs/modules/checksum-registry";
 import type { FileEntity } from "../fs/types";
 import type { Logger } from "../logging/logger";
 import { getFileExtension } from "../utils/path";
@@ -25,6 +26,7 @@ export interface ConflictResolverContext {
 	additionalRemote?: FileEntity;
 	additionalLocal?: FileEntity;
 	stateStore?: SyncStateStore;
+	checksumRegistry: ChecksumRegistry;
 	logger?: Logger;
 }
 
@@ -59,12 +61,15 @@ export type { ConflictResolutionResult };
 /** Bounded read-only capture; no path allocation, resolver call, or mutation. */
 export async function prepareConflict(ctx: ConflictResolverContext): Promise<PreparedConflict> {
 	if (!ctx.remote) throw new ContentProofError("proof_mismatch", "Conflict primary is absent");
-	const primary = await captureContentSnapshot(ctx.remoteFs, ctx.remotePath ?? ctx.remote.path, ctx.remote);
+	const primary = await captureContentSnapshot(
+		ctx.remoteFs, ctx.remotePath ?? ctx.remote.path, ctx.remote, ctx.checksumRegistry);
 	const additional = ctx.additionalRemote
-		? [await captureContentSnapshot(ctx.remoteFs, ctx.additionalRemote.path, ctx.additionalRemote)] as const
+		? [await captureContentSnapshot(
+			ctx.remoteFs, ctx.additionalRemote.path, ctx.additionalRemote, ctx.checksumRegistry)] as const
 		: [] as const;
 	const local = ctx.additionalLocal
-		? await captureContentSnapshot(ctx.localFs, ctx.additionalLocal.path, ctx.additionalLocal) : undefined;
+		? await captureContentSnapshot(
+			ctx.localFs, ctx.additionalLocal.path, ctx.additionalLocal, ctx.checksumRegistry) : undefined;
 	const obligations = Object.freeze([
 		obligation("primary", primary),
 		...additional.map((value) => obligation("additional", value)),
@@ -88,7 +93,9 @@ export async function resolveConflict(
 	ctx: ConflictResolverContext,
 	policy: ConflictExecutionPolicy,
 ): Promise<ConflictResolutionResult> {
-	const local = ctx.local ? await captureContentSnapshot(ctx.localFs, ctx.localPath ?? ctx.local.path, ctx.local) : undefined;
+	const local = ctx.local
+		? await captureContentSnapshot(ctx.localFs, ctx.localPath ?? ctx.local.path, ctx.local, ctx.checksumRegistry)
+		: undefined;
 	if (!ctx.remote) {
 		return { action: local ? "duplicated" : "kept_local", targetContent: local?.content, targetMtime: ctx.local?.mtime ?? 0,
 			verifiedOutputs: [], capturedInputs: { local } };
@@ -188,7 +195,7 @@ async function preserveAll(
 		await ctx.remoteFs.write(path, snapshot.content.slice(0), snapshot.entity.mtime);
 		for (const fs of [ctx.localFs, ctx.remoteFs]) {
 			const entity = await fs.stat(path);
-			if (!entity || (!await bytesMatch(snapshot.content, entity) &&
+			if (!entity || (!await bytesMatch(snapshot.content, entity, ctx.checksumRegistry) &&
 				!buffersEqual(snapshot.content, await fs.read(path)))) {
 				throw new ContentProofError("proof_mismatch", `Conflict output readback mismatch: ${path}`);
 			}

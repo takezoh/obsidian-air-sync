@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeAll } from "vitest";
+import type { App } from "obsidian";
 import { initRegistry, getAllBackendProviders } from "../fs/registry";
 import { getBackendSettingsRenderer } from "./backend-settings";
 import type { ISecretStore } from "../fs/secret-store";
+import type { AirSyncSettings } from "../settings";
+import type { Logger } from "../logging/logger";
 
 // A provider that lands in the registry with no settings renderer shows an EMPTY
 // settings panel — a silent UX drift. Since B2 the renderer is resolved straight
@@ -14,9 +17,21 @@ const mockSecretStore: ISecretStore = {
 	setSecret: () => {},
 };
 
+function testDeps() {
+	return {
+		getSettings: () => ({ backendData: {}, vaultId: "" }) as unknown as AirSyncSettings,
+		saveSettings: () => Promise.resolve(),
+		getApp: () => ({}) as App,
+		getLogger: () => ({}) as unknown as Logger,
+		getVaultName: () => "",
+		platform: { mobile: false },
+		sink: () => undefined,
+	};
+}
+
 describe("backend registry ↔ settings-renderer integrity", () => {
 	beforeAll(() => {
-		initRegistry(mockSecretStore);
+		initRegistry(mockSecretStore, testDeps());
 	});
 
 	it("every registered backend provider has a matching settings renderer", () => {

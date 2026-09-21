@@ -101,7 +101,7 @@ export class BackendManager {
 				return;
 			}
 
-			this.remoteFs = provider.createFs(this.deps.getApp(), settings, this.deps.getLogger());
+			this.remoteFs = await this.createRemoteFs(provider, settings);
 			if (this.remoteFs) {
 				// An identity change cleared the per-file SyncRecord baseline, so the next
 				// sync MUST cold-reconcile. Drop any checkpoint the new target's store may
@@ -326,10 +326,11 @@ export class BackendManager {
 
 		const settings = this.deps.getSettings();
 		this.connecting = true;
+		const provider = this.backendProvider;
 
 		try {
 			const backendData = settings.backendData;
-			const updates = await this.backendProvider.auth.completeAuth(
+			const updates = await provider.auth.completeAuth(
 				code,
 				backendData,
 			);
@@ -344,6 +345,11 @@ export class BackendManager {
 			// Close any FS from a prior connection before rebuilding — resetAll may have
 			// used its open connection, so reassigning without closing would leak it.
 			this.closeRemoteFs();
+
+			// Await asynchronous adapter creation here (the backend module builds its
+			// adapter), then validate the target against that adapter before it is
+			// exposed to the sync engine. Nothing is published until both succeed.
+			this.remoteFs = await this.createRemoteFs(provider, settings);
 
 			// A target that is already bound must be usable before it is exposed to the
 			// sync engine. The custom-OAuth id is typed by hand (never through the
@@ -365,14 +371,6 @@ export class BackendManager {
 				return;
 			}
 
-			// No remote-vault binding here: after auth the user picks the folder
-			// explicitly (default-folder button or the Picker). createFs returns null
-			// until a folder is bound, so the settings UI shows the folder-choice state.
-			this.remoteFs = this.backendProvider.createFs(
-				this.deps.getApp(),
-				settings,
-				this.deps.getLogger()
-			);
 			if (this.remoteFs) {
 				this.deps.onConnected(this.remoteFs);
 				// Record the synced identity now so a later same-session target change
@@ -411,6 +409,20 @@ export class BackendManager {
 		this.remoteFs?.close?.()?.catch((e: unknown) => {
 			this.deps.getLogger().warn("Failed to close backend", { error: e instanceof Error ? e.message : String(e) });
 		});
+	}
+
+	/**
+	 * Await any asynchronous adapter preparation at the connect boundary, then hand
+	 * back the remote FS the provider built. Backend modules create their adapter
+	 * asynchronously (`BackendModule.createAdapter`); a synchronous legacy provider
+	 * omits `prepare`, so `createFs` builds it directly.
+	 */
+	private async createRemoteFs(
+		provider: IBackendProvider,
+		settings: AirSyncSettings,
+	): Promise<IFileSystem | null> {
+		await provider.prepare?.(this.deps.getApp(), settings, this.deps.getLogger());
+		return provider.createFs(this.deps.getApp(), settings, this.deps.getLogger());
 	}
 
 	/**

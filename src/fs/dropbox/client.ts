@@ -1,6 +1,5 @@
-import { requestUrl } from "../../platform/obsidian";
-import type { RequestUrlParam, RequestUrlResponse } from "../../platform/obsidian";
-import type { Logger } from "../../logging/logger";
+import type { BackendLogger } from "../../backend-api";
+import type { HttpTransport, HttpTransportRequest, HttpTransportResponse } from "../http-transport";
 import { getHeader } from "../headers";
 import type {
 	DropboxEntry,
@@ -40,7 +39,7 @@ export type SleepFn = (ms: number) => Promise<void>;
 const defaultSleep: SleepFn = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
 /** Backoff for a 429: honor `Retry-After` (seconds) when present, else exponential; always capped. */
-function rateLimitDelayMs(res: RequestUrlResponse, attempt: number): number {
+function rateLimitDelayMs(res: HttpTransportResponse, attempt: number): number {
 	const header = getHeader(res.headers, "retry-after");
 	const retryAfter = header ? Number(header) : NaN;
 	const raw = Number.isFinite(retryAfter) && retryAfter >= 0 ? retryAfter * 1000 : 500 * 2 ** attempt;
@@ -91,7 +90,8 @@ function toDropboxTimestamp(mtime: number): string {
 export class DropboxClient {
 	constructor(
 		private getToken: (forceRefresh?: boolean) => Promise<string>,
-		private logger?: Logger,
+		private transport: HttpTransport,
+		private logger?: BackendLogger,
 		private sleep: SleepFn = defaultSleep,
 	) {}
 
@@ -108,13 +108,13 @@ export class DropboxClient {
 	 */
 	private async request(
 		op: string,
-		opts: RequestUrlParam,
+		opts: HttpTransportRequest,
 		state: { auth401Retried: boolean; rateLimitRetries: number } = { auth401Retried: false, rateLimitRetries: 0 },
-	): Promise<RequestUrlResponse> {
+	): Promise<HttpTransportResponse> {
 		const token = await this.getToken(state.auth401Retried);
-		let res: RequestUrlResponse;
+		let res: HttpTransportResponse;
 		try {
-			res = await requestUrl({
+			res = await this.transport.request({
 				...opts,
 				throw: false,
 				headers: { ...opts.headers, Authorization: `Bearer ${token}` },

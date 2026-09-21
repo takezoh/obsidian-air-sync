@@ -1,7 +1,8 @@
 import type { FileEntity, RemoteChecksum } from "../types";
-import type { Logger } from "../../logging/logger";
+import type { BackendLogger } from "../../backend-api";
 import { AuthError } from "../errors";
 import { describeErrorBody, logBackendErrorResponse, MAX_MESSAGE_BODY_CHARS } from "../backend-error-log";
+import { parseIsoTime } from "../modules/module-utils";
 
 /**
  * A Microsoft Graph `driveItem` (the subset Air Sync uses).
@@ -103,6 +104,8 @@ export class GraphApiError extends Error {
 		message: string,
 		readonly status: number,
 		readonly code: string,
+		/** Response headers, retained so a 429/503 `Retry-After` survives translation. */
+		readonly headers?: Record<string, string>,
 	) {
 		super(message);
 		this.name = "GraphApiError";
@@ -133,7 +136,7 @@ const AUTH_ERROR_CODES = new Set([
 export function assertOk(
 	res: { status: number; json?: unknown; text?: string; headers?: Record<string, string> },
 	op: string,
-	logger?: Logger,
+	logger?: BackendLogger,
 ): void {
 	if (res.status >= 200 && res.status < 300) return;
 	// Log the whole response first: whatever this function distils into the thrown
@@ -157,7 +160,7 @@ export function assertOk(
 	if (res.status === 401 || AUTH_ERROR_CODES.has(code)) {
 		throw new AuthError(message, 401);
 	}
-	throw new GraphApiError(message, res.status, code);
+	throw new GraphApiError(message, res.status, code, res.headers);
 }
 
 /** Whether an error is a Graph 410 Gone (delta cursor expired → resync required). */
@@ -189,9 +192,7 @@ export function toRemoteChecksum(item: OneDriveItem): RemoteChecksum | undefined
 
 /** Parse a Graph ISO8601 timestamp to epoch ms (0 if absent/invalid). */
 export function parseGraphTime(value: string | undefined): number {
-	if (!value) return 0;
-	const ms = Date.parse(value);
-	return Number.isNaN(ms) ? 0 : ms;
+	return parseIsoTime(value) ?? 0;
 }
 
 /** Percent-encode a vault-relative path for Graph's `:/path:` addressing (preserve `/`). */

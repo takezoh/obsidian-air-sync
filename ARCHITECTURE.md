@@ -30,13 +30,16 @@ One row per directory; see the layer diagram and per-doc references for module d
 | `config-sync.ts` | Experimental config-directory sync (augments dot-path scope and ignore patterns when enabled) plus the guard that keeps this plugin's own settings file from ever syncing. |
 | `sync/` | Four-stage sync (fact acquisition and scope projection; single-owner identity Admission; ordered component execution; per-action publication and clean-cycle checkpoint), plus conflict resolution/merge, orchestration, scheduler, state store, error classification, and conflict-history audit. |
 | `fs/` | Backend-agnostic contracts and lifecycle: `IFileSystem` and its optional capabilities, auth/provider interfaces, provider registry, neutral error classification, OAuth PKCE helper, settings-renderer contract, `BackendManager`, and SecretStorage-backed token wrappers. |
-| `tests/fs/` | Shared filesystem behaviour contracts, backend harnesses, the implementation-family catalog, and the required-contract matrix — kept outside `src/` to preserve the production/community-lint boundary. |
-| `fs/caching/` | Shared base for id-addressed remote backends (path↔id resolution, checkpoint lifecycle, derived metadata cache). Google Drive, Dropbox, and OneDrive build on it. Derived cache-address assignment is a separate pure concern: a contended address is resolved by a stated rule (provider-resolved spelling beats a request echo; ties by lowest stable id), applied across a claim set by cascading down the resolved parent chain. Every displacement is a **returned fact** naming the path, both stable ids, and the removed descendants; a displaced address is never reported as a provider deletion. |
+| `backend-api/` | The public Backend Module API: `BackendModule` / `BackendRuntimeContext` / `RemoteBackendAdapter` and the provider-neutral auth/binding/settings/errors/checksum types. Types-only, free of core internals, Obsidian, stores, and Node/Electron (guard-pinned). |
+| `fs/modules/` | Core side of the module boundary: the backend-module registry, the single built-in import root, runtime/http/secret/auth/pkce hosts, config-patch handling, checksum registry, and the compatibility owner for settings aliases and physical storage profiles. |
+| `fs/managed/` | The core-managed remote filesystem (`ManagedRemoteFs` over the shared caching base): normalized metadata cache and topology projection, delta projection, and the mutation bridge from path operations to adapter identity/version/destination inputs. |
+| `tests/fs/` | Shared filesystem behaviour contracts, backend harnesses, the implementation-family and module-definition catalogs, the auth matrix, and the required-contract matrix — kept outside `src/` to preserve the production/community-lint boundary. |
+| `fs/caching/` | Shared base for id-addressed remote backends (path↔id resolution, checkpoint lifecycle, derived metadata cache, order-independent delta apply). Google Drive, Dropbox, and OneDrive build on it. Derived cache-address assignment is a separate pure concern: a contended address is resolved by a stated rule (provider-resolved spelling beats a request echo; ties by lowest stable id), applied across a claim set by cascading down the resolved parent chain. Every displacement is a **returned fact** naming the path, both stable ids, and the removed descendants; a displaced address is never reported as a provider deletion. |
 | `fs/local/` | `LocalFs` (Obsidian Vault API wrapper) plus the raw adapter for dot-prefixed paths and authoritative actual-casing resolution when vault-index spellings collide. |
-| `fs/googledrive/` | The Google Drive backend (metadata cache, REST client, server + PKCE auth, incremental sync, resumable upload, remote-vault resolution). |
-| `fs/dropbox/` | The Dropbox backend (App Folder scope, id-only addressing, worker-less PKCE, path-keyed cache, cursor-based incremental sync). |
-| `fs/onedrive/` | The OneDrive backend (App Folder scope, Microsoft Graph, in-plugin PKCE, delta-query sync, locally-computed QuickXorHash). |
-| `ui/` | Settings UI: the main settings tab, the backend-connection section, and backend-specific settings and folder-pick modals. |
+| `fs/googledrive/` | The Google Drive backend module: declarative settings/auth/binding, the provider adapter, normalization, folder resolution, and resumable upload. |
+| `fs/dropbox/` | The Dropbox backend module (App Folder scope): adapter over the HTTP client, worker-less PKCE, and normalization. The vault is addressed solely by its **stable folder id** (`id:<id>/<subpath>` for every operation — no absolute path is stored), so a remote move/rename of the folder keeps syncing with no migration. Its path-addressed delta encodes a rename as a delete+add pair; the shared core cache applies upserts before deletes so detection is order-independent (ADR 0006). |
+| `fs/onedrive/` | The OneDrive backend module (App Folder scope, Microsoft Graph): adapter, in-plugin PKCE, chunked upload, remote-vault resolution, and normalization, with a locally-computed QuickXorHash. |
+| `ui/` | Settings UI: the main settings tab, the backend-connection section, the declarative Backend Module settings renderer, and folder-pick modals. |
 | `store/` | IndexedDB plumbing: transaction wrapper, generic metadata store, and deflate compression for stored 3-way merge base content. |
 | `logging/` | Structured log writer (`.airsync/logs/`). |
 | `queue/` | Concurrency primitives: bounded concurrency, AIMD concurrency with an optional byte budget, and `AsyncMutex`. |
@@ -96,7 +99,7 @@ One row per directory; see the layer diagram and per-doc references for module d
                      │
          ┌─────────────────────────────────────┐
          │                IFileSystem                │
-         │  LocalFs │ GoogleDriveFs │ DropboxFs │ OneDriveFs │
+          │  LocalFs │ ManagedRemoteFs (googledrive/onedrive/dropbox) │
          └───────────────────────────────────────────┘
 ```
 
@@ -135,9 +138,17 @@ slashes. The interface lives in `fs/interface.ts`; its non-obvious contract poin
 `IFileSystem` and `IBackendProvider`/`IAuthProvider` are the swappable-core boundary:
 main.ts and sync/ never import backend-specific modules directly. The provider's type is its
 stable registry key and also indexes settings and per-backend secrets; the registry is the
-source of truth and is injected with the secret store once at plugin load. Each `*-custom`
-variant is a thin subclass of a renderer-free base where the user supplies their own public
-PKCE client id (and, for OneDrive, the authority/account-type).
+source of truth and is injected with the secret store once at plugin load.
+
+The backend extension boundary is now the **Backend Module API v1**
+([design-backend-module-api.md](docs/design/design-backend-module-api.md)): a
+`BackendModule` implements provider operations through a `RemoteBackendAdapter`, and core
+owns the filesystem, normalized cache, cursor, scope, and checkpoint through
+`ManagedRemoteFs`
+([design-core-backend-integration.md](docs/design/design-core-backend-integration.md),
+[adr-20260920-backend-module-boundary.md](docs/adr/adr-20260920-backend-module-boundary.md)).
+The three canonical module ids are `googledrive` / `onedrive` / `dropbox`; the `*-custom`
+ids are settings aliases (`authMode: custom`), not separate providers.
 
 Key non-obvious decisions (full contracts in `fs/backend.ts` and `fs/auth.ts`):
 
@@ -145,6 +156,7 @@ Key non-obvious decisions (full contracts in `fs/backend.ts` and `fs/auth.ts`):
 - `settings.backendData` is one flat bag holding only the **active** backend's parameters; tokens live in SecretStorage. Switching backends hard-resets the bag and sweeps every backend's plugin-owned secrets, so the new backend starts disconnected and cannot reuse another's token under the wrong OAuth client.
 - OAuth completion and refresh-token rotation publish credentials only when the same SecretStorage key immediately reads back the exact candidate. This is an API-level postcondition, not proof of an OS-level flush. Custom PKCE attempts snapshot their nonsecret client/authority beside the pending verifier so callback exchange cannot drift with later settings edits.
 - Remote-vault binding is **explicit**, not automatic on connect: the user binds the convention folder or picks one. The folder is the sole binding; there is no `.airsync/metadata.json`. See [docs/google-drive-backend.md](docs/google-drive-backend.md).
+- The provider registry validates the built-in `BackendModule`s and wraps each in a core `BackendModuleProvider` (connection host + single `ManagedRemoteFs`); it is the production composition root and is initialized once at plugin load. See [adr-20260920-backend-module-boundary.md](docs/adr/adr-20260920-backend-module-boundary.md).
 
 ## Detailed documentation
 

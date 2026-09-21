@@ -1,6 +1,6 @@
 import type { OneDriveItem } from "./types";
 
-export { spyRequestUrl, mockRes, createMockSecretStore } from "../googledrive/test-helpers.test";
+export { spyRequestUrl, mockRes, createMockSecretStore, testTransport } from "../googledrive/test-helpers.test";
 
 /** Access private fields on OneDriveFs (inherited from CachingRemoteFs) in tests. */
 export interface OneDriveFsInternal {

@@ -3,7 +3,7 @@ import { classifyGoogleDriveError } from "./errors";
 import { decideRetry, sleep as defaultSleep } from "../errors";
 import { FOLDER_MIME, LIST_PAGE_CAP } from "./types";
 import type { GoogleDriveFile, GoogleDriveFileList } from "./types";
-import type { Logger } from "../../logging/logger";
+import type { BackendLogger } from "../../backend-api";
 
 /** Per-page retry attempts for the full-scan listing (rate-limit / transient). */
 const MAX_LIST_RETRIES = 3;
@@ -37,7 +37,7 @@ const REPEATED_ID_SAMPLE = 10;
 export async function listAllFiles(
 	listFiles: (folderId: string, pageToken?: string) => Promise<GoogleDriveFileList>,
 	rootFolderId: string,
-	opts: { sleepFn?: (ms: number) => Promise<void>; logger?: Logger } = {},
+	opts: { sleepFn?: (ms: number) => Promise<void>; logger?: BackendLogger } = {},
 ): Promise<GoogleDriveFile[]> {
 	const { sleepFn = defaultSleep, logger } = opts;
 	// Keyed by stable id, not a flat array: one file can be returned by two folder

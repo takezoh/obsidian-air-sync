@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import type { RequestUrlParam } from "obsidian";
-import { spyRequestUrl, mockRes, dbxFile, dbxFolder, untagged } from "./test-helpers";
+import { spyRequestUrl, mockRes, dbxFile, dbxFolder, untagged, testTransport } from "./test-helpers";
 import { AuthError } from "../errors";
 import { DropboxApiError } from "./types";
 import { MAX_RATE_LIMIT_RETRIES } from "./client";
@@ -14,7 +14,7 @@ afterEach(() => {
 async function makeClient(token = "tok") {
 	const { DropboxClient } = await import("./client");
 	// Inject a no-op sleep so 429 backoff retries run instantly in tests.
-	return new DropboxClient(() => Promise.resolve(token), undefined, () => Promise.resolve());
+	return new DropboxClient(() => Promise.resolve(token), testTransport(), undefined, () => Promise.resolve());
 }
 
 describe("DropboxClient error handling", () => {
@@ -60,7 +60,7 @@ describe("DropboxClient error handling", () => {
 			if (calls === 2) return Promise.resolve(mockRes({ error_summary: "too_many_requests/.." }, { status: 429, headers: { "retry-after": "3600" } }));
 			return Promise.resolve(mockRes({ entries: [], cursor: "c", has_more: false }));
 		});
-		const client = new DropboxClient(() => Promise.resolve("tok"), undefined, recordingSleep);
+		const client = new DropboxClient(() => Promise.resolve("tok"), testTransport(), undefined, recordingSleep);
 		await client.listFolder("", true);
 
 		expect(delays[0]).toBe(2000); // Retry-After: 2s honored verbatim

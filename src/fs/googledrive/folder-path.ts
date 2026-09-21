@@ -1,5 +1,5 @@
 import type { GoogleDriveClient } from "./client";
-import type { Logger } from "../../logging/logger";
+import type { BackendLogger } from "../../backend-api";
 import { isHttpError } from "./incremental-sync";
 import { classifyFetchedGoogleDriveFolder } from "./folder-usability";
 import type { GoogleDriveFetchedFolderProblem } from "./folder-usability";
@@ -51,7 +51,7 @@ export interface GoogleDriveFolderPath {
 export async function resolveFolderPath(
 	client: GoogleDriveClient,
 	folderId: string,
-	logger?: Logger,
+	logger?: BackendLogger,
 ): Promise<GoogleDriveFolderPath | null> {
 	let file;
 	try {

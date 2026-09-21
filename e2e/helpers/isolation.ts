@@ -46,7 +46,7 @@ export async function cleanupGoogleDriveParent(
 // ── Dropbox ───────────────────────────────────────────────────────────────
 //
 // Parent and child are created by ABSOLUTE path: `create_folder_v2` rejects an
-// `id:<folder>/<sub>` path (it requires `/path` or `ns:<n>`). DropboxFs itself
+// `id:<folder>/<sub>` path (it requires `/path` or `ns:<n>`). The Dropbox adapter
 // addresses by id, and a FRESHLY-created folder's id can transiently 400
 // ("did not match pattern") on an id-relative create until it propagates. The
 // contract drives a RetryingDropboxClient (dropbox-retry-client.ts) that retries

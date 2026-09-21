@@ -68,6 +68,16 @@ and exclusions based on maintenance scope. An unverified candidate MUST NOT be d
 as technically impossible, and a policy exclusion MUST NOT be described as a failed
 contract test. Investigated candidates are not a roadmap commitment.
 
+### Built-in vs external backends
+
+The three services above ship as **static built-in modules** maintained with Air Sync. The
+Backend Module API exists at v1 ([design-backend-module-api.md](design/design-backend-module-api.md)),
+but this release implements **no external backend loader**: there is no artifact
+discovery, dynamic import/eval, install/enable/disable UI, integrity manifest, or hot
+reload. Do not describe external JavaScript backends as a supported or delivered feature.
+Loading external artifacts is a future milestone and its requirements must not be used to
+widen or defer the built-in module boundary's completion criteria.
+
 ## Adding or reconsidering support
 
 Adding support requires an explicit target-user and maintenance-scope decision, concrete

@@ -8,6 +8,15 @@ import type { ErrorClassification } from "./errors";
 import type { IBackendSettingsRenderer } from "./settings-renderer";
 
 /**
+ * Environment facts core uses to decide host behavior. Core-only: a module never
+ * sees host platform/locale/version. `mobile` selects how an external auth URL is
+ * opened (in-place navigation on mobile, a new browser tab on desktop).
+ */
+export interface BackendPlatformInfo {
+	readonly mobile: boolean;
+}
+
+/**
  * The bound remote target's display location. `path` is human-readable and
  * best-effort. `warning` is an optional non-fatal note to show with the location
  * when the target is present but not usable (e.g. Google Drive keeps a trashed
@@ -37,6 +46,14 @@ export interface IBackendProvider {
 	 * Returns null if the backend is not fully configured.
 	 */
 	createFs(app: App, settings: AirSyncSettings, logger?: Logger): IFileSystem | null;
+
+	/**
+	 * Await any asynchronous backing (e.g. a backend module's `createAdapter`)
+	 * needed before {@link createFs} can return an instance. Optional: a provider
+	 * that builds synchronously omits it. The connect boundary awaits it so no
+	 * adapter is ever created synchronously.
+	 */
+	prepare?(app: App, settings: AirSyncSettings, logger?: Logger): Promise<void>;
 
 	/** Whether credentials are present and the backend is ready to sync */
 	isConnected(settings: AirSyncSettings): boolean;

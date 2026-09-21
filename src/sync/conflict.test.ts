@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { generateConflictPath, insertConflictSuffix } from "./conflict";
-import { resolveConflict } from "./conflict-resolver";
+import { resolveConflict as resolveConflictRaw, type ConflictResolverContext } from "./conflict-resolver";
 import {
 	createMockLocalFs, createMockRemoteFs, type MockFileSystem,
 	createMockStateStore,
@@ -8,6 +8,14 @@ import {
 	readText,
 } from "../__mocks__/sync-test-helpers";
 import type { ConflictExecutionPolicy, SyncRecord } from "./types";
+import { createChecksumRegistry } from "../fs/modules/checksum-registry";
+
+const checksumRegistry = createChecksumRegistry();
+
+const resolveConflict = (
+	ctx: Omit<ConflictResolverContext, "checksumRegistry">,
+	policy: ConflictExecutionPolicy,
+) => resolveConflictRaw({ ...ctx, checksumRegistry }, policy);
 
 const AUTO_MERGE_POLICY: ConflictExecutionPolicy = { mode: "auto_merge", strategy: "auto_merge" };
 

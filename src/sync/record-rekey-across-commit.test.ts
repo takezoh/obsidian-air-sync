@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import "fake-indexeddb/auto";
-import { collectChanges } from "./change-detector";
+import {
+	collectChanges as collectChangesRaw, type ChangeDetectorDeps, type ChangeSet,
+	type CollectChangesOptions,
+} from "./change-detector";
 import { LocalChangeTracker } from "./local-tracker";
-import { prepareSyncCycleSnapshotForExecution } from "./sync-cycle-planning";
+import { prepareSyncCycleSnapshotForExecution as prepareSyncCycleSnapshotForExecutionRaw } from "./sync-cycle-planning";
 import { admitBatchObservation } from "./plan-admission";
-import { executePlan } from "./plan-executor";
+import { executePlan as executePlanRaw, type ExecutionContext } from "./plan-executor";
 import { SyncStateStore } from "./state";
 import {
 	addFile,
@@ -14,6 +17,33 @@ import {
 	type MockFileSystem,
 } from "../__mocks__/sync-test-helpers";
 import type { RenamePair, SyncRecord } from "./types";
+import { createChecksumRegistry } from "../fs/modules/checksum-registry";
+import type { IFileSystem } from "../fs/interface";
+import type { ConflictStrategy } from "./types";
+import type { ScopeProjectionPolicy } from "./scope-projection";
+
+const checksumRegistry = createChecksumRegistry();
+
+const collectChanges = (
+	deps: Omit<ChangeDetectorDeps, "checksumRegistry">,
+	opts?: CollectChangesOptions,
+) => collectChangesRaw({ ...deps, checksumRegistry }, opts);
+
+const executePlan = (
+	plan: Parameters<typeof executePlanRaw>[0],
+	ctx: Omit<ExecutionContext, "checksumRegistry">,
+) => executePlanRaw(plan, { ...ctx, checksumRegistry });
+
+const prepareSyncCycleSnapshotForExecution = (
+	changeSet: ChangeSet,
+	namespace: string,
+	policy: ScopeProjectionPolicy,
+	strategy: ConflictStrategy,
+	localFs: IFileSystem,
+	remoteFs: IFileSystem,
+) => prepareSyncCycleSnapshotForExecutionRaw(
+	changeSet, namespace, policy, strategy, localFs, remoteFs, checksumRegistry,
+);
 
 /**
  * What the correspondence does across the commit boundary. A committed

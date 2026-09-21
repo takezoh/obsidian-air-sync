@@ -1,6 +1,6 @@
-import { requestUrl } from "../../platform/obsidian";
 import type { ISecretStore } from "../secret-store";
-import type { Logger } from "../../logging/logger";
+import type { BackendLogger } from "../../backend-api";
+import type { HttpTransport } from "../http-transport";
 import { AuthError } from "../errors";
 import { logBackendErrorResponse } from "../backend-error-log";
 import { BaseOAuthTokenManager, extractTokenErrorDetail } from "../oauth-pkce";
@@ -62,8 +62,9 @@ export function buildOneDriveAuthorizeUrl(opts: {
 export class OneDriveAuth extends BaseOAuthTokenManager {
 	constructor(
 		private clientId: string,
+		private transport: HttpTransport,
 		private authority: string = DEFAULT_ONEDRIVE_AUTHORITY,
-		logger?: Logger,
+		logger?: BackendLogger,
 	) {
 		super();
 		this.logger = logger;
@@ -86,7 +87,7 @@ export class OneDriveAuth extends BaseOAuthTokenManager {
 	 * can capture the redirect directly.
 	 */
 	async exchangeCode(code: string, codeVerifier: string, redirectUri: string = ONEDRIVE_AUTH.redirectUri): Promise<void> {
-		const res = await requestUrl({
+		const res = await this.transport.request({
 			url: tokenUrlFor(this.authority),
 			method: "POST",
 			throw: false,
@@ -112,7 +113,7 @@ export class OneDriveAuth extends BaseOAuthTokenManager {
 		this.logger?.info("Refreshing OneDrive access token");
 		let res;
 		try {
-			res = await requestUrl({
+			res = await this.transport.request({
 				url: tokenUrlFor(this.authority),
 				method: "POST",
 				throw: false,
@@ -153,12 +154,17 @@ export class OneDriveAuth extends BaseOAuthTokenManager {
  * the provider clears the stored secrets on disconnect.
  */
 export class OneDriveAuthProvider extends PkceAuthProvider<OneDriveAuth> {
-	constructor(secretStore: ISecretStore, clientId: string = ONEDRIVE_AUTH.clientId, logger?: Logger) {
-		super(secretStore, BACKEND_TYPE, clientId, logger);
+	constructor(
+		secretStore: ISecretStore,
+		transport: HttpTransport,
+		clientId: string = ONEDRIVE_AUTH.clientId,
+		logger?: BackendLogger,
+	) {
+		super(secretStore, BACKEND_TYPE, clientId, transport, logger);
 	}
 
-	protected createAuth(clientId: string, _backendData: Record<string, unknown>, logger?: Logger): OneDriveAuth {
-		return new OneDriveAuth(clientId, DEFAULT_ONEDRIVE_AUTHORITY, logger);
+	protected createAuth(clientId: string, _backendData: Record<string, unknown>, logger?: BackendLogger): OneDriveAuth {
+		return new OneDriveAuth(clientId, this.transport, DEFAULT_ONEDRIVE_AUTHORITY, logger);
 	}
 
 	protected resolveAttemptAuthority(_backendData: Record<string, unknown>): string | undefined {

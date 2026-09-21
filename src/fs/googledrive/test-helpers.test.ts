@@ -1,6 +1,8 @@
 import { vi } from "vitest";
 import type { RequestUrlResponse } from "obsidian";
 import type { ISecretStore } from "../secret-store";
+import type { HttpTransport } from "../http-transport";
+import { createPlatformTransport } from "../platform-http-transport";
 
 /** Simplified requestUrl type for test mocks (avoids RequestUrlResponsePromise complexity) */
 type MockableRequestUrl = (request: string | import("obsidian").RequestUrlParam) => Promise<RequestUrlResponse>;
@@ -9,6 +11,15 @@ type MockableRequestUrl = (request: string | import("obsidian").RequestUrlParam)
 export async function spyRequestUrl() {
 	const obsidian = await import("obsidian");
 	return vi.spyOn(obsidian as unknown as { requestUrl: MockableRequestUrl }, "requestUrl");
+}
+
+/**
+ * The transport seam over the mocked `obsidian.requestUrl`. Backend clients/auth no
+ * longer import the Obsidian host directly, so tests inject this and keep spying on
+ * `obsidian.requestUrl` exactly as before the seam was introduced.
+ */
+export function testTransport(): HttpTransport {
+	return createPlatformTransport();
 }
 
 /** Shorthand to build a partial RequestUrlResponse for mocks */

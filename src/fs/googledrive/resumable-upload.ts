@@ -1,5 +1,5 @@
-import type { RequestUrlParam, RequestUrlResponse } from "../../platform/obsidian";
-import type { Logger } from "../../logging/logger";
+import type { BackendLogger } from "../../backend-api";
+import type { HttpTransportRequest, HttpTransportResponse } from "../http-transport";
 import { getHeader, headerKeys } from "../headers";
 import type { GoogleDriveFile } from "./types";
 import { assertGoogleDriveFile, buildUploadMetadata } from "./types";
@@ -14,9 +14,9 @@ export interface ResumableUploadDeps {
 	getToken: (forceRefresh?: boolean) => Promise<string>;
 	request: (
 		operation: string,
-		opts: RequestUrlParam
-	) => Promise<RequestUrlResponse>;
-	logger?: Logger;
+		opts: HttpTransportRequest
+	) => Promise<HttpTransportResponse>;
+	logger?: BackendLogger;
 }
 
 /**

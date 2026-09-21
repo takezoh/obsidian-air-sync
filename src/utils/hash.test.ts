@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { sha1, sha256, digest, dropboxContentHash, isLocallyComputable } from "./hash";
+import { sha1, sha256, dropboxContentHash } from "./hash";
 import { quickXorHashBase64 } from "./quickxor";
+import { createChecksumRegistry } from "../fs/modules/checksum-registry";
 
 function buf(s: string): ArrayBuffer {
 	return new TextEncoder().encode(s).buffer;
@@ -20,25 +21,30 @@ describe("hash utils", () => {
 		expect(await sha1(buf("abc"))).toBe("a9993e364706816aba3e25717850c26c9cd0d89d");
 	});
 
-	it("digest dispatches by algorithm", async () => {
-		expect(await digest(buf("abc"), "md5")).toBe("900150983cd24fb0d6963f7d28e17f72");
-		expect(await digest(buf("abc"), "sha1")).toBe("a9993e364706816aba3e25717850c26c9cd0d89d");
-		expect(await digest(buf("abc"), "sha256")).toBe(await sha256(buf("abc")));
-		expect(await digest(buf("abc"), "dropbox")).toBe(await dropboxContentHash(buf("abc")));
-		expect(await digest(buf("abc"), "quickxor")).toBe(quickXorHashBase64(buf("abc")));
+	it("registry computes by algorithm", async () => {
+		const registry = createChecksumRegistry();
+		expect(await registry.compute(buf("abc"), "md5")).toBe("900150983cd24fb0d6963f7d28e17f72");
+		expect(await registry.compute(buf("abc"), "sha1")).toBe("a9993e364706816aba3e25717850c26c9cd0d89d");
+		expect(await registry.compute(buf("abc"), "sha256")).toBe(await sha256(buf("abc")));
+		expect(await registry.compute(buf("abc"), "dropbox")).toBe(await dropboxContentHash(buf("abc")));
+		expect(await registry.compute(buf("abc"), "quickxor")).toBe(quickXorHashBase64(buf("abc")));
 	});
 
-	it("digest throws for opaque (not locally computable)", async () => {
-		await expect(digest(buf("abc"), "opaque")).rejects.toThrow();
+	it("registry rejects opaque and unknown algorithms (fail closed)", async () => {
+		const registry = createChecksumRegistry();
+		await expect(registry.compute(buf("abc"), "opaque")).rejects.toThrow();
+		await expect(registry.compute(buf("abc"), "unknown")).rejects.toThrow();
 	});
 
-	it("isLocallyComputable is false only for opaque", () => {
-		expect(isLocallyComputable("md5")).toBe(true);
-		expect(isLocallyComputable("sha1")).toBe(true);
-		expect(isLocallyComputable("sha256")).toBe(true);
-		expect(isLocallyComputable("dropbox")).toBe(true);
-		expect(isLocallyComputable("quickxor")).toBe(true);
-		expect(isLocallyComputable("opaque")).toBe(false);
+	it("registry has core ids and refuses unknown/opaque", () => {
+		const registry = createChecksumRegistry();
+		expect(registry.has("md5")).toBe(true);
+		expect(registry.has("sha1")).toBe(true);
+		expect(registry.has("sha256")).toBe(true);
+		expect(registry.has("dropbox")).toBe(true);
+		expect(registry.has("quickxor")).toBe(true);
+		expect(registry.has("opaque")).toBe(false);
+		expect(registry.has("unknown")).toBe(false);
 	});
 });
 

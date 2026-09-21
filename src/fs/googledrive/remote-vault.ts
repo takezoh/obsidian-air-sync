@@ -1,5 +1,5 @@
 import type { GoogleDriveClient } from "./client";
-import type { Logger } from "../../logging/logger";
+import type { BackendLogger } from "../../backend-api";
 import type { RemoteVaultResolution } from "../remote-vault-contract";
 import { REMOTE_VAULT_ROOT } from "../remote-vault-contract";
 import { FOLDER_MIME } from "./types";
@@ -21,7 +21,7 @@ export async function resolveGoogleDriveRemoteVault(
 	client: GoogleDriveClient,
 	vaultName: string,
 	cachedFolderId: string | undefined,
-	logger?: Logger,
+	logger?: BackendLogger,
 ): Promise<RemoteVaultResolution> {
 	if (cachedFolderId) {
 		return resolveLinked(client, cachedFolderId);
@@ -78,7 +78,7 @@ async function resolveByName(
 	client: GoogleDriveClient,
 	rootFolderId: string,
 	vaultName: string,
-	logger?: Logger,
+	logger?: BackendLogger,
 ): Promise<RemoteVaultResolution> {
 	const folder = await findOrCreateFolder(client, rootFolderId, vaultName);
 	logger?.info("Bound remote vault by name", { folderId: folder.id, vaultName });

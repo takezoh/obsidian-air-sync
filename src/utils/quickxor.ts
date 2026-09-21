@@ -5,7 +5,8 @@
  * quickXorHash locally the OneDrive backend has no locally-reproducible checksum
  * and cross-side content dedup (change-detector's `enrichHashesForInitialMatch`)
  * can never fire — every pre-existing identical file would re-conflict on first
- * sync. Implemented here so `digest(content, "quickxor")` matches Graph's value.
+ * sync. Implemented here so the checksum registry's `quickxor` algorithm matches
+ * Graph's value.
  *
  * QuickXorHash is a 160-bit hash: each input byte is XORed into a rotating bit
  * offset that advances by 11 bits per byte position, then the total length is

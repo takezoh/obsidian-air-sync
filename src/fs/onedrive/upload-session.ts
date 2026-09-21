@@ -1,4 +1,4 @@
-import type { RequestUrlParam, RequestUrlResponse } from "../../platform/obsidian";
+import type { HttpTransportRequest, HttpTransportResponse } from "../http-transport";
 import type { OneDriveItem } from "./types";
 import { encodeRelPath } from "./types";
 
@@ -11,10 +11,10 @@ const CHUNK_SIZE = 10 * 320 * 1024; // 3.2 MiB — a multiple of 320 KiB, under 
 interface SessionCtx {
 	request: (
 		op: string,
-		opts: RequestUrlParam,
+		opts: HttpTransportRequest,
 		state?: { auth401Retried: boolean; rateLimitRetries: number },
 		skipAuth?: boolean,
-	) => Promise<RequestUrlResponse>;
+	) => Promise<HttpTransportResponse>;
 	graphApi: string;
 }
 
@@ -52,7 +52,7 @@ export async function uploadSession(
 	if (!uploadUrl) throw new Error("OneDrive createUploadSession returned no uploadUrl");
 
 	const total = content.byteLength;
-	let last: RequestUrlResponse | undefined;
+	let last: HttpTransportResponse | undefined;
 	for (let start = 0; start < total; start += CHUNK_SIZE) {
 		const end = Math.min(start + CHUNK_SIZE, total);
 		last = await ctx.request(

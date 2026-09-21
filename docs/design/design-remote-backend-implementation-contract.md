@@ -102,6 +102,37 @@ intended least-privilege mode cannot expose one. The feed and the full checkpoin
 lifecycle travel together; a partial delta capability or an empty-cursor steady-state
 COLD loop is forbidden for a supported backend.
 
+### Provider behavior vs core obligations (module boundary)
+
+Under the Backend Module API v1, this contract splits by owner. A backend **module**
+implements provider operations through a `RemoteBackendAdapter` — it reports provider
+facts and performs provider mutations. Core owns the observable `IFileSystem`, the
+normalized metadata cache, topology/identity projection, the delta cursor, scope
+fingerprint, priority observation, and the atomic checkpoint lifecycle. A module is
+therefore **not required to implement `IFileSystem` or subclass `CachingRemoteFs`**;
+doing so is not a conformance path.
+
+The behavioural requirements below remain the acceptance criteria for a supported
+backend, but for a module backend they are satisfied by **core's `ManagedRemoteFs`** plus
+the module's adapter contract, not by provider class inheritance:
+
+- The `RB-FS-*` outcomes (`list`/`stat`/`write`/`mkdir`/`delete`/`rename`, path model,
+  `FileEntity` truthfulness, identity/path authority, reserved-path rejection, detached
+  priority observation) are produced by `ManagedRemoteFs` from normalized
+  `RemoteObject`s. A module supplies the equivalent provider operations: complete
+  `listAll`, `getChanges`, `getById`/`getByPath`, version-bound `read`, and conditional
+  create/update/mkdir/move/delete.
+- The `RB-CHK-*` checkpoint and scope obligations are core-owned and identical for every
+  backend. A module never implements `hasCheckpoint`/`commitCheckpoint`/`abortWorkingView`/
+  `resetCheckpoint`, scope persistence, or store transactions.
+- The `RB-SVC-*` service prerequisites and the checksum/error contracts are enforced at
+  the adapter boundary: a module normalizes provider DTOs, registers its checksums, and
+  translates provider errors into the public taxonomy.
+
+See [design-backend-module-api.md](design-backend-module-api.md) for the adapter contract
+and [design-core-backend-integration.md](design-core-backend-integration.md) for the
+core-owned filesystem, cache, and checkpoint.
+
 ### Reference implementation evidence
 
 The production backends all separate a locally reproducible content checksum from a
@@ -380,14 +411,16 @@ acquisition shape, algorithm, provider scope, and wire representation vary.
 A backend is supportable only when all of the following evidence exists on the same
 implementation tree.
 
-1. Add the exact filesystem constructor to
-   [`tests/fs/contracts/remote-backend-family.ts`](../../tests/fs/contracts/remote-backend-family.ts).
-   Provider aliases that create the same constructor share one family; subclasses do
-   not inherit conformance implicitly.
-2. Add four backend adapters under `tests/fs/<backend>/` and register every cell in the
-   sole composition root,
+1. Add the validated `BackendModule` to the catalog in
+   [`tests/fs/contracts/remote-backend-family.ts`](../../tests/fs/contracts/remote-backend-family.ts)
+   (`REMOTE_BACKEND_MODULES`, keyed by the module's canonical id). Conformance is keyed
+   by module id, not by a filesystem constructor.
+2. Add four backend contract harnesses under `tests/fs/<backend>/` (the
+   `managed.contract-harness.ts` registrations) and register every cell in the sole
+   composition root,
    [`tests/fs/remote-backend-contracts.test.ts`](../../tests/fs/remote-backend-contracts.test.ts):
-   `filesystem`, `caching`, `changeDetection`, and `priorityObservation`.
+   `filesystem`, `caching`, `changeDetection`, and `priorityObservation` — all run over
+   the module's real adapter and core `ManagedRemoteFs`.
 3. Run shared contracts against the real filesystem implementation over faithful fakes
    at the typed-client/transport boundary. Do not reimplement the filesystem in the
    fake, inspect private cache state as proof, make the fake more generous than the real
@@ -396,10 +429,12 @@ implementation tree.
    local bytes, proves equality and inequality against the remote checksum, and asserts
    that no remote content read occurred. Make each new assertion load-bearing by a
    RED-first or mutation witness.
-4. Register every built-in/custom provider in `src/fs/registry.ts`, extend
+4. Add the module to `BUILTIN_BACKEND_MODULES` (`src/fs/modules/builtin-modules.ts`),
+   which `src/fs/registry.ts` validates and wraps in a `BackendModuleProvider`. Extend
    `src/fs/registry.test.ts` construction data and expected types, and keep the generic
-   registry guard green. A checkpoint-bearing filesystem must pair with
-   `clearCheckpointStore`.
+   registry guard green. The `*-custom` ids are settings aliases (`authMode: custom`)
+   and must never be registered as modules. A checkpoint-bearing filesystem must pair
+   with `clearCheckpointStore`.
 5. Add backend-specific unit coverage for wire validation, auth completion and secret
    publication, root binding, error classification, pagination/reset behaviour,
    provider-specific rename/casing, and API-route fidelity of detached priority lookup.

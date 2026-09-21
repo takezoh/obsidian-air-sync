@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	captureBatchObservation,
 	prepareSyncCycleSnapshot,
-	prepareSyncCycleSnapshotForExecution,
+	prepareSyncCycleSnapshotForExecution as prepareSyncCycleSnapshotForExecutionRaw,
 	type BatchObservation,
 } from "./sync-cycle-planning";
 import { logChangeDetection } from "./sync-cycle-diagnostics";
@@ -11,6 +11,23 @@ import type { MixedEntity, ScopeDisposition, ScopeProjection, SyncRecord } from 
 import { admitBatchObservation } from "./plan-admission";
 import { addFile, createMockLocalFs, createMockRemoteFs, deferred, flush } from "../__mocks__/sync-test-helpers";
 import { sha256 } from "../utils/hash";
+import { createChecksumRegistry } from "../fs/modules/checksum-registry";
+import type { IFileSystem } from "../fs/interface";
+import type { ConflictStrategy } from "./types";
+import type { ScopeProjectionPolicy } from "./scope-projection";
+
+const checksumRegistry = createChecksumRegistry();
+
+const prepareSyncCycleSnapshotForExecution = (
+	changeSet: ChangeSet,
+	namespace: string,
+	policy: ScopeProjectionPolicy,
+	strategy: ConflictStrategy,
+	localFs: IFileSystem,
+	remoteFs: IFileSystem,
+) => prepareSyncCycleSnapshotForExecutionRaw(
+	changeSet, namespace, policy, strategy, localFs, remoteFs, checksumRegistry,
+);
 
 function cannotMutateObservation(observation: BatchObservation): void {
 	// @ts-expect-error -- the Observation boundary is deeply readonly at compile time.

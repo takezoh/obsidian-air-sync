@@ -3,7 +3,10 @@ import "fake-indexeddb/auto";
 import { SyncOrchestrator } from "./orchestrator";
 import type { SyncOrchestratorDeps } from "./orchestrator";
 import { collectChanges } from "./change-detector";
+import { createChecksumRegistry } from "../fs/modules/checksum-registry";
 import { prepareSyncCycleSnapshot } from "./sync-cycle-planning";
+
+const checksumRegistry = createChecksumRegistry();
 import { admitBatchObservation } from "./plan-admission";
 import { LocalChangeTracker } from "./local-tracker";
 import {
@@ -73,6 +76,7 @@ function createDeps(
 		localFs: () => localFs,
 		remoteFs: () => remoteFs,
 		backendProvider: () => null,
+		checksumRegistry,
 		onStatusChange: vi.fn(),
 		onProgress: vi.fn(),
 		notify: vi.fn(),
@@ -942,7 +946,8 @@ describe("SyncOrchestrator", () => {
 			});
 			const renameRemote = vi.spyOn(remoteFs, "rename");
 			const changes = await collectChanges({
-				localFs, remoteFs, stateStore: orchestrator.state, changes: tracker.snapshot(),
+				localFs, remoteFs, stateStore: orchestrator.state, checksumRegistry,
+				changes: tracker.snapshot(),
 			}, { forceFullScan: true });
 			const planning = prepareSyncCycleSnapshot(changes, "test:root", {
 				ignorePatterns: [],

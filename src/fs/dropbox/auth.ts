@@ -1,6 +1,6 @@
-import { requestUrl } from "../../platform/obsidian";
 import type { ISecretStore } from "../secret-store";
-import type { Logger } from "../../logging/logger";
+import type { BackendLogger } from "../../backend-api";
+import type { HttpTransport } from "../http-transport";
 import { AuthError } from "../errors";
 import { logBackendErrorResponse } from "../backend-error-log";
 import { BaseOAuthTokenManager, extractTokenErrorDetail } from "../oauth-pkce";
@@ -47,7 +47,7 @@ export function buildDropboxAuthorizeUrl(opts: {
  * class supplies only Dropbox's wire protocol. One instance per FS lifetime.
  */
 export class DropboxAuth extends BaseOAuthTokenManager {
-	constructor(private clientId: string, logger?: Logger) {
+	constructor(private clientId: string, private transport: HttpTransport, logger?: BackendLogger) {
 		super();
 		this.logger = logger;
 	}
@@ -69,7 +69,7 @@ export class DropboxAuth extends BaseOAuthTokenManager {
 	 * loopback so a headless CLI can capture the redirect directly.
 	 */
 	async exchangeCode(code: string, codeVerifier: string, redirectUri: string = DROPBOX_AUTH.redirectUri): Promise<void> {
-		const res = await requestUrl({
+		const res = await this.transport.request({
 			url: TOKEN_URL,
 			method: "POST",
 			throw: false,
@@ -94,7 +94,7 @@ export class DropboxAuth extends BaseOAuthTokenManager {
 		this.logger?.info("Refreshing Dropbox access token");
 		let res;
 		try {
-			res = await requestUrl({
+			res = await this.transport.request({
 				url: TOKEN_URL,
 				method: "POST",
 				throw: false,
@@ -126,7 +126,7 @@ export class DropboxAuth extends BaseOAuthTokenManager {
 	async revokeToken(): Promise<void> {
 		if (!this.accessToken) return;
 		try {
-			await requestUrl({
+			await this.transport.request({
 				url: REVOKE_URL,
 				method: "POST",
 				throw: false,
@@ -144,12 +144,17 @@ export class DropboxAuth extends BaseOAuthTokenManager {
  * Dropbox's token manager and authorize URL.
  */
 export class DropboxAuthProvider extends PkceAuthProvider<DropboxAuth> {
-	constructor(secretStore: ISecretStore, clientId: string = DROPBOX_AUTH.clientId, logger?: Logger) {
-		super(secretStore, BACKEND_TYPE, clientId, logger);
+	constructor(
+		secretStore: ISecretStore,
+		transport: HttpTransport,
+		clientId: string = DROPBOX_AUTH.clientId,
+		logger?: BackendLogger,
+	) {
+		super(secretStore, BACKEND_TYPE, clientId, transport, logger);
 	}
 
-	protected createAuth(clientId: string, _backendData: Record<string, unknown>, logger?: Logger): DropboxAuth {
-		return new DropboxAuth(clientId, logger);
+	protected createAuth(clientId: string, _backendData: Record<string, unknown>, logger?: BackendLogger): DropboxAuth {
+		return new DropboxAuth(clientId, this.transport, logger);
 	}
 
 	protected buildAuthorizeUrl(

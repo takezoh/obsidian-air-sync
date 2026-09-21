@@ -1,20 +1,16 @@
 /**
- * Algorithm of a remote-provided content checksum.
+ * Algorithm id of a remote-provided content checksum.
  *
- * `"dropbox"` is Dropbox's `content_hash`: the file is split into 4 MiB blocks,
- * each block is SHA-256'd, the raw block digests are concatenated, and the
- * concatenation is SHA-256'd (hex). Unlike `"opaque"` it IS reproducible from
- * local content, so it powers cross-side dedup; it is distinct from `"sha256"`
- * (a plain hash of the whole file), hence its own algo tag.
+ * Core-standard ids are `"sha256"`, `"sha1"`, `"md5"`, `"dropbox"` (Dropbox's
+ * 4 MiB-block SHA-256 tree), and `"quickxor"` (Microsoft QuickXorHash base64).
+ * `"opaque"` is a backend-internal value that cannot be reproduced locally.
  *
- * `"quickxor"` is Microsoft's QuickXorHash (base64) — the only content hash a
- * personal OneDrive returns. Like `"dropbox"` it IS reproducible from local
- * content (see {@link ../utils/quickxor}), so it powers cross-side dedup.
- *
- * `"opaque"` is a backend-internal value (e.g. pCloud's content hash) that
- * cannot be reproduced from local content.
+ * A backend module may declare additional namespaced ids
+ * (`<module-id>:<algorithm>`). Locally-reproducibility and digest computation are
+ * resolved by the injected `ChecksumRegistry` (`registry.has` / `registry.compute`),
+ * NOT by a fixed switch or a type union — an unregistered id fails closed.
  */
-export type ChecksumAlgo = "md5" | "sha1" | "sha256" | "dropbox" | "quickxor" | "opaque";
+export type ChecksumAlgo = string;
 
 /** A content checksum provided by a remote backend, tagged with its algorithm. */
 export interface RemoteChecksum {

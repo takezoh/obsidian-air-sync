@@ -1,5 +1,6 @@
 import type { IFileSystem } from "../fs/interface";
 import type { AddressDisplacement } from "../fs/caching/claim-set-assignment";
+import type { ChecksumRegistry } from "../fs/modules/checksum-registry";
 import type { FileEntity } from "../fs/types";
 import type { CandidateFact, IdentityEvidence, MixedEntity, PathObservation, SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
@@ -46,6 +47,7 @@ export interface ChangeDetectorDeps {
 	localFs: IFileSystem;
 	remoteFs: IFileSystem;
 	stateStore: SyncStateStore;
+	checksumRegistry: ChecksumRegistry;
 	changes: TrackerSnapshot;
 	onRemoteIdentityEvidence?: (evidence: readonly IdentityEvidence[]) => void;
 	/**
@@ -147,10 +149,8 @@ export async function collectChanges(
 		changeSet.entries, changeSet.observations, changeSet.identityEvidence, deps.localFs, deps.remoteFs,
 	);
 	// Hash enrichment operates only on exact entries and cannot upgrade observations.
-	changeSet.hashEnrichment = await enrichHashesForInitialMatch(changeSet.entries, deps.localFs);
-	await enrichHashesForRenames(
-		changeSet.entries, changeSet.observations, deps.localFs, deps.remoteFs, changeSet.identityEvidence,
-	);
+	changeSet.hashEnrichment = await enrichHashesForInitialMatch(changeSet.entries, deps.localFs, deps.checksumRegistry);
+	await enrichHashesForRenames(changeSet.entries, changeSet.observations, deps.localFs, deps.remoteFs, changeSet.identityEvidence, deps.checksumRegistry);
 	const candidateEvidence = completeIdentityEvidence(
 		changeSet.identityEvidence,
 		changeSet.observations,

@@ -1,47 +1,77 @@
-import type { IBackendProvider } from "./backend";
+import type { App } from "../platform/obsidian";
+import type { AirSyncSettings } from "../settings";
+import type { Logger } from "../logging/logger";
+import type { BackendPlatformInfo, IBackendProvider } from "./backend";
 import type { ISecretStore } from "./secret-store";
-import { GoogleDriveProvider } from "./googledrive/provider";
-import { GoogleDriveCustomProvider } from "./googledrive/provider-custom";
-import { DropboxProvider } from "./dropbox/provider";
-import { DropboxCustomProvider } from "./dropbox/provider-custom";
-import { OneDriveProvider } from "./onedrive/provider";
-import { OneDriveCustomProvider } from "./onedrive/provider-custom";
+import { BackendModuleRegistry } from "./modules/registry";
+import { BUILTIN_BACKEND_MODULES } from "./modules/builtin-modules";
+import { BackendModuleProvider } from "./modules/backend-module-provider";
+import type { BackendModuleProviderDeps } from "./modules/backend-module-provider";
+import type { RuntimeLogLevel } from "./modules/runtime-host";
 
 /**
- * Registry of available backend providers.
- * New backends are added here — no changes needed in main.ts or sync/.
- * Call `initRegistry()` once during plugin load to inject the secret store.
+ * Production backend composition.
+ *
+ * The three canonical backend modules (`googledrive` / `onedrive` / `dropbox`)
+ * are validated and registered through the public `BackendModuleRegistry` and
+ * wrapped in the core `BackendModuleProvider`, which owns the connection host and
+ * the single `ManagedRemoteFs`. The legacy `IBackendProvider` registrations are
+ * gone; only the three module-backed providers exist.
+ *
+ * The `*-custom` ids are settings aliases, never registered here.
  */
+export interface BackendRegistryDeps {
+	getSettings: () => AirSyncSettings;
+	saveSettings: () => Promise<void>;
+	getApp: () => App;
+	getLogger: () => Logger;
+	getVaultName: () => string;
+	platform: BackendPlatformInfo;
+	sink: (level: RuntimeLogLevel, message: string, moduleId: string) => void;
+}
+
 let providers: IBackendProvider[] = [];
 let providerMap = new Map<string, IBackendProvider>();
 
-/** Initialize the provider registry with the given secret store. */
-export function initRegistry(secretStore: ISecretStore): void {
-	providers = [
-		// Built-in backends first, then the custom-app variants grouped below them — the
-		// registration order drives the backend selector dropdown.
-		new GoogleDriveProvider(secretStore),
-		new OneDriveProvider(secretStore),
-		new DropboxProvider(secretStore),
-		new GoogleDriveCustomProvider(secretStore),
-		new OneDriveCustomProvider(secretStore),
-		new DropboxCustomProvider(secretStore),
-	];
-	providerMap = new Map<string, IBackendProvider>();
-	for (const p of providers) {
-		if (providerMap.has(p.type)) continue;
-		providerMap.set(p.type, p);
+/**
+ * Validate and register the built-in modules, then build their production
+ * providers. Called once during plugin load. Every dependency is required — the
+ * production composition root must never fall back to a test stub (`{} as App`,
+ * a no-op `saveSettings`, a no-op logger), which would silently break a real vault.
+ */
+export function initRegistry(secretStore: ISecretStore, deps: BackendRegistryDeps): void {
+	const registry = new BackendModuleRegistry();
+	for (const module of BUILTIN_BACKEND_MODULES) {
+		const result = registry.register(module);
+		if (!result.ok) {
+			throw new Error(
+				`Built-in backend module "${module.id}" failed registration: ` +
+					result.issues.map((issue) => `${issue.path}: ${issue.message}`).join("; "),
+			);
+		}
 	}
+
+	const resolved: BackendModuleProviderDeps = {
+		secretStore,
+		getSettings: deps.getSettings,
+		saveSettings: deps.saveSettings,
+		getApp: deps.getApp,
+		getLogger: deps.getLogger,
+		getVaultName: deps.getVaultName,
+		platform: deps.platform,
+		sink: deps.sink,
+	};
+
+	providers = registry.list().map((module) => new BackendModuleProvider(module, resolved));
+	providerMap = new Map(providers.map((provider) => [provider.type, provider]));
 }
 
-/** Get a backend provider by type, or undefined if unknown */
-export function getBackendProvider(
-	type: string
-): IBackendProvider | undefined {
+/** Get a backend provider by canonical module id, or undefined if unknown. */
+export function getBackendProvider(type: string): IBackendProvider | undefined {
 	return providerMap.get(type);
 }
 
-/** Get all registered backend providers (returns a copy) */
+/** Get all registered backend providers (returns a copy). */
 export function getAllBackendProviders(): readonly IBackendProvider[] {
 	return [...providers];
 }

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import type { RequestUrlParam } from "obsidian";
-import { spyRequestUrl, mockRes, createMockSecretStore } from "./test-helpers";
+import { spyRequestUrl, mockRes, createMockSecretStore, testTransport } from "./test-helpers";
 import { AuthError } from "../errors";
 
 vi.mock("obsidian");
@@ -13,7 +13,7 @@ afterEach(() => {
 async function makeProvider(secrets: Record<string, string> = {}) {
 	const { OneDriveAuthProvider } = await import("./auth");
 	const store = createMockSecretStore(secrets);
-	return { auth: new OneDriveAuthProvider(store, "test-client-id"), store };
+	return { auth: new OneDriveAuthProvider(store, testTransport(), "test-client-id"), store };
 }
 
 const TOKEN_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
@@ -136,7 +136,7 @@ describe("OneDriveAuth refresh lifecycle", () => {
 	it("refreshes on demand using only client_id + refresh_token (no secret)", async () => {
 		const { OneDriveAuth } = await import("./auth");
 		const spy = (await spyRequestUrl()).mockResolvedValue(mockRes({ access_token: "AT2", expires_in: 3600 }));
-		const auth = new OneDriveAuth("test-client-id");
+		const auth = new OneDriveAuth("test-client-id", testTransport());
 		auth.setTokens("RT", "AT", 0); // expired → forces a refresh
 
 		const token = await auth.getAccessToken(false);
@@ -152,7 +152,7 @@ describe("OneDriveAuth refresh lifecycle", () => {
 	it("dedups concurrent refreshes into a single token request", async () => {
 		const { OneDriveAuth } = await import("./auth");
 		const spy = (await spyRequestUrl()).mockResolvedValue(mockRes({ access_token: "AT2", expires_in: 3600 }));
-		const auth = new OneDriveAuth("test-client-id");
+		const auth = new OneDriveAuth("test-client-id", testTransport());
 		auth.setTokens("RT", "AT", 0);
 
 		const [a, b] = await Promise.all([auth.getAccessToken(false), auth.getAccessToken(false)]);
@@ -167,7 +167,7 @@ describe("OneDriveAuth refresh lifecycle", () => {
 		const spy = (await spyRequestUrl()).mockResolvedValue(
 			mockRes({ error: "invalid_grant", error_description: "expired" }, { status: 400 }),
 		);
-		const auth = new OneDriveAuth("test-client-id");
+		const auth = new OneDriveAuth("test-client-id", testTransport());
 		auth.setTokens("RT", "AT", 0);
 
 		await expect(auth.getAccessToken(false)).rejects.toBeInstanceOf(AuthError);

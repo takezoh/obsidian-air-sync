@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import type { RequestUrlParam } from "obsidian";
-import { spyRequestUrl, mockRes, createMockSecretStore } from "./test-helpers";
+import { spyRequestUrl, mockRes, createMockSecretStore, testTransport } from "./test-helpers";
 
 vi.mock("obsidian");
 
@@ -12,7 +12,7 @@ afterEach(() => {
 async function makeProvider(secrets: Record<string, string> = {}) {
 	const { DropboxAuthProvider } = await import("./auth");
 	const store = createMockSecretStore(secrets);
-	return { auth: new DropboxAuthProvider(store, "test-client-id"), store };
+	return { auth: new DropboxAuthProvider(store, testTransport(), "test-client-id"), store };
 }
 
 const ATTEMPT_IDENTITY = { backendType: "dropbox", clientId: "test-client-id" };

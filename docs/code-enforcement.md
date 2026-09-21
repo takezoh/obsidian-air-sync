@@ -107,6 +107,44 @@ corresponding `tests/fs/<backend>/` directory. Production coverage includes only
 while the central `tests/fs/remote-backend-contracts.test.ts` composition root remains a
 discovered unit test.
 
+### Backend Module API boundary (v1)
+
+The public extension boundary is `src/backend-api/` (`BackendModule`,
+`BackendRuntimeContext`, `RemoteBackendAdapter`). A backend module implements provider
+operations only; it does not implement `IFileSystem`, the metadata cache, the delta cursor,
+scope, checkpoint commit/abort, or stores — core owns those (see
+[adr-20260920-backend-module-boundary.md](adr/adr-20260920-backend-module-boundary.md)).
+
+| | |
+|---|---|
+| **Prevents** | `src/backend-api/**` importing `obsidian`, Node/Electron, or any path outside `src/backend-api/` |
+| **Where** | `backend-module-boundary-guard.test.mjs`, run by `npm run lint:bot-repro` |
+| **How** | textual import scan over `src/backend-api/**/*.ts`; `tests/backend-api/fake-module.ts` is the compile fixture that builds a module with only the public API |
+| **Exception** | none. The boundary is types-only and must stay buildable without `App`, settings, or stores |
+
+Runtime validation (`src/fs/modules/validate-module.ts`) is authoritative for a candidate
+module shape; TypeScript compatibility alone is insufficient for a future dynamically loaded
+JavaScript artifact. `*-custom` ids are legacy settings aliases and are rejected as module
+ids; built-in vs custom OAuth is an `authMode` within a module.
+
+Provider modules may import the public API plus browser-safe shared helpers. The single
+built-in import root (`src/fs/modules/builtin-modules.ts`) is the only place that
+imports the backend-specific module implementations; `src/fs/registry.ts` validates
+and registers them and wraps each in the core `BackendModuleProvider` (connection host
++ `ManagedRemoteFs`) used in production.
+
+### Limited compatibility exception (settings reshape)
+
+The "no migration code" rule in `AGENTS.md` has one bounded exception for the backend
+module migration: the settings normalizations in `settings-normalize.ts`. They reshape
+(or discard) an incompatible old settings shape so a vault upgrading stays connected;
+they do not transform data field-by-field. A change to a persisted *metadata-record*
+format is handled by ordinary cold-start — a `MetadataStore` version bump drops and
+re-creates the derived checkpoint cache on open, so the old records and cursor disappear
+together, and same-generation corrupt/foreign records fail `bulkLoad` validation and
+re-scan — never by a codec. See
+[adr-20260920-backend-module-boundary.md](adr/adr-20260920-backend-module-boundary.md).
+
 ## 5. Pipeline as data (Principle #4)
 
 The pure transform stages of the sync pipeline are deterministic `data → data`
@@ -182,15 +220,11 @@ the new size, with a comment saying why the split was deferred. The pin is a
 ratchet: it stops *silent* growth and flags the file as split-when-convenient — it
 is not a mandate to shrink the file by force.
 
-Eight modules currently carry such overrides as known debt in `eslint.config.mts`:
+Seven modules currently carry such overrides as known debt in `eslint.config.mts`:
 `fs/googledrive/auth.ts` (337), `sync/orchestrator.ts` (444), `sync/plan-executor.ts`
-(334), `fs/caching/remote-fs.ts` (411), `fs/dropbox/index.ts` (317),
-`fs/backend-manager.ts` (369), `fs/caching/metadata-cache.ts` (595), and
-`fs/googledrive/index.ts` (321).
+(334), `fs/caching/remote-fs.ts` (411), `fs/backend-manager.ts` (373),
+`fs/modules/backend-module-provider.ts` (322), and `fs/caching/metadata-cache.ts` (595).
 Ratchet them down when a natural responsibility split presents itself.
-(`fs/googledrive/index.ts` was once here at 397; ADR 0001 lifted its cache/checkpoint
-machinery into `fs/caching/`, dropping it under 300. It is back, just over, for the
-Drive-only fan-out across same-named folders.)
 
 Four modules instead carry a **file-header `/* eslint max-lines */` comment**, which
 overrides the config entry for that file: `sync/scope-projection.ts` (340),
@@ -311,7 +345,7 @@ these green when touching the pipeline:
 | **#5 crash-safe** — an interrupted action commits no baseline and re-syncs to convergence | `sync/crash-safety.test.ts`, `sync/convergence.test.ts` |
 | **Attempt-bounded remote working view** — a clean cycle commits; every incomplete result or pre-closeout exception aborts before classification/retry; the next COLD/WARM/HOT attempt derives only from durable/current facts | `sync/sync-cycle-finalization.test.ts`, `sync/orchestrator.test.ts`, `sync/plan-executor.test.ts`, `tests/fs/remote-backend-contracts.test.ts` |
 | **Case-alias canonicalization adds no owner** — Observation records raw-adapter actual casing and comparable content facts; Admission alone normalizes an explicit alias component and may canonicalize remote casing when endpoints, vacancy, unique identity, and content are complete. Temperature, global record count, database version, and prior failure are not decision inputs | `fs/local/local-fs.test.ts`, `sync/change-detector.test.ts`, `sync/plan-admission.test.ts`, `sync/orchestrator.test.ts` |
-| **Requested spelling has no topology authority** — `requested_echo` may refresh metadata at an identity's current path but cannot re-key it. Provider-resolved mutation responses and successful explicit rename endpoints alone may change the cache path; a mixed case-only parent component retains content work and uses one parent rename | `fs/googledrive/metadata-cache.test.ts`, `fs/googledrive/index.test.ts`, `fs/dropbox/index.test.ts`, `fs/onedrive/index.test.ts`, `sync/orchestrator.test.ts` |
+| **Requested spelling has no topology authority** — `requested_echo` may refresh metadata at an identity's current path but cannot re-key it. Provider-resolved mutation responses and successful explicit rename endpoints alone may change the cache path; a mixed case-only parent component retains content work and uses one parent rename | `tests/fs/managed/normalized-metadata-cache.test.ts`, `tests/fs/remote-backend-contracts.test.ts`, `sync/orchestrator.test.ts` |
 | **Command-ID immutability** — registered command IDs are a stable, published API | `main-commands.test.ts` (snapshot — update only for a genuinely new command, never to rename a shipped ID) |
 | **Coverage floors** — ratchet thresholds (lines 76 / statements 75 / functions 70 / branches 65) | `vitest.config.ts`, enforced by `npm run test:coverage` in CI. Raise as coverage improves; never lower to make CI pass |
 
@@ -336,6 +370,11 @@ inventories (`imports`, `references`, `constructors`, `mutationCallers`), so onl
 in one of those — not a fixture edit that follows a removal — is evidence of a new writer
 or owner. This makes a new durable owner, persistent-store owner, or in-memory recovery
 owner a deliberate review event rather than an incidental field or write.
+The Backend Module API's `src/fs/managed/managed-remote-fs.ts` is one such deliberate
+entry: core constructs and owns the checkpoint `MetadataStore<RemoteObject>` for the
+managed remote filesystem so no backend module ever receives a store. It is a core
+owner of the same non-authoritative, commit-last projection, recorded in the fixture
+beside the legacy per-provider owners.
 The record store's key shape is subordinate storage mechanism, not an authority:
 `sync-records` and `sync-content` are keyed by `remoteIdentityKey`, and the unique `path`
 index guards the filesystem layer's path-uniqueness guarantee rather than arbitrating

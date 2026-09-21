@@ -1,4 +1,4 @@
-import type { Logger } from "../logging/logger";
+import type { BackendLogger } from "../backend-api";
 
 /**
  * Lossless logging of an irregular (non-2xx) backend response.
@@ -84,7 +84,7 @@ function describeHeaders(res: BackendErrorResponse): Record<string, string> | un
  * tokens. Only API responses (which do not) belong in the log.
  */
 export function logBackendErrorResponse(
-	logger: Logger | undefined,
+	logger: BackendLogger | undefined,
 	backend: string,
 	operation: string,
 	res: BackendErrorResponse,

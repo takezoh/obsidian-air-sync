@@ -15,6 +15,9 @@ import type { SyncSchedulerDeps } from "./scheduler";
 import type { TAbstractFile } from "obsidian";
 import { TFolder } from "../platform/obsidian";
 import { LocalChangeTracker } from "./local-tracker";
+import { createChecksumRegistry } from "../fs/modules/checksum-registry";
+
+const checksumRegistry = createChecksumRegistry();
 import {
 	addFile, createMockLocalFs, createMockRemoteFs, mockSettings, readText,
 } from "../__mocks__/sync-test-helpers";
@@ -350,6 +353,7 @@ describe("SyncScheduler", () => {
 				getSettings: () => settings, saveSettings: vi.fn().mockResolvedValue(undefined),
 				configDir: () => ".cfg", pluginId: () => "air-sync",
 				localFs: () => localFs, remoteFs: () => remoteFs, backendProvider: () => null,
+				checksumRegistry,
 				onStatusChange: vi.fn(), onProgress: vi.fn(), notify: vi.fn(),
 				isMobile: () => false, localTracker: tracker,
 			});
@@ -412,6 +416,7 @@ describe("SyncScheduler", () => {
 					getSettings: () => settings, saveSettings: vi.fn().mockResolvedValue(undefined),
 					configDir: () => ".cfg", pluginId: () => "air-sync",
 					localFs: () => localFs, remoteFs: () => remoteFs, backendProvider: () => null,
+					checksumRegistry,
 					onStatusChange, onProgress: vi.fn(), notify: vi.fn(),
 					isMobile: () => false, localTracker: tracker,
 				});
@@ -560,6 +565,7 @@ describe("SyncScheduler", () => {
 				localFs: () => localFs,
 				remoteFs: () => remoteFs,
 				backendProvider: () => null,
+				checksumRegistry,
 				onStatusChange: vi.fn(), onProgress: vi.fn(), notify: vi.fn(),
 				isMobile: () => false, localTracker: tracker,
 			});

@@ -1,7 +1,8 @@
 import { Notice, Platform } from "../platform/obsidian";
 import type { IAuthProvider } from "./auth";
 import type { ISecretStore } from "./secret-store";
-import type { Logger } from "../logging/logger";
+import type { BackendLogger } from "../backend-api";
+import type { HttpTransport } from "./http-transport";
 import { getBackendSecret, hasBackendSecret, publishBackendSecret, setBackendSecret } from "./token-store";
 import {
 	BaseOAuthTokenManager,
@@ -45,7 +46,8 @@ export abstract class PkceAuthProvider<TAuth extends PkceTokenManager> implement
 		protected secretStore: ISecretStore,
 		protected backendType: string,
 		protected clientId: string,
-		protected logger?: Logger,
+		protected transport: HttpTransport,
+		protected logger?: BackendLogger,
 	) {}
 
 	/**
@@ -53,7 +55,7 @@ export abstract class PkceAuthProvider<TAuth extends PkceTokenManager> implement
 	 * `backendData` is passed so a custom-app variant can read per-vault config (e.g. the
 	 * OneDrive authority); the built-ins ignore it and use the ctor `clientId`.
 	 */
-	protected abstract createAuth(clientId: string, backendData: Record<string, unknown>, logger?: Logger): TAuth;
+	protected abstract createAuth(clientId: string, backendData: Record<string, unknown>, logger?: BackendLogger): TAuth;
 	/** Build the provider's authorize URL for the in-plugin redirect. */
 	protected abstract buildAuthorizeUrl(
 		opts: { clientId: string; codeChallenge: string; state: string },
@@ -129,7 +131,7 @@ export abstract class PkceAuthProvider<TAuth extends PkceTokenManager> implement
 	}
 
 	/** Get or lazily create the shared token manager (so refreshed tokens are persistable). */
-	getOrCreateAuth(backendData: Record<string, unknown>, logger?: Logger): TAuth {
+	getOrCreateAuth(backendData: Record<string, unknown>, logger?: BackendLogger): TAuth {
 		if (!this.tokenAuth) {
 			this.tokenAuth = this.wireRefreshPersistence(
 				this.createAuth(this.resolveClientId(backendData), backendData, logger ?? this.logger),
@@ -145,7 +147,7 @@ export abstract class PkceAuthProvider<TAuth extends PkceTokenManager> implement
 	 * refresh token from a detached refresh is persisted to SecretStorage — otherwise it
 	 * would be discarded with this instance, leaving the stored token stale.
 	 */
-	createDetachedAuth(backendData: Record<string, unknown>, logger?: Logger): TAuth {
+	createDetachedAuth(backendData: Record<string, unknown>, logger?: BackendLogger): TAuth {
 		return this.wireRefreshPersistence(
 			this.createAuth(this.resolveClientId(backendData), backendData, logger ?? this.logger),
 		);

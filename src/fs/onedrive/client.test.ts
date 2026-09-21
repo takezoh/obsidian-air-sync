@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import type { RequestUrlParam } from "obsidian";
-import { spyRequestUrl, mockRes, odFile, odFolder, odDeleted } from "./test-helpers";
+import { spyRequestUrl, mockRes, odFile, odFolder, odDeleted, testTransport } from "./test-helpers";
 import { AuthError } from "../errors";
 import { GraphApiError } from "./types";
 import { MAX_RATE_LIMIT_RETRIES, extractDeltaToken } from "./client";
@@ -15,7 +15,7 @@ afterEach(() => {
 async function makeClient(token = "tok") {
 	const { OneDriveClient } = await import("./client");
 	// Inject a no-op sleep so 429 backoff retries run instantly in tests.
-	return new OneDriveClient(() => Promise.resolve(token), undefined, () => Promise.resolve());
+	return new OneDriveClient(() => Promise.resolve(token), testTransport(), undefined, () => Promise.resolve());
 }
 
 const ROOT = "root";
@@ -332,7 +332,7 @@ describe("OneDriveClient error handling", () => {
 			if (calls === 2) return Promise.resolve(mockRes({ error: { code: "x" } }, { status: 429, headers: { "retry-after": "3600" } }));
 			return Promise.resolve(mockRes(odFile("f1", "a.md", ROOT)));
 		});
-		const client = new OneDriveClient(() => Promise.resolve("tok"), undefined, (ms) => { delays.push(ms); return Promise.resolve(); });
+		const client = new OneDriveClient(() => Promise.resolve("tok"), testTransport(), undefined, (ms) => { delays.push(ms); return Promise.resolve(); });
 		await client.getItem("f1");
 		expect(delays[0]).toBe(2000);
 		expect(delays[1]).toBe(64_000);

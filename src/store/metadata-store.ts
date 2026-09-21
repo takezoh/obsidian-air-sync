@@ -11,8 +11,12 @@ const META_STORE = "meta";
  * A checkpoint written before that kept one of them and silently dropped the rest,
  * with their contents; restoring it would leave those objects invisible for as long
  * as the checkpoint stood, so it is rebuilt from a full scan instead.
+ *
+ * v6: the persisted record is the normalized `RemoteObject`; a cache written in an
+ * earlier (provider-native) encoding is invalid, so the store is dropped and
+ * recreated on open (no migration) — old records AND the old cursor disappear.
  */
-export const METADATA_CACHE_VERSION = 5;
+export const METADATA_CACHE_VERSION = 6;
 
 export interface FileRecord<T> {
 	path: string;

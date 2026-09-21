@@ -1,10 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DropboxAuth } from "../src/fs/dropbox/auth";
 import { DROPBOX_AUTH } from "../src/fs/auth-config";
-import { DropboxFs } from "../src/fs/dropbox/index";
+import { createPlatformTransport } from "../src/fs/platform-http-transport";
+import { DropboxAdapter } from "../src/fs/dropbox/adapter";
+import { ManagedRemoteFs } from "../src/fs/managed/managed-remote-fs";
+import type { IFileSystem } from "../src/fs/interface";
 import type { DropboxEntry } from "../src/fs/dropbox/types";
 import { runIFileSystemContract, bytes } from "../tests/fs/contracts/ifilesystem.contract";
-import { MetadataStore } from "../src/store/metadata-store";
 import { RetryingDropboxClient } from "./helpers/dropbox-retry-client";
 import { readCreds } from "./helpers/env";
 import {
@@ -18,22 +20,22 @@ import type { MovedObjectIdentity } from "../tests/fs/contracts/caching-remote-f
 
 /**
  * What Dropbox's own entity projection makes of a moved object's identity, against the
- * LIVE API. Same disposition the family declares to the fake-backed unit contract
- * (`tests/fs/dropbox/caching-remote-fs.contract-harness.ts`), and the family where it is
- * least obvious: `DropboxEntry.id` is declared OPTIONAL, the cache's own address function
- * `extractId` falls back to `entry.path_lower`, and `dropboxEntryToEntity` deliberately
- * refuses that fallback. A faithful fake always hands over a complete entry; only the live
- * feed can show whether the real one does (see the id probe at the bottom of this file).
+ * LIVE API. Same disposition the family declares to the fake-backed managed contract
+ * (`tests/fs/dropbox/managed.contract-harness.ts`), and the family where it is least
+ * obvious: `DropboxEntry.id` is declared OPTIONAL, while `normalizeDropboxObject`
+ * projects the normalized `RemoteObject` with `id: entry.id` and NO path fallback. A
+ * faithful fake always hands over a complete entry; only the live feed can show whether
+ * the real one does (see the id probe at the bottom of this file).
  */
 const DROPBOX_MOVED_OBJECT_IDENTITY: MovedObjectIdentity = {
 	determinate: true,
 	reason:
-		"dropboxEntryToEntity sets identityKey: entry.id with NO fallback — never " +
-		"extractId's path_lower address — so the pair names the object only if the live " +
-		"list_folder/continue entry carried an id. This scenario's remote-origin leg is a " +
-		"case-only rename, which Dropbox's move_v2 cannot do directly: it runs as two raw " +
-		"moves through an intermediate sibling path, and the delta that reports it is the " +
-		"one whose entry must carry the id.",
+		"normalizeDropboxObject sets RemoteObject.id from entry.id with NO fallback, " +
+		"so the pair names the object only if the live list_folder/continue entry " +
+		"carried an id. This scenario's remote-origin leg is a case-only rename, which " +
+		"Dropbox's move_v2 cannot do directly: it runs as two raw moves through an " +
+		"intermediate sibling path, and the delta that reports it is the one whose entry " +
+		"must carry the id.",
 };
 
 /** Bound on draining `has_more`; a server that never clears it must fail, not loop. */
@@ -48,11 +50,11 @@ const DROPBOX_CONTINUE_POLL_INTERVAL_MS = 1500;
  */
 const ID_CONSEQUENCE =
 	"DropboxEntry.id is declared optional only because the type also covers `deleted` " +
-	"tombstones, which its doc comment says are never cached and which buildFromFiles " +
-	"skips. A live file/folder entry without one means dropboxEntryToEntity projects " +
-	"identityKey: undefined, so buildSyncRecord refuses the SyncRecord and the identity " +
-	"floor's refusal branch is a LIVE user-facing outcome, not dead code " +
-	"(issue #95, `unknown-dropbox-entry-without-id`).";
+	"tombstones, which its doc comment says are never cached and which the normalized " +
+	"cache does not project. A live file/folder entry without one means " +
+	"normalizeDropboxObject cannot name the object, so buildSyncRecord refuses the " +
+	"SyncRecord and the identity floor's refusal branch is a LIVE user-facing outcome, " +
+	"not dead code (issue #95, `unknown-dropbox-entry-without-id`).";
 
 /**
  * Assert that every non-`deleted` entry of one raw page names its provider object.
@@ -90,13 +92,13 @@ if (!creds) {
 		"[e2e] Skipping Dropbox: set AIRSYNC_E2E_DROPBOX_REFRESH_TOKEN " +
 			"(run `npm run e2e:bootstrap -- dropbox`; see docs/e2e-testing.md).",
 	);
-	describe.skip("IFileSystem contract — DropboxFs (real) [no creds]", () => {
+	describe.skip("IFileSystem contract — ManagedRemoteFs<dropbox> (real) [no creds]", () => {
 		/* skipped */
 	});
 } else {
 	// PKCE refresh needs only the public client id. Empty access token + expiry 0
 	// forces a refresh on the first getAccessToken().
-	const auth = new DropboxAuth(DROPBOX_AUTH.clientId);
+	const auth = new DropboxAuth(DROPBOX_AUTH.clientId, createPlatformTransport());
 	auth.setTokens(creds.refreshToken, "", 0);
 	// Inject a node-safe sleep: the client's default sleep uses window.setTimeout,
 	// which is undefined under vitest's node environment — a 429 backoff (the very
@@ -105,6 +107,7 @@ if (!creds) {
 	// retry for the fresh-folder-id propagation transient (see its docstring).
 	const client = new RetryingDropboxClient(
 		(force) => auth.getAccessToken(force),
+		createPlatformTransport(),
 		undefined,
 		(ms) => new Promise((r) => setTimeout(r, ms)),
 	);
@@ -125,36 +128,39 @@ if (!creds) {
 		}
 	});
 
+	/** The production composition's filesystem: real adapter + core-managed cache. */
+	function makeManagedDropboxFs(childId: string, dbNamePrefix: string): ManagedRemoteFs {
+		return new ManagedRemoteFs({
+			adapter: new DropboxAdapter(client, childId),
+			name: "dropbox",
+			rootFolderId: childId,
+			vaultId: crypto.randomUUID(),
+			store: { dbNamePrefix, version: 1 },
+			addressing: "provider_path",
+		});
+	}
+
 	runIFileSystemContract(
-		"DropboxFs (real)",
-		async () => new DropboxFs(client, await makeDropboxChild(client, parentPath)),
-		// DropboxFs reports server_modified (the upload wall-clock) as mtime, so a
-		// written mtime does not round-trip (unlike the fake, which echoes it back).
-		// Verified by this e2e; see ADR 0003 / dropbox/types.ts.
+		"ManagedRemoteFs<dropbox> (real)",
+		async () => makeManagedDropboxFs(await makeDropboxChild(client, parentPath), "air-sync-dropbox-e2e-contract"),
+		// Same live Dropbox divergence as the legacy run: mtime is server_modified.
 		{ computesHashOnStat: false, preservesWrittenMtime: false, stableIdentity: true },
 	);
 
 	runPriorityFidelityE2E(
-		"DropboxFs",
-		async () => new DropboxFs(client, await makeDropboxChild(client, parentPath)),
+		"ManagedRemoteFs<dropbox>",
+		async () => makeManagedDropboxFs(await makeDropboxChild(client, parentPath), "air-sync-dropbox-e2e-priority"),
 	);
 
-	runRenameSafetyE2E("DropboxFs", {
+	runRenameSafetyE2E("ManagedRemoteFs<dropbox>", {
 		backendType: "dropbox",
 		movedObjectIdentity: DROPBOX_MOVED_OBJECT_IDENTITY,
 		makeBackend: async () => {
 			const childId = await makeDropboxChild(client, parentPath);
-			const store = new MetadataStore<DropboxEntry>(crypto.randomUUID(), {
-				dbNamePrefix: "air-sync-dropbox-e2e-rename",
-				version: 1,
-			});
-			const fs = new DropboxFs(client, childId, undefined, store);
+			const fs = makeManagedDropboxFs(childId, "air-sync-dropbox-e2e-rename");
 			return {
 				fs,
 				renameOutOfBand: async (file, newPath) => {
-					// Dropbox move_v2 cannot perform a case-only rename directly. Model a
-					// second device/Web UI with two raw client moves, bypassing DropboxFs's
-					// cache so the delta remains the only observation source.
 					const tempPath = `${childId}/.airsync-e2e-case-${crypto.randomUUID()}`;
 					await client.move(`${childId}/${file.path}`, tempPath);
 					await client.move(tempPath, `${childId}/${newPath}`);
@@ -169,45 +175,49 @@ if (!creds) {
 	// a subtree of delete+add (ADR 0006). Lives in the one Dropbox e2e file on purpose —
 	// a second `*.e2e.ts` matching "dropbox" would run concurrently and share its
 	// rate-limit bucket (vitest fileParallelism; see vitest.e2e.config.ts).
-	describe("DropboxFs delta — out-of-band rename via getChangedPaths (real)", () => {
-		it("reports a remote folder rename as a single renamed pair", async () => {
-			const childId = await makeDropboxChild(client, parentPath);
-			const fs = new DropboxFs(client, childId);
+	function registerDeltaRename(label: string, makeFs: (childId: string) => IFileSystem): void {
+		describe(`${label} delta — out-of-band rename via getChangedPaths (real)`, () => {
+			it("reports a remote folder rename as a single renamed pair", async () => {
+				const childId = await makeDropboxChild(client, parentPath);
+				const fs = makeFs(childId);
 
-			// Seed a folder with two files, then drain + commit so the cursor is at "now".
-			await fs.write("dir/b.md", bytes("beta"), 1000);
-			await fs.write("dir/c.md", bytes("gamma"), 1000);
-			await fs.list();
-			await fs.commitCheckpoint();
+				// Seed a folder with two files, then drain + commit so the cursor is at "now".
+				await fs.write("dir/b.md", bytes("beta"), 1000);
+				await fs.write("dir/c.md", bytes("gamma"), 1000);
+				await fs.list();
+				await fs.checkpoint!.commitCheckpoint();
 
-			// Rename the folder OUT-OF-BAND (as a second device / the web UI would),
-			// bypassing the FS cache, so the delta is the only source of truth.
-			const movedFolder = await client.move(`${childId}/dir`, `${childId}/papers`);
-			// `move_v2`'s own response names the folder it moved. Taking the identity
-			// expectation from THERE — not from a post-delta `fs.stat`, which reads the cache
-			// this same delta payload wrote — keeps the check cross-source.
-			if (!movedFolder.id) {
-				throw new Error(
-					"Dropbox move_v2 returned folder metadata with no id, so the reported pair's " +
-						`carried identity has nothing independent to be checked against. ${ID_CONSEQUENCE}`,
-				);
-			}
+				// Rename the folder OUT-OF-BAND (as a second device / the web UI would),
+				// bypassing the FS cache, so the delta is the only source of truth.
+				const movedFolder = await client.move(`${childId}/dir`, `${childId}/papers`);
+				// `move_v2`'s own response names the folder it moved. Taking the identity
+				// expectation from THERE — not from a post-delta `fs.stat`, which reads the cache
+				// this same delta payload wrote — keeps the check cross-source.
+				if (!movedFolder.id) {
+					throw new Error(
+						"Dropbox move_v2 returned folder metadata with no id, so the reported pair's " +
+							`carried identity has nothing independent to be checked against. ${ID_CONSEQUENCE}`,
+					);
+				}
 
-			const delta = await fs.checkpoint.getChangedPaths();
-			expect(delta).not.toBeNull();
-			expect(delta!.renamed ?? []).toContainEqual({
-				oldPath: "dir",
-				newPath: "papers",
-				isFolder: true,
-				// The pair now NAMES the folder it moved (issue #95): the same single-pair
-				// shape as before, plus the identity the producer carried from its own
-				// projection over Dropbox's delta payload.
-				identityKey: movedFolder.id,
+				const delta = await fs.checkpoint!.getChangedPaths();
+				expect(delta).not.toBeNull();
+				expect(delta!.renamed ?? []).toContainEqual({
+					oldPath: "dir",
+					newPath: "papers",
+					isFolder: true,
+					// The pair now NAMES the folder it moved (issue #95): the same single-pair
+					// shape as before, plus the identity the producer carried from its own
+					// projection over Dropbox's delta payload.
+					identityKey: movedFolder.id,
+				});
+				// Exactly one folder pair — not N per-file renames, and not delete+add.
+				expect((delta!.renamed ?? []).filter((p) => p.isFolder)).toHaveLength(1);
 			});
-			// Exactly one folder pair — not N per-file renames, and not delete+add.
-			expect((delta!.renamed ?? []).filter((p) => p.isFolder)).toHaveLength(1);
 		});
-	});
+	}
+
+	registerDeltaRename("ManagedRemoteFs<dropbox>", (childId) => makeManagedDropboxFs(childId, "air-sync-dropbox-e2e-delta"));
 
 	/**
 	 * Drain one `list_folder/continue` window, asserting every page it returns.

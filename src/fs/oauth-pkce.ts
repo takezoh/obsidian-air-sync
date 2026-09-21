@@ -1,4 +1,4 @@
-import type { Logger } from "../logging/logger";
+import type { BackendLogger } from "../backend-api";
 import { AuthError } from "./errors";
 import { describeErrorBody, MAX_MESSAGE_BODY_CHARS } from "./backend-error-log";
 
@@ -146,7 +146,7 @@ export abstract class BaseOAuthTokenManager {
 	protected refreshToken = "";
 	private refreshPromise: Promise<string> | null = null;
 	protected authFailedAt = 0;
-	protected logger?: Logger;
+	protected logger?: BackendLogger;
 	private onRefreshTokenRotated?: (refreshToken: string) => void | Promise<void>;
 
 	setTokens(refreshToken: string, accessToken: string, expiry: number): void {

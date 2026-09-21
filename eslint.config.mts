@@ -177,12 +177,15 @@ export default defineConfig(
 						'lint-bot-repro.test.mjs',
 						'sync-admission-authority-guard.test.mjs',
 						'sync-state-ownership-guard.test.mjs',
+						'backend-module-boundary-guard.test.mjs',
 						'manifest.json',
 						'test-fixtures/lint-bot-repro/untyped-dependencies.d.ts',
 						'test-fixtures/lint-bot-repro/untyped-vitest.d.ts',
 						'vitest.config.ts'
 					],
-					maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 10,
+					// 11: ten long-standing default-project entries plus the
+					// backend-module boundary guard (.mjs is outside tsconfig include).
+					maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 11,
 				},
 				tsconfigRootDir: configRoot,
 				extraFileExtensions: ['.json']
@@ -380,26 +383,6 @@ export default defineConfig(
 		rules: { "max-lines": ["error", { max: 411, skipBlankLines: true, skipComments: true }] },
 	},
 	{
-		// Over the default 300 for the vault folder several Drive folders make up.
-		// Drive is the only backend whose namespace holds same-named folders, so the
-		// fan-out that renames every one of them, and `ensureFolder` seating all of them
-		// instead of refusing, are Drive's own addressing and belong with its other
-		// mutating ops rather than in the shared cache.
-		// Re-pinned from 306 when the root-liveness check began going through the shared
-		// folder-usability seam: classifying not_found/inaccessible/trashed/not_folder and
-		// rethrowing the original 404/403 is one cohesive check that must stay beside the
-		// sync-time abort it drives.
-		files: ["src/fs/googledrive/index.ts"],
-		rules: { "max-lines": ["error", { max: 321, skipBlankLines: true, skipComments: true }] },
-	},
-	{
-		// Dropbox's detached identity/path seams belong beside its other API-addressing
-		// seams. Its case-only rename lifecycle is also provider-specific and cannot be
-		// moved into the shared cache or priority layers without crossing ownership.
-		files: ["src/fs/dropbox/index.ts"],
-		rules: { "max-lines": ["error", { max: 317, skipBlankLines: true, skipComments: true }] },
-	},
-	{
 		// Re-pinned from 303 for the top-level Google Picker callback. The
 		// auth+folder operation itself lives in backend-auth-folder-pick.ts; this file
 		// retains only its connecting gate and lifecycle re-init because those must
@@ -407,8 +390,27 @@ export default defineConfig(
 		// Re-pinned from 341 for the connect-boundary usability gate: validating before
 		// createFs and, on rejection, returning the session to a disconnected state are
 		// one lifecycle step that must stay beside the connect/teardown logic owned here.
+		// Re-pinned from 369 for `createRemoteFs`: awaiting a backend module's async
+		// `prepare` before handing back its ready filesystem IS the connect-boundary
+		// acquisition step, and it stays beside the connect/teardown logic owned here.
 		files: ["src/fs/backend-manager.ts"],
-		rules: { "max-lines": ["error", { max: 369, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 373, skipBlankLines: true, skipComments: true }] },
+	},
+	{
+		// Core composition root for the module boundary: it owns the per-connection
+		// auth/binding host, the compatibility physical profiles, the in-app picker's
+		// list client, and the single ManagedRemoteFs the sync engine consumes. Splitting
+		// the profile/disconnect policy away from the connection lifecycle would hide
+		// which physical secret namespace a connection resolves, so the cohesive piece
+		// stays here.
+		// Re-pinned from 316 for `readBackendState`, which carries the adapter's
+		// non-authoritative auth state (a refreshed `accessTokenExpiry`) into the
+		// settings bag exactly as the legacy provider did; it belongs with the
+		// prepared adapter this class owns. Re-pinned from 319 for the bound-folder
+		// display warning passthrough, the module-side successor to the legacy
+		// `RemoteVaultDisplay.warning`.
+		files: ["src/fs/modules/backend-module-provider.ts"],
+		rules: { "max-lines": ["error", { max: 322, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Re-pinned from 379 for `projectedIdentityKey`, the free function every rename

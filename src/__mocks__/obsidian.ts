@@ -53,8 +53,20 @@ export const __ui: {
 		value: string;
 		change: (value: string) => unknown;
 	}[];
+	texts: {
+		name: string;
+		description: string;
+		value: string;
+		change: (value: string) => unknown;
+	}[];
+	toggles: {
+		name: string;
+		description: string;
+		value: boolean;
+		change: (value: boolean) => unknown;
+	}[];
 	lastModal: { close: () => void } | null;
-} = { buttons: [], dropdowns: [], lastModal: null };
+} = { buttons: [], dropdowns: [], texts: [], toggles: [], lastModal: null };
 
 /** Minimal stand-in for Obsidian's augmented HTMLElement (createEl/empty). */
 class FakeEl {
@@ -119,7 +131,28 @@ export class Setting {
 		__ui.buttons.push({ name: this._name, click: () => handler() });
 		return this;
 	}
-	addText(_cb: (t: unknown) => unknown) {
+	addText(cb: (t: unknown) => unknown) {
+		let value = "";
+		let handler: (next: string) => unknown = () => {};
+		const text = {
+			setPlaceholder: (_placeholder: string) => text,
+			setValue: (next: string) => {
+				value = next;
+				return text;
+			},
+			setDisabled: (_disabled: boolean) => text,
+			onChange: (next: (value: string) => unknown) => {
+				handler = next;
+				return text;
+			},
+		};
+		cb(text);
+		__ui.texts.push({
+			name: this._name,
+			description: this._description,
+			get value() { return value; },
+			change: (next: string) => handler(next),
+		});
 		return this;
 	}
 	addDropdown(cb: (d: unknown) => unknown) {
@@ -151,7 +184,27 @@ export class Setting {
 		});
 		return this;
 	}
-	addToggle(_cb: (t: unknown) => unknown) {
+	addToggle(cb: (t: unknown) => unknown) {
+		let value = false;
+		let handler: (next: boolean) => unknown = () => {};
+		const toggle = {
+			setValue: (next: boolean) => {
+				value = next;
+				return toggle;
+			},
+			setDisabled: (_disabled: boolean) => toggle,
+			onChange: (next: (value: boolean) => unknown) => {
+				handler = next;
+				return toggle;
+			},
+		};
+		cb(toggle);
+		__ui.toggles.push({
+			name: this._name,
+			description: this._description,
+			get value() { return value; },
+			change: (next: boolean) => handler(next),
+		});
 		return this;
 	}
 	addTextArea(_cb: (t: unknown) => unknown) {

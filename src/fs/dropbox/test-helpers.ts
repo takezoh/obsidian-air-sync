@@ -1,6 +1,6 @@
 import type { DropboxEntry } from "./types";
 
-export { spyRequestUrl, mockRes, createMockSecretStore } from "../googledrive/test-helpers.test";
+export { spyRequestUrl, mockRes, createMockSecretStore, testTransport } from "../googledrive/test-helpers.test";
 
 /** Access private fields on DropboxFs (inherited from CachingRemoteFs) in tests. */
 export interface DropboxFsInternal {

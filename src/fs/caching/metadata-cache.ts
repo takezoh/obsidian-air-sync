@@ -114,7 +114,7 @@ export abstract class AbstractMetadataCache<TFile> {
 	/** Folder path → the other provider folders merged there, beside its representative. */
 	private mergedFolders = new Map<string, Map<string, TFile>>();
 
-	private rootFolderId: string;
+	protected rootFolderId: string;
 	protected logger?: Logger;
 
 	constructor(rootFolderId: string, logger?: Logger) {

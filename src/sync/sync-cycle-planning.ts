@@ -1,5 +1,6 @@
 import type { Logger } from "../logging/logger";
 import type { IFileSystem } from "../fs/interface";
+import type { ChecksumRegistry } from "../fs/modules/checksum-registry";
 import type { ChangeSet } from "./change-detector";
 import type { AdmissionResult } from "./plan-admission";
 import { applyScope, type ScopeProjectionPolicy } from "./scope-projection";
@@ -163,13 +164,14 @@ export async function prepareSyncCycleSnapshotForExecution(
 	strategy: ConflictStrategy,
 	localFs: IFileSystem,
 	remoteFs: IFileSystem,
+	checksumRegistry: ChecksumRegistry,
 	logger?: Logger,
 ) {
 	const { scopedChangeSet, projection, baselinePaths } = scopeSyncCycle(changeSet, policy, logger);
 	if (requiresConflictHashEnrichment(strategy)) {
 		await enrichHashesForPreferLocal(
 			scopedChangeSet.entries, scopedChangeSet.observations,
-			scopedChangeSet.identityEvidence, localFs, remoteFs,
+			scopedChangeSet.identityEvidence, localFs, remoteFs, checksumRegistry,
 		);
 	}
 	return captureScopedSnapshot(scopedChangeSet, projection, namespace, baselinePaths);
