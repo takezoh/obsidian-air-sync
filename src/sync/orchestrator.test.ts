@@ -18,6 +18,8 @@ import {
 } from "../__mocks__/sync-test-helpers";
 import type { AirSyncSettings } from "../settings";
 import type { AddressDisplacement } from "../fs/caching/claim-set-assignment";
+import { namespaceRepairFor } from "../fs/caching/namespace-reconciliation";
+import type { NamespaceRepairPolicy } from "../fs/caching/namespace-reconciliation";
 import type { FileEntity } from "../fs/types";
 import { AuthError } from "../backend-api/error-classification";
 import { sha256 } from "../utils/hash";
@@ -2344,6 +2346,32 @@ describe("SyncOrchestrator", () => {
 		});
 	});
 
+	/**
+	 * Attach a fake namespace-reconciliation capability to the mock remote. Each call
+	 * consumes one entry from `queues`; facts eligible under the caller's policy are
+	 * renamed through the mock's own `identityRename` — so the provider/view mutation
+	 * the test arranged actually happens — and the result is `changed`, else `settled`.
+	 * The keeper policy is the production one the orchestrator supplies, so the record
+	 * holder keeps the plain address exactly as it does in production.
+	 */
+	function attachReconciliation(remoteFs: MockFileSystem, queues: AddressDisplacement[][]) {
+		let call = 0;
+		const reconcile = vi.fn(async (policy: NamespaceRepairPolicy) => {
+			const facts = queues[Math.min(call, queues.length - 1)] ?? [];
+			call += 1;
+			const repairable = facts.filter((fact) => fact.owesRemediation && policy.isInScope(fact.path));
+			if (repairable.length === 0) return { kind: "settled" as const };
+			for (const fact of repairable) {
+				const keeper = await policy.keeper(fact.path, [fact.admittedId, fact.withheldId]);
+				const repair = namespaceRepairFor(fact, keeper);
+				await remoteFs.identityRename!.renameById(repair.identityKey, repair.path, repair.target);
+			}
+			return { kind: "changed" as const };
+		});
+		remoteFs.namespaceReconciliation = { reconcileNamespace: reconcile };
+		return reconcile;
+	}
+
 	describe("contention remediation reaches only the synced scope", () => {
 		/**
 		 * One contended address exactly as the remote filesystem announces it. The
@@ -2387,9 +2415,9 @@ describe("SyncOrchestrator", () => {
 			const renameById = vi.fn().mockResolvedValue(undefined);
 			remoteFs.identityRename = { renameById };
 			// Announced once: after the repair lands the provider no longer holds two
-			// objects there, so the next delta has nothing to say about the address.
+			// objects there, so the next reconciliation has nothing to settle.
+			const reconcile = attachReconciliation(remoteFs, [[contention(contendedPath)], []]);
 			const getChangedPaths = vi.fn()
-				.mockResolvedValueOnce({ modified: [], deleted: [], contended: [contention(contendedPath)] })
 				.mockResolvedValue({ modified: [], deleted: [] });
 			remoteFs.checkpoint!.getChangedPaths = getChangedPaths;
 			const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
@@ -2399,7 +2427,7 @@ describe("SyncOrchestrator", () => {
 
 			await orchestrator.runSync();
 			await orchestrator.close();
-			return { renameById, commitCheckpoint, abortWorkingView, getChangedPaths };
+			return { renameById, commitCheckpoint, abortWorkingView, getChangedPaths, reconcile };
 		}
 
 		it("repairs, withholds that cycle's checkpoint, and commits in the follow-up it queues", async () => {
@@ -2408,9 +2436,14 @@ describe("SyncOrchestrator", () => {
 			expect(cycle.renameById).toHaveBeenCalledOnce();
 			expect(cycle.renameById).toHaveBeenCalledWith(
 				"moved-id", "docs/Note.md", "docs/Note.conflict-id-moved-id.md");
-			// One runSync, two cycles: the repair cycle aborts its working view, and the
-			// cycle it queued — seeing the address settled — is the one that commits.
-			expect(cycle.getChangedPaths).toHaveBeenCalledTimes(2);
+			// The filesystem settles the namespace before the engine consumes any view:
+			// reconciliation is called before change collection reads the delta.
+			expect(cycle.reconcile.mock.invocationCallOrder[0]!)
+				.toBeLessThan(cycle.getChangedPaths.mock.invocationCallOrder[0]!);
+			// One runSync, two cycles: the repair cycle settles the namespace before change
+			// collection (so it never consumes the incomplete view) and aborts; the cycle it
+			// queued — seeing the address settled — collects once and commits.
+			expect(cycle.getChangedPaths).toHaveBeenCalledOnce();
 			expect(cycle.abortWorkingView).toHaveBeenCalledOnce();
 			expect(cycle.commitCheckpoint).toHaveBeenCalledOnce();
 			expect(cycle.abortWorkingView.mock.invocationCallOrder[0]!)
@@ -2452,15 +2485,58 @@ describe("SyncOrchestrator", () => {
 				await orchestrator.runSync();
 				await orchestrator.runSync();
 			}) };
+			attachReconciliation(remoteFs, [[contention("docs/Note.md")], []]);
 			const getChangedPaths = vi.fn()
-				.mockResolvedValueOnce({ modified: [], deleted: [], contended: [contention("docs/Note.md")] })
 				.mockResolvedValue({ modified: [], deleted: [] });
 			remoteFs.checkpoint!.getChangedPaths = getChangedPaths;
 
 			await orchestrator.runSync();
 			await orchestrator.close();
 
-			expect(getChangedPaths).toHaveBeenCalledTimes(2);
+			// The reconciled cycle settles before collection, so only the follow-up reads
+			// the delta — and the queue is one slot however many requests arrive.
+			expect(getChangedPaths).toHaveBeenCalledOnce();
+		});
+
+		it("routes a refused namespace repair through the error policy instead of looping", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			confirmRemoteWrites(remoteFs);
+			const settings = baseMockSettings({
+				backendType: "test", vaultId: `test-${Math.random()}`, lastSyncedIdentity: "test:root",
+			});
+			const statuses: string[] = [];
+			const orchestrator = new SyncOrchestrator(createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+				onStatusChange: (status) => statuses.push(status),
+			}));
+			addFile(localFs, "keep.md", "settled", 1000);
+			await orchestrator.runSync();
+
+			// A repair the backend permanently refuses: `failed` carries the provider's error.
+			const reconcile = vi.fn().mockResolvedValue({
+				kind: "failed",
+				failures: [{
+					path: "note.md", identityKey: "b-id", target: "note.conflict-id-b-id.md",
+					message: "insufficient permissions", error: new Error("insufficient permissions"),
+				}],
+			});
+			remoteFs.namespaceReconciliation = { reconcileNamespace: reconcile };
+			remoteFs.checkpoint!.getChangedPaths = vi.fn().mockResolvedValue({ modified: [], deleted: [] });
+			const commit = vi.fn().mockResolvedValue(undefined);
+			const abort = vi.fn().mockResolvedValue(undefined);
+			remoteFs.checkpoint!.commitCheckpoint = commit;
+			remoteFs.checkpoint!.abortWorkingView = abort;
+
+			await orchestrator.runSync();
+			await orchestrator.close();
+
+			// It terminates, reports an error, never commits, and retries a bounded number of
+			// times rather than re-running the follow-up inside one runSync forever.
+			expect(statuses).toContain("error");
+			expect(commit).not.toHaveBeenCalled();
+			expect(abort).toHaveBeenCalled();
+			expect(reconcile).toHaveBeenCalledTimes(3);
 		});
 	});
 
@@ -2539,15 +2615,15 @@ describe("SyncOrchestrator", () => {
 
 			const renameById = landRepair(remoteFs, holder);
 			remoteFs.identityRename = { renameById };
-			// The repair cycle's delta announces the contention; the follow-up's reports
-			// what the repair did; after that there is nothing new.
+			// The first reconciliation sees the newcomer beating the record holder and
+			// moves it; the follow-up reports what the repair did; after that nothing new.
+			attachReconciliation(remoteFs, [[{
+				path: CONTENDED, admittedId: NEWCOMER, withheldId: RECORD_HOLDER,
+				displacedPaths: [], reason: "lowest_stable_id", owesRemediation: true,
+			}], []]);
+			// The reconciled cycle settles before collection, so the follow-up is the first
+			// cycle to collect: it reads what the repair left, and then there is nothing new.
 			remoteFs.checkpoint!.getChangedPaths = vi.fn()
-				.mockResolvedValueOnce({
-					modified: [CONTENDED], deleted: [], contended: [{
-						path: CONTENDED, admittedId: NEWCOMER, withheldId: RECORD_HOLDER,
-						displacedPaths: [], reason: "lowest_stable_id", owesRemediation: true,
-					}],
-				})
 				.mockResolvedValueOnce({ modified: [CONTENDED, TARGET], deleted: [] })
 				.mockResolvedValue({ modified: [], deleted: [] });
 			const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
@@ -2626,14 +2702,13 @@ describe("SyncOrchestrator", () => {
 
 			const renameById = landRepair(remoteFs, holder);
 			remoteFs.identityRename = { renameById };
-			// No checkpoint ⇒ forceFullScan ⇒ COLD, which never calls getChangedPaths.
+			// No checkpoint ⇒ forceFullScan ⇒ COLD, which never calls getChangedPaths. The
+			// first full scan's contention reaches reconciliation; the follow-up is settled.
 			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(false);
-			remoteFs.checkpoint!.drainWorkingViewContentions = vi.fn()
-				.mockReturnValueOnce([{
-					path: CONTENDED, admittedId: NEWCOMER, withheldId: RECORD_HOLDER,
-					displacedPaths: [], reason: "lowest_stable_id", owesRemediation: true,
-				}])
-				.mockReturnValue([]);
+			attachReconciliation(remoteFs, [[{
+				path: CONTENDED, admittedId: NEWCOMER, withheldId: RECORD_HOLDER,
+				displacedPaths: [], reason: "lowest_stable_id", owesRemediation: true,
+			}], []]);
 			const commitCheckpoint = vi.fn().mockResolvedValue(undefined);
 			remoteFs.checkpoint!.commitCheckpoint = commitCheckpoint;
 			remoteFs.checkpoint!.abortWorkingView = vi.fn().mockResolvedValue(undefined);

@@ -70,6 +70,19 @@ central `tests/fs/remote-backend-contracts.test.ts` unit composition root.
   Canonical ids are `googledrive`/`onedrive`/`dropbox`; `*-custom` are settings aliases
   only and are never registered as modules. See
   [adr-20260920-backend-module-boundary.md](docs/adr/adr-20260920-backend-module-boundary.md).
+- **The remote filesystem owns the path↔identity bijection and namespace reconciliation.**
+  A filesystem holds one object per path, so the remote filesystem — the backend layer in
+  front of the sync engine — is the only layer that observes two live provider objects
+  claiming one derived address, and the only layer allowed to settle it. It renames the
+  non-keeper on the backend through the identity-addressed rename capability, updates its
+  derived cache from the provider's answer, aborts its working view, and reports that the
+  cycle must be retried. The sync engine consumes only a 1:1 view — `list`, `stat` and
+  `getChangedPaths` carry no collision — and must not plan or publish for a cycle the
+  filesystem reports as reconciled. The keeper policy (the claimant holding a committed
+  `SyncRecord`) and the scope filter are per-call arguments; the filesystem reads no sync
+  state and persists no collision record. This is one backend rename issued from the
+  backend layer, not an admitted sync action. See
+  [adr-20260922-backend-layer-namespace-reconciliation.md](docs/adr/adr-20260922-backend-layer-namespace-reconciliation.md).
 - **Sync durable authority is closed to two states:** the remote delta cursor commits
   only after a wholly clean cycle, and each file's `SyncRecord` commits only after its
   admitted I/O succeeds. The remote metadata cache is a derived projection, written as
@@ -91,7 +104,9 @@ central `tests/fs/remote-backend-contracts.test.ts` unit composition root.
   finish with exactly one lifecycle result: commit only after a wholly clean cycle, or
   abort on every incomplete outcome/exception before classification or retry. Abort may
   clear only live derived cache/cursor/scope state; it must not clear the durable
-  checkpoint or mutate the provider. Wait for scheduled sibling effects to settle before
+  checkpoint or mutate the provider. (A namespace reconciliation rename is the remote
+  filesystem's own operation, described above, not part of abort; its cycle does not
+  commit.) Wait for scheduled sibling effects to settle before
   aborting. Never add a prior-failure/recovery field to compensate for an unclosed view.
 - **Re-evaluate current facts; do not add stopped-state recovery branches.** COLD,
   WARM, and HOT are acquisition strategies only. They must produce the same Admission

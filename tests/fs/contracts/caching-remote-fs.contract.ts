@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import type { MetadataStore } from "../../../src/store/metadata-store";
-import type { CachingRemoteFs, RemoteDelta } from "../../../src/fs/caching/remote-fs";
+import type { CachingRemoteFs } from "../../../src/fs/caching/remote-fs";
 import type { FileEntity } from "../../../src/fs/types";
 import type { IFileSystem } from "../../../src/fs/interface";
 import { insertConflictSuffix } from "../../../src/sync/conflict";
@@ -653,9 +653,13 @@ export function runCachingRemoteFsContract<TFile>(
 			const paths = (entries: readonly FileEntity[]): string[] =>
 				entries.map((entry) => entry.path).sort();
 
-			/** The delta's own contention report, as plain comparable rows. */
-			const announced = (delta: RemoteDelta | null) =>
-				(delta?.contended ?? []).map((fact) => ({
+			/**
+			 * The working view's own contention report, as plain comparable rows. The
+			 * facts never reach the public `RemoteDelta`; the concrete caching filesystem
+			 * hands them to namespace reconciliation and to this unit-level driver.
+			 */
+			const announced = (fs: CachingRemoteFs<TFile>) =>
+				fs.takeWorkingViewContentions().map((fact) => ({
 					path: fact.path,
 					admittedId: fact.admittedId,
 					withheldId: fact.withheldId,
@@ -692,7 +696,7 @@ export function runCachingRemoteFsContract<TFile>(
 				const observed = {
 					addressable: (await fs.stat("Test.md"))?.identityKey,
 					listed: paths(await fs.list()),
-					announced: announced(delta),
+					announced: announced(fs),
 					deleted: [...(delta?.deleted ?? [])].sort(),
 				};
 				await store.close();
@@ -770,7 +774,7 @@ export function runCachingRemoteFsContract<TFile>(
 					listed: paths(await fs.list()),
 					underDocs: paths(await fs.listDir("docs")),
 					folder: (await fs.stat("docs"))?.identityKey,
-					announced: announced(delta),
+					announced: announced(fs),
 					deleted: [...(delta?.deleted ?? [])].sort(),
 				};
 				await store.close();
@@ -839,7 +843,7 @@ export function runCachingRemoteFsContract<TFile>(
 				const delta = await fs.getChangedPaths();
 
 				expect(delta?.deleted).toEqual([]);
-				expect(announced(delta)).toEqual([{
+				expect(announced(fs)).toEqual([{
 					path: "docs", admittedId: "d1", withheldId: "d2",
 					displacedPaths: ["docs/x.md"], reason: "lowest_stable_id", owesRemediation: true,
 				}]);
@@ -848,46 +852,6 @@ export function runCachingRemoteFsContract<TFile>(
 				await store.close();
 			});
 
-			it("leaves both objects present after the repair, the keeper at the plain address", async () => {
-				const h = makeHarness();
-				const collision = staged(h);
-				collision.stage([{ id: "A1", name: "Test.md" }], "baseline");
-				const store = h.makeStore("contract-collision-survival");
-				const fs = h.makeFs(store);
-				await fs.list();
-				await fs.commitCheckpoint();
-				collision.stage([{ id: "B2", name: "Test.md" }], "delta");
-				expect(announced(await fs.getChangedPaths())[0]?.withheldId).toBe("B2");
-
-				const target = insertConflictSuffix("Test.md", "id-B2");
-				const capability: IFileSystem["identityRename"] = (fs as IFileSystem).identityRename;
-				if (!capability) {
-					// No way to move an object off a contended address, so nothing is done
-					// to the provider at all. What must still hold is that nothing was
-					// lost: the namespace a cold scan finds is exactly what it was, with
-					// no conflict-suffixed address invented on the way.
-					const untouched = h.makeStore("contract-collision-survival-untouched");
-					const provider = h.makeFs(untouched);
-					expect(paths(await provider.list())).toEqual(["Test.md"]);
-					await untouched.close();
-					await store.close();
-					return;
-				}
-				await capability.renameById("B2", "Test.md", target);
-
-				// In the vault: both reachable, the keeper still at the plain address.
-				expect(paths(await fs.list())).toEqual([target, "Test.md"].sort());
-				expect((await fs.stat("Test.md"))?.identityKey).toBe("A1");
-				expect((await fs.stat(target))?.identityKey).toBe("B2");
-
-				// On the provider: a cold scan through a store that has never seen any of
-				// this finds the same two objects, so nothing was lost to repair it.
-				const fresh = h.makeStore("contract-collision-survival-provider");
-				const provider = h.makeFs(fresh);
-				expect(paths(await provider.list())).toEqual([target, "Test.md"].sort());
-				await fresh.close();
-				await store.close();
-			});
 
 			it("does not advance the committed cursor while a claimant is withheld", async () => {
 				const h = makeHarness();
@@ -899,7 +863,8 @@ export function runCachingRemoteFsContract<TFile>(
 				await fs.commitCheckpoint();
 
 				collision.stage([{ id: "B2", name: "Test.md" }], "delta");
-				const first = announced(await fs.getChangedPaths());
+				await fs.getChangedPaths();
+				const first = announced(fs);
 				expect(first).toHaveLength(1);
 
 				// The cycle owed a repair, so it aborted instead of committing. The next
@@ -908,7 +873,7 @@ export function runCachingRemoteFsContract<TFile>(
 				await fs.abortWorkingView();
 				const replay = await fs.getChangedPaths();
 
-				expect(announced(replay)).toEqual(first);
+				expect(announced(fs)).toEqual(first);
 				expect(replay?.deleted).toEqual([]);
 				await store.close();
 			});
@@ -932,6 +897,113 @@ export function runRemoteFamilyCachingContract<TFile>(
 	makeHarness: () => RemoteFamilyCachingHarness<TFile>,
 ): void {
 	runCachingRemoteFsContract(name, makeHarness);
+
+	/**
+	 * The collision is settled through the PUBLIC filesystem boundary, never by reaching
+	 * for the internal identity-rename mechanism. A family that can stage the shape must
+	 * expose `namespaceReconciliation` and honour the keeper policy; a family that cannot
+	 * is covered by the base contract's cited non-producibility.
+	 */
+	describe(`CachingRemoteFs namespace reconciliation — ${name}`, () => {
+		const paths = (entries: readonly FileEntity[]): string[] =>
+			entries.map((entry) => entry.path).sort();
+
+		/** Stage a baseline `A1` at `Test.md`, commit, then land `B2` on the same address. */
+		async function stagedCollision(h: RemoteFamilyCachingHarness<TFile>, storeId: string) {
+			if (h.collision.kind !== "stages") return null;
+			h.collision.stage([{ id: "A1", name: "Test.md" }], "baseline");
+			const store = h.makeStore(storeId);
+			const fs = h.makeFs(store);
+			await fs.list();
+			await fs.commitCheckpoint();
+			h.collision.stage([{ id: "B2", name: "Test.md" }], "delta");
+			await fs.getChangedPaths();
+			return { fs, store };
+		}
+
+		it("settles a staged collision through namespace reconciliation, both objects surviving", async () => {
+			const h = makeHarness();
+			const staged = await stagedCollision(h, "contract-reconcile-survival");
+			if (!staged) {
+				expect(h.collision.kind).toBe("cannot");
+				return;
+			}
+			const { fs, store } = staged;
+			// A family that can produce the collision must provide the public repair.
+			const reconciliation = (fs as IFileSystem).namespaceReconciliation;
+			expect(reconciliation, `${name} must expose namespaceReconciliation for a producible collision`).toBeDefined();
+
+			const result = await reconciliation!.reconcileNamespace({
+				isInScope: () => true,
+				keeper: () => Promise.resolve(undefined),
+			});
+			expect(result.kind).toBe("changed");
+
+			// The reconciled cycle does not commit; discard the working view and re-read,
+			// and the namespace is settled with both objects at distinct addresses.
+			await fs.abortWorkingView();
+			await fs.getChangedPaths();
+			const target = insertConflictSuffix("Test.md", "id-B2");
+			expect(paths(await fs.list())).toEqual([target, "Test.md"].sort());
+			expect((await fs.stat("Test.md"))?.identityKey).toBe("A1");
+			expect((await fs.stat(target))?.identityKey).toBe("B2");
+
+			// On the provider, a scan through a fresh store finds the same two objects.
+			const fresh = h.makeStore("contract-reconcile-survival-provider");
+			const provider = h.makeFs(fresh);
+			expect(paths(await provider.list())).toEqual([target, "Test.md"].sort());
+			await fresh.close();
+			await store.close();
+		});
+
+		it("honours the keeper policy, moving the admitted claimant instead", async () => {
+			const h = makeHarness();
+			const staged = await stagedCollision(h, "contract-reconcile-keeper");
+			if (!staged) {
+				expect(h.collision.kind).toBe("cannot");
+				return;
+			}
+			const { fs, store } = staged;
+			const reconciliation = (fs as IFileSystem).namespaceReconciliation!;
+
+			// The engine names the withheld claimant the keeper, so the admitted claimant moves.
+			const result = await reconciliation.reconcileNamespace({
+				isInScope: () => true,
+				keeper: () => Promise.resolve("B2"),
+			});
+			expect(result.kind).toBe("changed");
+
+			await fs.abortWorkingView();
+			await fs.getChangedPaths();
+			const target = insertConflictSuffix("Test.md", "id-A1");
+			expect((await fs.stat("Test.md"))?.identityKey).toBe("B2");
+			expect((await fs.stat(target))?.identityKey).toBe("A1");
+			await store.close();
+		});
+
+		it("does not mutate the provider for an out-of-scope address", async () => {
+			const h = makeHarness();
+			const staged = await stagedCollision(h, "contract-reconcile-out-of-scope");
+			if (!staged) {
+				expect(h.collision.kind).toBe("cannot");
+				return;
+			}
+			const { fs, store } = staged;
+			const reconciliation = (fs as IFileSystem).namespaceReconciliation!;
+
+			const result = await reconciliation.reconcileNamespace({
+				isInScope: () => false,
+				keeper: () => Promise.resolve(undefined),
+			});
+			expect(result.kind).toBe("settled");
+			// Nothing moved: the provider a fresh scan finds is unchanged.
+			const fresh = h.makeStore("contract-reconcile-out-of-scope-provider");
+			const provider = h.makeFs(fresh);
+			expect(paths(await provider.list())).toEqual(["Test.md"]);
+			await fresh.close();
+			await store.close();
+		});
+	});
 
 	describe(`CachingRemoteFs carried rename identity — ${name}`, () => {
 		it("names the moved object by its own projection, or records that it has none", async () => {

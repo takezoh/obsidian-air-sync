@@ -1,7 +1,7 @@
 import type { FileEntity } from "./types";
 import type { RenamePair } from "./types";
 import type { PriorityObservationCapability } from "./priority-observation";
-import type { AddressDisplacement } from "./caching/claim-set-assignment";
+import type { NamespaceReconciliationCapability } from "./caching/namespace-reconciliation";
 
 /**
  * Abstract filesystem interface for sync operations.
@@ -111,6 +111,15 @@ export interface IFileSystem {
 	identityRename?: IdentityAddressedRename;
 
 	/**
+	 * Namespace reconciliation (see {@link NamespaceReconciliationCapability}): the
+	 * filesystem's own repair of a derived address two live provider objects claim, so
+	 * the sync engine always consumes a 1:1 view and never observes the collision.
+	 * Optional, in the shape {@link checkpoint} uses; a filesystem whose addresses are
+	 * the provider's own keys cannot produce the condition and does not offer it.
+	 */
+	namespaceReconciliation?: NamespaceReconciliationCapability;
+
+	/**
 	 * Release resources (e.g. close IndexedDB connections).
 	 * Called on plugin unload. Optional — not all backends need cleanup.
 	 */
@@ -138,7 +147,9 @@ export interface IdentityAddressedRename {
 	 * `admittedPath` is the source address Admission observed the object at when
 	 * it decided the repair. The call fails closed if the object is no longer
 	 * addressed there: a post-Admission move must not let a fresh observation
-	 * justify renaming an object at a different location.
+	 * justify renaming an object at a different location. That check is made from
+	 * the re-observed object against the working view's projection of its name and
+	 * its immediate parent's cached path — one provider read, never one per ancestor.
 	 *
 	 * Only the final segment moves: the object keeps the provider parent it
 	 * already has, which is exactly what disambiguating two claimants of one
@@ -176,19 +187,16 @@ export interface IncrementalCheckpoint {
 	 * Should be called before list() to allow the change-detector to skip
 	 * unchanged paths. Returns modified, deleted, and optionally renamed path lists.
 	 *
-	 * `contended` reports the derived addresses this cycle found claimed by two live
-	 * ids. It is a FACT ABOUT THIS CYCLE, not a deletion and not an instruction: the
-	 * backend has already subtracted those addresses from `deleted`, because an
-	 * object that lost an address is still on the provider. Nothing above the
-	 * filesystem decides an absence, so no caller may move a path from here into
-	 * `deleted`. Optional: a backend whose addresses are the provider's own keys
-	 * cannot produce one.
+	 * The result is a 1:1 path view: a derived address two live provider objects
+	 * claim is settled inside the filesystem (see
+	 * {@link IFileSystem.namespaceReconciliation}) and never appears here. The
+	 * filesystem has already subtracted a displaced address from `deleted`, because
+	 * an object that lost an address is still on the provider.
 	 */
 	getChangedPaths(): Promise<{
 		modified: string[];
 		deleted: string[];
 		renamed?: RenamePair[];
-		contended?: readonly AddressDisplacement[];
 	} | null>;
 
 	/**
@@ -199,25 +207,6 @@ export interface IncrementalCheckpoint {
 	 * it must fail closed rather than fall back to `IFileSystem.list()`.
 	 */
 	listCurrentSnapshot?(): Promise<FileEntity[]>;
-
-	/**
-	 * Take the contentions the current working view was built with, leaving none
-	 * behind.
-	 *
-	 * `getChangedPaths` reports what a delta it RETURNS found. A working view is also
-	 * built by path-level calls (`list`, `stat`) that have nowhere to return an
-	 * address-level fact: a lazily-entered full scan, and the cursor replay `list()`
-	 * performs on a restored checkpoint. Without this, a cycle acquiring its remote
-	 * side by listing — COLD, with or without a checkpoint — reports no contention at
-	 * all, and an address the cache could not seat stays silently absent for as long
-	 * as the checkpoint stands.
-	 *
-	 * Draining is what keeps the two channels from double-reporting: a delta that is
-	 * returned carries its own contentions and leaves nothing here.
-	 * Optional, for the same reason `getChangedPaths`'s `contended` is: a backend
-	 * whose addresses are the provider's own keys can never produce one.
-	 */
-	drainWorkingViewContentions?(): readonly AddressDisplacement[];
 
 	/**
 	 * Whether a committed incremental checkpoint (delta cursor) exists. When false,

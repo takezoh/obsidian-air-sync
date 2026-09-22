@@ -17,21 +17,19 @@ import { observeDetachedPriority, readDetachedPriority } from "./detached-priori
 import type { DetachedReadOutcome } from "./detached-priority";
 
 /**
- * A remote delta: paths added/modified, deleted, and renamed since the last cursor,
- * plus the addresses this cycle found claimed by two live ids.
+ * A remote delta: paths added/modified, deleted, and renamed since the last cursor.
  *
- * `contended` is what keeps `deleted` honest. A path can be absent from the working
- * view for two completely different reasons — the provider deleted the object, or
- * two objects claimed one derived address and the cache could only hold one — and
- * only the first is a deletion. The second names an object that is still on the
- * provider, so reporting it in `deleted` would authorize deleting a live file
- * locally. Every producer of `deleted` subtracts these facts; nothing else may.
+ * It is a 1:1 path view. A derived address two live provider objects claim is settled
+ * inside this filesystem (see {@link ManagedRemoteFs.namespaceReconciliation}) before
+ * the delta is returned, and the displaced address is subtracted from `deleted` here
+ * — an object that lost an address is still on the provider, so reporting it would
+ * authorize deleting a live file locally. Nothing above the filesystem decides an
+ * absence.
  */
 export interface RemoteDelta {
 	modified: string[];
 	deleted: string[];
 	renamed: RenamePair[];
-	contended: readonly AddressDisplacement[];
 }
 
 /**
@@ -157,6 +155,25 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	 * here, so nothing is reported twice.
 	 */
 	private _workingViewContentions: readonly AddressDisplacement[] = [];
+
+	/**
+	 * The contentions a returned delta carried this working view. Kept beside
+	 * {@link _workingViewContentions} so `drainWorkingViewContentions` (the one-shot
+	 * channel out of a lazy call) keeps its meaning while namespace reconciliation,
+	 * which runs after the cycle's change collection, can still see the delta's facts.
+	 * Both are taken and cleared together by {@link takeWorkingViewContentions}.
+	 */
+	private _deltaContentions: readonly AddressDisplacement[] = [];
+
+	/**
+	 * Whether the current working view has already replayed its cursor (or was built by a
+	 * scan with no cursor to replay). A working view is built once; a second implicit
+	 * replay from `list()` after namespace reconciliation would advance the cursor again
+	 * and could seat a newly-arrived same-name object that reconciliation never saw,
+	 * hiding a claimant while a clean checkpoint commits. The flag makes the implicit
+	 * `list()` replay once per view; `getChangedPaths` still advances explicitly.
+	 */
+	private _viewDeltaApplied = false;
 
 	protected constructor(
 		rootFolderId: string,
@@ -323,21 +340,27 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 		// `fullScanWithDelta` deliberately does not come through here: it takes the
 		// return value, so a cursor-expiry scan reports through the delta and only there.
 		this._workingViewContentions = await this.fullScan();
+		// A scan captures "now": there is no cursor to replay in this view.
+		this._viewDeltaApplied = true;
 		return false;
 	}
 
 	/**
-	 * Take the contentions the working view was built with, leaving none behind.
+	 * Take every contention the current working view was built with — the lazy full
+	 * scan's and the returned delta's — leaving none behind. Namespace reconciliation
+	 * drains this after the cycle's remote side is acquired; the contention facts never
+	 * cross the `IFileSystem` boundary.
 	 *
-	 * Every temperature reports its contentions through this or through the delta, so
-	 * an address the cache could not seat is announced once per cycle no matter which
-	 * call happened to build the view — which is what makes "nothing disappears from
-	 * the working view without saying so" true on the full-scan route too.
+	 * Deliberately NOT on `IncrementalCheckpoint`: the sync engine's contract carries
+	 * no collision. This is the concrete caching filesystem's own working-view drain,
+	 * reached by namespace reconciliation and by the shared caching contract's
+	 * unit-level driver.
 	 */
-	drainWorkingViewContentions(): readonly AddressDisplacement[] {
-		const drained = this._workingViewContentions;
+	takeWorkingViewContentions(): readonly AddressDisplacement[] {
+		const combined = [...this._workingViewContentions, ...this._deltaContentions];
 		this._workingViewContentions = [];
-		return drained;
+		this._deltaContentions = [];
+		return combined;
 	}
 
 	/**
@@ -399,6 +422,7 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 			const scopeFingerprint = context?.scopeFingerprint ?? this._scopeFingerprint;
 			await this.commitCache(scopeFingerprint);
 			this._scopeFingerprint = scopeFingerprint;
+			this._viewDeltaApplied = false;
 		});
 	}
 
@@ -450,6 +474,8 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 			this._changesPageToken = null;
 			this._scopeFingerprint = null;
 			this._workingViewContentions = [];
+			this._deltaContentions = [];
+			this._viewDeltaApplied = false;
 			this.cache.clear();
 			this.initialized = false;
 		});
@@ -472,6 +498,8 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 			this._changesPageToken = null;
 			this._scopeFingerprint = null;
 			this._workingViewContentions = [];
+			this._deltaContentions = [];
+			this._viewDeltaApplied = false;
 			this.cache.clear();
 			this.initialized = false;
 		});
@@ -503,7 +531,13 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 		}
 
 		this._changesPageToken = result.newToken;
+		this._viewDeltaApplied = true;
 		const contended = result.contended ?? [];
+		// A working view may replay its cursor more than once (`list()` replays after a
+		// `getChangedPaths`, for example). Only the replay that actually holds a
+		// contention is the view's fact; a later empty replay must not wipe it. The
+		// bucket is cleared with the working view, so nothing leaks across cycles.
+		if (contended.length > 0) this._deltaContentions = contended;
 		const displaced = displacedAddresses(contended);
 		const modified: string[] = [];
 		const deleted: string[] = [];
@@ -523,7 +557,7 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 				deleted.push(path);
 			}
 		}
-		return { modified, deleted, renamed: result.renamedPaths, contended };
+		return { modified, deleted, renamed: result.renamedPaths };
 	}
 
 	/**
@@ -540,6 +574,10 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 		// Snapshot before fullScan() overwrites the cache.
 		const oldPathById = this.cache.snapshotPathsById();
 		const contended = await this.fullScan();
+		// The cursor-expiry route reports its facts in the returned delta, so they are
+		// parked as delta contentions, not as the lazy path-level channel.
+		this._deltaContentions = contended;
+		this._viewDeltaApplied = true;
 		return this.diffById(oldPathById, contended);
 	}
 
@@ -606,7 +644,7 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 				renamed: renamed.length,
 			});
 		}
-		return { modified: [...modified], deleted: [...deleted], renamed, contended };
+		return { modified: [...modified], deleted: [...deleted], renamed };
 	}
 
 	/**
@@ -656,16 +694,15 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	async list(): Promise<FileEntity[]> {
 		return this.cacheMutex.run(async () => {
 			// A fresh full scan captures "now"; a restored cursor warrants a replay.
-			if (await this.ensureInitialized()) {
+			if (await this.ensureInitialized() && !this._viewDeltaApplied) {
 				// The replay's paths are superseded by the listing this returns, but its
-				// contentions are not: they are facts about this working view, and this
-				// path-level call has nowhere else to put them. A cycle that lists instead
-				// of asking for a delta — COLD with a checkpoint standing, as after a scope
-				// change — would otherwise report none.
-				const delta = await this._applyIncrementalChanges();
-				if (delta && delta.contended.length > 0) {
-					this._workingViewContentions = [...this._workingViewContentions, ...delta.contended];
-				}
+				// contentions still belong to this working view: a cycle that lists
+				// instead of asking for a delta — COLD with a checkpoint standing, as
+				// after a scope change — must still settle them. `_applyIncrementalChanges`
+				// parks them for namespace reconciliation. Replayed at most once per view:
+				// after reconciliation built the view, a second implicit replay would move
+				// the cursor behind reconciliation and could seat a collision it never saw.
+				await this._applyIncrementalChanges();
 			}
 			return this.snapshotEntities();
 		});

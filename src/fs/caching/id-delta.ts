@@ -171,11 +171,39 @@ function applyEntry<TFile>(
 		hold(acc, entry, applied.withheld);
 		return;
 	}
+	// This id was written, so any standing loss recorded for it no longer describes
+	// current facts. That is the case the address-keyed withdrawal in `settleOnce`
+	// cannot see: a contender that lost an address is repaired by renaming IT to a
+	// new address, and a later entry placing it there must withdraw the loss without
+	// waiting for the admitted id to leave. Report the address it left as the move it
+	// is, so the vacated path is accounted for rather than left to read as a deletion.
+	const superseded = acc.standing.get(entry.id);
+	if (superseded !== undefined) {
+		acc.standing.delete(entry.id);
+		if (oldPath === undefined && newPath !== undefined &&
+			superseded.claim.vacatedPath !== null && superseded.claim.vacatedPath !== newPath) {
+			reportMove(cache, acc, {
+				oldPath: superseded.claim.vacatedPath,
+				newPath,
+				wasFolder: entry.isFolder,
+				oldDescendants: superseded.claim.displacedPaths,
+			});
+		}
+	}
 	if (applied.displacement) {
-		// This entry took the address from a live occupant. The drain never held that
-		// occupant's metadata — it only ever saw the winner's — so the loss is
-		// announced and cannot be re-applied; the address it vacated is its own.
-		hold(acc, null, { ...applied.displacement, vacatedPath: applied.displacement.path });
+		// This entry took the address from a live occupant. Hold the occupant's own
+		// metadata too — the cache hands it back for exactly this — so that if the
+		// arriving claimant later vacates the address, `settleOnce` re-applies the
+		// evicted object and the contention withdraws with no provider read. The
+		// evicted object was in the committed view; re-seating it is what lets a
+		// keeper the cache evicted (a claimant it never held otherwise) converge.
+		const evicted = applied.evicted;
+		const entry = evicted === undefined ? null : {
+			id: applied.displacement.withheldId,
+			isFolder: cache.toEntity(applied.displacement.path, evicted).isDirectory,
+			file: evicted,
+		};
+		hold(acc, entry, { ...applied.displacement, vacatedPath: applied.displacement.path });
 	}
 	// The rest of what this change cost: folders merged beside an evicted occupant,
 	// and children a folder brought into a same-named one that met theirs. None of

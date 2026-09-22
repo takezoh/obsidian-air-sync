@@ -337,6 +337,66 @@ describe("applyIdDeltaPage", () => {
 			expect(acc.withheld).toEqual([]);
 		});
 
+		it("withdraws the loss when a later entry re-seats the evicted incumbent at its repair target", () => {
+			// The reported shape: two live ids claim one address and the newcomer wins,
+			// so the established incumbent is evicted with no delta entry of its own. The
+			// repair renames that incumbent to a conflict target; the provider reports it
+			// as its own entry. The address-keyed withdrawal in `settleOnce` never sees
+			// the admitted id leave, so the loss would stand forever unless placing the
+			// relocated claimant withdraws it.
+			const cache = makeCache();
+			seed(cache, [
+				["Note.md", file("f2", "Note.md", ROOT)],
+				["Other.md", file("f1", "Other.md", ROOT)],
+			]);
+
+			const acc = drain(cache, [
+				[upsert(file("f1", "Note.md", ROOT))],
+				[upsert(file("f2", "Note.conflict-id-f2.md", ROOT))],
+			]);
+
+			expect(acc.standing.size).toBe(0);
+			expect(acc.withheld).toEqual([]);
+			expect(acc.displacements).toEqual([]);
+			expect(cache.idAt("Note.md")).toBe("f1");
+			expect(cache.idAt("Note.conflict-id-f2.md")).toBe("f2");
+			// The evicted incumbent's vacated address is accounted for as the move it is,
+			// never left absent for a deletion rule to read.
+			expect(acc.renamedPaths).toContainEqual({
+				oldPath: "Note.md",
+				newPath: "Note.conflict-id-f2.md",
+				isFolder: undefined,
+				identityKey: projectedIdentity(cache, "Note.conflict-id-f2.md"),
+			});
+		});
+
+		it("withdraws a held loss when the withheld claimant is re-seated at its repair target", () => {
+			const cache = makeCache();
+			seed(cache, [
+				["docs", file("d1", "docs", ROOT)],
+				["old", folder("d2", "old", ROOT)],
+			]);
+
+			// d2 loses its move into docs to d1; the drain holds d2's own entry. The
+			// provider repair then renames d2 from old to the conflict target.
+			const acc = drain(cache, [
+				[upsert(folder("d2", "docs", ROOT))],
+				[upsert(folder("d2", "docs.conflict-id-d2", ROOT))],
+			]);
+
+			expect(acc.standing.size).toBe(0);
+			expect(acc.withheld).toEqual([]);
+			expect(acc.displacements).toEqual([]);
+			expect(cache.idAt("docs")).toBe("d1");
+			expect(cache.idAt("docs.conflict-id-d2")).toBe("d2");
+			expect(acc.renamedPaths).toContainEqual({
+				oldPath: "old",
+				newPath: "docs.conflict-id-d2",
+				isFolder: true,
+				identityKey: projectedIdentity(cache, "docs.conflict-id-d2"),
+			});
+		});
+
 		it("still announces the loss when nothing in the drain frees the address", () => {
 			const cache = makeCache();
 			seed(cache, [["docs", file("d1", "docs", ROOT)]]);

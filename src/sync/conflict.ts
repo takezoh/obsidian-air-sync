@@ -1,6 +1,9 @@
 import type { IFileSystem } from "../fs/interface";
 import type { FileEntity } from "../fs/types";
+import { insertConflictSuffix } from "../utils/path";
 import type { ExactSnapshot } from "./content-snapshot";
+
+export { insertConflictSuffix } from "../utils/path";
 
 export interface ConflictResolutionResult {
 	/** The action that was taken */
@@ -55,15 +58,6 @@ export async function generateConflictPath(
 	// timestamp suffix. No further tier — a same-path, same-millisecond collision on
 	// top of 100 existing copies is not a real scenario.
 	return insertConflictSuffix(path, Date.now());
-}
-
-export function insertConflictSuffix(path: string, seq: number | string): string {
-	const suffix = seq === 1 ? ".conflict" : `.conflict-${seq}`;
-	const lastDot = path.lastIndexOf(".");
-	if (lastDot === -1 || lastDot <= path.lastIndexOf("/")) {
-		return `${path}${suffix}`;
-	}
-	return `${path.substring(0, lastDot)}${suffix}${path.substring(lastDot)}`;
 }
 
 /** Reverse only the deterministic full-SHA preservation address. The result is

@@ -269,6 +269,10 @@ class FakeGoogleDrive {
 		if (removeParents) file.parents = (file.parents ?? []).filter((p) => p !== removeParents);
 		if (addParents) file.parents = [...(file.parents ?? []), addParents];
 		this.place(file, this.contents.get(fileId));
+		// Drive reports every change, including the app's own metadata rename, in the next
+		// delta; a fake that did not would be LESS generous than the provider and would
+		// hide the re-observation a reconciled cycle depends on.
+		this.events.push({ type: "file", fileId, removed: false, file });
 		return Promise.resolve(this.copy(file));
 	}
 

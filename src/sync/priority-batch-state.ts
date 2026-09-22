@@ -21,6 +21,10 @@ export class PriorityBatchState {
 	}
 
 	setPhase(phase: BatchPhase): void {
+		// Abort is terminal for the batch: once a cycle is aborted it publishes nothing,
+		// so a later phase report (the executor's opening "transfer", say) must not move
+		// it back into a runnable phase where a queued priority pull could publish.
+		if (this.phase === "aborting") return;
 		this.phase = phase;
 	}
 

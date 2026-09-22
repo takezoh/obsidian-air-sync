@@ -759,6 +759,9 @@ describe("AbstractMetadataCache claim-set assignment", () => {
 					reason: "lowest_stable_id",
 					owesRemediation: true,
 				},
+				// The evicted occupant's own metadata is handed back so the drain can
+				// re-seat it if the arriving claimant later vacates the address.
+				evicted: folder("d2", "docs", ROOT),
 				additionalLosses: [],
 				relocated: [],
 			});

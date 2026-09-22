@@ -11,7 +11,7 @@ import type { GoogleDriveFile } from "../src/backends/googledrive/types";
 import type { IncrementalCheckpoint } from "../src/fs/interface";
 import { bytes, decode, runIFileSystemContract } from "../tests/fs/contracts/ifilesystem.contract";
 import { insertConflictSuffix } from "../src/sync/conflict";
-import { planAddressContentionRemediation } from "../src/sync/plan-admission-address-contention";
+import type { AddressDisplacement } from "../src/fs/caching/claim-set-assignment";
 import {
 	createGoogleE2EAuth,
 	GOOGLE_E2E_REFRESH_TOKEN_ENV,
@@ -259,6 +259,14 @@ if (!creds) {
 	// `afterAll` trashes recursively — the renamed object included, because it keeps
 	// the parent it started with (which is case 4's own assertion).
 	function registerContendedAddress(drive: DriveFsUnderTest): void {
+		/**
+		 * The working view's contention facts, drained. They are not on the public
+		 * `IFileSystem` contract any more — namespace reconciliation owns them — but the
+		 * concrete caching filesystem exposes the drain for a live assertion.
+		 */
+		const contentions = (target: IFileSystem): readonly AddressDisplacement[] =>
+			(target as unknown as { takeWorkingViewContentions(): readonly AddressDisplacement[] })
+				.takeWorkingViewContentions();
 		describe(`${drive.label} contended derived address (real)`, () => {
 			it("holds one address for two live ids, calls neither a deletion, and repairs it by id", async () => {
 				const rootId = await makeGoogleDriveChild(client, parentId);
@@ -304,74 +312,61 @@ if (!creds) {
 					}
 
 					// ── 2. The contention reaches the cache AS a contention ──
-					// Every drain in the window is kept, not just the one carrying the fact: the
-					// two siblings may arrive in one page or across several, and an intermediate
-					// drain that mis-attributed a displaced address would otherwise be consumed
-					// unobserved.
+					// Every delta in the window is kept, not just the one carrying the fact: the
+					// two siblings may arrive in one page or across several. The contention
+					// facts are not on the public delta — the filesystem settles them — so this
+					// waits for the moved sibling to land and then drives the settlement.
 					const observed: RemoteDelta[] = [];
-					const cycle = await pollForChange(
+					await pollForChange(
 						checkpoint,
 						`two siblings named "${CONTENDED_NAME}"`,
 						(delta) => {
 							observed.push(delta);
-							return (delta.contended ?? []).some((fact) => fact.path === CONTENDED_NAME);
+							return delta.modified.includes(CONTENDED_NAME);
 						},
 					);
-					const fact = (cycle.contended ?? []).find((entry) => entry.path === CONTENDED_NAME)!;
-					expect([fact.admittedId, fact.withheldId].sort()).toEqual([first.id, second.id].sort());
-					// Tier 2 of the arbiter, decided over the real ids. Asserting the rule rather
-					// than "whichever arrived first" is what makes this independent of the order
-					// Drive's change feed happened to report the two creations in.
-					expect(fact.admittedId).toBe([first.id, second.id].sort()[0]);
-					// Both claims are provider-resolved, so the loser is repairable — which is
-					// what separates this from a contention nothing can be done about.
-					expect(fact.owesRemediation).toBe(true);
 					// THE DATA-LOSS ROUTE. An address a contention displaced is absent from the
 					// working view but still present on the provider; reporting it in `deleted`
 					// would authorise deleting a live file locally.
 					for (const delta of observed) expect(delta.deleted).toEqual([]);
-					// Exactly one claimant is addressable, it is the admitted one, and the other
-					// holds no address ANYWHERE in the working view — not merely not this one.
+					// Exactly one claimant is addressable before the repair, and it is the one
+					// the arbiter admits: the lexicographically lowest stable id.
 					expect((await fs.list()).map((entry) => entry.path)).toEqual([CONTENDED_NAME]);
-					expect((await fs.stat(CONTENDED_NAME))?.identityKey).toBe(fact.admittedId);
+					const admittedId = (await fs.stat(CONTENDED_NAME))?.identityKey ?? "";
+					expect(admittedId).toBe([first.id, second.id].sort()[0]);
+					const movedId = admittedId === first.id ? second.id : first.id;
+					const target = insertConflictSuffix(CONTENDED_NAME, `id-${movedId}`);
+					const parentsBefore = (await client.getFile(movedId)).parents;
 
 					// ── 3. The repair, against the real API ──
-					// The target address comes from the production planner, so this exercises the
-					// address the plugin would actually ask for rather than one restated here.
-					const remediation = planAddressContentionRemediation({
-						contentions: cycle.contended ?? [],
-						recordHolders: new Set(),
-						renameByIdentity: fs.identityRename !== undefined,
+					// The filesystem owns the repair: it renames the non-keeper on the backend
+					// and reports that the namespace changed, so the next cycle re-observes a
+					// settled, 1:1 view.
+					const reconciliation = await fs.namespaceReconciliation!.reconcileNamespace({
+						isInScope: () => true,
+						keeper: () => Promise.resolve(undefined),
 					});
-					expect(remediation.checkpointBlocked).toBe(true);
-					expect(remediation.actions).toHaveLength(1);
-					const repair = remediation.actions[0]!;
-					expect(repair.oldPath).toBe(CONTENDED_NAME);
-					expect(repair.providerIdentity).toBe(fact.withheldId);
-					expect(repair.path).toBe(insertConflictSuffix(CONTENDED_NAME, `id-${fact.withheldId}`));
-
-					const parentsBefore = (await client.getFile(fact.withheldId)).parents;
-					await fs.identityRename!.renameById(repair.providerIdentity!, repair.path);
+					expect(reconciliation.kind).toBe("changed");
 
 					// The no-loss invariant, end to end: both objects reachable at distinct
 					// addresses, each with its own bytes, and the keeper's identity unmoved.
 					// `stat`/`read` do not replay a delta, so this reads the working view the
 					// repair itself produced rather than a later re-observation of it.
-					expect((await fs.stat(CONTENDED_NAME))?.identityKey).toBe(fact.admittedId);
-					expect((await fs.stat(repair.path))?.identityKey).toBe(fact.withheldId);
+					expect((await fs.stat(CONTENDED_NAME))?.identityKey).toBe(admittedId);
+					expect((await fs.stat(target))?.identityKey).toBe(movedId);
 					const contentById = new Map([[first.id, FIRST_CONTENT], [second.id, SECOND_CONTENT]]);
-					expect(decode(await fs.read(CONTENDED_NAME))).toBe(contentById.get(fact.admittedId));
-					expect(decode(await fs.read(repair.path))).toBe(contentById.get(fact.withheldId));
+					expect(decode(await fs.read(CONTENDED_NAME))).toBe(contentById.get(admittedId));
+					expect(decode(await fs.read(target))).toBe(contentById.get(movedId));
 
 					// ── 4. Only the leaf name moved ──
 					// `updateFileMetadata(id, { name })` sends no addParents/removeParents, and a
 					// real-API parent check is the part a fake cannot give: it is also what keeps
 					// the renamed object inside the tree `afterAll` trashes.
-					const movedOnDrive = await client.getFile(fact.withheldId);
-					expect(movedOnDrive.name).toBe(repair.path.split("/").pop());
+					const movedOnDrive = await client.getFile(movedId);
+					expect(movedOnDrive.name).toBe(target.split("/").pop());
 					expect(movedOnDrive.parents).toEqual(parentsBefore);
 					expect(movedOnDrive.parents).toEqual([rootId]);
-					const keeperOnDrive = await client.getFile(fact.admittedId);
+					const keeperOnDrive = await client.getFile(admittedId);
 					expect(keeperOnDrive.name).toBe(CONTENDED_NAME);
 					expect(keeperOnDrive.parents).toEqual([rootId]);
 				} finally {
@@ -414,8 +409,8 @@ if (!creds) {
 							return delta.modified.includes(CONTENDED_NAME);
 						},
 					);
+					expect(contentions(fs)).toEqual([]);
 					for (const delta of observed) {
-						expect(delta.contended ?? []).toEqual([]);
 						expect(delta.deleted).toEqual([]);
 					}
 					expect(cycle.modified).toEqual([CONTENDED_NAME]);
@@ -498,46 +493,45 @@ if (!creds) {
 					const content = new Map([[aInA.id, "a-in-A"], [aInB.id, "a-in-B"]]);
 
 					// ── 2. One vault folder, one contended file, nothing deleted ──
-					// Every drain in the window is kept: the folders and their contents may
-					// arrive across several, and each one must call nothing a deletion.
+					// Every delta in the window is kept: the folders and their contents may
+					// arrive across several, and each one must call nothing a deletion. The
+					// contention facts settle inside the filesystem, so this waits for the
+					// folders' contents and then drives the settlement.
 					const observed: RemoteDelta[] = [];
-					const facts = () => observed.flatMap((delta) => delta.contended ?? [])
-						.filter((fact) => fact.path === `${MERGED_FOLDER}/a.md`);
 					await pollForChange(checkpoint, "two same-named folders and their contents", (delta) => {
 						observed.push(delta);
-						return facts().length > 0 &&
-							observed.some((seen) => seen.modified.includes(`${MERGED_FOLDER}/b.md`));
+						return observed.some((seen) => seen.modified.includes(`${MERGED_FOLDER}/b.md`));
 					});
 					for (const delta of observed) expect(delta.deleted).toEqual([]);
 					expect((await fs.list()).map((entry) => entry.path).sort())
 						.toEqual([MERGED_FOLDER, `${MERGED_FOLDER}/a.md`, `${MERGED_FOLDER}/b.md`]);
 					expect((await fs.stat(MERGED_FOLDER))?.identityKey).toBe([folderA.id, folderB.id].sort()[0]);
 					expect((await fs.stat(`${MERGED_FOLDER}/b.md`))?.identityKey).toBe(bInB.id);
-					const fact = facts().at(-1)!;
-					expect(fact.admittedId).toBe([aInA.id, aInB.id].sort()[0]);
-					expect([fact.admittedId, fact.withheldId].sort()).toEqual([aInA.id, aInB.id].sort());
-					expect(fact.owesRemediation).toBe(true);
+					// One addressable a.md before the repair, and it is the arbiter's admitted id.
+					const admittedId = (await fs.stat(`${MERGED_FOLDER}/a.md`))?.identityKey ?? "";
+					expect(admittedId).toBe([aInA.id, aInB.id].sort()[0]);
+					const withheldId = admittedId === aInA.id ? aInB.id : aInA.id;
 
 					// ── 3. A full scan reaches the same fact through its own channel ──
 					expect((await cold.list()).map((entry) => entry.path).sort())
 						.toEqual([MERGED_FOLDER, `${MERGED_FOLDER}/a.md`, `${MERGED_FOLDER}/b.md`]);
-					expect(cold.checkpoint!.drainWorkingViewContentions?.()).toEqual([
-						expect.objectContaining({ path: fact.path, admittedId: fact.admittedId, withheldId: fact.withheldId }),
+					expect(contentions(cold)).toEqual([
+						expect.objectContaining({ path: `${MERGED_FOLDER}/a.md`, admittedId, withheldId }),
 					]);
 
 					// ── 4. The repair moves one FILE, inside its own Drive folder ──
-					const remediation = planAddressContentionRemediation({
-						contentions: [fact], recordHolders: new Set(), renameByIdentity: true,
+					const target = insertConflictSuffix(`${MERGED_FOLDER}/a.md`, `id-${withheldId}`);
+					const parentsBefore = (await client.getFile(withheldId)).parents;
+					const reconciliation = await fs.namespaceReconciliation!.reconcileNamespace({
+						isInScope: () => true,
+						keeper: () => Promise.resolve(undefined),
 					});
-					const repair = remediation.actions[0]!;
-					expect(repair.path).toBe(insertConflictSuffix(`${MERGED_FOLDER}/a.md`, `id-${fact.withheldId}`));
-					const parentsBefore = (await client.getFile(fact.withheldId)).parents;
-					await fs.identityRename!.renameById(fact.withheldId, repair.path);
-					expect((await fs.stat(`${MERGED_FOLDER}/a.md`))?.identityKey).toBe(fact.admittedId);
-					expect((await fs.stat(repair.path))?.identityKey).toBe(fact.withheldId);
-					expect(decode(await fs.read(`${MERGED_FOLDER}/a.md`))).toBe(content.get(fact.admittedId));
-					expect(decode(await fs.read(repair.path))).toBe(content.get(fact.withheldId));
-					expect((await client.getFile(fact.withheldId)).parents).toEqual(parentsBefore);
+					expect(reconciliation.kind).toBe("changed");
+					expect((await fs.stat(`${MERGED_FOLDER}/a.md`))?.identityKey).toBe(admittedId);
+					expect((await fs.stat(target))?.identityKey).toBe(withheldId);
+					expect(decode(await fs.read(`${MERGED_FOLDER}/a.md`))).toBe(content.get(admittedId));
+					expect(decode(await fs.read(target))).toBe(content.get(withheldId));
+					expect((await client.getFile(withheldId)).parents).toEqual(parentsBefore);
 
 					// ── 5. The vault folder moves as one, and loses only what is really gone ──
 					await fs.rename(MERGED_FOLDER, "notes");

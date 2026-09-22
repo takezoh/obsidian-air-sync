@@ -8,10 +8,10 @@ import { captureScopePolicy, isExcludedFromScope } from "./scope-projection";
 import { SyncStateStore } from "./state";
 import { LocalChangeTracker, type TrackerSnapshot } from "./local-tracker";
 import { collectChanges, type ChangeSet } from "./change-detector";
-import type { AddressDisplacement } from "../fs/caching/claim-set-assignment";
 import { computeScopeFingerprint } from "./scope-fingerprint";
 import { executePlan, toConflictRecords, DESKTOP_TRANSFER_POOL, MOBILE_TRANSFER_POOL } from "./plan-executor";
 import type { ExecutionContext } from "./plan-executor";
+import type { ExecutionResult } from "./execution-result";
 import { classifyHttpError, errorMessage, toError } from "../backend-api/error-classification";
 import { decideRetry, sleep } from "./error";
 import type { ConflictRecord, ConflictStrategy, SyncStatus } from "./types";
@@ -22,10 +22,11 @@ import {
 } from "./sync-notification";
 import { logChangeDetection } from "./sync-cycle-diagnostics";
 import {
+	captureBatchObservation,
 	logSyncCyclePlan,
 	prepareSyncCycleSnapshotForExecution,
 } from "./sync-cycle-planning";
-import { awaitsRepair, runSyncCycleAttempt, WorkingViewAbortError } from "./sync-cycle-finalization";
+import { runSyncCycleAttempt, WorkingViewAbortError } from "./sync-cycle-finalization";
 import { admitBatchObservation } from "./plan-admission";
 import { PriorityCoordinator } from "./priority-coordinator";
 import { LocalMutationBarrier } from "./local-mutation-barrier";
@@ -120,6 +121,18 @@ export class SyncOrchestrator {
 		return isExcludedFromScope(path, captureScopePolicy(
 			this.deps.getSettings(), this.deps.configDir(), this.deps.pluginId(),
 		));
+	}
+
+	/**
+	 * The keeper decision handed to the remote filesystem's namespace reconciliation:
+	 * the claimant holding a committed SyncRecord at the contended address, or
+	 * undefined to leave the choice to the arbiter. Read per call from the record
+	 * store; the filesystem stores nothing.
+	 */
+	private async namespaceKeeper(claimantIds: readonly string[]): Promise<string | undefined> {
+		const holders = await this.stateStore.recordedIdentities(claimantIds);
+		const synced = claimantIds.filter((id) => holders.has(id));
+		return synced.length === 1 ? synced[0] : undefined;
 	}
 
 	/**
@@ -274,8 +287,7 @@ export class SyncOrchestrator {
 				return {
 					outcome: lastOutcome,
 					succeeded: execution.succeeded.length + execution.superseded.length,
-					failed: execution.failed.length +
-						admissionFailures.filter((failure) => !awaitsRepair(failure)).length,
+					failed: execution.failed.length + admissionFailures.length,
 					blocked: execution.blocked.length,
 					conflicts: execution.conflicts.length,
 				};
@@ -385,20 +397,61 @@ export class SyncOrchestrator {
 		const namespace = (provider?.getIdentity?.(settings) ?? settings.lastSyncedIdentity) ||
 			`${settings.backendType}:${settings.vaultId}`;
 
-		// Cycle-local: the contended addresses this cycle's remote delta announced.
-		// Discarded with the cycle — nothing about a contention is persisted, and the
-		// next cycle re-observes whatever still stands.
-		const contentions: AddressDisplacement[] = [];
+		// The remote filesystem owns the path↔identity bijection, and it settles every
+		// provider-resolved contention BEFORE the engine consumes any view. It builds its
+		// working view, renames the non-keeper on the backend, and reports whether the
+		// namespace changed. The engine never observes a collision — it supplies the
+		// keeper decision (committed SyncRecords) and the scope filter, and retries when
+		// the namespace changed. A cycle that reconciled does not plan or publish
+		// anything: it closes as a follow-up and re-observes settled facts next cycle.
+		const reconciliation = remoteFs.namespaceReconciliation
+			? await remoteFs.namespaceReconciliation.reconcileNamespace({
+				isInScope: (path) => !this.isExcluded(path),
+				keeper: (_path, claimantIds) => this.namespaceKeeper(claimantIds),
+			})
+			: { kind: "settled" as const };
+		if (reconciliation.kind === "failed") {
+			// A refused repair is not a follow-up loop: rethrowing the provider's own error
+			// routes it through the attempt's classification, backoff and MAX_RETRIES, so a
+			// permanent refusal surfaces as an error instead of endless `syncing`.
+			this.deps.logger?.warn("Namespace reconciliation could not repair a contended address", {
+				failures: reconciliation.failures,
+			});
+			throw toError(reconciliation.failures[0]?.error ?? new Error("Namespace reconciliation failed"));
+		}
+		if (reconciliation.kind === "changed") {
+			const empty = admitBatchObservation(
+				captureBatchObservation([], [], [], {
+					byEndpoint: new Map(), isConfiguredScopeCompatible: () => true,
+				}, namespace),
+				conflictStrategy,
+			);
+			this.activeBatch = new PriorityBatchState(empty);
+			this.activeBatch.blockCheckpoint();
+			// Move priority to the abort state BEFORE the preparation permit is released,
+			// so a queued file-open pull sees `defer` rather than `independent` and cannot
+			// publish a local write or a SyncRecord in this reconciled, non-publishing cycle.
+			this.activeBatch.abort();
+			// Signal the cycle out of the normal executor entirely: it plans nothing and
+			// publishes nothing. `executePlan` must not run on it, because its first act is
+			// to move the batch back to the transfer phase.
+			return { settings, provider, admission: empty, namespaceReconciled: true };
+		}
+
+		// The namespace is settled, so the engine consumes a 1:1 view. The filesystem's
+		// working delta is reused here rather than re-fetched, so no incomplete view is
+		// ever exposed and no change is consumed twice.
 		const changeSet: ChangeSet = await collectChanges({
 				localFs,
 				remoteFs,
 				stateStore: this.stateStore,
 				checksumRegistry: this.deps.checksumRegistry,
 				changes: snapshot,
-				onRemoteContention: (announced) => contentions.push(...announced),
+				remoteDelta: reconciliation.delta,
 			}, {
 				forceFullScan,
 			});
+
 		const { renamePairs } = snapshot;
 
 		const planning = await prepareSyncCycleSnapshotForExecution(
@@ -414,31 +467,10 @@ export class SyncOrchestrator {
 		const visiblePaths = new Set(planning.snapshot.scope.byEndpoint.keys());
 		logChangeDetection(changeSet, renamePairs, this.deps.logger, visiblePaths);
 
-		// The remote metadata cache holds every object under the bound root, including
-		// paths this vault excludes. Remediation writes to the provider, so it may only
-		// ever reach a path the user actually syncs: an excluded address is not Air
-		// Sync's working area, and renaming an object there would mutate data the user
-		// told this plugin to leave alone — and block the checkpoint every cycle while
-		// doing it. Announced and then dropped here, not filtered upstream, because the
-		// absence rules in fs/ must still subtract a displaced excluded path from
-		// `deleted`.
-		const remediable = contentions.filter((fact) => !this.isExcluded(fact.path));
-
-		// `AGENTS.md` permits a decision to depend on a component's committed
-		// SyncRecord; which claimants hold one is the input that keeps a user's
-		// established file from being renamed to make room for a newly appeared
-		// duplicate. Looked up by the claimants' own identities, and acquired before the
-		// cut point below, with the rest of the cycle's evidence.
-		const recordHolders = await this.stateStore.recordedIdentities(
-			[...new Set(remediable.flatMap((fact) => [fact.admittedId, fact.withheldId]))]);
-
 		// This call is the authorization cut point. Exceptions from this line onward
-		// are not reclassified as evidence-acquisition recovery.
-		const admission = admitBatchObservation(planning.snapshot, conflictStrategy, {
-			contentions: remediable,
-			recordHolders,
-			renameByIdentity: remoteFs.identityRename !== undefined,
-		});
+		// are not reclassified as evidence-acquisition recovery. Namespace collisions
+		// were already settled below the boundary, so Admission sees a 1:1 view.
+		const admission = admitBatchObservation(planning.snapshot, conflictStrategy);
 		logSyncCyclePlan(this.deps.logger, admission);
 		const { folderRenamePairs } = snapshot;
 
@@ -449,18 +481,21 @@ export class SyncOrchestrator {
 			});
 		}
 		this.activeBatch = new PriorityBatchState(admission);
-		// A cycle that owes a provider repair must not publish a cursor past the
-		// claimant it is still withholding: the checkpoint stays uncommitted and the
-		// working view aborts, so the next cycle replays the same evidence. Every
-		// uncontested action in this cycle still executes and still publishes its own
-		// SyncRecord — only the cycle-level checkpoint is withheld.
-		if (admission.checkpointBlocked) this.activeBatch.blockCheckpoint();
-		return { settings, provider, admission };
+		return { settings, provider, admission, namespaceReconciled: false };
 		} finally {
 			preparationPermit.release();
 		}
 		})();
-		const { settings, provider, admission } = prepared;
+		const { settings, provider, admission, namespaceReconciled } = prepared;
+		if (namespaceReconciled) {
+			// The reconciled cycle never reaches the executor. Its batch stays in the abort
+			// state for the rest of the cycle, so a queued file-open priority keeps
+			// deferring and cannot publish a local write or a SyncRecord.
+			const empty: ExecutionResult = {
+				succeeded: [], superseded: [], failed: [], blocked: [], conflicts: [],
+			};
+			return { settings, provider, admission, execution: empty };
+		}
 		const total = admission.executable.actions.length;
 
 		const classifyError = (err: unknown) => provider?.classifyError?.(err) ?? classifyHttpError(err);

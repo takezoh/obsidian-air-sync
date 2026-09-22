@@ -49,6 +49,20 @@ export function isDotPathOutOfScope(path: string, syncDotPaths: string[]): boole
 }
 
 /**
+ * Insert the deterministic conflict suffix into a path, before its extension:
+ * `notes/file.md` → `notes/file.conflict-2.md`. Pure path composition, shared by the
+ * conflict resolver and the remote filesystem's namespace reconciliation.
+ */
+export function insertConflictSuffix(path: string, seq: number | string): string {
+	const suffix = seq === 1 ? ".conflict" : `.conflict-${seq}`;
+	const lastDot = path.lastIndexOf(".");
+	if (lastDot === -1 || lastDot <= path.lastIndexOf("/")) {
+		return `${path}${suffix}`;
+	}
+	return `${path.substring(0, lastDot)}${suffix}${path.substring(lastDot)}`;
+}
+
+/**
  * Validate that a rename operation is safe.
  * @throws if oldPath === newPath or newPath is inside oldPath's subtree.
  */

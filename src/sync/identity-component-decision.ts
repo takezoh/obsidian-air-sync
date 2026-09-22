@@ -17,12 +17,12 @@ import type {
 /**
  * Why Admission could not authorize a component this cycle.
  *
- * `awaiting_repair` alone is not a failure to converge: the component sits at a
- * contended address whose provider repair this same plan carries, so the next cycle
- * decides it from settled facts. Every other reason stands until the facts change.
+ * Every reason stands until the current facts change. A provider namespace contention
+ * is not among them: the remote filesystem settles one below this boundary, so
+ * Admission always reads a 1:1 view.
  */
 export type AdmissionFailureReason =
-	| "conflicting_identity" | "identity_postcondition_unproven" | "awaiting_repair"
+	| "conflicting_identity" | "identity_postcondition_unproven"
 	| "incomplete_folder_mapping" | "present_unresolved"
 	| "rename_mismatch" | "unknown_observation" | "unknown_scope"
 	| "remote_identity_missing" | "case_alias_content_mismatch"
@@ -86,12 +86,11 @@ export function decideIdentityComponent(
 	scope: ScopeProjection,
 	baselinePaths?: ReadonlySet<string>,
 	conflictStrategy: ConflictStrategy = "auto_merge",
-	withheldAddresses?: ReadonlyMap<string, AdmissionFailureReason>,
 ): IdentityComponentDecision {
 	const fail = (reason: AdmissionFailureReason): IdentityComponentDecision => ({
 		component: { ...component, actions: [] }, reasons: [reason],
 	});
-	const current = indexFacts(component, scope, withheldAddresses);
+	const current = indexFacts(component, scope);
 	if (typeof current === "string") return fail(current);
 	for (const path of component.paths) {
 		if (baselinePaths?.has(path) && !current.records.has(path)) return fail("unknown_observation");
@@ -336,19 +335,7 @@ function compareUtf8(left: string, right: string): number {
 function indexFacts(
 	component: IdentityComponent,
 	scope: ScopeProjection,
-	withheldAddresses?: ReadonlyMap<string, AdmissionFailureReason>,
 ): CurrentFacts | AdmissionFailureReason {
-	// Two live provider objects claim this address and the one it belongs to — the one
-	// the committed record names — is not the one the cache seated, so it is not in this
-	// cycle's view at all. Something IS there, and which object the address denotes
-	// cannot be resolved from these facts — not an absence and not the seated claimant.
-	// Nor can anything beneath it, which the seated claimant's subtree now occupies.
-	// The contention stage says why: a repair this plan carries, or none it can make.
-	for (const path of component.paths) {
-		for (const [address, reason] of withheldAddresses ?? []) {
-			if (path === address || path.startsWith(`${address}/`)) return reason;
-		}
-	}
 	const local = new Map<string, FileEntity>();
 	const remote = new Map<string, FileEntity>();
 	const records = new Map<string, SyncRecord>();

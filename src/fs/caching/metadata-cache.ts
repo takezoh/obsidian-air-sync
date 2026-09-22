@@ -12,13 +12,21 @@ import {
 
 export type { AddressDisplacement } from "./claim-set-assignment";
 
-export interface FileChangeResult {
+export interface FileChangeResult<TFile = unknown> {
 	oldPath: string | undefined;
 	newPath: string | undefined;
 	wasFolder: boolean;
 	oldDescendants: string[];
 	/** The address this change took from another live id, when it took one. */
 	displacement?: AddressDisplacement | null;
+	/**
+	 * The metadata of the live occupant this change evicted from the address it took,
+	 * when there was one. Handed back so the drain can hold it and re-seat it if the
+	 * arriving object later vacates the address again — the evicted claimant was in the
+	 * committed view, and re-seating it is what lets a keeper that the cache evicted
+	 * converge without a provider read.
+	 */
+	evicted?: TFile;
 	/** The claim this change did NOT write, because another live id holds its address. */
 	withheld?: WithheldClaim | null;
 	/** Every loss this change caused beyond the one it names; see {@link FileChangeApplication}. */
@@ -52,10 +60,12 @@ export interface WithheldClaim extends AddressDisplacement {
 }
 
 /** What one {@link AbstractMetadataCache.applyFileChange} did, and what it cost. */
-export interface FileChangeApplication {
+export interface FileChangeApplication<TFile = unknown> {
 	/** The cache path the entry now occupies, or null when its claim was withheld. */
 	readonly path: string | null;
 	readonly displacement: AddressDisplacement | null;
+	/** The live occupant this change evicted from the address it took, if any. */
+	readonly evicted?: TFile;
 	readonly withheld: WithheldClaim | null;
 	/**
 	 * Every loss this change caused beyond `displacement` and `withheld`, each naming
@@ -730,7 +740,7 @@ export abstract class AbstractMetadataCache<TFile> {
 	 * Apply a file change and return move/rename information.
 	 * Captures the old path before cache mutation for move detection.
 	 */
-	applyFileChangeDetectMove(file: TFile): FileChangeResult {
+	applyFileChangeDetectMove(file: TFile): FileChangeResult<TFile> {
 		const id = this.extractId(file);
 		const oldPath = this.getPathById(id);
 		const wasFolder = oldPath ? this.isFolder(oldPath) : false;
@@ -747,6 +757,7 @@ export abstract class AbstractMetadataCache<TFile> {
 			wasFolder,
 			oldDescendants,
 			displacement: applied?.displacement ?? null,
+			evicted: applied?.evicted,
 			withheld: applied?.withheld ?? null,
 			additionalLosses: applied?.additionalLosses ?? [],
 			relocated: applied?.relocated ?? [],
@@ -761,7 +772,7 @@ export abstract class AbstractMetadataCache<TFile> {
 	 * existed — an unresolvable path and the reserved metadata path — so a caller's
 	 * "place it at the requested path instead" fallback still fires only for those.
 	 */
-	applyFileChange(file: TFile): FileChangeApplication | null {
+	applyFileChange(file: TFile): FileChangeApplication<TFile> | null {
 		const id = this.extractId(file);
 		const path = this.resolvePathFromCache(file);
 		const oldPath = this.idToPath.get(id);
@@ -793,11 +804,11 @@ export abstract class AbstractMetadataCache<TFile> {
 			};
 		}
 		if (vacated === null || !this.isFolderEntry(file)) {
-			return { path, displacement: root.displacement, withheld: null, additionalLosses: root.evictedMerged, relocated: [] };
+			return { path, displacement: root.displacement, evicted: root.evicted, withheld: null, additionalLosses: root.evictedMerged, relocated: [] };
 		}
 		const { losses, relocated } = this.reseat(moving.slice(1), vacated, path);
 		return {
-			path, displacement: root.displacement, withheld: null,
+			path, displacement: root.displacement, evicted: root.evicted, withheld: null,
 			additionalLosses: [...root.evictedMerged, ...losses], relocated,
 		};
 	}
@@ -814,6 +825,8 @@ export abstract class AbstractMetadataCache<TFile> {
 		path: string, id: string, file: TFile, authority: PathAuthority,
 	): {
 		displacement: AddressDisplacement | null;
+		/** The live occupant of `path` this arrival evicted, so the drain can hold it. */
+		evicted?: TFile;
 		/** Folders that shared `path` with the evicted representative, each a loss of its own. */
 		evictedMerged: WithheldClaim[];
 		withheld: Omit<WithheldClaim, "displacedPaths" | "vacatedPath"> | null;
@@ -828,12 +841,16 @@ export abstract class AbstractMetadataCache<TFile> {
 				reason: verdict.reason, owesRemediation: verdict.withheldOwesRemediation,
 			} };
 		}
+		// Capture the evicted occupant's own metadata before the removal, so a caller that
+		// holds the loss can put the object back if the arriving claimant later vacates the
+		// address. It is the committed view's object, and no provider read is needed.
+		const evicted = verdict?.outcome === "admit_claimant" ? this.pathToFile.get(path) : undefined;
 		const [displacement = null, ...merged] = verdict?.outcome === "admit_claimant" ? this.displaceOccupant(
 			path, id, verdict.withheldId, verdict.reason, verdict.withheldOwesRemediation,
 		) : [];
 		this.setFile(path, file, authority);
 		return {
-			displacement, withheld: null,
+			displacement, evicted, withheld: null,
 			evictedMerged: merged.map((fact) => ({ ...fact, vacatedPath: fact.path })),
 		};
 	}

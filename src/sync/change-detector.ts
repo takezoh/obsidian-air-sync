@@ -1,5 +1,5 @@
 import type { IFileSystem } from "../fs/interface";
-import type { AddressDisplacement } from "../fs/caching/claim-set-assignment";
+import type { RemoteDelta } from "../fs/caching/remote-fs";
 import type { ChecksumRegistry } from "../fs/modules/checksum-registry";
 import type { FileEntity } from "../fs/types";
 import type { CandidateFact, IdentityEvidence, MixedEntity, PathObservation, SyncRecord } from "./types";
@@ -51,11 +51,12 @@ export interface ChangeDetectorDeps {
 	changes: TrackerSnapshot;
 	onRemoteIdentityEvidence?: (evidence: readonly IdentityEvidence[]) => void;
 	/**
-	 * The addresses this cycle's remote delta found claimed by two live ids. A
-	 * sibling of `onRemoteIdentityEvidence`: the facts travel to the caller without
-	 * `ChangeSet` acquiring a field, because they are not a change at any path.
+	 * The remote filesystem's working delta, when namespace reconciliation already built
+	 * it this cycle. Collection reads this same view instead of replaying the cursor
+	 * again (a second replay would see no changes), so no incomplete or empty view is
+	 * ever consumed. Absent for callers that did not reconcile first.
 	 */
-	onRemoteContention?: (contended: readonly AddressDisplacement[]) => void;
+	remoteDelta?: RemoteDelta | null;
 }
 
 export interface CollectChangesOptions {
@@ -87,7 +88,7 @@ export async function collectChanges(
 	if (!opts.forceFullScan && changes.initialized && changes.dirtyPaths.size > 0 &&
 		changes.folderRenamePairs.size === 0) {
 		const remoteChanges = await getRemoteChanges(
-			deps.remoteFs, deps.onRemoteIdentityEvidence, deps.onRemoteContention);
+			deps.remoteFs, deps.onRemoteIdentityEvidence, deps.remoteDelta);
 		if (hasFolderRename(remoteChanges)) {
 			changeSet = await collectCold(
 				deps,
@@ -116,14 +117,6 @@ export async function collectChanges(
 			? await collectCold(deps, allRecords)
 			: await collectWarm(deps, allRecords);
 	}
-	// Whatever temperature ran above, the remote side may have been acquired by a
-	// path-level call rather than a returned delta — COLD lists, which full-scans with
-	// no checkpoint and replays the cursor with one. Either decides contentions exactly
-	// as a returned delta does, but cannot return them, so this is the only place they
-	// reach the cycle. Drained here rather than in each branch, so no temperature can
-	// be the one that forgets: COLD, WARM and HOT report the same facts.
-	const scanned = deps.remoteFs.checkpoint?.drainWorkingViewContentions?.() ?? [];
-	if (scanned.length > 0) deps.onRemoteContention?.(scanned);
 	changeSet.identityEvidence.unshift(...collectLocalRenameEvidence(changes));
 	ensureRenameEndpointObservations(changeSet.observations, changeSet.identityEvidence);
 	await confirmUnknownRenameEndpoints(changeSet, deps.localFs, deps.remoteFs);
@@ -236,7 +229,7 @@ async function collectWarm(
 	const [localFiles, remoteChanges] = await Promise.all([
 		localFs.list(),
 		prefetchedRemoteChanges ??
-			getRemoteChanges(remoteFs, deps.onRemoteIdentityEvidence, deps.onRemoteContention),
+			getRemoteChanges(remoteFs, deps.onRemoteIdentityEvidence, deps.remoteDelta),
 	]);
 	if (hasFolderRename(remoteChanges)) {
 		return collectCold(

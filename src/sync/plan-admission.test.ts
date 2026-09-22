@@ -3,7 +3,6 @@ import type { FileEntity, RenamePair } from "../fs/types";
 import {
 	admitBatchObservation,
 	type AdmissionDisposition,
-	type AdmissionFailureComponent,
 	type AuthorizedSyncPlan,
 } from "./plan-admission";
 import { captureBatchObservation } from "./sync-cycle-planning";
@@ -4217,104 +4216,5 @@ describe("cross-source remote rename validation", () => {
 		expect(split.carried).toEqual([undefined, ""]);
 		expect(split.family).toBe("conflicting");
 		expect(split.actions).toEqual(ordinaryAfterAbandonment);
-	});
-});
-
-/**
- * Decision 8d: *"SyncRecord とオブジェクト ID が一致するものを同期し、一致しないものを
- * リネーム"* — two verbs. #90 implemented the rename half (`rule-keeper` names who keeps
- * the plain address, `rule-target-address` names where the other one goes). Nothing
- * implemented the sync half: WHICH object the cycle acts on at the contended address.
- *
- * That was left to whatever the cache admitted, and the cache cannot read sync state —
- * it settles a contest by path authority, then by lowest stable id. Decision 8d scopes
- * that tie-break to the all-new case ("複数が新規の場合"), but nothing confined it there.
- */
-describe("a contended address is synced as the record names it, not as the cache admitted it", () => {
-	const RECORD_HOLDER = "z-drive-id";
-	const NEWCOMER = "a-drive-id";
-
-	/** The user's established file, unchanged since its last sync. */
-	const local = entity("note.md");
-	/** The record naming the object the user has been syncing: the keeper. */
-	const record: SyncRecord = {
-		path: "note.md", hash: "h", localMtime: 1, remoteMtime: 1,
-		localSize: 1, remoteSize: 1, remoteIdentityKey: RECORD_HOLDER, syncedAt: 1,
-	};
-	/**
-	 * The same-named sibling that just appeared. It wins the cache address on the
-	 * lexicographic tie-break alone, so it — not the record holder — is what the
-	 * listing reports at `note.md`. Different bytes and a later mtime, so the ordinary
-	 * rules have something to do with it.
-	 */
-	const newcomer: FileEntity = { ...entity("note.md", NEWCOMER), hash: "h-newcomer", mtime: 2 };
-
-	function admitContended(renameByIdentity = true) {
-		const snapshot = captureBatchObservation(
-			[{ path: "note.md", local, remote: newcomer, prevSync: record }],
-			[],
-			[
-				{ kind: "exact", side: "local", requestedPath: "note.md", entity: local },
-				{ kind: "exact", side: "remote", requestedPath: "note.md", entity: newcomer },
-			],
-			projection({ "note.md": "included" }),
-			"backend\0root",
-		);
-		return admitBatchObservation(snapshot, "auto_merge", {
-			contentions: [{
-				path: "note.md", admittedId: NEWCOMER, withheldId: RECORD_HOLDER,
-				displacedPaths: [], reason: "lowest_stable_id", owesRemediation: true,
-			}],
-			recordHolders: new Set([RECORD_HOLDER]),
-			renameByIdentity,
-		});
-	}
-
-	it("does not sync the newcomer at the address the record holder keeps", () => {
-		const result = admitContended();
-
-		// The defect this pins: the ordinary rules see the newcomer at `note.md` with the
-		// record holder's baseline, read that as a replaced destination, and authorize a
-		// pull — overwriting the user's file with an unrelated object's bytes and
-		// publishing a record that names an object this same plan is moving away.
-		expect(result.executable.actions.filter((action) => action.path === "note.md")).toEqual([]);
-	});
-
-	it("withholds the contended address as awaiting the repair this plan carries", () => {
-		const result = admitContended();
-
-		// The record holder is not in this cycle's view at all — the cache dropped it to
-		// seat the newcomer — so what the address denotes cannot be resolved from this
-		// cycle's facts. The repair in this plan settles it, so the reason says so: the
-		// cycle is owed a follow-up, not a failure report.
-		const contended = result.dispositions.find((item) => item.paths.includes("note.md"));
-		expect(contended?.kind).toBe("failed");
-		expect((contended as AdmissionFailureComponent).reasons).toEqual(["awaiting_repair"]);
-	});
-
-	it("still plans the repair that lets the next cycle sync the record holder", () => {
-		const result = admitContended();
-
-		expect(result.executable.actions).toEqual([{
-			action: "rename_remote",
-			path: insertConflictSuffix("note.md", `id-${NEWCOMER}`),
-			oldPath: "note.md",
-			providerIdentity: NEWCOMER,
-		}]);
-		expect(result.checkpointBlocked).toBe(true);
-	});
-
-	it("withholds the address even when no repair can be planned", () => {
-		// A backend that cannot rename by identity clears `checkpointBlocked`, because no
-		// action it could take would ever resolve the contention. That must not turn into
-		// permission to sync the newcomer at the keeper's address: the reason the address
-		// is unresolved is the contention, not the repair.
-		const result = admitContended(false);
-
-		expect(result.executable.actions).toEqual([]);
-		expect(result.checkpointBlocked).toBe(false);
-		// Nothing here will repair it, so it is not awaiting anything: it stays
-		// unresolved until the provider's facts change, and no follow-up is owed.
-		expect(result.failures.map((failure) => failure.reasons)).toEqual([["present_unresolved"]]);
 	});
 });

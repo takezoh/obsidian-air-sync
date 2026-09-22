@@ -17,6 +17,14 @@ import { validateRemoteObject, validateRemoteChanges } from "./remote-object-val
 import { applyRemoteChanges } from "./delta-projection";
 import { MutationBridge } from "./mutation-bridge";
 import type { RenamePlan, WritePlan } from "./mutation-bridge";
+import type {
+	NamespaceReconciliation,
+	NamespaceReconciliationCapability,
+	NamespaceRepairFailure,
+	NamespaceRepairPolicy,
+} from "../caching/namespace-reconciliation";
+import { groupRepairableContentions, namespaceRepairFor } from "../caching/namespace-reconciliation";
+import { errorMessage } from "../../backend-api/error-classification";
 
 export interface ManagedRemoteFsOptions {
 	adapter: RemoteBackendAdapter;
@@ -265,6 +273,17 @@ export class ManagedRemoteFs extends CachingRemoteFs<RemoteObject> {
 		renameById: (identityKey, admittedPath, newPath) => this.renameById(identityKey, admittedPath, newPath),
 	};
 
+	/**
+	 * Namespace reconciliation (see {@link NamespaceReconciliationCapability}). The
+	 * filesystem, not the sync engine, repairs a derived address two live provider
+	 * objects claim: it renames the non-keeper on the backend and reports whether the
+	 * working view changed. The sync engine supplies only the keeper decision and the
+	 * scope filter, per call; nothing here reads or stores sync state.
+	 */
+	readonly namespaceReconciliation: NamespaceReconciliationCapability = {
+		reconcileNamespace: (policy) => this.reconcileNamespace(policy),
+	};
+
 	private async renameById(identityKey: string, admittedPath: string, newPath: string): Promise<void> {
 		const target = normalizeSyncPath(newPath);
 		const admitted = normalizeSyncPath(admittedPath);
@@ -282,10 +301,17 @@ export class ManagedRemoteFs extends CachingRemoteFs<RemoteObject> {
 				// the fresh observation justify renaming an object at another location.
 				const current = await this.fetchCurrentFile(r.identityKey);
 				if (current === null) throw new Error(`Remote object not found: ${r.identityKey}`);
-				const resolved = await this.resolveDetachedPath(current);
+				// One re-observation of the object itself, and nothing more: this is the
+				// permitted provider read (NFR-RECON-003). The admitted address is checked
+				// against the working view's own projection from that object (its name and
+				// its immediate parent's cached path), never by walking the provider parent
+				// chain — a deeper path must not cost a read per ancestor, and a walk that
+				// failed would mask the original precondition error.
+				const resolved = this.cache.resolvePathFromCache(current);
 				if (resolved === null || normalizeSyncPath(resolved) !== r.admitted) {
+					const observed = resolved === null ? "unresolved" : normalizeSyncPath(resolved);
 					throw new Error(
-						`Remote object ${r.identityKey} is no longer addressed by the admitted path ${r.admitted}`,
+						`Remote object ${r.identityKey} is no longer addressed by the admitted path ${r.admitted} (observed ${observed})`,
 					);
 				}
 				return this.bridge.performIdentityRename(current, r.name);
@@ -295,6 +321,50 @@ export class ManagedRemoteFs extends CachingRemoteFs<RemoteObject> {
 				this.cache.applyFileChange(object);
 			},
 		});
+	}
+
+	/**
+	 * Settle every repairable contention the working view was built with, then report
+	 * whether the provider namespace changed.
+	 *
+	 * The contentions are taken under the cache mutex, but each rename is issued on its
+	 * own (the identity rename acquires the mutex itself, so holding it across the loop
+	 * would deadlock). The sync engine is serialized per cycle, so nothing else mutates
+	 * the view between the take and the renames. A rename updates the derived cache from
+	 * the provider's answer; the caller discards the working view on `changed`, and the
+	 * next cycle re-reads the settled facts.
+	 */
+	private async reconcileNamespace(policy: NamespaceRepairPolicy): Promise<NamespaceReconciliation> {
+		// Build the working view first, so the contentions are known and the delta handed
+		// back lets change collection read this same, already-settled view.
+		const delta = await this.getChangedPaths();
+		const contentions = await this.cacheMutex.run(() => this.takeWorkingViewContentions());
+		// Group by contended address first and keep only addresses whose every claimant is
+		// provider-resolved and in scope; per-fact filtering would let a mixed address
+		// mutate the provider from an incomplete topology.
+		const byPath = groupRepairableContentions(contentions, policy);
+		if (byPath.size === 0) return { kind: "settled", delta };
+		// At most one rename per contended address per cycle: when three or more ids
+		// claim one address, the remaining losers are settled by later cycles. The pick is
+		// the smallest withheld id, so it is a function of the claim set and stable across
+		// retries. The keeper is decided once per address over its whole claimant set.
+		const failures: NamespaceRepairFailure[] = [];
+		let changed = false;
+		for (const [path, facts] of [...byPath].sort(([left], [right]) => (left < right ? -1 : 1))) {
+			const fact = [...facts].sort((left, right) =>
+				left.withheldId < right.withheldId ? -1 : left.withheldId > right.withheldId ? 1 : 0)[0]!;
+			const claimantIds = [...new Set(facts.flatMap((item) => [item.admittedId, item.withheldId]))];
+			const keeper = await policy.keeper(path, claimantIds);
+			const repair = namespaceRepairFor(fact, keeper);
+			try {
+				await this.identityRename.renameById(repair.identityKey, repair.path, repair.target);
+				changed = true;
+			} catch (err) {
+				failures.push({ ...repair, message: errorMessage(err), error: err });
+			}
+		}
+		if (failures.length > 0) return { kind: "failed", failures };
+		return changed ? { kind: "changed" } : { kind: "settled", delta };
 	}
 
 	private applyWrite(plan: WritePlan, object: RemoteObject): void {

@@ -500,9 +500,9 @@ describe("the three producers of RemoteDelta.deleted", () => {
 		});
 
 		it("names the contention instead, with both ids and every absent address", async () => {
-			const { delta, fs } = await runWithheldFolderDelta();
+			const { fs } = await runWithheldFolderDelta();
 
-			expect(delta.contended).toEqual([{
+			expect(fs.takeWorkingViewContentions()).toEqual([{
 				path: "docs",
 				admittedId: "a-docs",
 				withheldId: "z-old",
@@ -524,7 +524,7 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			const delta = await fs.checkpoint.getChangedPaths();
 
 			expect(delta?.deleted).toEqual(["gone.md"]);
-			expect(delta?.contended).toEqual([]);
+			expect(fs.takeWorkingViewContentions()).toEqual([]);
 			await fs.close();
 		});
 	});
@@ -566,9 +566,9 @@ describe("the three producers of RemoteDelta.deleted", () => {
 		});
 
 		it("reports all three as displaced, naming the withheld folder id", async () => {
-			const { delta, fs } = await runFolderCollisionScan();
+			const { fs } = await runFolderCollisionScan();
 
-			expect(delta.contended).toEqual([{
+			expect(fs.takeWorkingViewContentions()).toEqual([{
 				path: "docs",
 				admittedId: "a-docs",
 				withheldId: "z-docs",
@@ -599,7 +599,7 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			const delta = await fs.checkpoint.getChangedPaths();
 
 			expect(delta?.deleted).toEqual([]);
-			expect(delta?.contended).toEqual([{
+			expect(fs.takeWorkingViewContentions()).toEqual([{
 				path: "Notes.md",
 				admittedId: "keeper",
 				withheldId: "orphan",
@@ -626,7 +626,7 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			const delta = await fs.checkpoint.getChangedPaths();
 
 			expect(delta?.deleted).toEqual(["gone.md"]);
-			expect(delta?.contended).toEqual([]);
+			expect(fs.takeWorkingViewContentions()).toEqual([]);
 			await fs.close();
 		});
 	});
@@ -646,10 +646,10 @@ describe("the three producers of RemoteDelta.deleted", () => {
 				return { delta: delta as RemoteDelta, fs };
 			})();
 
-			// Without a declared carrier the two vacated addresses arrive at producer 1
+			// Without the displacement facts the two vacated addresses arrive at producer 1
 			// as ordinary changed paths that no longer resolve — indistinguishable from
-			// a deletion. `contended` is what tells them apart, and it survives the trip.
-			expect(delta.contended.flatMap((fact) => fact.displacedPaths)).toEqual(["old", "old/a.md"]);
+			// a deletion. The working view's own drain is what tells them apart.
+			expect(fs.takeWorkingViewContentions().flatMap((fact) => fact.displacedPaths)).toEqual(["old", "old/a.md"]);
 			expect(delta.deleted).toEqual([]);
 			expect(delta.modified).toEqual([]);
 			await fs.close();
@@ -666,7 +666,7 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			const delta = await fs.checkpoint.getChangedPaths();
 
 			expect(delta?.deleted).toEqual(["note.md"]);
-			expect(delta?.contended).toEqual([]);
+			expect(fs.takeWorkingViewContentions()).toEqual([]);
 			await fs.close();
 		});
 	});
@@ -699,7 +699,7 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			const delta = await fs.checkpoint.getChangedPaths();
 
 			expect(delta?.deleted).toEqual([]);
-			expect(delta?.contended).toEqual([]);
+			expect(fs.takeWorkingViewContentions()).toEqual([]);
 			expect(await fs.stat("docs/b.md")).toMatchObject({ identityKey: "z-child" });
 			await fs.close();
 		});
@@ -789,7 +789,7 @@ describe("the three producers of RemoteDelta.deleted", () => {
 
 			// A folder pair would say the vault folder `docs` moved, contents and all.
 			expect(delta?.renamed).toEqual([{ oldPath: "old/b.md", newPath: "docs/b.md", identityKey: "z-child" }]);
-			expect(delta?.contended).toEqual([]);
+			expect(fs.takeWorkingViewContentions()).toEqual([]);
 			expect(await fs.stat("docs/a.md")).toMatchObject({ identityKey: "a-child" });
 			expect(await fs.stat("docs/b.md")).toMatchObject({ identityKey: "z-child" });
 			await fs.close();
@@ -837,7 +837,7 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			// and returns files, so this is the only way the scan's facts get out.
 			await fs.list();
 
-			expect(fs.checkpoint.drainWorkingViewContentions?.()).toEqual([{
+			expect(fs.takeWorkingViewContentions()).toEqual([{
 				path: "Note.md",
 				admittedId: "a-note",
 				withheldId: "z-note",
@@ -852,14 +852,14 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			const fs = collidingSiblings();
 			await fs.list();
 
-			expect(fs.checkpoint.drainWorkingViewContentions?.()).toHaveLength(1);
+			expect(fs.takeWorkingViewContentions()).toHaveLength(1);
 			// A second reader must not see them again: two announcements of one address
 			// would owe two repairs for one object.
-			expect(fs.checkpoint.drainWorkingViewContentions?.()).toEqual([]);
+			expect(fs.takeWorkingViewContentions()).toEqual([]);
 			await fs.close();
 		});
 
-		it("leaves nothing here for the cursor-expiry route, which reports in the delta", async () => {
+		it("hands over the cursor-expiry route's contentions, once", async () => {
 			const remote = new FakeRemote();
 			const keep = mockFile("a-note", "Note.md", remote.rootId);
 			remote.seedRaw(keep);
@@ -869,12 +869,12 @@ describe("the three producers of RemoteDelta.deleted", () => {
 
 			const fs = new MockRemoteFs(remote, store);
 			fs.requestCursorExpiry();
-			const delta = await fs.checkpoint.getChangedPaths();
+			await fs.checkpoint.getChangedPaths();
 
-			// `fullScanWithDelta` takes the scan's return value directly, so the fact
-			// travels in the delta. Draining as well would report one address twice.
-			expect(delta?.contended).toHaveLength(1);
-			expect(fs.checkpoint.drainWorkingViewContentions?.()).toEqual([]);
+			// A scan reached through cursor expiry settles into the same drain as any
+			// other working view, and reports each address exactly once.
+			expect(fs.takeWorkingViewContentions()).toHaveLength(1);
+			expect(fs.takeWorkingViewContentions()).toEqual([]);
 			await fs.close();
 		});
 
@@ -888,7 +888,7 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			const fs = new MockRemoteFs(remote, store);
 			await fs.list();
 
-			expect(fs.checkpoint.drainWorkingViewContentions?.()).toEqual([]);
+			expect(fs.takeWorkingViewContentions()).toEqual([]);
 			await fs.close();
 		});
 
@@ -906,7 +906,7 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			const fs = new MockRemoteFs(remote, store);
 			await fs.list();
 
-			expect(fs.checkpoint.drainWorkingViewContentions?.()).toEqual([expect.objectContaining({
+			expect(fs.takeWorkingViewContentions()).toEqual([expect.objectContaining({
 				path: "Note.md", admittedId: "a-note", withheldId: "z-note",
 			})]);
 			await fs.close();
@@ -926,7 +926,7 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			const delta = await fs.checkpoint.getChangedPaths();
 
 			expect(delta?.modified).toEqual(["Note.md"]);
-			expect(delta?.contended).toEqual([expect.objectContaining({
+			expect(fs.takeWorkingViewContentions()).toEqual([expect.objectContaining({
 				path: "Note.md", admittedId: "a-note", withheldId: "z-note",
 			})]);
 			await fs.close();
@@ -940,7 +940,37 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			// the next one — which re-scans and re-derives them anyway.
 			await fs.checkpoint.abortWorkingView();
 
-			expect(fs.checkpoint.drainWorkingViewContentions?.()).toEqual([]);
+			expect(fs.takeWorkingViewContentions()).toEqual([]);
+			await fs.close();
+		});
+	});
+
+	/**
+	 * A working view replays its cursor at most once through the implicit `list()`
+	 * replay. Namespace reconciliation builds the view first; a second replay behind it
+	 * would move the cursor again and could seat a newly-arrived same-name object that
+	 * reconciliation never saw, hiding a claimant while a clean checkpoint commits.
+	 */
+	describe("the working view's cursor is replayed once through list()", () => {
+		it("does not apply a change that arrives after the view's delta was built", async () => {
+			const remote = new FakeRemote();
+			const keep = mockFile("a-keep", "keep.md", remote.rootId);
+			remote.seedRaw(keep);
+			const store = makeStore();
+			await seedCheckpoint(store, [keep], ["keep.md"]);
+			const fs = new MockRemoteFs(remote, store);
+
+			// The view's delta is built (as reconciliation does before listing).
+			expect((await fs.checkpoint.getChangedPaths())?.modified).toEqual([]);
+
+			// A same-name sibling arrives AFTER the view was built.
+			remote.stageRaw(mockFile("z-new", "New.md", remote.rootId));
+
+			// `list()` must not replay behind the built view: the late change is not seated.
+			expect((await fs.list()).map((entry) => entry.path)).toEqual(["keep.md"]);
+
+			// An explicit delta still advances and reports it for the next cycle.
+			expect((await fs.checkpoint.getChangedPaths())?.modified).toContain("New.md");
 			await fs.close();
 		});
 	});

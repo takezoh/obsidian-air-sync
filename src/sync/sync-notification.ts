@@ -1,6 +1,6 @@
 import type { ExecutionResult } from "./plan-executor";
 import type { AdmissionFailureComponent } from "./plan-admission";
-import { awaitsRepair, type SyncCycleCompletion } from "./sync-cycle-finalization";
+import type { SyncCycleCompletion } from "./sync-cycle-finalization";
 
 /** One complete cycle outcome across the Admission and execution boundaries. */
 export interface SyncCycleOutcome {
@@ -27,10 +27,7 @@ export function buildNotificationMessage(outcome: SyncCycleOutcome): string {
 		else if (action.action === "pull") counts.pulled++;
 		else if (action.action === "match") counts.matched++;
 		else if (action.action === "delete_local" || action.action === "delete_remote") counts.deleted++;
-		// A provider-namespace repair renames an object the vault never held under that
-		// name; it is the remote filesystem's business, not a rename to report.
-		else if ((action.action === "rename_remote" && action.providerIdentity === undefined) ||
-			action.action === "rename_local") counts.renamed++;
+		else if (action.action === "rename_remote" || action.action === "rename_local") counts.renamed++;
 	};
 	for (const { action } of execution.succeeded) count(action);
 	for (const { action } of execution.superseded) count(action);
@@ -41,10 +38,7 @@ export function buildNotificationMessage(outcome: SyncCycleOutcome): string {
 	if (counts.deleted > 0) parts.push(`${counts.deleted} deleted`);
 	if (counts.renamed > 0) parts.push(`${counts.renamed} renamed`);
 	if (execution.conflicts.length > 0) parts.push(`${execution.conflicts.length} conflicts`);
-	// A component awaiting a repair its own cycle carried converged in the follow-up
-	// that cycle queued; it is not an error of the burst.
-	const errors = execution.failed.length +
-		outcome.admissionFailures.filter((failure) => !awaitsRepair(failure)).length;
+	const errors = execution.failed.length + outcome.admissionFailures.length;
 	if (errors > 0) parts.push(`${errors} ${errors === 1 ? "error" : "errors"}`);
 	if (execution.blocked.length > 0) parts.push(`${execution.blocked.length} blocked`);
 	if (outcome.completion.kind === "incomplete" && errors === 0 && execution.blocked.length === 0) parts.push("incomplete");

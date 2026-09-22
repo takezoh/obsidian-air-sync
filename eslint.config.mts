@@ -392,9 +392,12 @@ export default defineConfig(
 		// Re-pinned from 411 for `downloadForPriority`: the priority path must surface
 		// a version-bound read's typed `target_changed`/`unverifiable` instead of the
 		// throw `downloadFile` uses for `IFileSystem.read`, and that outcome seam
-		// belongs beside the abstract download it refines.
+		// belongs beside the abstract download it refines. Re-pinned from 416 for the
+		// delta-contention bookkeeping `takeNamespaceContentions` hands to namespace
+		// reconciliation: the facts belong to the working view this class already owns
+		// and its lifecycle is the class's, so the split would be artificial.
 		files: ["src/fs/caching/remote-fs.ts"],
-		rules: { "max-lines": ["error", { max: 416, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 427, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Re-pinned from under the 300 cap for the Dropbox content preconditions:
@@ -483,8 +486,11 @@ export default defineConfig(
 		// eviction there takes several.
 		// Re-pinned from 595 for `objectById`: resolving a merged folder's exact member
 		// by id is a cache query beside `foldersAt`/`idsAt`, not a caller-side re-derivation.
+		// Re-pinned from 601 to hand the evicted occupant's own metadata back from the seat
+		// so the drain can re-seat it: the capture belongs where the eviction happens, beside
+		// the maps it reads, not in the caller.
 		files: ["src/fs/caching/metadata-cache.ts"],
-		rules: { "max-lines": ["error", { max: 601, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 605, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Lint manifest.json for the words the Obsidian submission validator

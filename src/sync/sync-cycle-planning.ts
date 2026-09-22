@@ -15,7 +15,6 @@ import type {
 } from "./types";
 import { enrichHashesForPreferLocal } from "./change-hash-enrichment";
 import { logScopeExclusions } from "./sync-cycle-diagnostics";
-import { awaitsRepair } from "./sync-cycle-finalization";
 
 export type CycleEvidenceItem =
 	| { readonly role: "local_rename_candidate"; readonly evidence: LocalRenameEvidence }
@@ -232,12 +231,6 @@ export function logSyncCyclePlan(
 		...actionBreakdown,
 	});
 	for (const component of admission.failures) {
-		// Waiting for the repair this plan carries is not a failure; the next cycle
-		// decides it. Say where it is, without a warning.
-		if (awaitsRepair(component)) {
-			logger?.info("Sync plan component awaits its repair", { paths: component.paths });
-			continue;
-		}
 		logger?.warn("Sync plan component failed Admission", {
 			reasons: component.reasons,
 			paths: component.paths,

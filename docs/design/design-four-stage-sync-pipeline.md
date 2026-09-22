@@ -18,6 +18,17 @@ responsibilities:
 - id: RESP-004
   statement: Commit and finalization persist only proven terminal outcomes and advance
     checkpoint state last.
+- id: RESP-005
+  statement: The remote filesystem — the backend layer in front of the sync engine —
+    owns the path↔identity bijection and provider namespace reconciliation. It alone
+    detects that two provider-resolved objects claim one derived address, renames the
+    non-keeper on the backend through the identity-addressed rename capability, updates
+    its derived cache from the provider's answer, and reports whether its working view
+    may be committed. The sync engine consumes only a 1:1 remote view and re-runs the
+    cycle when the filesystem reports that it reconciled the namespace; no collision,
+    displacement or withheld claimant is an engine-level fact. The keeper policy from
+    committed SyncRecords, and the scope filter, are supplied to the filesystem per
+    call, never stored or read by it.
 invariants:
 - id: INV-001
   statement: No executable action exists before Admission.
@@ -121,6 +132,16 @@ invariants:
     changed or disappeared; the later tracker generation remains next-cycle input.
     This direction-specific rule never weakens remote proof or non-push protocols.
   enforcement: test
+- id: INV-017
+  statement: Every remote view the sync engine consumes is 1 path = 1 object and
+    contains every live object at some path; an object is never withheld from the
+    engine's view while a collision is unresolved. A remote filesystem that cannot
+    present a 1:1 view repairs the provider namespace in the backend layer and the cycle
+    is retried; until the repair lands the cursor is not committed, and no object is
+    destroyed, emptied or made permanently unreachable to free an address. Where the
+    filesystem lacks the repair capability, no collision is created by it and nothing is
+    done to the provider.
+  enforcement: contract
 boundaries:
   provides:
   - id: BOUNDARY-001

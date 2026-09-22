@@ -83,4 +83,16 @@ describe("PriorityBatchState", () => {
 		expect(batch.priorityTarget(action.path)).toEqual({ kind: "defer" });
 		expect(batch.beginAction(action)).toBe("invalidated");
 	});
+
+	it("keeps abort terminal, so the executor's opening phase report cannot re-open priority", () => {
+		const { action, admission } = admittedPull();
+		const batch = new PriorityBatchState(admission);
+		batch.abort();
+
+		// The executor reports "transfer" when it starts; a reconciled cycle must not let
+		// that move the batch back into a phase where a queued priority pull is independent.
+		batch.setPhase("transfer");
+		expect(batch.priorityTarget(action.path)).toEqual({ kind: "defer" });
+		expect(batch.beginAction(action)).toBe("invalidated");
+	});
 });
