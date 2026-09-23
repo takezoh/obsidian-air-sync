@@ -196,20 +196,6 @@ describe("SyncStateStore", () => {
 		expect(result.has("missing.md")).toBe(false);
 	});
 
-	it("recordedIdentities: names the identities that hold a record, wherever it stands", async () => {
-		await store.put(makeRecord("a.md"));
-		await store.put(makeRecord("moved/b.md", { remoteIdentityKey: "id:b" }));
-
-		const held = await store.recordedIdentities(["id:a.md", "id:b", "id:never-synced"]);
-
-		// By the object, not by any address: the one synced at another path still counts.
-		expect(held).toEqual(new Set(["id:a.md", "id:b"]));
-	});
-
-	it("recordedIdentities: opens nothing for an empty question", async () => {
-		expect(await store.recordedIdentities([])).toEqual(new Set());
-	});
-
 	it("getMany: returns empty map for empty input", async () => {
 		const result = await store.getMany([]);
 		expect(result.size).toBe(0);

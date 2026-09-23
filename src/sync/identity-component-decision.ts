@@ -1,4 +1,4 @@
-/* eslint max-lines: ["error", 822] -- relation abandonment, exact-path binding, preservation-cover authorization, and Prefer-local eligibility must stay under the sole identity-policy owner. Re-pinned from 785 for the two corrected publication expectations: a replacement continues no row, so the incumbent it names is the occupant of the claimed address and nothing else. Re-pinned from 789 for the rename guard's cross-source note, which precedes the loop it explains; this directive counts comments. Re-pinned from 800 for the contended-address precondition: which provider object an address denotes is current topology, bound here with the endpoint and record facts below rather than filtered out of the result afterwards, so every rule reads one `CurrentFacts` and no caller can re-decide an address this owner already refused. Re-pinned from 815 for `awaiting_repair`, the reason that tells a withheld address whose repair its own plan carries apart from one nothing will settle — the closeout owes the first a follow-up cycle and the second nothing — and it belongs in the closed vocabulary this owner defines. */
+/* eslint max-lines: ["error", 901] -- relation abandonment, exact-path binding, preservation-cover authorization, and Prefer-local eligibility must stay under the sole identity-policy owner. Re-pinned from 785 for the two corrected publication expectations: a replacement continues no row, so the incumbent it names is the occupant of the claimed address and nothing else. Re-pinned from 789 for the rename guard's cross-source note, which precedes the loop it explains; this directive counts comments. Re-pinned from 800 for the contended-address precondition: which provider object an address denotes is current topology, bound here with the endpoint and record facts below rather than filtered out of the result afterwards, so every rule reads one `CurrentFacts` and no caller can re-decide an address this owner already refused. Re-pinned from 815 for `awaiting_repair`, the reason that tells a withheld address whose repair its own plan carries apart from one nothing will settle — the closeout owes the first a follow-up cycle and the second nothing — and it belongs in the closed vocabulary this owner defines. Re-pinned from 822 for the abandoned-relation fallback's identity join: a committed row belongs to the current address its provider identity is observed at, and abandoning a relation must re-seat it there (through the relocated-match fallback) rather than decide the endpoint unbaselined. Re-pinned from 848 to also mark a stored row whose identity is observed elsewhere as relocated away, so a continuation and a replacement cannot both name the same incumbent row. Re-pinned from 858 for ordering a carrying action before the address it vacates, so a stored path that sorts first cannot outrun the row it must lose. Re-pinned from 869 for carrying a remote rename's local counterpart to the rename destination, so a folder rename onto an occupied address moves the local file instead of pushing the stale old address. */
 import type { FileEntity } from "../fs/types";
 import type { IdentityComponent } from "./plan-admission-graph";
 import { selectReportFamily } from "./identity-component-report-family";
@@ -217,8 +217,24 @@ function ordinaryActionsAfterRelationAbandonment(
 	facts: CurrentFacts,
 	conflictStrategy: ConflictStrategy,
 ): SyncAction[] | AdmissionFailureReason {
+	// The durable correspondence is identity-keyed, so a committed row belongs to the
+	// current address its provider identity is observed at, not to the address it was
+	// stored under. Abandoning a relation must not lose that join: re-seat every record
+	// on its identity's observed remote endpoint before deciding the addresses, or the
+	// endpoint is decided unbaselined (an insert the identity-keyed store refuses).
+	const paths = [...new Set([...facts.local.keys(), ...facts.remote.keys()])].sort();
+	// A row continued at a new address must publish before the address it leaves is
+	// decided, or the vacating action sees the row still present. Otherwise a path
+	// that sorts before its endpoint flips the dependency (the pulled-ahead address).
+	const carries = (path: string): boolean => {
+		const identity = facts.remote.get(path)?.identityKey;
+		if (!identity) return false;
+		const row = committedRowAtObservedIdentity(facts, identity);
+		return !!row && row.path !== path;
+	};
+	const ordered = [...paths.filter(carries), ...paths.filter((path) => !carries(path))];
 	const actions: SyncAction[] = [];
-	for (const path of [...new Set([...facts.local.keys(), ...facts.remote.keys()])].sort()) {
+	for (const path of ordered) {
 		const action = materializeExactPath(facts, path, { kind: "preserve_present_side" }, conflictStrategy, false);
 		if (typeof action === "string") return action;
 		if (action) actions.push(action);
@@ -429,7 +445,17 @@ function bindFiles(facts: CurrentFacts, reports: readonly RenameEvidence[]): Fil
 		const localReport = reports.find((report) => report.side === "local" &&
 			!report.isFolder && report.oldPath === baseline.path);
 		const remote = trackedRemote ?? (localReport ? facts.remote.get(localReport.newPath) : undefined);
-		const local = localReport ? facts.local.get(localReport.newPath) : resolveLocal(facts, baseline.path) ??
+		// A remote rename that carried this row's identity to its current endpoint names
+		// the old address in its own report. When the local side was not renamed with it
+		// (the folder rename case), the local counterpart is still at that old address,
+		// and it is the source this publication must move — not the file sitting at the
+		// committed path, and not an unbaselined local-only push.
+		const carriedFrom = reports.find((report) => report.side === "remote" && !report.isFolder &&
+			remote !== undefined && report.newPath === remote.path &&
+			(report.identityKey === undefined || report.identityKey === baseline.remoteIdentityKey))?.oldPath;
+		const carriedLocal = carriedFrom !== undefined ? facts.local.get(carriedFrom) : undefined;
+		const local = localReport ? facts.local.get(localReport.newPath) : carriedLocal ??
+			resolveLocal(facts, baseline.path) ??
 			(remote && absent(facts, "local", baseline.path) ? facts.local.get(remote.path) : undefined);
 		if (remote?.isDirectory || local?.isDirectory) continue;
 		// Historical records at another identity's current destination are exact
@@ -455,8 +481,10 @@ function bindFiles(facts: CurrentFacts, reports: readonly RenameEvidence[]): Fil
 			if (exactRemote && !exactRemote.isDirectory) claimedRemote.add(exactRemote.path);
 			continue;
 		}
-		const path = localReport && local ? local.path : remote?.path !== baseline.path && remote
-			? remote.path : local?.path ?? remote?.path ?? baseline.path;
+		const path = localReport && local ? local.path
+			: carriedLocal && remote ? remote.path
+			: remote?.path !== baseline.path && remote
+				? remote.path : local?.path ?? remote?.path ?? baseline.path;
 		if (!compatible(facts, baseline.path, path)) return "unknown_scope";
 		if (occurrenceClaimed) continue;
 		const recreated = path !== baseline.path && facts.remote.has(baseline.path) &&
@@ -487,8 +515,28 @@ function bindFiles(facts: CurrentFacts, reports: readonly RenameEvidence[]): Fil
 	for (const report of reports) {
 		if (report.side !== "remote" || report.isFolder || claimedRemote.has(report.newPath)) continue;
 		const remote = facts.remote.get(report.newPath);
+		if (!remote?.identityKey) continue;
 		const occupant = facts.remote.get(report.oldPath);
-		if (!remote?.identityKey || !occupant?.identityKey || remote.identityKey === occupant.identityKey) continue;
+		if (!occupant?.identityKey) {
+			// The remote object left `oldPath` (a rename whose destination is where it
+			// now is) and the local side did not move with it. The local counterpart
+			// still at `oldPath` is this rename's source and must travel to `newPath`;
+			// without this it is decided unbaselined and pushed back to the old address,
+			// duplicating the object the rename already carried.
+			const source = facts.local.get(report.oldPath);
+			const sourceObserved = observationsAt(facts, "local", report.oldPath).some((item) =>
+				item.kind === "exact" || item.kind === "alias");
+			if (sourceObserved && source && !source.isDirectory && absent(facts, "local", report.newPath) &&
+				!claimedLocal.has(source.path) && !claimedRemote.has(remote.path)) {
+				bound.push({ kind: "structural", binding: { path: report.newPath, local: source, remote,
+					move: { side: "local", from: source.path },
+					publication: { source: undefined, destination: facts.records.get(report.newPath) } } });
+				claimedLocal.add(source.path);
+				claimedRemote.add(remote.path);
+			}
+			continue;
+		}
+		if (remote.identityKey === occupant.identityKey) continue;
 		const local = facts.local.get(report.newPath);
 		bound.push({ kind: "structural", binding: { path: report.newPath, local, remote, replacement: !!local,
 			additionalLocal: local && !equal(local, remote) ? local : undefined,
@@ -562,19 +610,63 @@ function materializeExactPath(
 	if (local?.isDirectory || remote?.isDirectory) return null;
 	if (!local && !absent(facts, "local", path)) return "unknown_observation";
 	if (!remote && !absent(facts, "remote", path)) return "unknown_observation";
-	const expected = facts.records.get(path);
+	// The durable correspondence is identity-keyed: a committed row belongs to the
+	// current address its provider identity is observed at, not to the address it was
+	// stored under. When the path lookup misses but the observed identity is committed
+	// elsewhere, this address continues that row rather than being decided unbaselined
+	// (an insert the identity-keyed store refuses).
+	const pathRecord = facts.records.get(path);
+	// A stored row whose identity is observed at another address has moved: this
+	// address is vacant, and the row continues where its identity now lives. Without
+	// this, a continuation and a replacement would both name the same incumbent row,
+	// and the second publication would fail its own precondition.
+	const observedAt = pathRecord?.remoteIdentityKey
+		? observedRemotePath(facts, pathRecord.remoteIdentityKey) : undefined;
+	const relocatedAway = observedAt !== undefined && observedAt !== path;
+	const destination = relocatedAway ? undefined : pathRecord;
+	const expected = destination && pathRecord
+		? pathRecord : committedRowAtObservedIdentity(facts, remote?.identityKey);
 	const comparisonBaseline = capability.kind === "preserve_present_side" && (!local || !remote)
 		? undefined : expected;
-	const replacement = !!expected?.remoteIdentityKey && !!remote?.identityKey &&
-		expected.remoteIdentityKey !== remote.identityKey;
+	const replacement = !!destination?.remoteIdentityKey && !!remote?.identityKey &&
+		destination.remoteIdentityKey !== remote.identityKey;
 	const binding: BoundFile = {
 		path, local, remote, baseline: comparisonBaseline,
-		// A replacement continues no row: the incumbent is only the occupant of the
-		// claimed address, never also the row this publication carries forward.
-		publication: { source: replacement ? undefined : expected, destination: expected },
+		// `source` is the row this publication continues; `destination` is whatever
+		// holds the claimed address — which for a row continued at a new address is
+		// vacant, never also the moved row. A replacement continues no row: the
+		// incumbent is only the occupant of the claimed address.
+		publication: { source: replacement ? undefined : expected, destination },
 		replacement,
 	};
-	return materializeFile(binding, facts, conflictStrategy, allowPreferLocalWin);
+	const action = materializeFile(binding, facts, conflictStrategy, allowPreferLocalWin);
+	// A row continued at a new address has no diff at its old path, so the comparison
+	// yields nothing; the synchronized endpoints still prove the relocation.
+	if (!action && expected && expected.path !== path && local && remote) {
+		if (!sameSynchronizedContent(local, remote, expected)) return "identity_postcondition_unproven";
+		return { action: "match", path, local, remote, baseline: expected, publication: binding.publication };
+	}
+	return action;
+}
+
+/** The address a provider identity is currently observed at, if it is observed at all. */
+function observedRemotePath(facts: CurrentFacts, identityKey: string): string | undefined {
+	for (const entity of facts.remote.values()) {
+		if (entity.identityKey === identityKey) return entity.path;
+	}
+	return undefined;
+}
+
+/** The committed row bound to a provider identity, wherever its object now lives. */
+function committedRowAtObservedIdentity(
+	facts: CurrentFacts,
+	identityKey: string | undefined,
+): SyncRecord | undefined {
+	if (!identityKey) return undefined;
+	for (const record of facts.records.values()) {
+		if (record.remoteIdentityKey === identityKey) return record;
+	}
+	return undefined;
 }
 
 function materializeFile(

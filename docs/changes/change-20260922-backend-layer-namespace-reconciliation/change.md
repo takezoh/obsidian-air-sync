@@ -23,6 +23,7 @@ outcomes:
   The no-loss invariant of change-20260916-cache-path-id-bijection is preserved — every
   object that existed before a collision still exists and is reachable after it.
 scope:
+- src/backends/googledrive/adapter.ts
 - src/fs/interface.ts
 - src/fs/caching/remote-fs.ts
 - src/fs/caching/remote-fs.contract.test.ts
@@ -38,8 +39,12 @@ scope:
 - src/sync/plan-admission.ts
 - src/sync/plan-admission.test.ts
 - src/sync/identity-component-decision.ts
+- src/sync/moved-baseline-publication.test.ts
 - src/sync/orchestrator.ts
 - src/sync/orchestrator.test.ts
+- src/sync/state.ts
+- src/sync/state.test.ts
+- src/__mocks__/sync-test-helpers.ts
 - src/sync/sync-cycle-finalization.ts
 - src/sync/sync-cycle-finalization.test.ts
 - src/sync/sync-cycle-planning.ts
@@ -58,6 +63,7 @@ scope:
 - tests/fs/googledrive/managed.contract-harness.ts
 - tests/fs/managed/faithful-collision-adapter.ts
 - tests/fs/managed/reconcile-namespace.test.ts
+- tests/fs/managed/orchestrator-namespace.test.ts
 - e2e/googledrive.e2e.ts
 - eslint.config.mts
 - AGENTS.md
@@ -159,6 +165,7 @@ relations:
 - type: conformsTo
   target: design-core-backend-integration
 source_paths:
+- src/backends/googledrive/adapter.ts
 - src/fs/interface.ts
 - src/fs/caching/remote-fs.ts
 - src/fs/caching/metadata-cache.ts
@@ -168,7 +175,11 @@ source_paths:
 - src/sync/plan-admission-address-contention.ts
 - src/sync/plan-admission.ts
 - src/sync/identity-component-decision.ts
+- src/sync/moved-baseline-publication.test.ts
 - src/sync/orchestrator.ts
+- src/sync/state.ts
+- src/sync/state.test.ts
+- src/__mocks__/sync-test-helpers.ts
 - src/sync/sync-cycle-finalization.ts
 - src/sync/sync-cycle-planning.ts
 - src/sync/sync-notification.ts
@@ -297,6 +308,39 @@ Review fixes:
   `changed`, discards and re-reads the working view, and checks keeper placement, the survival of
   both objects at distinct addresses, the keeper-policy flip, and an out-of-scope address left
   unmutated. It no longer reaches for the internal `identityRename` (unit-6, AC-RECON-001/002/005/008).
+
+Follow-on fixes (the same boundary, after the repair's non-committing cycle):
+- The keeper decision handed to the filesystem is now resolved from the record at the
+  contended address (`SyncOrchestrator.namespaceKeeper(path, claimantIds)`), not from
+  which claimants hold a record anywhere. When both claimants were already synced, the
+  old form was undefined and the arbiter winner took the plain address; the record
+  holder at the path is what FR-RECON-003 names. The then-unused `recordedIdentities`
+  store API is removed.
+- The engine's identity→committed-row join survives a relation the report family
+  abandons: a stored row whose provider identity is observed at another address is
+  re-seated on that endpoint (the relocated-match fallback), its old address is decided
+  vacant, and the carrying action publishes before the vacated one. Without this a
+  WARM/HOT cycle decided the moved endpoint unbaselined and the identity-keyed store
+  refused the publication — the `SyncRecord changed before terminal publication` loop
+  the repair leaves behind.
+- `tests/fs/managed/orchestrator-namespace.test.ts` drives the real `ManagedRemoteFs`
+  through the real `SyncOrchestrator.runSync()`: the collision is seeded with no prior
+  `getChangedPaths()`, so a reconcile that lost its self-built working view fails the
+  test.
+- A remote folder rename onto an address an existing folder already occupies leaves the
+  renamed folder's local counterpart at the old path. Admission now carries that local
+  file to the identity's settled address (its own remote rename report names the old
+  path), instead of deciding it unbaselined and pushing the old address back onto the
+  provider — which recreated `Untitled/a.md` and duplicated the content.
+- The repair receipt is verified to leave the derived cache at the provider's own
+  post-rename version: `tests/fs/googledrive/managed.contract-harness.ts` deletes a
+  reconciled object with no re-observation between the repair and the delete, and a
+  separate case pins that a provider write past the observed version fails the delete
+  closed rather than deleting an unobserved latest version.
+- `tests/fs/managed/orchestrator-namespace.test.ts` adds the COLD/no-checkpoint path
+  (AC-RECON-002 parity): the collision exists on the provider before any listing, so a
+  reconcile that only worked off a delta would never see it; the test drives the real
+  `runSync`, keeper, rename, abort/retry and both surviving objects.
 
 Test coverage:
 - `tests/fs/managed/reconcile-namespace.test.ts` drives the production

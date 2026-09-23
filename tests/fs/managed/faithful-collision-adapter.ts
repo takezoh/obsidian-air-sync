@@ -120,8 +120,17 @@ export class FaithfulCollisionAdapter implements RemoteBackendAdapter {
 	createFile(_input: CreateFileInput): Promise<RemoteObject> {
 		throw new Error("FaithfulCollisionAdapter.createFile: not implemented");
 	}
-	updateFile(_input: UpdateFileInput): Promise<RemoteObject> {
-		throw new Error("FaithfulCollisionAdapter.updateFile: not implemented");
+	updateFile(input: UpdateFileInput): Promise<RemoteObject> {
+		const node = this.nodes.get(input.id);
+		if (!node) return Promise.reject(new Error(`no such object ${input.id}`));
+		if (`v${node.version}` !== input.expected.versionToken) {
+			return Promise.reject(new Error(`version mismatch on ${input.id}`));
+		}
+		node.content = input.content;
+		node.version++;
+		const object = this.objectOf(node);
+		this.log.push({ kind: "upsert", object });
+		return Promise.resolve(object);
 	}
 	createDirectory(_input: CreateDirectoryInput): Promise<RemoteObject> {
 		throw new Error("FaithfulCollisionAdapter.createDirectory: not implemented");

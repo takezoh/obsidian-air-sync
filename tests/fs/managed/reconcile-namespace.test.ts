@@ -157,6 +157,22 @@ describe("ManagedRemoteFs.namespaceReconciliation — the filesystem repairs the
 		await fs.close();
 	});
 
+	it("re-renames a reconciled object with its refreshed version token", async () => {
+		const adapter = new FaithfulCollisionAdapter();
+		const { fs, movedId, establishedId } = await seedAndCollide(adapter, "reconcile-then-rerename");
+		const conflictTarget = insertConflictSuffix("Note.md", `id-${movedId}`);
+		expect((await fs.namespaceReconciliation.reconcileNamespace(
+			policy({ keeper: () => Promise.resolve(establishedId) }))).kind).toBe("changed");
+		// The repaired cycle aborts its view; the follow-up re-reads the settled facts.
+		await fs.abortWorkingView();
+		await fs.getChangedPaths();
+		// The moved object now sits at the conflict address. A later cycle renames the
+		// same committed object again; its cached version must be the post-rename one.
+		await fs.rename(conflictTarget, "Moved.md");
+		expect((await adapter.getByPath("Moved.md")).map((object) => object.id)).toEqual([movedId]);
+		await fs.close();
+	});
+
 	it("reports failed, without a wrong-object move, when the backend refuses the rename", async () => {
 		const adapter = new FaithfulCollisionAdapter();
 		const { fs } = await seedAndCollide(adapter, "reconcile-refused");

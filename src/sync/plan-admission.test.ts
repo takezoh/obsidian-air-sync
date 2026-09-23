@@ -2175,9 +2175,11 @@ describe("admitBatchObservation", () => {
 		const result = admit([], fixture.evidence, fixture.observations, fixture.scope, fixture.entries);
 
 		expect(result.failures).toEqual([]);
+		// Each `B` address carries the row that `A` vacates, so the carrying action
+		// publishes first and the vacating action's precondition still holds.
 		expect(result.executable.actions.map(({ action, path }) => ({ action, path }))).toEqual([
-			{ action: "push", path: "A/x.md" }, { action: "push", path: "A/y.md" },
 			{ action: "pull", path: "B/x.md" }, { action: "pull", path: "B/y.md" },
+			{ action: "push", path: "A/x.md" }, { action: "push", path: "A/y.md" },
 		]);
 	});
 
@@ -4070,9 +4072,13 @@ describe("cross-source remote rename validation", () => {
 
 	/** What the component degrades to once the relation is abandoned: each address
 	 * reconciled on its own current facts, with neither claim bound. */
-	const ordinaryAfterAbandonment: readonly ShapedAction[] = [
-		{ action: "push", path: "notes/a.md" },
+	/** What the component degrades to once the relation is abandoned: each address
+	 * reconciled on its own current facts. When `notes/a.md`'s row is carried to
+	 * `notes/b.md`, the carrying address publishes before the vacated one, or the
+	 * vacating action would still see the row present and fail its precondition. */
+	const ordinaryAfterAbandonmentCarried: readonly ShapedAction[] = [
 		{ action: "pull", path: "notes/b.md" },
+		{ action: "push", path: "notes/a.md" },
 	];
 
 	it("admits the relation when the carried identity is the one observed at newPath", () => {
@@ -4138,7 +4144,7 @@ describe("cross-source remote rename validation", () => {
 		expect(split.family).toBe("conflicting");
 		expect(split.kinds).toEqual(["authorized"]);
 		expect(split.reasons).toEqual([]);
-		expect(split.actions).toEqual(ordinaryAfterAbandonment);
+		expect(split.actions).toEqual(ordinaryAfterAbandonmentCarried);
 		// A conflicting family selects no reports, so the report loop never records this
 		// edge's compatibility pair — the guard is not reached and nothing is bound by it.
 		expect(split.trace).not.toContain("notes/a.md=>notes/b.md");
@@ -4164,7 +4170,7 @@ describe("cross-source remote rename validation", () => {
 		expect(keyed.family).toBe("conflicting");
 		expect(keyless.family).toBe("conflicting");
 		expect(keyed.actions).toEqual(keyless.actions);
-		expect(keyed.actions).toEqual(ordinaryAfterAbandonment);
+		expect(keyed.actions).toEqual(ordinaryAfterAbandonmentCarried);
 		expect(keyed.reasons).toEqual(keyless.reasons);
 	});
 
@@ -4215,6 +4221,6 @@ describe("cross-source remote rename validation", () => {
 
 		expect(split.carried).toEqual([undefined, ""]);
 		expect(split.family).toBe("conflicting");
-		expect(split.actions).toEqual(ordinaryAfterAbandonment);
+		expect(split.actions).toEqual(ordinaryAfterAbandonmentCarried);
 	});
 });

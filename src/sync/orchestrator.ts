@@ -129,10 +129,10 @@ export class SyncOrchestrator {
 	 * undefined to leave the choice to the arbiter. Read per call from the record
 	 * store; the filesystem stores nothing.
 	 */
-	private async namespaceKeeper(claimantIds: readonly string[]): Promise<string | undefined> {
-		const holders = await this.stateStore.recordedIdentities(claimantIds);
-		const synced = claimantIds.filter((id) => holders.has(id));
-		return synced.length === 1 ? synced[0] : undefined;
+	private async namespaceKeeper(path: string, claimantIds: readonly string[]): Promise<string | undefined> {
+		const record = await this.stateStore.get(path);
+		return record && claimantIds.includes(record.remoteIdentityKey)
+			? record.remoteIdentityKey : undefined;
 	}
 
 	/**
@@ -407,7 +407,7 @@ export class SyncOrchestrator {
 		const reconciliation = remoteFs.namespaceReconciliation
 			? await remoteFs.namespaceReconciliation.reconcileNamespace({
 				isInScope: (path) => !this.isExcluded(path),
-				keeper: (_path, claimantIds) => this.namespaceKeeper(claimantIds),
+				keeper: (path, claimantIds) => this.namespaceKeeper(path, claimantIds),
 			})
 			: { kind: "settled" as const };
 		if (reconciliation.kind === "failed") {

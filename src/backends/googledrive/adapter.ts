@@ -193,7 +193,8 @@ export class GoogleDriveAdapter implements RemoteBackendAdapter {
 			failBackend("unverifiable", "Google Drive reported no version evidence for update");
 		}
 		if (!matches(input.expected, observed.versionToken)) {
-			failBackend("target_changed", `Google Drive file ${input.id} changed before update`);
+			failBackend("target_changed",
+				`Google Drive file ${input.id} changed before update (expected ${input.expected.versionToken}, observed ${observed.versionToken})`);
 		}
 		const file = await this.map(() =>
 			this.client.uploadFile(
@@ -327,7 +328,8 @@ function assertExpectedEvidence(
 		failBackend("unverifiable", `${subject} has no version evidence for ${operation}`);
 	}
 	if (!matches(expected, observedToken)) {
-		failBackend("target_changed", `${subject} changed before ${operation}`);
+		failBackend("target_changed",
+			`${subject} changed before ${operation} (expected ${expected.versionToken}, observed ${observedToken})`);
 	}
 }
 

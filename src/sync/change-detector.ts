@@ -59,6 +59,43 @@ export interface ChangeDetectorDeps {
 	remoteDelta?: RemoteDelta | null;
 }
 
+/**
+ * Include the committed baseline of every observed remote identity, even when its
+ * stored path was not visited this cycle.
+ *
+ * The durable correspondence is identity-keyed, but a component's facts are keyed by
+ * address. A WARM/HOT cycle visits only the addresses the delta names, so a committed
+ * row whose object moved to a new address — a namespace repair whose cycle never
+ * committed its checkpoint — can be absent from the facts entirely: its stored path is
+ * unvisited and its new address carries no row. Admission then emits an insert
+ * publication at the endpoint, and the identity-keyed store rightly refuses it — the
+ * identical failure every cycle. Loading the row at its *stored* path (never re-keying
+ * it) restores the facts COLD already has in full: the identity-evidence union binds
+ * the moved endpoint to that baseline, and Admission continues the committed row
+ * instead of inserting.
+ */
+async function includeCommittedBaselines(
+	entries: MixedEntity[],
+	recordByIdentity: ReadonlyMap<string, SyncRecord>,
+	remoteFs: IFileSystem,
+	observations: PathObservation[],
+): Promise<void> {
+	if (recordByIdentity.size === 0) return;
+	const known = new Set(entries.map((entry) => entry.path));
+	for (const entry of [...entries]) {
+		const identity = entry.remote?.identityKey;
+		if (!identity || entry.prevSync?.remoteIdentityKey === identity) continue;
+		const row = recordByIdentity.get(identity);
+		if (!row || known.has(row.path)) continue;
+		const stat = await remoteFs.stat(row.path);
+		const observation = stat ? observePath("remote", row.path, stat, "stat") : undefined;
+		if (observation) observations.push(observation);
+		entries.push({ path: row.path, prevSync: row,
+			remote: observation ? exactEntity(observation) : undefined });
+		known.add(row.path);
+	}
+}
+
 export interface CollectChangesOptions {
 	/**
 	 * Force a COLD full join regardless of tracker/store state. This is selected
@@ -211,6 +248,18 @@ async function collectHot(
 		};
 	});
 
+	// A committed row may sit at a stored path this delta never named. Read the rows of
+	// the observed identities so their baselines join the facts, the way COLD loads them
+	// in full. The store is identity-keyed, so only the endpoints with no row at their
+	// own path need a bounded identity read.
+	const recordByIdentity = new Map<string, SyncRecord>(
+		[...syncRecords.values()].flatMap((row) =>
+			row.remoteIdentityKey ? [[row.remoteIdentityKey, row] as const] : []));
+	const uncovered = [...new Set(remoteStats.flatMap((stat) =>
+		stat?.identityKey ? [stat.identityKey] : []))].filter((id) => !recordByIdentity.has(id));
+	for (const [id, row] of await deps.stateStore.getManyByIdentity(uncovered)) recordByIdentity.set(id, row);
+	await includeCommittedBaselines(entries, recordByIdentity, remoteFs, observations);
+
 	// Acquisition retains all facts it obtained. Admission owns no-change and
 	// deletion decisions, including whether stat absence has deletion authority.
 	return {
@@ -312,6 +361,9 @@ async function collectWarm(
 			prevSync: recordMap.get(path),
 		};
 	});
+
+	await includeCommittedBaselines(entries, new Map(allRecords.flatMap((row) =>
+		row.remoteIdentityKey ? [[row.remoteIdentityKey, row] as const] : [])), remoteFs, observations);
 
 	return {
 		entries, observations, candidateFacts: [],

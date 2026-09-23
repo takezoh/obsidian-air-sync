@@ -8,6 +8,7 @@ import { GoogleDriveAdapter } from "../../../src/backends/googledrive/adapter";
 import { ManagedRemoteFs } from "../../../src/fs/managed/managed-remote-fs";
 import { MetadataStore } from "../../../src/store/metadata-store";
 import { sha256 } from "../../../src/utils/hash";
+import { insertConflictSuffix } from "../../../src/utils/path";
 import { runIFileSystemContract } from "../contracts/ifilesystem.contract";
 import { runRemoteFamilyCachingContract } from "../contracts/caching-remote-fs.contract";
 import type {
@@ -396,6 +397,102 @@ export function registerGoogleDriveManagedIFileSystemContract(): void {
 
 export function registerGoogleDriveManagedCachingContract(): void {
 	runRemoteFamilyCachingContract("ManagedRemoteFs<googledrive>", makeCachingHarness);
+
+	describe("ManagedRemoteFs<googledrive> reconciled relocation", () => {
+		it("re-renames a reconciled object with its refreshed Drive version", async () => {
+			const client = new FakeGoogleDrive();
+			const movedId = client.seedFile("Other.md");
+			const establishedId = client.seedFile("Note.md");
+			const store = new MetadataStore<RemoteObject>("managed-rerename", STORE);
+			const fs = makeFs(client, "managed-rerename", store);
+			await fs.list();
+			await fs.commitCheckpoint();
+			// The moved object lands on the established address; the record holder keeps it.
+			client.stageRemoteRename("Other.md", "Note.md");
+			const reconciled = await fs.namespaceReconciliation.reconcileNamespace({
+				isInScope: () => true,
+				keeper: (_path, ids) => Promise.resolve(ids.includes(establishedId) ? establishedId : undefined),
+			});
+			expect(reconciled.kind).toBe("changed");
+			await fs.abortWorkingView();
+			await fs.getChangedPaths();
+			// A later cycle moves the same committed object again. Its Drive version must
+			// be the post-rename one, or the move's version CAS fails closed.
+			const conflictTarget = insertConflictSuffix("Note.md", `id-${movedId}`);
+			await fs.rename(conflictTarget, "Moved.md");
+			expect((await fs.stat("Moved.md"))?.identityKey).toBe(movedId);
+			await fs.close();
+		});
+
+		it("deletes a reconciled object at the provider version the repair receipt carried", async () => {
+			const client = new FakeGoogleDrive();
+			const movedId = client.seedFile("Other.md");
+			const establishedId = client.seedFile("Note.md");
+			const store = new MetadataStore<RemoteObject>("managed-reconcile-receipt", STORE);
+			const fs = makeFs(client, "managed-reconcile-receipt", store);
+			await fs.list();
+			await fs.commitCheckpoint();
+			client.stageRemoteRename("Other.md", "Note.md");
+			const conflictTarget = insertConflictSuffix("Note.md", `id-${movedId}`);
+			await fs.namespaceReconciliation.reconcileNamespace({
+				isInScope: () => true,
+				keeper: (_path, ids) => Promise.resolve(ids.includes(establishedId) ? establishedId : undefined),
+			});
+			// No re-observation between the repair and the delete: the cache must already
+			// hold the provider's post-rename version from the repair receipt.
+			await fs.delete(conflictTarget);
+			expect(await fs.stat(conflictTarget)).toBeNull();
+			await fs.close();
+		});
+
+		it("fails a delete closed when the provider advanced past the observed version", async () => {
+			const client = new FakeGoogleDrive();
+			const movedId = client.seedFile("Other.md");
+			const establishedId = client.seedFile("Note.md");
+			const store = new MetadataStore<RemoteObject>("managed-reconcile-delete-guard", STORE);
+			const fs = makeFs(client, "managed-reconcile-delete-guard", store);
+			await fs.list();
+			await fs.commitCheckpoint();
+			client.stageRemoteRename("Other.md", "Note.md");
+			const conflictTarget = insertConflictSuffix("Note.md", `id-${movedId}`);
+			await fs.namespaceReconciliation.reconcileNamespace({
+				isInScope: () => true,
+				keeper: (_path, ids) => Promise.resolve(ids.includes(establishedId) ? establishedId : undefined),
+			});
+			// A concurrent provider write the engine never observed must not be deleted:
+			// the exact-version precondition fails closed rather than deleting an
+			// unobserved latest version.
+			client.touchVersion(movedId);
+			await expect(fs.delete(conflictTarget)).rejects.toMatchObject({ kind: "target_changed" });
+			expect((await fs.stat(conflictTarget))?.identityKey).toBe(movedId);
+			await fs.close();
+		});
+
+		it("deletes a reconciled object whose version was persisted across a restart", async () => {
+			const client = new FakeGoogleDrive();
+			const movedId = client.seedFile("Other.md");
+			const establishedId = client.seedFile("Note.md");
+			const store = new MetadataStore<RemoteObject>("managed-reconcile-delete", STORE);
+			const fs = makeFs(client, "managed-reconcile-delete", store);
+			await fs.list();
+			await fs.commitCheckpoint();
+			client.stageRemoteRename("Other.md", "Note.md");
+			const conflictTarget = insertConflictSuffix("Note.md", `id-${movedId}`);
+			await fs.namespaceReconciliation.reconcileNamespace({
+				isInScope: () => true,
+				keeper: (_path, ids) => Promise.resolve(ids.includes(establishedId) ? establishedId : undefined),
+			});
+			// A restart re-reads the settled facts from the provider into the same store.
+			await fs.close();
+			const resumed = makeFs(client, "managed-reconcile-delete", store);
+			await resumed.getChangedPaths();
+			// The leftover name is the object the repair moved; the engine removes it. Its
+			// version must be the provider's current one.
+			await resumed.delete(conflictTarget);
+			expect(await resumed.stat(conflictTarget)).toBeNull();
+			await resumed.close();
+		});
+	});
 }
 
 const GOOGLEDRIVE_CONCURRENCY_CAPABILITIES: RemoteBackendCapabilities = {

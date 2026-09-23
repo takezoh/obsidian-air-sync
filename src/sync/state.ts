@@ -130,15 +130,24 @@ export class SyncStateStore {
 	}
 
 	/**
-	 * Which of these provider identities hold a committed record. The store is keyed
-	 * by identity, so this reads each row by its own key rather than by any address.
+	 * Get multiple sync records by their provider identity, returning only found
+	 * entries. The store is keyed by identity, so a row can be read wherever its
+	 * object currently lives — the counterpart of {@link getMany}, which reads by
+	 * address.
 	 */
-	async recordedIdentities(identities: readonly string[]): Promise<Set<string>> {
-		if (identities.length === 0) return new Set();
+	async getManyByIdentity(identities: readonly string[]): Promise<Map<string, SyncRecord>> {
+		if (identities.length === 0) return new Map();
 		return this.helper.runTransaction(STORE_NAME, "readonly", (tx) => {
 			const store = tx.objectStore(STORE_NAME);
-			const reqs = identities.map((identity) => ({ identity, req: store.count(identity) }));
-			return () => new Set(reqs.filter(({ req }) => req.result > 0).map(({ identity }) => identity));
+			const reqs = identities.map((identity) => ({ identity, req: store.get(identity) }));
+			return () => {
+				const result = new Map<string, SyncRecord>();
+				for (const { identity, req } of reqs) {
+					const record = req.result as SyncRecord | undefined;
+					if (record !== undefined) result.set(identity, record);
+				}
+				return result;
+			};
 		});
 	}
 

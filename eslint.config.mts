@@ -327,9 +327,12 @@ export default defineConfig(
 		// observations, exact-entity map, observed-path set, and deletion path set.
 		// The sets exist only to feed the candidate loop a few lines below, so the
 		// pin keeps the acquisition step cohesive instead of splitting projections
-		// from their single use.
+		// from their single use. Re-pinned from 312 for `includeCommittedBaselines`,
+		// which loads the committed row of an observed identity whose stored path the
+		// delta did not visit: a per-cycle acquisition concern that belongs beside the
+		// other entry-shaping steps, not in a separate module.
 		files: ["src/sync/change-detector.ts"],
-		rules: { "max-lines": ["error", { max: 312, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 328, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Per-file overrides above the 300 cap (known debt), each pinned at its
