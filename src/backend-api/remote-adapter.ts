@@ -62,6 +62,22 @@ export interface RemoteBackendAdapter {
 	/** Provider facts since `cursor`, or explicit cursor invalidation. */
 	getChanges(cursor: string): Promise<RemoteChangeResult>;
 
+	/**
+	 * A complete recursive provider snapshot of ONE folder, addressed by its stable
+	 * id, or explicit cursor invalidation.
+	 *
+	 * Core uses this to complete a delta: a provider whose delta reports only the
+	 * changed item sends no entry for a folder's unchanged descendants, so when a
+	 * folder newly enters the bound root core lists exactly that folder's subtree.
+	 * The adapter reads no metadata cache, cursor, scope or store and performs no
+	 * mutation; it returns provider facts only, and a partial enumeration is never
+	 * published as complete.
+	 *
+	 * Optional: a provider whose delta already reports descendants omits it, and
+	 * core treats that backend's delta as already complete.
+	 */
+	listSubtreeById?(id: string): Promise<SubtreeReadResult>;
+
 	/** A detached current observation by stable id; `null` when absent. */
 	getById(id: string): Promise<RemoteObject | null>;
 	/** Detached current occupants of a provider-resolved path (may be several). */
@@ -124,6 +140,16 @@ export type RemoteChangeResult =
 			readonly nextCursor: string;
 			readonly changes: readonly RemoteChange[];
 	  }
+	| { readonly kind: "cursor_invalid" };
+
+/**
+ * The result of a {@link RemoteBackendAdapter.listSubtreeById} read. `cursor_invalid`
+ * is NOT an empty subtree: core takes the existing full-scan fallback and derives a
+ * fresh usable cursor. A `subtree` carries the folder's complete current subtree as
+ * provider facts; absence from it never removes, tombstones or re-keys a cached entry.
+ */
+export type SubtreeReadResult =
+	| { readonly kind: "subtree"; readonly objects: readonly RemoteObject[] }
 	| { readonly kind: "cursor_invalid" };
 
 /** An observed object version a read must still correspond to. */

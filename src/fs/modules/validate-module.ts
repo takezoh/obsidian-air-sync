@@ -302,5 +302,16 @@ export function validateAdapter(candidate: unknown): ModuleValidationResult {
 			"capabilities.versionBoundRead must be revision | reobserve",
 		);
 	}
+	// The delta-completion read is optional: a provider whose delta is already
+	// complete omits it and stays valid. A declared-but-malformed member is
+	// rejected here, before ManagedRemoteFs can invoke it.
+	const listSubtreeById = candidate.listSubtreeById;
+	if (listSubtreeById !== undefined && !isFunction(listSubtreeById)) {
+		issues.add(
+			"invalid_member",
+			"listSubtreeById",
+			"adapter.listSubtreeById must be a function when declared",
+		);
+	}
 	return issues.result();
 }

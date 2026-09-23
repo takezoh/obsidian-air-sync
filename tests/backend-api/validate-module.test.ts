@@ -168,4 +168,19 @@ describe("validateAdapter", () => {
 		});
 		expect(codes(result)).toContain("invalid_capability");
 	});
+
+	it("accepts an adapter that omits the optional delta-completion read", () => {
+		expect(validateAdapter(valid).ok).toBe(true);
+	});
+
+	it("accepts an adapter that declares a well-formed delta-completion read", () => {
+		const result = validateAdapter({ ...valid, listSubtreeById: () => Promise.resolve({ kind: "subtree", objects: [] }) });
+		expect(result.ok).toBe(true);
+	});
+
+	it("rejects a declared-but-malformed delta-completion read", () => {
+		const result = validateAdapter({ ...valid, listSubtreeById: "not a function" });
+		expect(result.ok).toBe(false);
+		expect(codes(result)).toContain("invalid_member");
+	});
 });

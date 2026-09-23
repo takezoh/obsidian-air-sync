@@ -399,8 +399,14 @@ export default defineConfig(
 		// delta-contention bookkeeping `takeNamespaceContentions` hands to namespace
 		// reconciliation: the facts belong to the working view this class already owns
 		// and its lifecycle is the class's, so the split would be artificial.
+		// Re-pinned from 427 for the pre-delta view a mutating completion route hands
+		// the full-scan fallback, so the fallback diffs against the view before the
+		// partial apply instead of dropping the change it already applied. Re-pinned
+		// from 430 for the observed changed paths carried with it: a same-id, same-path
+		// content update the path↔id diff cannot re-derive is unioned back into
+		// `modified`, so the fallback never publishes an incomplete delta.
 		files: ["src/fs/caching/remote-fs.ts"],
-		rules: { "max-lines": ["error", { max: 427, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 440, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Re-pinned from under the 300 cap for the Dropbox content preconditions:
@@ -419,8 +425,11 @@ export default defineConfig(
 		// Google Drive has no provider metadata precondition, so update/move/delete must
 		// still compare-before-mutate and reject an empty/mismatched expected identity or
 		// version before any provider call.
+		// Re-pinned from 308 for `listSubtreeById`: the optional identity-addressed
+		// subtree read core invokes to complete a delta when a folder newly enters the
+		// bound root. It is one provider fact read beside the adapter's other reads.
 		files: ["src/backends/googledrive/adapter.ts"],
-		rules: { "max-lines": ["error", { max: 308, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 313, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Re-pinned from 303 for the top-level Google Picker callback. The

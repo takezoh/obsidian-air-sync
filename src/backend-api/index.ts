@@ -35,6 +35,7 @@ export type {
 	RemoteBackendCapabilities,
 	RemoteChange,
 	RemoteChangeResult,
+	SubtreeReadResult,
 	ExpectedVersion,
 	VersionBoundReadInput,
 	VersionBoundReadResult,

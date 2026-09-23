@@ -14,7 +14,7 @@ import { normalizeSyncPath, validateRename } from "../../utils/path";
 import { sha256 } from "../../utils/hash";
 import { NormalizedMetadataCache, toFileEntity } from "./normalized-metadata-cache";
 import { validateRemoteObject, validateRemoteChanges } from "./remote-object-validation";
-import { applyRemoteChanges } from "./delta-projection";
+import { applyRemoteChanges, completeDelta } from "./delta-projection";
 import { MutationBridge } from "./mutation-bridge";
 import type { RenamePlan, WritePlan } from "./mutation-bridge";
 import type {
@@ -128,16 +128,32 @@ export class ManagedRemoteFs extends CachingRemoteFs<RemoteObject> {
 		if (result.kind === "cursor_invalid") {
 			return { needsFullScan: true, changedPaths: new Set<string>() };
 		}
+		// A route that can complete the delta mutates the working view before it can
+		// discover that a completion read invalidated the cursor. Keep the pre-delta
+		// view and the changes it already observed, so the full-scan fallback diffs
+		// against the true pre-delta view and does not drop a content update the diff
+		// cannot re-derive.
+		const baselineView = this.adapter.listSubtreeById ? this.cache.snapshotPathsById() : undefined;
 		const projected = applyRemoteChanges(
 			this.cache,
 			validateRemoteChanges(result.changes, this.adapter.addressing),
 		);
+		const listSubtreeById = this.adapter.listSubtreeById?.bind(this.adapter);
+		const completed = await completeDelta(this.cache, projected, listSubtreeById, this.adapter.addressing);
+		if (completed === "cursor_invalid") {
+			return {
+				needsFullScan: true,
+				changedPaths: new Set<string>(),
+				baselineView,
+				observedChanges: projected.changedPaths,
+			};
+		}
 		return {
 			needsFullScan: false,
 			newToken: result.nextCursor,
-			changedPaths: projected.changedPaths,
-			renamedPaths: projected.renamedPaths,
-			contended: projected.contended,
+			changedPaths: completed.changedPaths,
+			renamedPaths: completed.renamedPaths,
+			contended: completed.contended,
 		};
 	}
 

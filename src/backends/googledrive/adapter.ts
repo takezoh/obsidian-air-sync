@@ -11,6 +11,7 @@ import type {
 	RemoteChange,
 	RemoteChangeResult,
 	RemoteObject,
+	SubtreeReadResult,
 	UpdateFileInput,
 	VersionBoundReadInput,
 	VersionBoundReadResult,
@@ -39,11 +40,14 @@ import { inspectGoogleDriveFolder } from "./folder-usability";
  * compares before mutating. `read` binds bytes by re-observing `version` after the
  * download.
  *
- * A `changes.list` drain that reports a changed FOLDER may omit that folder's
- * unchanged descendants, so the adapter completes the delta by re-listing every
- * changed folder's subtree. That is provider fact completion, not scope state: the
- * subtree listing is the same authoritative `files.list` a cold scan uses, and the
- * resulting upserts are idempotent for ids already in the working view.
+ * A `changes.list` drain reports one change for each changed item, so moving a
+ * folder reports only that folder and omits its unchanged descendants. The adapter
+ * therefore declares {@link RemoteBackendAdapter.listSubtreeById} so core can complete
+ * the delta by reading the subtree of exactly the folders that newly entered the bound
+ * root. That is provider fact completion, not scope state: the read is the same
+ * authoritative `files.list` a cold scan uses, and the resulting upserts are idempotent
+ * for ids already in the working view. Core decides which folders to read; the adapter
+ * never re-lists every changed folder.
  */
 export class GoogleDriveAdapter implements RemoteBackendAdapter {
 	readonly capabilities: RemoteBackendCapabilities = {
@@ -97,7 +101,6 @@ export class GoogleDriveAdapter implements RemoteBackendAdapter {
 	async getChanges(cursor: string): Promise<RemoteChangeResult> {
 		try {
 			const changes: RemoteChange[] = [];
-			const changedFolderIds = new Set<string>();
 			let pageToken: string | undefined;
 			let nextCursor = cursor;
 			for (let guard = 0; ; guard++) {
@@ -105,20 +108,26 @@ export class GoogleDriveAdapter implements RemoteBackendAdapter {
 					throw new Error("Google Drive changes pagination did not terminate");
 				}
 				const page = await this.client.listChanges(cursor, pageToken);
-				collectChanges(page.changes, changes, changedFolderIds, this.rootId);
+				collectChanges(page.changes, changes, this.rootId);
 				if (page.newStartPageToken) nextCursor = page.newStartPageToken;
 				pageToken = page.nextPageToken;
 				if (!pageToken) break;
 			}
-			// A changed folder's unchanged descendants produce no change of their own;
-			// complete them from the provider's own subtree listing.
-			for (const folderId of changedFolderIds) {
-				const descendants = await this.client.listAllFiles(folderId);
-				for (const file of descendants) {
-					changes.push({ kind: "upsert", object: normalizeGoogleDriveObject(file, this.rootId) });
-				}
-			}
 			return { kind: "changes", nextCursor, changes };
+		} catch (err) {
+			if (isStatus(err, 410)) return { kind: "cursor_invalid" };
+			throw toBackendError(this.translate(err));
+		}
+	}
+
+	/** Read one provider folder's subtree by identity; core owns target selection and merge. */
+	async listSubtreeById(id: string): Promise<SubtreeReadResult> {
+		try {
+			const files = await this.client.listAllFiles(id);
+			return {
+				kind: "subtree",
+				objects: files.map((file) => normalizeGoogleDriveObject(file, this.rootId)),
+			};
 		} catch (err) {
 			if (isStatus(err, 410)) return { kind: "cursor_invalid" };
 			throw toBackendError(this.translate(err));
@@ -271,7 +280,6 @@ export class GoogleDriveAdapter implements RemoteBackendAdapter {
 function collectChanges(
 	changes: readonly GoogleDriveChange[],
 	out: RemoteChange[],
-	changedFolders: Set<string>,
 	rootId: string,
 ): void {
 	for (const change of changes) {
@@ -281,7 +289,6 @@ function collectChanges(
 		}
 		if (!change.file) continue;
 		out.push({ kind: "upsert", object: normalizeGoogleDriveObject(change.file, rootId) });
-		if (change.file.mimeType === FOLDER_MIME) changedFolders.add(change.file.id);
 	}
 }
 

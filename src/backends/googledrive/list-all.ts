@@ -18,8 +18,8 @@ const REPEATED_ID_SAMPLE = 10;
  *
  * Reached on a cold/initial scan, a rescan, or the 410 cursor-expiry full scan —
  * and, on the incremental path, for the one scoped exception: `changes.list`
- * reports only the changed item, so `applyIncrementalChanges` re-lists each folder
- * that newly entered the bound root (see `incremental-sync.ts`) to recover the
+ * reports only the changed item, so core re-lists each folder that newly entered the
+ * bound root (via the adapter's declared `listSubtreeById`) to recover the
  * descendants Google Drive never sends. A steady-state delta with no entering
  * folder still issues no walk at all. Concurrency is an
  * `AdaptivePool` (start 3 ⇒ no change at t=0; ramps toward 8 on sustained success,
@@ -45,7 +45,7 @@ export async function listAllFiles(
 	// single folder's pages are not a point-in-time snapshot. A repeat would otherwise
 	// reach `MetadataCache.bulkLoad()`, whose one-id-one-path guard fails the whole
 	// scan as corrupt metadata. Last occurrence wins; `Map` keeps the first insertion
-	// position, so the parent-before-child order `incremental-sync.ts` relies on holds.
+	// position, so the parent-before-child order the delta completion relies on holds.
 	const byId = new Map<string, GoogleDriveFile>();
 	// Unlike OneDrive's delta feed, Drive does not document repeats — a collapse here
 	// means something unexpected, so warn (the level a vault owner actually sees) and

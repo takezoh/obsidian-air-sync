@@ -47,7 +47,26 @@ export type IncrementalChangesResult =
 		renamedPaths: RenamePair[];
 		contended?: readonly AddressDisplacement[];
 	}
-	| { needsFullScan: true; changedPaths: Set<string> };
+	| {
+		needsFullScan: true;
+		changedPaths: Set<string>;
+		/**
+		 * A delta route that applied provider changes to the working view BEFORE it
+		 * discovered a full scan is required hands the fallback the facts the scan
+		 * cannot re-derive, so they are not silently dropped:
+		 *
+		 * - `baselineView` is the path↔id snapshot as it stood before the route's
+		 *   partial apply, so the scan diff is measured from the true pre-delta view.
+		 * - `observedChanges` names paths the partial apply already observed as
+		 *   changed. A path still present after the fresh scan is unioned into
+		 *   `modified`, recovering a same-id/same-path content update that a path↔id
+		 *   diff cannot see.
+		 *
+		 * Both are omitted by a route that discovered the need before mutating.
+		 */
+		baselineView?: Map<string, string>;
+		observedChanges?: ReadonlySet<string>;
+	};
 
 /**
  * IndexedDB meta key under which the delta cursor is persisted, ALONGSIDE the
@@ -526,8 +545,11 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 		const result = await this.fetchChanges(this._changesPageToken);
 
 		if (result.needsFullScan) {
-			// Cursor expired (e.g. Google Drive 410): snapshot-diff a fresh full scan for the delta.
-			return this.fullScanWithDelta();
+			// Cursor expired (e.g. Google Drive 410), or a delta-completion read
+			// invalidated the cursor after the initial delta applied. The fallback must
+			// diff against the view BEFORE this delta and keep the facts the partial
+			// apply already observed; a route that mutated first hands both back.
+			return this.fullScanWithDelta(result.baselineView, result.observedChanges);
 		}
 
 		this._changesPageToken = result.newToken;
@@ -569,16 +591,33 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	 * and an empty one is a view with nothing in it: everything the scan finds is new,
 	 * not an initial sync with no delta, and the scan's contentions must reach the
 	 * cycle.
+	 *
+	 * A route that mutated the working view before discovering the fallback passes
+	 * `baselineView` (the view before its partial apply) and `observedChanges` (the
+	 * paths it already observed). A changed path still present after the fresh scan is
+	 * unioned into `modified`, because a path↔id diff cannot recover a same-id,
+	 * same-path content update.
 	 */
-	private async fullScanWithDelta(): Promise<RemoteDelta> {
-		// Snapshot before fullScan() overwrites the cache.
-		const oldPathById = this.cache.snapshotPathsById();
+	private async fullScanWithDelta(
+		baselineView?: Map<string, string>,
+		observedChanges?: ReadonlySet<string>,
+	): Promise<RemoteDelta> {
+		// Snapshot before fullScan() overwrites the cache. A caller that already
+		// mutated the working view before discovering it needs the fallback passes the
+		// view it had before that mutation.
+		const oldPathById = baselineView ?? this.cache.snapshotPathsById();
 		const contended = await this.fullScan();
 		// The cursor-expiry route reports its facts in the returned delta, so they are
 		// parked as delta contentions, not as the lazy path-level channel.
 		this._deltaContentions = contended;
 		this._viewDeltaApplied = true;
-		return this.diffById(oldPathById, contended);
+		const delta = this.diffById(oldPathById, contended);
+		if (observedChanges === undefined || observedChanges.size === 0) return delta;
+		const modified = new Set(delta.modified);
+		for (const path of observedChanges) {
+			if (this.cache.hasFile(path)) modified.add(path);
+		}
+		return { ...delta, modified: [...modified] };
 	}
 
 	/**
