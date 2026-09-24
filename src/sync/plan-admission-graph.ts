@@ -1,6 +1,7 @@
 import type { CandidateFact, IdentityEvidence, MixedEntity, PathObservation } from "./types";
 import type { BatchObservation } from "./sync-cycle-planning";
 import { directConflictCandidateHint, insertConflictSuffix } from "./conflict";
+import { pathsWithPrefix } from "../utils/path";
 
 /** Component membership is established before any action exists. */
 export interface IdentityComponent {
@@ -154,23 +155,6 @@ function folderDescendantPaths(
 		...pathsWithPrefix(sortedKnownPaths, `${oldPath}/`),
 		...pathsWithPrefix(sortedKnownPaths, `${newPath}/`),
 	];
-}
-
-function pathsWithPrefix(sortedPaths: readonly string[], prefix: string): string[] {
-	let low = 0;
-	let high = sortedPaths.length;
-	while (low < high) {
-		const middle = (low + high) >>> 1;
-		if (sortedPaths[middle]! < prefix) low = middle + 1;
-		else high = middle;
-	}
-	const matches: string[] = [];
-	for (let index = low; index < sortedPaths.length; index++) {
-		const path = sortedPaths[index]!;
-		if (!path.startsWith(prefix)) break;
-		matches.push(path);
-	}
-	return matches;
 }
 
 function evidencePaths(evidence: IdentityEvidence): string[] {

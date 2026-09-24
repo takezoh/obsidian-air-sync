@@ -5,6 +5,7 @@ import {
 	validateRename,
 	isDotPrefixed,
 	isDotPathOutOfScope,
+	pathsWithPrefix,
 } from "./path";
 
 describe("isDotPrefixed", () => {
@@ -99,6 +100,30 @@ describe("getFileExtension", () => {
 
 	it("returns last extension for multiple dots", () => {
 		expect(getFileExtension("archive.tar.gz")).toBe(".gz");
+	});
+});
+
+describe("pathsWithPrefix", () => {
+	const sorted = [
+		"a", "a/b", "a/b/c", "a/c", "a0", "ab", "b/a", "b/b",
+	];
+
+	it("returns exactly the entries starting with the prefix", () => {
+		expect(pathsWithPrefix(sorted, "a/")).toEqual(["a/b", "a/b/c", "a/c"]);
+	});
+
+	it("returns every entry under a nested prefix", () => {
+		expect(pathsWithPrefix(sorted, "a/b/")).toEqual(["a/b/c"]);
+	});
+
+	it("excludes siblings sharing a leading character but not the slash", () => {
+		expect(pathsWithPrefix(sorted, "a/b")).toEqual(["a/b", "a/b/c"]);
+		expect(pathsWithPrefix(sorted, "ab")).toEqual(["ab"]);
+	});
+
+	it("returns an empty array for an absent prefix", () => {
+		expect(pathsWithPrefix(sorted, "zz/")).toEqual([]);
+		expect(pathsWithPrefix([], "a/")).toEqual([]);
 	});
 });
 

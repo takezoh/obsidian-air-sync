@@ -49,6 +49,29 @@ export function isDotPathOutOfScope(path: string, syncDotPaths: string[]): boole
 }
 
 /**
+ * The paths having `prefix`, from a lexicographically sorted array. The array MUST
+ * be sorted with the default `Array#sort()` (UTF-16 code-unit order), which is the
+ * same order the lower-bound comparison below uses; prefix-matching entries are
+ * contiguous from that lower bound. Shared so the comparator invariant has one owner.
+ */
+export function pathsWithPrefix(sortedPaths: readonly string[], prefix: string): string[] {
+	let low = 0;
+	let high = sortedPaths.length;
+	while (low < high) {
+		const middle = (low + high) >>> 1;
+		if (sortedPaths[middle]! < prefix) low = middle + 1;
+		else high = middle;
+	}
+	const matches: string[] = [];
+	for (let index = low; index < sortedPaths.length; index++) {
+		const path = sortedPaths[index]!;
+		if (!path.startsWith(prefix)) break;
+		matches.push(path);
+	}
+	return matches;
+}
+
+/**
  * Insert the deterministic conflict suffix into a path, before its extension:
  * `notes/file.md` → `notes/file.conflict-2.md`. Pure path composition, shared by the
  * conflict resolver and the remote filesystem's namespace reconciliation.
