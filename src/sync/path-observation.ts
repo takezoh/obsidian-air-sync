@@ -1,7 +1,7 @@
 import type { FileEntity } from "../fs/types";
 import type { IFileSystem } from "../fs/interface";
 import type { IdentityEvidence, MixedEntity, PathObservation, SyncSide } from "./types";
-import { AsyncPool } from "../queue/async-queue";
+import { AsyncPool } from "../backend-api/async-queue";
 
 export function observePath(
 	side: SyncSide,

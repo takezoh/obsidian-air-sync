@@ -1,5 +1,6 @@
 import type { IFileSystem } from "../fs/interface";
-import type { AddressDisplacement } from "../fs/caching/claim-set-assignment";
+import type { RemoteDelta } from "../fs/caching/remote-fs";
+import type { ChecksumRegistry } from "../fs/modules/checksum-registry";
 import type { FileEntity } from "../fs/types";
 import type { CandidateFact, IdentityEvidence, MixedEntity, PathObservation, SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
@@ -46,14 +47,53 @@ export interface ChangeDetectorDeps {
 	localFs: IFileSystem;
 	remoteFs: IFileSystem;
 	stateStore: SyncStateStore;
+	checksumRegistry: ChecksumRegistry;
 	changes: TrackerSnapshot;
 	onRemoteIdentityEvidence?: (evidence: readonly IdentityEvidence[]) => void;
 	/**
-	 * The addresses this cycle's remote delta found claimed by two live ids. A
-	 * sibling of `onRemoteIdentityEvidence`: the facts travel to the caller without
-	 * `ChangeSet` acquiring a field, because they are not a change at any path.
+	 * The remote filesystem's working delta, when namespace reconciliation already built
+	 * it this cycle. Collection reads this same view instead of replaying the cursor
+	 * again (a second replay would see no changes), so no incomplete or empty view is
+	 * ever consumed. Absent for callers that did not reconcile first.
 	 */
-	onRemoteContention?: (contended: readonly AddressDisplacement[]) => void;
+	remoteDelta?: RemoteDelta | null;
+}
+
+/**
+ * Include the committed baseline of every observed remote identity, even when its
+ * stored path was not visited this cycle.
+ *
+ * The durable correspondence is identity-keyed, but a component's facts are keyed by
+ * address. A WARM/HOT cycle visits only the addresses the delta names, so a committed
+ * row whose object moved to a new address — a namespace repair whose cycle never
+ * committed its checkpoint — can be absent from the facts entirely: its stored path is
+ * unvisited and its new address carries no row. Admission then emits an insert
+ * publication at the endpoint, and the identity-keyed store rightly refuses it — the
+ * identical failure every cycle. Loading the row at its *stored* path (never re-keying
+ * it) restores the facts COLD already has in full: the identity-evidence union binds
+ * the moved endpoint to that baseline, and Admission continues the committed row
+ * instead of inserting.
+ */
+async function includeCommittedBaselines(
+	entries: MixedEntity[],
+	recordByIdentity: ReadonlyMap<string, SyncRecord>,
+	remoteFs: IFileSystem,
+	observations: PathObservation[],
+): Promise<void> {
+	if (recordByIdentity.size === 0) return;
+	const known = new Set(entries.map((entry) => entry.path));
+	for (const entry of [...entries]) {
+		const identity = entry.remote?.identityKey;
+		if (!identity || entry.prevSync?.remoteIdentityKey === identity) continue;
+		const row = recordByIdentity.get(identity);
+		if (!row || known.has(row.path)) continue;
+		const stat = await remoteFs.stat(row.path);
+		const observation = stat ? observePath("remote", row.path, stat, "stat") : undefined;
+		if (observation) observations.push(observation);
+		entries.push({ path: row.path, prevSync: row,
+			remote: observation ? exactEntity(observation) : undefined });
+		known.add(row.path);
+	}
 }
 
 export interface CollectChangesOptions {
@@ -85,7 +125,7 @@ export async function collectChanges(
 	if (!opts.forceFullScan && changes.initialized && changes.dirtyPaths.size > 0 &&
 		changes.folderRenamePairs.size === 0) {
 		const remoteChanges = await getRemoteChanges(
-			deps.remoteFs, deps.onRemoteIdentityEvidence, deps.onRemoteContention);
+			deps.remoteFs, deps.onRemoteIdentityEvidence, deps.remoteDelta);
 		if (hasFolderRename(remoteChanges)) {
 			changeSet = await collectCold(
 				deps,
@@ -114,14 +154,6 @@ export async function collectChanges(
 			? await collectCold(deps, allRecords)
 			: await collectWarm(deps, allRecords);
 	}
-	// Whatever temperature ran above, the remote side may have been acquired by a
-	// path-level call rather than a returned delta — COLD lists, which full-scans with
-	// no checkpoint and replays the cursor with one. Either decides contentions exactly
-	// as a returned delta does, but cannot return them, so this is the only place they
-	// reach the cycle. Drained here rather than in each branch, so no temperature can
-	// be the one that forgets: COLD, WARM and HOT report the same facts.
-	const scanned = deps.remoteFs.checkpoint?.drainWorkingViewContentions?.() ?? [];
-	if (scanned.length > 0) deps.onRemoteContention?.(scanned);
 	changeSet.identityEvidence.unshift(...collectLocalRenameEvidence(changes));
 	ensureRenameEndpointObservations(changeSet.observations, changeSet.identityEvidence);
 	await confirmUnknownRenameEndpoints(changeSet, deps.localFs, deps.remoteFs);
@@ -147,10 +179,8 @@ export async function collectChanges(
 		changeSet.entries, changeSet.observations, changeSet.identityEvidence, deps.localFs, deps.remoteFs,
 	);
 	// Hash enrichment operates only on exact entries and cannot upgrade observations.
-	changeSet.hashEnrichment = await enrichHashesForInitialMatch(changeSet.entries, deps.localFs);
-	await enrichHashesForRenames(
-		changeSet.entries, changeSet.observations, deps.localFs, deps.remoteFs, changeSet.identityEvidence,
-	);
+	changeSet.hashEnrichment = await enrichHashesForInitialMatch(changeSet.entries, deps.localFs, deps.checksumRegistry);
+	await enrichHashesForRenames(changeSet.entries, changeSet.observations, deps.localFs, deps.remoteFs, changeSet.identityEvidence, deps.checksumRegistry);
 	const candidateEvidence = completeIdentityEvidence(
 		changeSet.identityEvidence,
 		changeSet.observations,
@@ -218,6 +248,18 @@ async function collectHot(
 		};
 	});
 
+	// A committed row may sit at a stored path this delta never named. Read the rows of
+	// the observed identities so their baselines join the facts, the way COLD loads them
+	// in full. The store is identity-keyed, so only the endpoints with no row at their
+	// own path need a bounded identity read.
+	const recordByIdentity = new Map<string, SyncRecord>(
+		[...syncRecords.values()].flatMap((row) =>
+			row.remoteIdentityKey ? [[row.remoteIdentityKey, row] as const] : []));
+	const uncovered = [...new Set(remoteStats.flatMap((stat) =>
+		stat?.identityKey ? [stat.identityKey] : []))].filter((id) => !recordByIdentity.has(id));
+	for (const [id, row] of await deps.stateStore.getManyByIdentity(uncovered)) recordByIdentity.set(id, row);
+	await includeCommittedBaselines(entries, recordByIdentity, remoteFs, observations);
+
 	// Acquisition retains all facts it obtained. Admission owns no-change and
 	// deletion decisions, including whether stat absence has deletion authority.
 	return {
@@ -236,7 +278,7 @@ async function collectWarm(
 	const [localFiles, remoteChanges] = await Promise.all([
 		localFs.list(),
 		prefetchedRemoteChanges ??
-			getRemoteChanges(remoteFs, deps.onRemoteIdentityEvidence, deps.onRemoteContention),
+			getRemoteChanges(remoteFs, deps.onRemoteIdentityEvidence, deps.remoteDelta),
 	]);
 	if (hasFolderRename(remoteChanges)) {
 		return collectCold(
@@ -319,6 +361,9 @@ async function collectWarm(
 			prevSync: recordMap.get(path),
 		};
 	});
+
+	await includeCommittedBaselines(entries, new Map(allRecords.flatMap((row) =>
+		row.remoteIdentityKey ? [[row.remoteIdentityKey, row] as const] : [])), remoteFs, observations);
 
 	return {
 		entries, observations, candidateFacts: [],

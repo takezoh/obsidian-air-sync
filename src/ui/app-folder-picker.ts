@@ -1,3 +1,4 @@
+import { errorMessage } from "../backend-api";
 import type { App } from "../platform/obsidian";
 import { Modal, Notice, Setting } from "../platform/obsidian";
 import type { AirSyncSettings } from "../settings";
@@ -54,8 +55,8 @@ export class AppFolderPickerModal extends Modal {
 			// Show WHY, not just that it failed: the backend's own message is what
 			// distinguishes "nothing there yet" from a service-side denial, and a bare
 			// "could not list" reads like the former even when it is the latter. The full
-			// response body is already in the log (see fs/backend-error-log.ts).
-			const reason = err instanceof Error ? err.message : String(err);
+			// response body is already in the log (see backend-api/backend-error-log.ts).
+			const reason = errorMessage(err);
 			contentEl.createEl("p", {
 				text: `Could not list existing folders: ${reason}. You can still create a new one below.`,
 			});

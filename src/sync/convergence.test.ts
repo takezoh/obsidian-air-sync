@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
-import { collectChanges, type ChangeSet } from "./change-detector";
-import { executePlan } from "./plan-executor";
+import {
+	collectChanges as collectChangesRaw, type ChangeDetectorDeps, type ChangeSet,
+	type CollectChangesOptions,
+} from "./change-detector";
+import { executePlan as executePlanRaw, type ExecutionContext } from "./plan-executor";
 import { LocalChangeTracker } from "./local-tracker";
 import {
 	confirmMockPath, createMockLocalFs, createMockRemoteFs, type MockFileSystem,
@@ -16,12 +19,40 @@ import { projectScope } from "./scope-projection";
 import {
 	captureBatchObservation,
 	prepareSyncCycleSnapshot,
-	prepareSyncCycleSnapshotForExecution,
+	prepareSyncCycleSnapshotForExecution as prepareSyncCycleSnapshotForExecutionRaw,
 } from "./sync-cycle-planning";
 import { finalizeSyncCycle, runSyncCycleAttempt } from "./sync-cycle-finalization";
 import { insertConflictSuffix } from "./conflict";
 import type { Logger } from "../logging/logger";
 import { sha256 } from "../utils/hash";
+import { createChecksumRegistry } from "../fs/modules/checksum-registry";
+import type { IFileSystem } from "../fs/interface";
+import type { ConflictStrategy } from "./types";
+import type { ScopeProjectionPolicy } from "./scope-projection";
+
+const checksumRegistry = createChecksumRegistry();
+
+const collectChanges = (
+	deps: Omit<ChangeDetectorDeps, "checksumRegistry">,
+	opts?: CollectChangesOptions,
+) => collectChangesRaw({ ...deps, checksumRegistry }, opts);
+
+const executePlan = (
+	plan: Parameters<typeof executePlanRaw>[0],
+	ctx: Omit<ExecutionContext, "checksumRegistry">,
+) => executePlanRaw(plan, { ...ctx, checksumRegistry });
+
+const prepareSyncCycleSnapshotForExecution = (
+	changeSet: ChangeSet,
+	namespace: string,
+	policy: ScopeProjectionPolicy,
+	strategy: ConflictStrategy,
+	localFs: IFileSystem,
+	remoteFs: IFileSystem,
+	logger?: Logger,
+) => prepareSyncCycleSnapshotForExecutionRaw(
+	changeSet, namespace, policy, strategy, localFs, remoteFs, checksumRegistry, logger,
+);
 
 /**
  * Convergence (fixed-point) contract — the emergent property the whole engine

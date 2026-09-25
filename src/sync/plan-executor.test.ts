@@ -3,8 +3,11 @@ import { executePlan, toConflictRecords, DESKTOP_TRANSFER_POOL, MOBILE_TRANSFER_
 import type { ExecutionContext, ResolvedConflict } from "./plan-executor";
 import type { CandidateFact, ConflictAction, PathObservation, SyncAction, SyncRecord } from "./types";
 import { createMockLocalFs, createMockRemoteFs, type MockFileSystem, createMockStateStore, addFile, readText, deferred, flush } from "../__mocks__/sync-test-helpers";
-import { AuthError, classifyHttpError } from "../fs/errors";
-import { AdaptivePool } from "../queue/async-queue";
+import { AuthError, classifyHttpError } from "../backend-api/error-classification";
+import { backendError } from "../backend-api";
+import { toBackendError, backendErrorFromStatus } from "../backends/shared/error-shape";
+import { classifyBackendError } from "../fs/modules/error-bridge";
+import { AdaptivePool } from "../backend-api/async-queue";
 import {
 	admitBatchObservation,
 	type AuthorizedSyncPlan,
@@ -17,6 +20,9 @@ import { buildSyncRecord } from "./state-committer";
 import { insertConflictSuffix } from "./conflict";
 import { sha256 } from "../utils/hash";
 import { conflictContractViolation } from "./conflict-action-contract";
+import { createChecksumRegistry } from "../fs/modules/checksum-registry";
+
+const checksumRegistry = createChecksumRegistry();
 
 function makeCtx(
 	overrides: Partial<ExecutionContext> = {},
@@ -39,6 +45,7 @@ function makeCtx(
 		sleep: () => Promise.resolve(),
 		rng: () => 0,
 		...overrides,
+		checksumRegistry,
 	};
 }
 
@@ -845,6 +852,67 @@ describe("executePlan", () => {
 			}]), ctx)).rejects.toThrow("expired");
 			expect(order).toEqual(["fatal-published", "release"]);
 		});
+
+		it("aborts the cycle on a plain structural auth shape from a remote read (no Error identity)", async () => {
+			const fatal = vi.fn();
+			const ctx = makeCtx({ onActionFatal: fatal });
+			addFile(ctx.remoteFs as MockFileSystem, "fatal-shape.md", "x");
+			const remote = (await ctx.remoteFs.stat("fatal-shape.md"))!;
+			// A separately bundled module throws a plain BackendErrorShape object;
+			// content capture wraps it, and the executor must still abort the cycle.
+			vi.spyOn(ctx.remoteFs, "read").mockRejectedValue(backendError("auth", "credentials expired"));
+
+			await expect(executePlan(makePlan([{
+				path: "fatal-shape.md", action: "pull",
+				remote,
+			}]), ctx)).rejects.toThrow("credentials expired");
+			expect(fatal).toHaveBeenCalledTimes(1);
+		});
+
+		it("retries and signals the transfer pool on a plain structural rate_limit shape from a remote read", async () => {
+			const noteSpy = vi.spyOn(AdaptivePool.prototype, "noteRateLimit");
+			const ctx = makeCtx({
+				classifyError: (err) => classifyBackendError(err) ?? classifyHttpError(err),
+			});
+			addFile(ctx.remoteFs as MockFileSystem, "throttled.md", "x");
+			const remote = (await ctx.remoteFs.stat("throttled.md"))!;
+			const readSpy = vi.spyOn(ctx.remoteFs, "read")
+				.mockRejectedValue(backendError("rate_limit", "slow down", { retryAfterMs: 1 }));
+
+			const result = await executePlan(makePlan([{
+				path: "throttled.md", action: "pull",
+				remote,
+			}]), ctx);
+
+			// Rate-limit (not a generic transient) is what drives the retry and the
+			// adaptive-pool signal; a wrapper that hid the plain shape would classify
+			// as transient and never signal.
+			expect(noteSpy).toHaveBeenCalled();
+			expect(readSpy).toHaveBeenCalledTimes(3);
+			expect(result.failed).toHaveLength(1);
+			// The safe provider diagnostic survives the final throw; it must not
+			// collapse to "[object Object]".
+			expect(result.failed[0]!.error.message).toBe("slow down");
+		});
+
+		it("preserves a plain structural not_found message on the final failure", async () => {
+			const ctx = makeCtx({
+				classifyError: (err) => classifyBackendError(err) ?? classifyHttpError(err),
+			});
+			addFile(ctx.remoteFs as MockFileSystem, "missing.md", "x");
+			const remote = (await ctx.remoteFs.stat("missing.md"))!;
+			const readSpy = vi.spyOn(ctx.remoteFs, "read")
+				.mockRejectedValue(backendError("not_found", "the object is gone"));
+
+			const result = await executePlan(makePlan([{
+				path: "missing.md", action: "pull",
+				remote,
+			}]), ctx);
+
+			expect(readSpy).toHaveBeenCalledTimes(1); // notFound → no retry
+			expect(result.failed).toHaveLength(1);
+			expect(result.failed[0]!.error.message).toBe("the object is gone");
+		});
 	});
 
 	describe("match", () => {
@@ -1191,128 +1259,6 @@ describe("executePlan", () => {
 			expect(stateStore.records.has("A/f2.md")).toBe(false);
 			expect(stateStore.records.has("B/f1.md")).toBe(true);
 			expect(stateStore.records.has("B/f2.md")).toBe(true);
-		});
-	});
-
-	describe("rename_remote addressed by provider identity", () => {
-		/**
-		 * Admission emits a namespace repair with no publication, no local/remote
-		 * endpoint and no baseline — the object has never been in the vault — so the
-		 * plan is built literally rather than through `makePlan`, which back-fills a
-		 * publication for ordinary actions.
-		 */
-		function repairPlan(action: SyncAction): AuthorizedSyncPlan {
-			return {
-				actions: [action],
-				components: [{ kind: "authorized", actions: [action], evidence: [], paths: [action.path] }],
-			} as unknown as AuthorizedSyncPlan;
-		}
-
-		/**
-		 * The contended address resolves to the KEEPER on the remote filesystem; the
-		 * withheld claimant has no path at all, which is exactly what makes a
-		 * path-addressed rename the wrong instrument — it would move the keeper.
-		 */
-		function arrangeContention(ctx: ExecutionContext, withCapability = true) {
-			const remoteFs = ctx.remoteFs as MockFileSystem;
-			addFile(remoteFs, "Test.md", "keeper").identityKey = "keeper-id";
-			const byIdentity: { identityKey: string; newPath: string }[] = [];
-			if (withCapability) {
-				remoteFs.identityRename = {
-					renameById: (identityKey: string, newPath: string) => {
-						byIdentity.push({ identityKey, newPath });
-						return Promise.resolve();
-					},
-				};
-			}
-			const byPath = vi.spyOn(remoteFs, "rename");
-			const action: SyncAction = {
-				action: "rename_remote", path: "Test.conflict-id-loser-id.md",
-				oldPath: "Test.md", providerIdentity: "loser-id",
-			};
-			return { remoteFs, byIdentity, byPath, action };
-		}
-
-		it("renames by provider identity and publishes no SyncRecord", async () => {
-			const ctx = makeCtx();
-			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
-			const { byIdentity, action } = arrangeContention(ctx);
-
-			const result = await executePlan(repairPlan(action), ctx);
-
-			// It no longer trips the "omitted its admitted execution inputs" throw.
-			expect(result.failed).toEqual([]);
-			expect(result.blocked).toEqual([]);
-			expect(result.succeeded).toHaveLength(1);
-			expect(byIdentity).toEqual([
-				{ identityKey: "loser-id", newPath: "Test.conflict-id-loser-id.md" },
-			]);
-			expect(result.succeeded[0]?.terminalRecord).toBeUndefined();
-			expect(stateStore.records.size).toBe(0);
-		});
-
-		it("never falls back to a path-addressed rename, which would move the keeper", async () => {
-			const ctx = makeCtx();
-			const { remoteFs, byPath, action } = arrangeContention(ctx);
-
-			const result = await executePlan(repairPlan(action), ctx);
-
-			expect(result.succeeded).toHaveLength(1);
-			expect(byPath).not.toHaveBeenCalled();
-			expect(readText(remoteFs, "Test.md")).toBe("keeper");
-			expect(remoteFs.files.get("Test.md")?.entity.identityKey).toBe("keeper-id");
-			expect(remoteFs.files.has("Test.conflict-id-loser-id.md")).toBe(false);
-		});
-
-		it("fails the action on a backend without the capability instead of renaming by path", async () => {
-			const ctx = makeCtx();
-			const { remoteFs, byPath, action } = arrangeContention(ctx, false);
-
-			const result = await executePlan(repairPlan(action), ctx);
-
-			expect(result.succeeded).toEqual([]);
-			expect(result.failed).toHaveLength(1);
-			expect(result.failed[0]?.error.message).toContain("cannot rename by provider identity");
-			expect(byPath).not.toHaveBeenCalled();
-			expect(readText(remoteFs, "Test.md")).toBe("keeper");
-		});
-
-		it("refuses an action that mixes provider identity with a path-addressed triple", async () => {
-			const ctx = makeCtx();
-			const { remoteFs, byIdentity, byPath } = arrangeContention(ctx);
-			const remote = (await remoteFs.stat("Test.md"))!;
-
-			const result = await executePlan(repairPlan({
-				action: "rename_remote", path: "Test.conflict-id-loser-id.md",
-				oldPath: "Test.md", providerIdentity: "loser-id", remote,
-			}), ctx);
-
-			expect(result.failed).toHaveLength(1);
-			expect(result.failed[0]?.error.message)
-				.toContain("mixes provider-identity and path addressing");
-			expect(byIdentity).toEqual([]);
-			expect(byPath).not.toHaveBeenCalled();
-		});
-
-		it("blocks the component suffix when the provider refuses the rename", async () => {
-			const ctx = makeCtx();
-			const { remoteFs, action } = arrangeContention(ctx);
-			remoteFs.identityRename = {
-				renameById: () => Promise.reject(new Error("insufficient permissions")),
-			};
-			const follower: SyncAction = { action: "cleanup", path: "after.md" };
-
-			const result = await executePlan({
-				actions: [action, follower],
-				components: [{
-					kind: "authorized", actions: [action, follower], evidence: [],
-					paths: [action.path, follower.path],
-				}],
-			} as unknown as AuthorizedSyncPlan, ctx);
-
-			expect(result.failed).toHaveLength(1);
-			expect(result.blocked).toHaveLength(1);
-			expect(result.blocked[0]?.action).toBe(follower);
 		});
 	});
 
@@ -2520,6 +2466,23 @@ describe("withIoRetry (per-action in-cycle retry)", () => {
 		expect(writeSpy).toHaveBeenCalledTimes(1); // AuthError is rethrown immediately
 	});
 
+	it("aborts the cycle on a module-path auth BackendErrorShape", async () => {
+		const fatal = vi.fn();
+		const ctx = makeCtx({ onActionFatal: fatal });
+		const localFs = ctx.localFs as MockFileSystem;
+		const remoteFs = ctx.remoteFs as MockFileSystem;
+		addFile(localFs, "x.md", "content");
+		// The module provider throws its structural shape through toBackendError; an
+		// auth failure must still abort (onActionFatal) and reject as an AuthError.
+		const writeSpy = vi.spyOn(remoteFs, "write").mockRejectedValue(
+			toBackendError(backendError("auth", "credentials expired")),
+		);
+
+		await expect(executePlan(pushPlan(), ctx)).rejects.toThrow(AuthError);
+		expect(fatal).toHaveBeenCalledTimes(1);
+		expect(writeSpy).toHaveBeenCalledTimes(1);
+	});
+
 	it("gives up after MAX_ACTION_RETRIES (3) → failed, without a cycle abort", async () => {
 		const ctx = makeCtx();
 		const localFs = ctx.localFs as MockFileSystem;
@@ -2547,6 +2510,36 @@ describe("withIoRetry (per-action in-cycle retry)", () => {
 
 		expect(result.succeeded).toHaveLength(1); // retried — proves ctx.classifyError is used
 		expect(writeSpy).toHaveBeenCalledTimes(2);
+	});
+
+	it("treats a module-thrown permanent error with a permanentCode like an HTTP-derived permanent (no in-cycle retry)", async () => {
+		// The production classifier for a module-backed provider: the public boundary
+		// shape first, then the transport/HTTP fallback.
+		const classify = (err: unknown) => classifyBackendError(err) ?? classifyHttpError(err);
+		const cases: ReadonlyArray<readonly [string, Error]> = [
+			[
+				"module permanent",
+				toBackendError(backendError("permanent", "Resumable upload: no upload URL in response", {
+					permanentCode: "googledrive.resumable_upload.missing_location",
+				})),
+			],
+			// The adapter's status-derived permanent (a non-5xx HTTP status), with no code.
+			["http-derived permanent", toBackendError(backendErrorFromStatus(400, "bad request"))],
+		];
+
+		for (const [label, error] of cases) {
+			const ctx = makeCtx({ classifyError: classify });
+			const localFs = ctx.localFs as MockFileSystem;
+			const remoteFs = ctx.remoteFs as MockFileSystem;
+			addFile(localFs, "x.md", "content");
+			const writeSpy = vi.spyOn(remoteFs, "write").mockRejectedValue(error);
+
+			const result = await executePlan(pushPlan(), ctx);
+
+			// `stop` for `permanent`: the same failing action is not retried in-cycle.
+			expect(writeSpy, label).toHaveBeenCalledTimes(1);
+			expect(result.failed, label).toHaveLength(1);
+		}
 	});
 
 	it("signals the transfer pool (noteRateLimit) BEFORE sleeping, on a 429", async () => {

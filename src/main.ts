@@ -1,11 +1,14 @@
 import { Notice, Platform, Plugin, setIcon, setTooltip } from "./platform/obsidian";
 import { DEFAULT_SETTINGS, AirSyncSettings } from "./settings";
-import { liftActiveBackendData, normalizeConflictStrategy } from "./settings-normalize";
+import { liftActiveBackendData, normalizeBackendModuleSettings, normalizeConflictStrategy } from "./settings-normalize";
 import { getEffectiveSyncDotPaths } from "./config-sync";
 import { AirSyncSettingTab } from "./ui/settings";
 import { LocalFs } from "./fs/local/index";
 import { BackendManager } from "./fs/backend-manager";
-import { initRegistry, getAllBackendProviders } from "./fs/registry";
+import { errorMessage } from "./backend-api";
+import { initRegistry } from "./fs/registry";
+import { CANONICAL_BACKEND_IDS, LEGACY_BACKEND_ALIASES } from "./fs/modules/validate-module";
+import { createChecksumRegistry } from "./fs/modules/checksum-registry";
 import type { ISecretStore } from "./fs/secret-store";
 import type { SyncStatus } from "./sync/orchestrator";
 import { SyncOrchestrator } from "./sync/orchestrator";
@@ -27,18 +30,16 @@ export default class AirSyncPlugin extends Plugin {
 	private wakeLock!: ScreenWakeLockManager;
 	private localTracker!: LocalChangeTracker;
 	private settingTab: AirSyncSettingTab | null = null;
+	/** The single checksum resolver shared by every stage of the sync pipeline. */
+	private readonly checksumRegistry = createChecksumRegistry();
 	private logger!: Logger;
 	private conflictHistory!: ConflictHistory;
 
 	async onload() {
-		// Init the registry BEFORE loadSettings: the backendData normalization there
-		// needs the set of registered backend types to tell the old per-type-map
-		// shape from the new single-bag shape.
 		const secretStore: ISecretStore = {
 			getSecret: (key) => this.app.secretStorage.getSecret(key),
 			setSecret: (key, value) => { this.app.secretStorage.setSecret(key, value); },
 		};
-		initRegistry(secretStore);
 
 		await this.loadSettings();
 
@@ -54,6 +55,22 @@ export default class AirSyncPlugin extends Plugin {
 			deviceName,
 		);
 		this.logger.info("Plugin loaded", { deviceName, vaultId: this.settings.vaultId });
+
+		// Validate + register the built-in modules and build their production
+		// providers. Needs the logger (module log attribution) and settings.
+		initRegistry(secretStore, {
+			getSettings: () => this.settings,
+			saveSettings: () => this.saveSettings(),
+			getApp: () => this.app,
+			getLogger: () => this.logger,
+			getVaultName: () => this.app.vault.getName(),
+			platform: {
+				mobile: Platform.isMobile,
+			},
+			sink: (level, message, moduleId) => {
+				this.logger[level](message, { backend: moduleId });
+			},
+		});
 
 		// Conflict-resolution audit history, written via the same raw adapter + device
 		// name as the logger (it persists to .airsync/conflicts/<device>.json).
@@ -113,6 +130,7 @@ export default class AirSyncPlugin extends Plugin {
 			localFs: () => this.localFs,
 			remoteFs: () => this.backendManager.getRemoteFs(),
 			backendProvider: () => this.backendManager.getBackendProvider(),
+			checksumRegistry: this.checksumRegistry,
 			isMobile: () => Platform.isMobile,
 			onStatusChange: (status) => {
 				this.syncStatus = status;
@@ -206,7 +224,7 @@ export default class AirSyncPlugin extends Plugin {
 		this.backendManager.close();
 		this.scheduler.destroy();
 		this.orchestrator.close().catch((e) => {
-			this.logger.error("Failed to close orchestrator", { message: e instanceof Error ? e.message : String(e) });
+			this.logger.error("Failed to close orchestrator", { message: errorMessage(e) });
 		});
 	}
 
@@ -220,7 +238,15 @@ export default class AirSyncPlugin extends Plugin {
 		let needsSave = false;
 
 		// Normalize a legacy per-type backendData map to the single active-backend bag.
-		if (liftActiveBackendData(this.settings, getAllBackendProviders().map((p) => p.type))) {
+		// The legacy six backend types are the only keys the old nested shape used, so
+		// they are the discriminator; the module registry is not built until later.
+		const legacyTypes = [...CANONICAL_BACKEND_IDS, ...Object.keys(LEGACY_BACKEND_ALIASES)];
+		if (liftActiveBackendData(this.settings, legacyTypes)) {
+			needsSave = true;
+		}
+
+		// Canonicalize a legacy `*-custom` selection onto its module id + authMode.
+		if (normalizeBackendModuleSettings(this.settings)) {
 			needsSave = true;
 		}
 
@@ -258,7 +284,7 @@ export default class AirSyncPlugin extends Plugin {
 			}
 			await this.orchestrator.runSync();
 		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
+			const msg = errorMessage(err);
 			this.syncStatus = "error";
 			this.updateStatusBar();
 			new Notice(`Sync error: ${msg}`);

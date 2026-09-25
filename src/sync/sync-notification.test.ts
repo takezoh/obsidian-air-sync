@@ -26,34 +26,27 @@ describe("sync notification Admission failure visibility", () => {
 		expect(buildNotificationMessage(outcome(2))).toBe("Sync: 2 errors");
 	});
 
-	it("does not report a burst's repair-and-follow-up as errors", () => {
-		// The repair cycle withholds the contended address awaiting its own repair and
-		// queues a follow-up; the follow-up converges. Neither is an error of the burst.
-		const repairCycle: SyncCycleOutcome = {
-			...outcome(),
-			completion: { kind: "follow_up" },
-			admissionFailures: [{
-				kind: "failed", paths: ["note.md"], actions: [], evidence: [], reasons: ["awaiting_repair"],
-			}],
-		};
+	it("does not report a queued follow-up as an error", () => {
+		// A cycle that settled a namespace contention below the boundary queues a
+		// follow-up and carries no Admission failure; the follow-up converges. Neither
+		// is an error of the burst.
+		const followUp: SyncCycleOutcome = { ...outcome(), completion: { kind: "follow_up" } };
 		const summary = new CycleSummary();
-		summary.add(repairCycle);
+		summary.add(followUp);
 		summary.add(outcome());
 
 		expect(summary.message).toBe("Everything up to date");
 	});
 
-	it("does not count a provider-namespace repair as a rename", () => {
-		const repair = {
-			action: "rename_remote", path: "note.conflict-id-z.md", oldPath: "note.md", providerIdentity: "z",
-		} as const;
+	it("counts every remote rename, including one at a conflict-suffixed address", () => {
+		const repair = { action: "rename_remote", path: "note.conflict-id-z.md", oldPath: "note.md" } as const;
 		const moved = { action: "rename_remote", path: "b.md", oldPath: "a.md" } as const;
 		const cycle: SyncCycleOutcome = {
 			...outcome(),
 			execution: { succeeded: [{ action: repair }, { action: moved }], superseded: [], failed: [], blocked: [], conflicts: [] },
 		};
 
-		expect(buildNotificationMessage(cycle)).toBe("Sync: 1 renamed");
+		expect(buildNotificationMessage(cycle)).toBe("Sync: 2 renamed");
 	});
 
 	it("coalesces Admission failures across cycles", () => {

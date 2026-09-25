@@ -1,6 +1,7 @@
+import { errorMessage } from "../backend-api";
 import type { IFileSystem } from "../fs/interface";
 import type { ExecutionResult } from "./execution-result";
-import type { AdmissionFailureComponent, AdmissionResult } from "./plan-admission";
+import type { AdmissionResult } from "./plan-admission";
 import type { SyncAction } from "./types";
 
 interface SyncCycleFinalizationInput {
@@ -28,20 +29,10 @@ export type SyncCycleCompletion =
 	| { readonly kind: "follow_up" }
 	| { readonly kind: "incomplete" };
 
-/**
- * Whether a failed component is only waiting for a provider repair its own plan
- * carries. The next cycle settles it, so the closeout owes a follow-up rather than a
- * failure — and the notice reads this same predicate, so the two cannot disagree
- * about what counts as an error.
- */
-export function awaitsRepair(component: AdmissionFailureComponent): boolean {
-	return component.reasons.length > 0 && component.reasons.every((reason) => reason === "awaiting_repair");
-}
-
 /** Abort failure escapes classification/retry without attempting another abort. */
 export class WorkingViewAbortError extends Error {
 	constructor(readonly original: unknown) {
-		super(original instanceof Error ? original.message : String(original));
+		super(errorMessage(original));
 		this.name = "WorkingViewAbortError";
 	}
 }
@@ -57,7 +48,7 @@ async function abortWorkingView(checkpoint: IFileSystem["checkpoint"]): Promise<
 function completionOf(input: Omit<SyncCycleFinalizationInput, "checkpoint">): SyncCycleCompletion["kind"] {
 	if (!everyActionFinished(input)) return "incomplete";
 	const failed = input.admission.dispositions.filter((disposition) => disposition.kind === "failed");
-	if (input.checkpointBlocked || failed.some(awaitsRepair)) return "follow_up";
+	if (input.checkpointBlocked) return "follow_up";
 	return failed.length > 0 ? "incomplete" : "clean";
 }
 

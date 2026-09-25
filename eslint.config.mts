@@ -177,12 +177,15 @@ export default defineConfig(
 						'lint-bot-repro.test.mjs',
 						'sync-admission-authority-guard.test.mjs',
 						'sync-state-ownership-guard.test.mjs',
+						'backend-module-boundary-guard.test.mjs',
 						'manifest.json',
 						'test-fixtures/lint-bot-repro/untyped-dependencies.d.ts',
 						'test-fixtures/lint-bot-repro/untyped-vitest.d.ts',
 						'vitest.config.ts'
 					],
-					maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 10,
+					// 11: ten long-standing default-project entries plus the
+					// backend-module boundary guard (.mjs is outside tsconfig include).
+					maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 11,
 				},
 				tsconfigRootDir: configRoot,
 				extraFileExtensions: ['.json']
@@ -319,6 +322,19 @@ export default defineConfig(
 		},
 	},
 	{
+		// Startup WARM acquisition: the durable record read now starts before the
+		// local listing is awaited, and one pass over that listing builds the
+		// observations, exact-entity map, observed-path set, and deletion path set.
+		// The sets exist only to feed the candidate loop a few lines below, so the
+		// pin keeps the acquisition step cohesive instead of splitting projections
+		// from their single use. Re-pinned from 312 for `includeCommittedBaselines`,
+		// which loads the committed row of an observed identity whose stored path the
+		// delta did not visit: a per-cycle acquisition concern that belongs beside the
+		// other entry-shaping steps, not in a separate module.
+		files: ["src/sync/change-detector.ts"],
+		rules: { "max-lines": ["error", { max: 328, skipBlankLines: true, skipComments: true }] },
+	},
+	{
 		// Per-file overrides above the 300 cap (known debt), each pinned at its
 		// current size so it cannot grow SILENTLY — the pin is a ratchet, not a
 		// reduction mandate. Ratchet down when a natural split presents itself;
@@ -326,7 +342,7 @@ export default defineConfig(
 		// count down with churn (see docs/code-enforcement.md §6).
 		// (googledrive/index.ts was here at 397; A1 lifted its cache/checkpoint
 		// machinery into fs/caching/, dropping it back under the standard 300 cap.)
-		files: ["src/fs/googledrive/auth.ts"],
+		files: ["src/backends/googledrive/auth.ts"],
 		rules: { "max-lines": ["error", { max: 337, skipBlankLines: true, skipComments: true }] },
 	},
 	{
@@ -376,28 +392,44 @@ export default defineConfig(
 		// the incremental drain does — a folder leaving or joining a same-named one is
 		// its contents' moves, not a folder rename — and so an empty committed view
 		// still reports what its scan decided. Both are this class's own diff.
+		// Re-pinned from 411 for `downloadForPriority`: the priority path must surface
+		// a version-bound read's typed `target_changed`/`unverifiable` instead of the
+		// throw `downloadFile` uses for `IFileSystem.read`, and that outcome seam
+		// belongs beside the abstract download it refines. Re-pinned from 416 for the
+		// delta-contention bookkeeping `takeNamespaceContentions` hands to namespace
+		// reconciliation: the facts belong to the working view this class already owns
+		// and its lifecycle is the class's, so the split would be artificial.
+		// Re-pinned from 427 for the pre-delta view a mutating completion route hands
+		// the full-scan fallback, so the fallback diffs against the view before the
+		// partial apply instead of dropping the change it already applied. Re-pinned
+		// from 430 for the observed changed paths carried with it: a same-id, same-path
+		// content update the path↔id diff cannot re-derive is unioned back into
+		// `modified`, so the fallback never publishes an incomplete delta.
 		files: ["src/fs/caching/remote-fs.ts"],
-		rules: { "max-lines": ["error", { max: 411, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 440, skipBlankLines: true, skipComments: true }] },
 	},
 	{
-		// Over the default 300 for the vault folder several Drive folders make up.
-		// Drive is the only backend whose namespace holds same-named folders, so the
-		// fan-out that renames every one of them, and `ensureFolder` seating all of them
-		// instead of refusing, are Drive's own addressing and belong with its other
-		// mutating ops rather than in the shared cache.
-		// Re-pinned from 306 when the root-liveness check began going through the shared
-		// folder-usability seam: classifying not_found/inaccessible/trashed/not_folder and
-		// rethrowing the original 404/403 is one cohesive check that must stay beside the
-		// sync-time abort it drives.
-		files: ["src/fs/googledrive/index.ts"],
-		rules: { "max-lines": ["error", { max: 321, skipBlankLines: true, skipComments: true }] },
+		// Re-pinned from under the 300 cap for the Dropbox content preconditions:
+		// `add` (exclusive create), `update(rev)` with `strict_conflict` (content CAS),
+		// the revision-bound download, and the fail-closed expected-evidence guard for
+		// move/delete are one cohesive provider-operation surface beside the
+		// case-only-rename mechanism already owned here. Re-pinned from 322 for the
+		// expected-identity guard shared by update/move/delete. Re-pinned from 330 for
+		// the `addressing: "provider_path"` declaration (API v3), which belongs on the
+		// adapter that reports provider_path locations.
+		files: ["src/backends/dropbox/adapter.ts"],
+		rules: { "max-lines": ["error", { max: 331, skipBlankLines: true, skipComments: true }] },
 	},
 	{
-		// Dropbox's detached identity/path seams belong beside its other API-addressing
-		// seams. Its case-only rename lifecycle is also provider-specific and cannot be
-		// moved into the shared cache or priority layers without crossing ownership.
-		files: ["src/fs/dropbox/index.ts"],
-		rules: { "max-lines": ["error", { max: 317, skipBlankLines: true, skipComments: true }] },
+		// Re-pinned from under the 300 cap for the fail-closed expected-evidence guard:
+		// Google Drive has no provider metadata precondition, so update/move/delete must
+		// still compare-before-mutate and reject an empty/mismatched expected identity or
+		// version before any provider call.
+		// Re-pinned from 308 for `listSubtreeById`: the optional identity-addressed
+		// subtree read core invokes to complete a delta when a folder newly enters the
+		// bound root. It is one provider fact read beside the adapter's other reads.
+		files: ["src/backends/googledrive/adapter.ts"],
+		rules: { "max-lines": ["error", { max: 313, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Re-pinned from 303 for the top-level Google Picker callback. The
@@ -407,8 +439,29 @@ export default defineConfig(
 		// Re-pinned from 341 for the connect-boundary usability gate: validating before
 		// createFs and, on rejection, returning the session to a disconnected state are
 		// one lifecycle step that must stay beside the connect/teardown logic owned here.
+		// Re-pinned from 369 for `createRemoteFs`: awaiting a backend module's async
+		// `prepare` before handing back its ready filesystem IS the connect-boundary
+		// acquisition step, and it stays beside the connect/teardown logic owned here.
 		files: ["src/fs/backend-manager.ts"],
-		rules: { "max-lines": ["error", { max: 369, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 373, skipBlankLines: true, skipComments: true }] },
+	},
+	{
+		// Core composition root for the module boundary: it owns the per-connection
+		// auth/binding host, the compatibility physical profiles, the in-app picker's
+		// list client, and the single ManagedRemoteFs the sync engine consumes. Splitting
+		// the profile/disconnect policy away from the connection lifecycle would hide
+		// which physical secret namespace a connection resolves, so the cohesive piece
+		// stays here.
+		// Re-pinned from 316 for `readBackendState`, which carries the adapter's
+		// non-authoritative auth state (a refreshed `accessTokenExpiry`) into the
+		// settings bag exactly as the legacy provider did; it belongs with the
+		// prepared adapter this class owns. Re-pinned from 319 for the bound-folder
+		// display warning passthrough, the module-side successor to the legacy
+		// `RemoteVaultDisplay.warning`.
+		// Re-pinned from 322 so prepare() validates the adapter's declared capabilities
+		// immediately after createAdapter, before the adapter reaches ManagedRemoteFs.
+		files: ["src/fs/modules/backend-module-provider.ts"],
+		rules: { "max-lines": ["error", { max: 328, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Re-pinned from 379 for `projectedIdentityKey`, the free function every rename
@@ -443,8 +496,13 @@ export default defineConfig(
 		// Re-pinned from 589 so the plain seat refuses to re-key a shared path, the same
 		// way it refuses to relocate across one: it can return only one fact, and an
 		// eviction there takes several.
+		// Re-pinned from 595 for `objectById`: resolving a merged folder's exact member
+		// by id is a cache query beside `foldersAt`/`idsAt`, not a caller-side re-derivation.
+		// Re-pinned from 601 to hand the evicted occupant's own metadata back from the seat
+		// so the drain can re-seat it: the capture belongs where the eviction happens, beside
+		// the maps it reads, not in the caller.
 		files: ["src/fs/caching/metadata-cache.ts"],
-		rules: { "max-lines": ["error", { max: 595, skipBlankLines: true, skipComments: true }] },
+		rules: { "max-lines": ["error", { max: 605, skipBlankLines: true, skipComments: true }] },
 	},
 	{
 		// Lint manifest.json for the words the Obsidian submission validator

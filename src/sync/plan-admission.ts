@@ -7,10 +7,6 @@ import {
 	decideIdentityComponent,
 	type AdmissionFailureReason as IdentityAdmissionFailureReason,
 } from "./identity-component-decision";
-import {
-	planAddressContentionRemediation,
-	type AddressContentionFacts,
-} from "./plan-admission-address-contention";
 import type {
 	IdentityEvidence,
 	ConflictStrategy,
@@ -59,44 +55,25 @@ export interface AdmissionResult {
 	executable: AuthorizedSyncPlan;
 	dispositions: AdmissionDisposition[];
 	failures: AdmissionFailureComponent[];
-	/**
-	 * Whether this cycle owes a provider repair for a contended address and must
-	 * therefore not commit its checkpoint. A cycle-local fact about the plan, never
-	 * persisted and never read back — the next cycle re-derives it from its own
-	 * observations.
-	 */
-	checkpointBlocked: boolean;
 }
 
 /** Sole production entry: construct, validate, and authorize actions from observed facts. */
 export function admitBatchObservation(
 	observation: BatchObservation,
 	conflictStrategy: ConflictStrategy = "auto_merge",
-	contention?: AddressContentionFacts,
 ): AdmissionResult {
-	return authorizeComponents(
-		observation, buildFactComponents(observation), conflictStrategy,
-		// A cycle whose filesystem announced nothing owes nothing.
-		contention ?? { contentions: [], recordHolders: new Set(), renameByIdentity: false },
-	);
+	return authorizeComponents(observation, buildFactComponents(observation), conflictStrategy);
 }
 
 function authorizeComponents(
 	snapshot: BatchObservation,
 	components: readonly IdentityComponent[],
 	conflictStrategy: ConflictStrategy,
-	contention: AddressContentionFacts,
 ): AdmissionResult {
-	// Decided before the components, not after: the owner's rule for a contended address
-	// is "sync the object whose id matches the SyncRecord, rename the one that does not",
-	// so which object an address syncs is an input to every ordinary decision at that
-	// address — not a repair appended once they have all been made.
-	const remediation = planAddressContentionRemediation(contention);
 	const dispositions: AdmissionDisposition[] = [];
 	for (const observedComponent of components) {
 		const decision = decideIdentityComponent(
 			observedComponent, snapshot.scope, snapshot.baselinePaths, conflictStrategy,
-			remediation.withheldAddresses,
 		);
 		const decidedComponent = decision.component;
 		const shared = {
@@ -122,13 +99,6 @@ function authorizeComponents(
 			});
 		}
 	}
-	// A namespace repair is authorized from complete current-cycle facts, exactly as
-	// a case-alias parent transition is: one existing-vocabulary `rename_remote` per
-	// contended address, in its own single-path component, with no evidence to carry
-	// and no record to publish.
-	for (const action of remediation.actions) {
-		dispositions.push({ kind: "authorized", paths: [action.path], actions: [action], evidence: [] });
-	}
 	dispositions.sort((left, right) => left.paths.join("\0").localeCompare(right.paths.join("\0")));
 	const frozen = immutableSnapshot(dispositions);
 	const authorized = frozen.filter((item): item is AuthorizedComponent => item.kind === "authorized");
@@ -140,7 +110,6 @@ function authorizeComponents(
 	return {
 		snapshot,
 		executable,
-		checkpointBlocked: remediation.checkpointBlocked,
 		dispositions: frozen,
 		failures: frozen.filter((item): item is AdmissionFailureComponent => item.kind === "failed"),
 	};

@@ -52,6 +52,17 @@ The Google Drive backend additionally keeps an **IndexedDB metadata cache** (the
 `list`/`stat`/`read`/`getChangedPaths` avoid a network re-list, and it is fully
 derivable: a `fullScan()` rebuilds it from Google Drive (the real authority).
 
+**2026-09-20 backend-module-boundary note.** The Backend Module API
+([ADR — backend module boundary](adr-20260920-backend-module-boundary.md)) moves
+filesystem/cache/checkpoint ownership into core. `ManagedRemoteFs` wraps a
+`RemoteBackendAdapter` and **constructs and owns its own `MetadataStore<RemoteObject>`**,
+exactly as any `CachingRemoteFs` owns the checkpoint it commits. This is the same
+non-authoritative derived projection described here — commit-last, complete, and
+re-derived from provider facts — not a third authority and not a migration; a backend
+module receives no store. The ownership guard's `MetadataStore` inventory lists
+`src/fs/managed/managed-remote-fs.ts` as an owner for the same reason the legacy
+per-provider files are listed: core-owned checkpoint storage, never a module-owned one.
+
 We have repeatedly introduced bugs by **treating this optimization as if it were
 authoritative state and over-engineering its persistence**:
 

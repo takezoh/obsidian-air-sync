@@ -9,8 +9,8 @@ import type { IncrementalChangesResult, RemoteDelta } from "./remote-fs";
 import { runCachingRemoteFsContract } from "../../../tests/fs/contracts/caching-remote-fs.contract";
 import type { CachingRemoteFsHarness } from "../../../tests/fs/contracts/caching-remote-fs.contract";
 import { resolveDetachedIdPath } from "../priority-observation";
-import { DropboxMetadataCache } from "../dropbox/metadata-cache";
-import type { DropboxEntry } from "../dropbox/types";
+import type { RemoteObject } from "../../backend-api";
+import { NormalizedMetadataCache } from "../managed/normalized-metadata-cache";
 
 // A minimal id-addressed backend over an in-memory remote. It exists only to drive
 // the shared crash-safety contract against the base machinery — proving the base is
@@ -370,38 +370,27 @@ describe("MockRemoteFs incremental authority persistence", () => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The identity a rename pair carries is the ENTITY PROJECTION's, never the cache's
-// internal address. The two are defined differently and are not required to agree:
-// `DropboxMetadataCache.extractId` (behind `idAt`/`snapshotPathsById`) is
-// `entry.id ?? entry.path_lower` — deliberately total, because a lowercased absolute
-// path is a real Dropbox download/delete address — while `dropboxEntryToEntity` sets
-// `identityKey: entry.id` with NO fallback. An id-less entry therefore HAS an address
-// and HAS NO identity, and only the latter may cross the IFileSystem boundary.
-//
-// This is the one shape in which an id-less entry can produce a rename pair at all.
-// The delta route cannot: `dropbox/incremental-sync.ts` reaches `applyRename` only for
-// an entry whose `id` is truthy. The full-scan route cannot either for a PATH-CHANGING
-// rename, because `diffById` keys on `entry.id ?? entry.path_lower`, so an id-less
-// entry's surrogate key moves with its path and it surfaces as delete+add. A CASE-ONLY
-// rename is the exception: `path_lower` is stable while the cached display path changes,
-// so the surrogate key still hits and a pair is produced.
+// internal address. `NormalizedMetadataCache.extractId` is `RemoteObject.id`, and the
+// pair producer must carry that same projection. The legacy per-backend cache that once
+// made the two functions differ (Dropbox's `entry.id ?? entry.path_lower`) is gone: the
+// normalized object's id is required, so an "address without identity" shape does not
+// exist on the managed path.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** A minimal full-scan-only Dropbox FS: every delta expires, forcing diffById. */
-class DropboxFullScanFs extends CachingRemoteFs<DropboxEntry> {
-	readonly name = "dropbox-full-scan";
-	private staged: DropboxEntry[] = [];
+/** A minimal full-scan-only FS over the normalized cache: every delta expires, forcing diffById. */
+class NormalizedFullScanFs extends CachingRemoteFs<RemoteObject> {
+	readonly name = "normalized-full-scan";
+	private staged: RemoteObject[] = [];
 
-	constructor(rootPath: string) {
-		super("", new DropboxMetadataCache(rootPath));
+	constructor() {
+		super("root", new NormalizedMetadataCache("root"));
 	}
 
 	/** Replace what the next full list returns. */
-	stage(entries: DropboxEntry[]): void { this.staged = entries; }
-	/** The cache, for the address-vs-identity comparison the witness makes. */
-	get dropboxCache(): DropboxMetadataCache { return this.cache as DropboxMetadataCache; }
+	stage(entries: RemoteObject[]): void { this.staged = entries; }
 
 	protected getStartCursor(): Promise<string> { return Promise.resolve("cursor"); }
-	protected fullList(): Promise<DropboxEntry[]> { return Promise.resolve(this.staged); }
+	protected fullList(): Promise<RemoteObject[]> { return Promise.resolve(this.staged); }
 	protected assertRootAlive(): Promise<void> { return Promise.resolve(); }
 	/** Always expired ⇒ the cursor-expiry fallback (full scan + diffById) runs. */
 	protected fetchChanges(): Promise<IncrementalChangesResult> {
@@ -410,8 +399,8 @@ class DropboxFullScanFs extends CachingRemoteFs<DropboxEntry> {
 
 	protected downloadFile(): Promise<ArrayBuffer> { throw new Error("not implemented"); }
 	protected deleteRemote(): Promise<void> { throw new Error("not implemented"); }
-	protected fetchCurrentFile(): Promise<DropboxEntry | null> { throw new Error("not implemented"); }
-	protected fetchCurrentPath(): Promise<DropboxEntry[] | null> { throw new Error("not implemented"); }
+	protected fetchCurrentFile(): Promise<RemoteObject | null> { throw new Error("not implemented"); }
+	protected fetchCurrentPath(): Promise<RemoteObject[] | null> { throw new Error("not implemented"); }
 	protected resolveDetachedPath(): Promise<string | null> { throw new Error("not implemented"); }
 	protected toDetachedEntity(): FileEntity { throw new Error("not implemented"); }
 	protected detachedVersionToken(): string | null { throw new Error("not implemented"); }
@@ -420,58 +409,24 @@ class DropboxFullScanFs extends CachingRemoteFs<DropboxEntry> {
 	rename(): Promise<void> { throw new Error("not implemented"); }
 }
 
-/** A Dropbox entry that carries NO provider id (only `path_lower` addresses it). */
-function idlessEntry(path: string): DropboxEntry {
-	return {
-		".tag": "file",
-		name: path.split("/").pop()!,
-		path_lower: path.toLowerCase(),
-		path_display: path,
-		rev: "rev1",
-		size: 10,
-		server_modified: "2024-01-01T00:00:00Z",
-		content_hash: "hash1",
-	};
+function normalizedRootFile(id: string, name: string): RemoteObject {
+	return { kind: "file", id, name, location: { addressing: "parent_id", parentId: null } };
 }
 
 describe("diffById identity source", () => {
-	it("omits the identity for a case-only rename of an id-less entry, and does not substitute the address", async () => {
-		const fs = new DropboxFullScanFs("/root");
-		fs.stage([idlessEntry("/root/Note.md")]);
+	it("carries the projected identity for a case-only rename", async () => {
+		const fs = new NormalizedFullScanFs();
+		fs.stage([normalizedRootFile("id:7", "Note.md")]);
 		expect(await fs.getChangedPaths()).toBeNull(); // initial full scan captures "now"
 
-		// Case-only rename: path_display changes, path_lower (the surrogate key) does not.
-		fs.stage([idlessEntry("/root/note.md")]);
-		const delta = await fs.getChangedPaths();
-
-		expect(delta?.renamed).toEqual([
-			{ oldPath: "Note.md", newPath: "note.md", isFolder: undefined, identityKey: undefined },
-		]);
-
-		const pair = delta?.renamed?.[0];
-		const address = fs.dropboxCache.idAt("note.md");
-		// The cache CAN address this entry — it just has no identity to report.
-		expect(address).toBe("/root/note.md");
-		expect(pair?.identityKey).toBeUndefined();
-		// The load-bearing assertion: what the pair carries is NOT what extractId/idAt
-		// returns. A refactor that re-routed the producer through the address function
-		// would make these equal and fail here.
-		expect(pair?.identityKey).not.toBe(address);
-		// …and it matches the entity projection the public surface reports.
-		expect(pair?.identityKey).toBe((await fs.stat("note.md"))?.identityKey);
-	});
-
-	it("carries the projected identity for a case-only rename of an ID-BEARING entry", async () => {
-		const fs = new DropboxFullScanFs("/root");
-		fs.stage([{ ...idlessEntry("/root/Note.md"), id: "id:7" }]);
-		expect(await fs.getChangedPaths()).toBeNull();
-
-		fs.stage([{ ...idlessEntry("/root/note.md"), id: "id:7" }]);
+		// Case-only rename: name (the derived path segment) changes, id does not.
+		fs.stage([normalizedRootFile("id:7", "note.md")]);
 		const delta = await fs.getChangedPaths();
 
 		expect(delta?.renamed).toEqual([
 			{ oldPath: "Note.md", newPath: "note.md", isFolder: undefined, identityKey: "id:7" },
 		]);
+		// …and it matches the entity projection the public surface reports.
 		expect(delta?.renamed?.[0]?.identityKey).toBe((await fs.stat("note.md"))?.identityKey);
 	});
 });
@@ -545,9 +500,9 @@ describe("the three producers of RemoteDelta.deleted", () => {
 		});
 
 		it("names the contention instead, with both ids and every absent address", async () => {
-			const { delta, fs } = await runWithheldFolderDelta();
+			const { fs } = await runWithheldFolderDelta();
 
-			expect(delta.contended).toEqual([{
+			expect(fs.takeWorkingViewContentions()).toEqual([{
 				path: "docs",
 				admittedId: "a-docs",
 				withheldId: "z-old",
@@ -569,7 +524,7 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			const delta = await fs.checkpoint.getChangedPaths();
 
 			expect(delta?.deleted).toEqual(["gone.md"]);
-			expect(delta?.contended).toEqual([]);
+			expect(fs.takeWorkingViewContentions()).toEqual([]);
 			await fs.close();
 		});
 	});
@@ -611,9 +566,9 @@ describe("the three producers of RemoteDelta.deleted", () => {
 		});
 
 		it("reports all three as displaced, naming the withheld folder id", async () => {
-			const { delta, fs } = await runFolderCollisionScan();
+			const { fs } = await runFolderCollisionScan();
 
-			expect(delta.contended).toEqual([{
+			expect(fs.takeWorkingViewContentions()).toEqual([{
 				path: "docs",
 				admittedId: "a-docs",
 				withheldId: "z-docs",
@@ -644,7 +599,7 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			const delta = await fs.checkpoint.getChangedPaths();
 
 			expect(delta?.deleted).toEqual([]);
-			expect(delta?.contended).toEqual([{
+			expect(fs.takeWorkingViewContentions()).toEqual([{
 				path: "Notes.md",
 				admittedId: "keeper",
 				withheldId: "orphan",
@@ -671,7 +626,7 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			const delta = await fs.checkpoint.getChangedPaths();
 
 			expect(delta?.deleted).toEqual(["gone.md"]);
-			expect(delta?.contended).toEqual([]);
+			expect(fs.takeWorkingViewContentions()).toEqual([]);
 			await fs.close();
 		});
 	});
@@ -691,10 +646,10 @@ describe("the three producers of RemoteDelta.deleted", () => {
 				return { delta: delta as RemoteDelta, fs };
 			})();
 
-			// Without a declared carrier the two vacated addresses arrive at producer 1
+			// Without the displacement facts the two vacated addresses arrive at producer 1
 			// as ordinary changed paths that no longer resolve — indistinguishable from
-			// a deletion. `contended` is what tells them apart, and it survives the trip.
-			expect(delta.contended.flatMap((fact) => fact.displacedPaths)).toEqual(["old", "old/a.md"]);
+			// a deletion. The working view's own drain is what tells them apart.
+			expect(fs.takeWorkingViewContentions().flatMap((fact) => fact.displacedPaths)).toEqual(["old", "old/a.md"]);
 			expect(delta.deleted).toEqual([]);
 			expect(delta.modified).toEqual([]);
 			await fs.close();
@@ -711,7 +666,7 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			const delta = await fs.checkpoint.getChangedPaths();
 
 			expect(delta?.deleted).toEqual(["note.md"]);
-			expect(delta?.contended).toEqual([]);
+			expect(fs.takeWorkingViewContentions()).toEqual([]);
 			await fs.close();
 		});
 	});
@@ -744,7 +699,7 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			const delta = await fs.checkpoint.getChangedPaths();
 
 			expect(delta?.deleted).toEqual([]);
-			expect(delta?.contended).toEqual([]);
+			expect(fs.takeWorkingViewContentions()).toEqual([]);
 			expect(await fs.stat("docs/b.md")).toMatchObject({ identityKey: "z-child" });
 			await fs.close();
 		});
@@ -834,7 +789,7 @@ describe("the three producers of RemoteDelta.deleted", () => {
 
 			// A folder pair would say the vault folder `docs` moved, contents and all.
 			expect(delta?.renamed).toEqual([{ oldPath: "old/b.md", newPath: "docs/b.md", identityKey: "z-child" }]);
-			expect(delta?.contended).toEqual([]);
+			expect(fs.takeWorkingViewContentions()).toEqual([]);
 			expect(await fs.stat("docs/a.md")).toMatchObject({ identityKey: "a-child" });
 			expect(await fs.stat("docs/b.md")).toMatchObject({ identityKey: "z-child" });
 			await fs.close();
@@ -882,7 +837,7 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			// and returns files, so this is the only way the scan's facts get out.
 			await fs.list();
 
-			expect(fs.checkpoint.drainWorkingViewContentions?.()).toEqual([{
+			expect(fs.takeWorkingViewContentions()).toEqual([{
 				path: "Note.md",
 				admittedId: "a-note",
 				withheldId: "z-note",
@@ -897,14 +852,14 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			const fs = collidingSiblings();
 			await fs.list();
 
-			expect(fs.checkpoint.drainWorkingViewContentions?.()).toHaveLength(1);
+			expect(fs.takeWorkingViewContentions()).toHaveLength(1);
 			// A second reader must not see them again: two announcements of one address
 			// would owe two repairs for one object.
-			expect(fs.checkpoint.drainWorkingViewContentions?.()).toEqual([]);
+			expect(fs.takeWorkingViewContentions()).toEqual([]);
 			await fs.close();
 		});
 
-		it("leaves nothing here for the cursor-expiry route, which reports in the delta", async () => {
+		it("hands over the cursor-expiry route's contentions, once", async () => {
 			const remote = new FakeRemote();
 			const keep = mockFile("a-note", "Note.md", remote.rootId);
 			remote.seedRaw(keep);
@@ -914,12 +869,12 @@ describe("the three producers of RemoteDelta.deleted", () => {
 
 			const fs = new MockRemoteFs(remote, store);
 			fs.requestCursorExpiry();
-			const delta = await fs.checkpoint.getChangedPaths();
+			await fs.checkpoint.getChangedPaths();
 
-			// `fullScanWithDelta` takes the scan's return value directly, so the fact
-			// travels in the delta. Draining as well would report one address twice.
-			expect(delta?.contended).toHaveLength(1);
-			expect(fs.checkpoint.drainWorkingViewContentions?.()).toEqual([]);
+			// A scan reached through cursor expiry settles into the same drain as any
+			// other working view, and reports each address exactly once.
+			expect(fs.takeWorkingViewContentions()).toHaveLength(1);
+			expect(fs.takeWorkingViewContentions()).toEqual([]);
 			await fs.close();
 		});
 
@@ -933,7 +888,7 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			const fs = new MockRemoteFs(remote, store);
 			await fs.list();
 
-			expect(fs.checkpoint.drainWorkingViewContentions?.()).toEqual([]);
+			expect(fs.takeWorkingViewContentions()).toEqual([]);
 			await fs.close();
 		});
 
@@ -951,7 +906,7 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			const fs = new MockRemoteFs(remote, store);
 			await fs.list();
 
-			expect(fs.checkpoint.drainWorkingViewContentions?.()).toEqual([expect.objectContaining({
+			expect(fs.takeWorkingViewContentions()).toEqual([expect.objectContaining({
 				path: "Note.md", admittedId: "a-note", withheldId: "z-note",
 			})]);
 			await fs.close();
@@ -971,7 +926,7 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			const delta = await fs.checkpoint.getChangedPaths();
 
 			expect(delta?.modified).toEqual(["Note.md"]);
-			expect(delta?.contended).toEqual([expect.objectContaining({
+			expect(fs.takeWorkingViewContentions()).toEqual([expect.objectContaining({
 				path: "Note.md", admittedId: "a-note", withheldId: "z-note",
 			})]);
 			await fs.close();
@@ -985,7 +940,37 @@ describe("the three producers of RemoteDelta.deleted", () => {
 			// the next one — which re-scans and re-derives them anyway.
 			await fs.checkpoint.abortWorkingView();
 
-			expect(fs.checkpoint.drainWorkingViewContentions?.()).toEqual([]);
+			expect(fs.takeWorkingViewContentions()).toEqual([]);
+			await fs.close();
+		});
+	});
+
+	/**
+	 * A working view replays its cursor at most once through the implicit `list()`
+	 * replay. Namespace reconciliation builds the view first; a second replay behind it
+	 * would move the cursor again and could seat a newly-arrived same-name object that
+	 * reconciliation never saw, hiding a claimant while a clean checkpoint commits.
+	 */
+	describe("the working view's cursor is replayed once through list()", () => {
+		it("does not apply a change that arrives after the view's delta was built", async () => {
+			const remote = new FakeRemote();
+			const keep = mockFile("a-keep", "keep.md", remote.rootId);
+			remote.seedRaw(keep);
+			const store = makeStore();
+			await seedCheckpoint(store, [keep], ["keep.md"]);
+			const fs = new MockRemoteFs(remote, store);
+
+			// The view's delta is built (as reconciliation does before listing).
+			expect((await fs.checkpoint.getChangedPaths())?.modified).toEqual([]);
+
+			// A same-name sibling arrives AFTER the view was built.
+			remote.stageRaw(mockFile("z-new", "New.md", remote.rootId));
+
+			// `list()` must not replay behind the built view: the late change is not seated.
+			expect((await fs.list()).map((entry) => entry.path)).toEqual(["keep.md"]);
+
+			// An explicit delta still advances and reports it for the next cycle.
+			expect((await fs.checkpoint.getChangedPaths())?.modified).toContain("New.md");
 			await fs.close();
 		});
 	});

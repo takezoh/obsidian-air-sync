@@ -1,55 +1,78 @@
-import { describe } from "vitest";
-import type { RemoteBackendFamily } from "./contracts/remote-backend-family";
-import { registerGoogleDriveIFileSystemContract } from "./googledrive/ifilesystem.contract-harness";
-import { registerGoogleDriveCachingContract } from "./googledrive/caching-remote-fs.contract-harness";
-import { registerGoogleDriveChangeDetectionContract } from "./googledrive/remote-change-detection.contract-harness";
-import { registerGoogleDrivePriorityObservationContract } from "./googledrive/priority-observation.contract-harness";
-import { registerDropboxIFileSystemContract } from "./dropbox/ifilesystem.contract-harness";
-import { registerDropboxCachingContract } from "./dropbox/caching-remote-fs.contract-harness";
-import { registerDropboxChangeDetectionContract } from "./dropbox/remote-change-detection.contract-harness";
-import { registerDropboxPriorityObservationContract } from "./dropbox/priority-observation.contract-harness";
-import { registerOneDriveIFileSystemContract } from "./onedrive/ifilesystem.contract-harness";
-import { registerOneDriveCachingContract } from "./onedrive/caching-remote-fs.contract-harness";
-import { registerOneDriveChangeDetectionContract } from "./onedrive/remote-change-detection.contract-harness";
-import { registerOneDrivePriorityObservationContract } from "./onedrive/priority-observation.contract-harness";
+import { describe, expect, it } from "vitest";
+import {
+	validateRemoteBackendCatalog,
+	type RemoteBackendCatalog,
+} from "./contracts/remote-backend-family";
+import {
+	registerGoogleDriveManagedIFileSystemContract,
+	registerGoogleDriveManagedCachingContract,
+	registerGoogleDriveManagedChangeDetectionContract,
+	registerGoogleDriveManagedPriorityObservationContract,
+	registerGoogleDriveManagedConcurrencyContract,
+} from "./googledrive/managed.contract-harness";
+import {
+	registerDropboxManagedIFileSystemContract,
+	registerDropboxManagedCachingContract,
+	registerDropboxManagedChangeDetectionContract,
+	registerDropboxManagedPriorityObservationContract,
+	registerDropboxManagedConcurrencyContract,
+} from "./dropbox/managed.contract-harness";
+import {
+	registerOneDriveManagedIFileSystemContract,
+	registerOneDriveManagedCachingContract,
+	registerOneDriveManagedChangeDetectionContract,
+	registerOneDriveManagedPriorityObservationContract,
+	registerOneDriveManagedConcurrencyContract,
+} from "./onedrive/managed.contract-harness";
 
-interface RequiredRemoteContractSet {
-	filesystem: () => void;
-	/**
-	 * The base crash-safety contract AND the cross-family conformance of the identity a
-	 * reported rename pair carries — one cell, because a family registers both through
-	 * `runRemoteFamilyCachingContract` over a single `RemoteFamilyCachingHarness`, whose
-	 * required members make an unstaged identity case a compile error rather than a
-	 * silently skipped one.
-	 */
-	caching: () => void;
-	changeDetection: () => void;
-	priorityObservation: () => void;
-}
-
-const remoteBackendContracts = {
+/**
+ * The five contracts, for each backend's `BackendModule` + `RemoteBackendAdapter`
+ * over core `ManagedRemoteFs`. This is the production path: the legacy
+ * constructor-identity catalog and its direct-provider harnesses are gone (T13).
+ */
+const managedRemoteBackendCatalog = {
 	googledrive: {
-		filesystem: registerGoogleDriveIFileSystemContract,
-		caching: registerGoogleDriveCachingContract,
-		changeDetection: registerGoogleDriveChangeDetectionContract,
-		priorityObservation: registerGoogleDrivePriorityObservationContract,
+		moduleId: "googledrive",
+		contracts: {
+			filesystem: registerGoogleDriveManagedIFileSystemContract,
+			caching: registerGoogleDriveManagedCachingContract,
+			changeDetection: registerGoogleDriveManagedChangeDetectionContract,
+			priorityObservation: registerGoogleDriveManagedPriorityObservationContract,
+			concurrency: registerGoogleDriveManagedConcurrencyContract,
+		},
 	},
 	dropbox: {
-		filesystem: registerDropboxIFileSystemContract,
-		caching: registerDropboxCachingContract,
-		changeDetection: registerDropboxChangeDetectionContract,
-		priorityObservation: registerDropboxPriorityObservationContract,
+		moduleId: "dropbox",
+		contracts: {
+			filesystem: registerDropboxManagedIFileSystemContract,
+			caching: registerDropboxManagedCachingContract,
+			changeDetection: registerDropboxManagedChangeDetectionContract,
+			priorityObservation: registerDropboxManagedPriorityObservationContract,
+			concurrency: registerDropboxManagedConcurrencyContract,
+		},
 	},
 	onedrive: {
-		filesystem: registerOneDriveIFileSystemContract,
-		caching: registerOneDriveCachingContract,
-		changeDetection: registerOneDriveChangeDetectionContract,
-		priorityObservation: registerOneDrivePriorityObservationContract,
+		moduleId: "onedrive",
+		contracts: {
+			filesystem: registerOneDriveManagedIFileSystemContract,
+			caching: registerOneDriveManagedCachingContract,
+			changeDetection: registerOneDriveManagedChangeDetectionContract,
+			priorityObservation: registerOneDriveManagedPriorityObservationContract,
+			concurrency: registerOneDriveManagedConcurrencyContract,
+		},
 	},
-} satisfies Record<RemoteBackendFamily, RequiredRemoteContractSet>;
+} satisfies RemoteBackendCatalog;
 
-for (const [family, contracts] of Object.entries(remoteBackendContracts)) {
-	describe(`required remote contracts — ${family}`, () => {
-		for (const registerContract of Object.values(contracts)) registerContract();
+const catalogIssues = validateRemoteBackendCatalog(managedRemoteBackendCatalog);
+
+for (const [family, cell] of Object.entries(managedRemoteBackendCatalog)) {
+	describe(`required managed remote contracts — ${family}`, () => {
+		for (const registerContract of Object.values(cell.contracts)) registerContract();
 	});
 }
+
+describe("backend module conformance catalog", () => {
+	it("covers all three modules × five contracts with validated modules", () => {
+		expect(catalogIssues).toEqual([]);
+	});
+});

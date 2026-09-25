@@ -36,7 +36,7 @@ const COMMON_PROJECT_FILES = [
 	"tsconfig.json",
 	"manifest.json",
 ];
-const EFFECTIVE_CONFIG_SENTINEL = "src/fs/dropbox/auth.ts";
+const EFFECTIVE_CONFIG_SENTINEL = "src/backends/dropbox/auth.ts";
 const UNTYPED_FIXTURE = "test-fixtures/lint-bot-repro/untyped-dependencies.d.ts";
 const UNTYPED_VITEST_FIXTURE = "test-fixtures/lint-bot-repro/untyped-vitest.d.ts";
 

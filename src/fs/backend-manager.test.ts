@@ -4,7 +4,8 @@ import type { IBackendProvider } from "./backend";
 import type { AirSyncSettings } from "../settings";
 import type { IFileSystem } from "./interface";
 import type { Logger } from "../logging/logger";
-import { AuthError } from "./errors";
+import { backendError } from "../backend-api";
+import { AuthError } from "../backend-api/error-classification";
 import { mockSettings } from "../__mocks__/sync-test-helpers";
 
 // Mock the registry to return our fake provider
@@ -77,12 +78,12 @@ beforeEach(() => {
 		type: "test",
 		displayName: "Test",
 		auth: {
-			isAuthenticated: () => true,
 			startAuth: vi.fn(),
 			completeAuth: vi.fn(),
 		},
 		createFs: () => fakeFs,
 		isConnected: () => true,
+		hasCredentials: () => true,
 		getIdentity: () => "test:folder-A",
 		disconnect: vi.fn().mockResolvedValue({}),
 		clearPluginSecrets: vi.fn(),
@@ -96,9 +97,10 @@ beforeEach(() => {
 	otherProvider = {
 		type: "other",
 		displayName: "Other",
-		auth: { isAuthenticated: () => false, startAuth: vi.fn(), completeAuth: vi.fn() },
+		auth: { startAuth: vi.fn(), completeAuth: vi.fn() },
 		createFs: () => null,
 		isConnected: () => false,
+		hasCredentials: () => false,
 		getIdentity: () => null,
 		disconnect: vi.fn().mockResolvedValue({}),
 		clearPluginSecrets: vi.fn(),
@@ -707,6 +709,21 @@ describe("BackendManager — web folder pick", () => {
 		expect(notify).toHaveBeenCalledWith("Folder selection failed: inaccessible folder");
 		expect(onConnected).not.toHaveBeenCalled();
 	});
+
+	it("preserves a plain structural binding error message in the notice", async () => {
+		const settings = mockSettings();
+		// A module may throw a plain BackendErrorShape object (no Error identity);
+		// the notice must carry its safe diagnostic, not "[object Object]".
+		fakeProvider.picker!.completeWebFolderPick = vi.fn()
+			.mockRejectedValue(backendError("permission", "folder denied"));
+		const deps = createDeps(settings);
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend();
+
+		await mgr.completeBackendFolderPick({ id: "id:bad", state: "S" });
+
+		expect(deps.notify).toHaveBeenCalledWith("Folder selection failed: folder denied");
+	});
 });
 
 describe("BackendManager — bind default remote vault", () => {
@@ -1075,5 +1092,63 @@ describe("BackendManager — onRemoteBound (initial sync after a mid-session bin
 		expect(deps.notify).toHaveBeenCalledWith(
 			"Connected to Test — choose a remote folder to start syncing",
 		);
+	});
+});
+
+describe("BackendManager — module auth patches survive the connect boundary", () => {
+	it("keeps a pending-auth state the module committed during startAuth", async () => {
+		const settings = mockSettings();
+		settings.backendType = "test";
+		settings.backendData = {};
+		const mgr = new BackendManager(createDeps(settings));
+		vi.spyOn(fakeProvider.auth, "startAuth").mockImplementation((bag) => {
+			// A module-backed connection replaces the live bag with its committed patch;
+			// BackendManager must not overwrite it with a pre-await snapshot.
+			settings.backendData = { ...bag, pendingAuthState: "STATE" };
+			return Promise.resolve({});
+		});
+
+		await mgr.startBackendConnect();
+
+		expect(settings.backendData.pendingAuthState).toBe("STATE");
+	});
+
+	it("does not restore a pending flow state the module cleared during completeAuth", async () => {
+		const settings = mockSettings();
+		settings.backendType = "test";
+		settings.backendData = {
+			pendingAuthState: "STALE-STATE",
+			pendingCodeVerifier: "STALE-VERIFIER",
+		};
+		// Snapshot the bag at every persist so the old snapshot-merge bug (which wrote
+		// the pre-await bag back over the module's own commit) is caught even though
+		// resetAll later runs and saveSettings takes no argument.
+		const persisted: Record<string, unknown>[] = [];
+		const saveSettings = vi.fn(() => {
+			persisted.push({ ...settings.backendData });
+			return Promise.resolve();
+		});
+		const deps = createDeps(settings, { saveSettings });
+		const mgr = new BackendManager(deps);
+		await mgr.initBackend();
+		saveSettings.mockClear();
+		persisted.length = 0;
+
+		vi.spyOn(fakeProvider.auth, "completeAuth").mockImplementation(() => {
+			// The module connection commit REPLACES the live bag, clearing the flow
+			// state it just consumed, and returns no additional patch.
+			settings.backendData = { authMode: false, accessTokenExpiry: 123 };
+			return Promise.resolve({});
+		});
+
+		await mgr.completeBackendConnect("auth-code");
+
+		expect(persisted.length).toBeGreaterThan(0);
+		for (const snapshot of persisted) {
+			expect(snapshot).not.toHaveProperty("pendingAuthState");
+			expect(snapshot).not.toHaveProperty("pendingCodeVerifier");
+		}
+		expect(settings.backendData).not.toHaveProperty("pendingAuthState");
+		expect(settings.backendData).not.toHaveProperty("pendingCodeVerifier");
 	});
 });

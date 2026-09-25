@@ -4,7 +4,7 @@ import type { IFileSystem } from "./interface";
 import type { IBackendProvider } from "./backend";
 import type { Logger } from "../logging/logger";
 import { getBackendProvider, getAllBackendProviders } from "./registry";
-import { AuthError } from "./errors";
+import { errorMessage, isAuthFailure } from "../backend-api/error-classification";
 import { completeAuthFolderPick } from "./backend-auth-folder-pick";
 
 export interface BackendManagerDeps {
@@ -101,7 +101,7 @@ export class BackendManager {
 				return;
 			}
 
-			this.remoteFs = provider.createFs(this.deps.getApp(), settings, this.deps.getLogger());
+			this.remoteFs = await this.createRemoteFs(provider, settings);
 			if (this.remoteFs) {
 				// An identity change cleared the per-file SyncRecord baseline, so the next
 				// sync MUST cold-reconcile. Drop any checkpoint the new target's store may
@@ -112,9 +112,9 @@ export class BackendManager {
 				this.deps.getLogger().info("Backend initialized", { backend: settings.backendType });
 			}
 		} catch (e) {
-			const msg = e instanceof Error ? e.message : String(e);
+			const msg = errorMessage(e);
 			this.deps.getLogger().error("Failed to initialize backend", { message: msg });
-			if (e instanceof AuthError) {
+			if (isAuthFailure(e)) {
 				this.deps.notify("Authentication expired. Please reconnect in settings.");
 			}
 		} finally {
@@ -165,7 +165,7 @@ export class BackendManager {
 			// now, so there is no stale settings cursor to drop here — ADR 0001).
 			this.deps.notify("Remote folder updated");
 		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
+			const msg = errorMessage(err);
 			this.deps.getLogger().error("Failed to bind default folder", { message: msg });
 			this.deps.notify(`Folder selection failed: ${msg}`);
 			return;
@@ -197,7 +197,7 @@ export class BackendManager {
 			settings.backendData = { ...settings.backendData, ...updates };
 			await this.deps.saveSettings();
 		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
+			const msg = errorMessage(err);
 			this.deps.getLogger().error("Failed to start folder pick", { message: msg });
 			this.deps.notify(`Folder picker failed: ${msg}`);
 		}
@@ -234,7 +234,7 @@ export class BackendManager {
 			// now — ADR 0001).
 			this.deps.notify("Remote folder updated");
 		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
+			const msg = errorMessage(err);
 			this.deps.getLogger().error("Failed to bind picked folder", { message: msg });
 			this.deps.notify(`Folder selection failed: ${msg}`);
 			return;
@@ -305,12 +305,14 @@ export class BackendManager {
 			return;
 		}
 		try {
-			const current = settings.backendData;
-			const updates = await this.backendProvider.auth.startAuth(current);
-			settings.backendData = { ...current, ...updates };
+			// The module-backed provider commits its auth patch (e.g. `pendingAuthState`,
+			// `pendingCodeVerifier`) to the live bag during `startAuth`. Re-read the bag
+			// AFTER the await so a pre-await snapshot cannot clobber that committed state.
+			const updates = await this.backendProvider.auth.startAuth(settings.backendData);
+			settings.backendData = { ...settings.backendData, ...updates };
 			await this.deps.saveSettings();
 		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
+			const msg = errorMessage(err);
 			this.deps.getLogger().error("Failed to start backend connection", { message: msg });
 			this.deps.notify(`Connection failed: ${msg}`);
 		}
@@ -326,14 +328,14 @@ export class BackendManager {
 
 		const settings = this.deps.getSettings();
 		this.connecting = true;
+		const provider = this.backendProvider;
 
 		try {
-			const backendData = settings.backendData;
-			const updates = await this.backendProvider.auth.completeAuth(
-				code,
-				backendData,
-			);
-			settings.backendData = { ...backendData, ...updates };
+			// `completeAuth` commits its patch (clears the pending flow state, records the
+			// token expiry) to the live bag itself; re-read AFTER the await so the
+			// pre-await snapshot cannot restore the flow state it just cleared.
+			const updates = await provider.auth.completeAuth(code, settings.backendData);
+			settings.backendData = { ...settings.backendData, ...updates };
 			await this.deps.saveSettings();
 
 			// Start cold on connect: a reconnect to a still-bound target (e.g. custom OAuth
@@ -345,6 +347,11 @@ export class BackendManager {
 			// used its open connection, so reassigning without closing would leak it.
 			this.closeRemoteFs();
 
+			// Await asynchronous adapter creation here (the backend module builds its
+			// adapter), then validate the target against that adapter before it is
+			// exposed to the sync engine. Nothing is published until both succeed.
+			this.remoteFs = await this.createRemoteFs(provider, settings);
+
 			// A target that is already bound must be usable before it is exposed to the
 			// sync engine. The custom-OAuth id is typed by hand (never through the
 			// Picker), and a target bound to a previous connection may have become
@@ -353,7 +360,7 @@ export class BackendManager {
 			try {
 				await this.assertRemoteVaultUsable(settings);
 			} catch (err) {
-				const msg = err instanceof Error ? err.message : String(err);
+				const msg = errorMessage(err);
 				this.deps.getLogger().error("Failed to validate remote folder", { message: msg });
 				this.deps.notify(`Folder selection failed: ${msg}`);
 				// Return to a disconnected state: the rejected target must not resurface on a
@@ -365,14 +372,6 @@ export class BackendManager {
 				return;
 			}
 
-			// No remote-vault binding here: after auth the user picks the folder
-			// explicitly (default-folder button or the Picker). createFs returns null
-			// until a folder is bound, so the settings UI shows the folder-choice state.
-			this.remoteFs = this.backendProvider.createFs(
-				this.deps.getApp(),
-				settings,
-				this.deps.getLogger()
-			);
 			if (this.remoteFs) {
 				this.deps.onConnected(this.remoteFs);
 				// Record the synced identity now so a later same-session target change
@@ -389,7 +388,7 @@ export class BackendManager {
 				? `Connected to ${this.backendProvider.displayName}`
 				: `Connected to ${this.backendProvider.displayName} — choose a remote folder to start syncing`);
 		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
+			const msg = errorMessage(err);
 			this.deps.getLogger().error("Authorization failed", { message: msg });
 			this.deps.notify(`Authorization failed: ${msg}`);
 		} finally {
@@ -409,8 +408,22 @@ export class BackendManager {
 	/** Close the current FS's connections, swallowing errors (best-effort teardown). */
 	private closeRemoteFs(): void {
 		this.remoteFs?.close?.()?.catch((e: unknown) => {
-			this.deps.getLogger().warn("Failed to close backend", { error: e instanceof Error ? e.message : String(e) });
+			this.deps.getLogger().warn("Failed to close backend", { error: errorMessage(e) });
 		});
+	}
+
+	/**
+	 * Await any asynchronous adapter preparation at the connect boundary, then hand
+	 * back the remote FS the provider built. Backend modules create their adapter
+	 * asynchronously (`BackendModule.createAdapter`); a synchronous legacy provider
+	 * omits `prepare`, so `createFs` builds it directly.
+	 */
+	private async createRemoteFs(
+		provider: IBackendProvider,
+		settings: AirSyncSettings,
+	): Promise<IFileSystem | null> {
+		await provider.prepare?.(this.deps.getApp(), settings, this.deps.getLogger());
+		return provider.createFs(this.deps.getApp(), settings, this.deps.getLogger());
 	}
 
 	/**
@@ -441,7 +454,7 @@ export class BackendManager {
 		if (this.remoteFs) {
 			await this.remoteFs.checkpoint?.resetCheckpoint().catch((e: unknown) => {
 				this.deps.getLogger().warn("Failed to clear checkpoint store", {
-					error: e instanceof Error ? e.message : String(e),
+					error: errorMessage(e),
 				});
 			});
 		} else {
@@ -492,7 +505,7 @@ export class BackendManager {
 		} catch (e) {
 			// A revoke failure must not block the local teardown.
 			this.deps.getLogger().warn("Backend revoke during disconnect failed (continuing)", {
-				error: e instanceof Error ? e.message : String(e),
+				error: errorMessage(e),
 			});
 		} finally {
 			// Guarantee the plugin-owned tokens are gone even if the revoke call failed,
@@ -539,7 +552,7 @@ export class BackendManager {
 					await prev.disconnect(settings);
 				} catch (e) {
 					this.deps.getLogger().warn("Revoke on backend switch failed (continuing)", {
-						error: e instanceof Error ? e.message : String(e),
+						error: errorMessage(e),
 					});
 				}
 			}

@@ -81,7 +81,7 @@ happens inside the Google Drive client before errors reach the orchestrator-leve
 |----------|----------|
 | Network drop | Retry up to the bound with backoff; if all fail, status `error`. On network restore, the scheduler triggers a new sync. |
 | Crash mid-sync | State commits per action after successful I/O; uncommitted actions are re-detected next cycle. See [sync-pipeline.md § State commit](sync-pipeline.md#state-commit). |
-| IndexedDB eviction | The state store returns an empty set, triggering cold change detection, which treats all paths as candidates. |
+| IndexedDB eviction | `ManagedRemoteFs` falls back to the cold path (full scan); the state store returns an empty set, triggering cold change detection, which treats all paths as candidates. |
 | Auth error | `AuthError` aborts immediately. A 400/401 token-refresh failure arms a cooldown during which token acquisition short-circuits and throws without a network attempt; after the cooldown a refresh is retried. Reconnecting or any successful token store/refresh resets it, and non-400/401 refresh errors do not arm it. |
 | Individual file error | Caught per-action; the failure is recorded, other actions continue, status `partial_error`. After one forced cold recovery, a repeated local-origin poison action classified `permanent` with a stable `permanentCode` may be blocked for a bounded period instead of executed again. See [sync-pipeline.md § Execution phases](sync-pipeline.md#execution-phases-lanetier-scheduling). |
 | Mass deletion | No volume-based abort; erroneous deletions are prevented structurally. See [sync-pipeline.md § Deletion safety](sync-pipeline.md#deletion-safety). |

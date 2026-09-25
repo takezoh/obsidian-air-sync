@@ -6,7 +6,15 @@ import { syncOpenedFilePriority } from "./opened-file-priority";
 import { admitBatchObservation } from "./plan-admission";
 import { captureBatchObservation } from "./sync-cycle-planning";
 import { PriorityBatchState } from "./priority-batch-state";
-import { executePlan } from "./plan-executor";
+import { executePlan as executePlanRaw, type ExecutionContext } from "./plan-executor";
+import { createChecksumRegistry } from "../fs/modules/checksum-registry";
+
+const checksumRegistry = createChecksumRegistry();
+
+const executePlan = (
+	plan: Parameters<typeof executePlanRaw>[0],
+	ctx: Omit<ExecutionContext, "checksumRegistry">,
+) => executePlanRaw(plan, { ...ctx, checksumRegistry });
 import type { Logger } from "../logging/logger";
 import type { SyncAction } from "./types";
 

@@ -281,11 +281,16 @@ export function createMockStateStore(): {
 			}
 			return Promise.resolve(result);
 		},
+		getManyByIdentity(identities: readonly string[]) {
+			const result = new Map<string, SyncRecord>();
+			for (const identity of identities) {
+				const r = rowFor(identity);
+				if (r !== undefined) result.set(identity, r);
+			}
+			return Promise.resolve(result);
+		},
 		getAll() {
 			return Promise.resolve(Array.from(records.values()));
-		},
-		recordedIdentities(identities: readonly string[]) {
-			return Promise.resolve(new Set(identities.filter((identity) => rowFor(identity) !== undefined)));
 		},
 		put(record: SyncRecord) {
 			records.set(record.path, record);

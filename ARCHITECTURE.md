@@ -29,14 +29,18 @@ One row per directory; see the layer diagram and per-doc references for module d
 | `settings.ts` | Settings type and defaults; `settings-normalize.ts` lifts a legacy per-type `backendData` map into the active flat bag on load. |
 | `config-sync.ts` | Experimental config-directory sync (augments dot-path scope and ignore patterns when enabled) plus the guard that keeps this plugin's own settings file from ever syncing. |
 | `sync/` | Four-stage sync (fact acquisition and scope projection; single-owner identity Admission; ordered component execution; per-action publication and clean-cycle checkpoint), plus conflict resolution/merge, orchestration, scheduler, state store, error classification, and conflict-history audit. |
-| `fs/` | Backend-agnostic contracts and lifecycle: `IFileSystem` and its optional capabilities, auth/provider interfaces, provider registry, neutral error classification, OAuth PKCE helper, settings-renderer contract, `BackendManager`, and SecretStorage-backed token wrappers. |
-| `tests/fs/` | Shared filesystem behaviour contracts, backend harnesses, the implementation-family catalog, and the required-contract matrix — kept outside `src/` to preserve the production/community-lint boundary. |
-| `fs/caching/` | Shared base for id-addressed remote backends (path↔id resolution, checkpoint lifecycle, derived metadata cache). Google Drive, Dropbox, and OneDrive build on it. Derived cache-address assignment is a separate pure concern: a contended address is resolved by a stated rule (provider-resolved spelling beats a request echo; ties by lowest stable id), applied across a claim set by cascading down the resolved parent chain. Every displacement is a **returned fact** naming the path, both stable ids, and the removed descendants; a displaced address is never reported as a provider deletion. |
+| `fs/` | Core filesystem contracts and lifecycle: `IFileSystem` and its optional capabilities, the core `IAuthProvider`/`ISecretStore` interfaces, the provider registry, the settings-renderer contract, `BackendManager`, and the secret host that maps a module's logical secret key to its physical SecretStorage key. Provider-neutral runtime helpers live in the public `backend-api/`. |
+| `backend-api/` | The public Backend Module API: `BackendModule` / `BackendRuntimeContext` / `RemoteBackendAdapter`, the provider-neutral auth/binding/settings/errors/checksum types, and the runtime helpers a module bundles (error classification, HTTP transport, OAuth/PKCE, headers, error logging, remote-vault contract, and the concurrency primitive). Free of core internals, Obsidian, stores, and Node/Electron (guard-pinned). |
+| `fs/modules/` | Core side of the module boundary: the backend-module registry, the single built-in import root, runtime/http/secret/auth/pkce hosts, config-patch handling, checksum registry, and the compatibility owner for settings aliases and physical storage profiles. It is core-internal; a backend implementation must not import it. |
+| `backends/` | The consolidated backend implementation directory: `googledrive/`, `dropbox/`, `onedrive/`, and `shared/` for the provider-neutral helpers they build on (`error-shape`, `adapter-state`, `module-utils`, `pkce-module-auth`, `auth-config`). One module is one backend: a provider imports only `src/backend-api/**`, `shared/`, and its own directory; `shared/` imports only the public API and itself. No backend imports the internal backend-module API, core state, or a plain `src/fs/**` helper (guard-enforced). |
+| `fs/managed/` | The core-managed remote filesystem (`ManagedRemoteFs` over the shared caching base): normalized metadata cache and topology projection, delta projection, and the mutation bridge from path operations to adapter identity/version/destination inputs. |
+| `tests/fs/` | Shared filesystem behaviour contracts, backend harnesses, the implementation-family and module-definition catalogs, the auth matrix, and the required-contract matrix — kept outside `src/` to preserve the production/community-lint boundary. |
+| `fs/caching/` | Shared base for id-addressed remote backends (path↔id resolution, checkpoint lifecycle, derived metadata cache, order-independent delta apply). Google Drive, Dropbox, and OneDrive build on it. Derived cache-address assignment is a separate pure concern: a contended address is resolved by a stated rule (provider-resolved spelling beats a request echo; ties by lowest stable id), applied across a claim set by cascading down the resolved parent chain. A displaced address is never published as a provider deletion. Two live ids at one derived address are settled **inside the filesystem** by namespace reconciliation, so the facts never cross the `IFileSystem` view. |
 | `fs/local/` | `LocalFs` (Obsidian Vault API wrapper) plus the raw adapter for dot-prefixed paths and authoritative actual-casing resolution when vault-index spellings collide. |
-| `fs/googledrive/` | The Google Drive backend (metadata cache, REST client, server + PKCE auth, incremental sync, resumable upload, remote-vault resolution). |
-| `fs/dropbox/` | The Dropbox backend (App Folder scope, id-only addressing, worker-less PKCE, path-keyed cache, cursor-based incremental sync). |
-| `fs/onedrive/` | The OneDrive backend (App Folder scope, Microsoft Graph, in-plugin PKCE, delta-query sync, locally-computed QuickXorHash). |
-| `ui/` | Settings UI: the main settings tab, the backend-connection section, and backend-specific settings and folder-pick modals. |
+| `backends/googledrive/` | The Google Drive backend module: declarative settings/auth/binding, the provider adapter, normalization, folder resolution, and resumable upload. |
+| `backends/dropbox/` | The Dropbox backend module (App Folder scope): adapter over the HTTP client, worker-less PKCE, and normalization. The vault is addressed solely by its **stable folder id** (`id:<id>/<subpath>` for every operation — no absolute path is stored), so a remote move/rename of the folder keeps syncing with no migration. Its path-addressed delta encodes a rename as a delete+add pair; the shared core cache applies upserts before deletes so detection is order-independent (ADR 0006). |
+| `backends/onedrive/` | The OneDrive backend module (App Folder scope, Microsoft Graph): adapter, in-plugin PKCE, chunked upload, remote-vault resolution, and normalization, with a locally-computed QuickXorHash. |
+| `ui/` | Settings UI: the main settings tab, the backend-connection section, the declarative Backend Module settings renderer, and folder-pick modals. |
 | `store/` | IndexedDB plumbing: transaction wrapper, generic metadata store, and deflate compression for stored 3-way merge base content. |
 | `logging/` | Structured log writer (`.airsync/logs/`). |
 | `queue/` | Concurrency primitives: bounded concurrency, AIMD concurrency with an optional byte budget, and `AsyncMutex`. |
@@ -96,7 +100,7 @@ One row per directory; see the layer diagram and per-doc references for module d
                      │
          ┌─────────────────────────────────────┐
          │                IFileSystem                │
-         │  LocalFs │ GoogleDriveFs │ DropboxFs │ OneDriveFs │
+          │  LocalFs │ ManagedRemoteFs (googledrive/onedrive/dropbox) │
          └───────────────────────────────────────────┘
 ```
 
@@ -116,7 +120,7 @@ another record authority.
 - **`FileEntity`** describes one path on one side. Invariants: mtime 0 and an empty hash mean "no data" (never the epoch, never a real hash for a directory); change comparisons use mtime only when both values are > 0; an identity key is comparable only within one filesystem/root; a `pathAuthority` of requested-echo is presence without exact-slot proof; a remote checksum tagged with its algorithm powers temporal change detection and, when locally reproducible, cross-side dedup.
 - **`SyncRecord`** is the baseline snapshot stored after each successful sync. It is keyed by the remote object's own provider identity, with a unique index over path: one remote object holds at most one record, and at most one record claims a vault address. Both fields are mandatory — a record is written only after the remote side has settled, so it is refused rather than folded to an empty string.
 - **`MixedEntity`/`ChangeSet`** combine local, remote, and baseline state for the decision engine; a `ChangeSet` carries exact entries, path observations, normative identity evidence, and the acquisition temperature. A thrown `stat()` aborts the cycle and is never converted to absence ([ADR 0008](docs/adr/0008-logical-identity-admission-fails-closed.md)).
-- **`SyncAction`/`SyncPlan`**: the plan is the only executable artifact. A rename action is addressed by a stable provider id for a remote-only namespace repair, never by path, and may carry a folder flag plus descendant mappings for one folder rename. `match` (identical bilateral files with no baseline) and `cleanup` (baseline exists, neither side does) are state-only and perform no file I/O. See [docs/conflict-resolution.md](docs/conflict-resolution.md).
+- **`SyncAction`/`SyncPlan`**: the plan is the only executable artifact. A rename action is path-addressed and may carry a folder flag plus descendant mappings for one folder rename. `match` (identical bilateral files with no baseline) and `cleanup` (baseline exists, neither side does) are state-only and perform no file I/O. See [docs/conflict-resolution.md](docs/conflict-resolution.md).
 
 ## IFileSystem interface
 
@@ -125,8 +129,9 @@ slashes. The interface lives in `fs/interface.ts`; its non-obvious contract poin
 
 - `list()` may omit content hashes for performance; `stat()` is authoritative for casing and absence. The vault index can under-report or retain both spellings after a case-only rename, so `LocalFs` resolves collisions through the raw adapter and drops a spelling only when both resolve to one physical path; genuine case-sensitive siblings remain. Absence must never be derived from listing alone — it drives deletion.
 - **Dot-prefixed (hidden) paths bypass the indexed Vault API**: Obsidian's index excludes them, so `LocalFs` routes every operation through the raw adapter. This is a **mechanism** choice, independent of the **policy** of whether to sync the path (dot-path scope + ignore patterns + reserved paths, enforced by `SyncOrchestrator.isExcluded()`). OS-generated junk is dropped unconditionally on every backend.
-- `checkpoint` is optional and all-or-nothing: a delta-capable backend exposes the full crash-safe lifecycle. Its rename field supplies normative remote movement evidence, and its contended field reports derived addresses claimed by two live stable ids — a fact about the cycle, never a deletion and never an instruction. No caller above the filesystem may move a contention into the deleted set.
-- `identityRename` is optional, consulted for presence exactly like `checkpoint` (never by filesystem name), and renames a provider object by stable id. There is no path-addressed fallback: renaming by path would move the claimant that keeps the address.
+- `checkpoint` is optional and all-or-nothing: a delta-capable backend exposes the full crash-safe lifecycle. Its rename field supplies normative remote movement evidence, and its `getChangedPaths` returns a **1:1 path view**: a derived address claimed by two live stable ids is settled inside the filesystem (see `namespaceReconciliation`) and never appears as a collision, displacement or withheld claimant. No caller above the filesystem decides an absence.
+- `namespaceReconciliation` is optional, consulted for presence exactly like `checkpoint` (never by filesystem name). It is the filesystem's own repair of a provider namespace the destination cannot represent: it renames the non-keeper on the backend by stable id, clears its working view and reports that the cycle must be retried. The keeper policy from committed `SyncRecord`s and the scope filter are per-call arguments; the filesystem reads no sync state and persists no collision record. The sync engine never observes the collision and only retries.
+- `identityRename` is the identity-addressed rename mechanism `namespaceReconciliation` uses internally; it is not an admitted sync action and has no path-addressed fallback (renaming by path would move the claimant that keeps the address).
 - `delete()` is idempotent and may soft-delete; deleting a directory is recursive, and the caller separately cleans up the corresponding SyncRecords.
 - A mutation argument is an address, not proof of provider casing. A requested echo may update metadata only at the stable identity's resolved path and never re-keys topology; provider-resolved metadata or a successful explicit rename is required to move a cache identity. A case-only parent transition is one parent folder rename after child publication, decided once from complete current-cycle facts.
 
@@ -135,9 +140,17 @@ slashes. The interface lives in `fs/interface.ts`; its non-obvious contract poin
 `IFileSystem` and `IBackendProvider`/`IAuthProvider` are the swappable-core boundary:
 main.ts and sync/ never import backend-specific modules directly. The provider's type is its
 stable registry key and also indexes settings and per-backend secrets; the registry is the
-source of truth and is injected with the secret store once at plugin load. Each `*-custom`
-variant is a thin subclass of a renderer-free base where the user supplies their own public
-PKCE client id (and, for OneDrive, the authority/account-type).
+source of truth and is injected with the secret store once at plugin load.
+
+The backend extension boundary is now the **Backend Module API v3**
+([design-backend-module-api.md](docs/design/design-backend-module-api.md)): a
+`BackendModule` implements provider operations through a `RemoteBackendAdapter`, and core
+owns the filesystem, normalized cache, cursor, scope, and checkpoint through
+`ManagedRemoteFs`
+([design-core-backend-integration.md](docs/design/design-core-backend-integration.md),
+[adr-20260920-backend-module-boundary.md](docs/adr/adr-20260920-backend-module-boundary.md)).
+The three canonical module ids are `googledrive` / `onedrive` / `dropbox`; the `*-custom`
+ids are settings aliases (`authMode: custom`), not separate providers.
 
 Key non-obvious decisions (full contracts in `fs/backend.ts` and `fs/auth.ts`):
 
@@ -145,6 +158,8 @@ Key non-obvious decisions (full contracts in `fs/backend.ts` and `fs/auth.ts`):
 - `settings.backendData` is one flat bag holding only the **active** backend's parameters; tokens live in SecretStorage. Switching backends hard-resets the bag and sweeps every backend's plugin-owned secrets, so the new backend starts disconnected and cannot reuse another's token under the wrong OAuth client.
 - OAuth completion and refresh-token rotation publish credentials only when the same SecretStorage key immediately reads back the exact candidate. This is an API-level postcondition, not proof of an OS-level flush. Custom PKCE attempts snapshot their nonsecret client/authority beside the pending verifier so callback exchange cannot drift with later settings edits.
 - Remote-vault binding is **explicit**, not automatic on connect: the user binds the convention folder or picks one. The folder is the sole binding; there is no `.airsync/metadata.json`. See [docs/google-drive-backend.md](docs/google-drive-backend.md).
+- The provider registry validates the built-in `BackendModule`s and wraps each in a core `BackendModuleProvider` (connection host + single `ManagedRemoteFs`); it is the production composition root and is initialized once at plugin load. See [adr-20260920-backend-module-boundary.md](docs/adr/adr-20260920-backend-module-boundary.md).
+- Core holds no per-backend knowledge: an adapter declares its `addressing` (`parent_id` | `provider_path`), an auth block declares its owned `credentialKeys`, and a module declares the `disconnectConfig` bag it keeps. Credential readiness and target presence are separate axes, so core never guesses a secret key name or branches on a module id. See [adr-20260921-backend-module-api-v3.md](docs/adr/adr-20260921-backend-module-api-v3.md).
 
 ## Detailed documentation
 

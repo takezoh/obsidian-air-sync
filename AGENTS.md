@@ -42,7 +42,7 @@ full set of enforced rules, the test-pinned principles, and how to declare an ex
 disabling a rule.**
 
 When adding or replacing a remote filesystem implementation, update the exact
-implementation-family catalog, all four shared `*.contract-harness.ts` registrations,
+implementation-family catalog, all five shared `*.contract-harness.ts` registrations,
 the central required-contract matrix, and that backend's opt-in live E2E; then verify
 that the generic registry guard passes. Extend a registry fixture only when the backend
 needs backend-specific construction data. Contract definitions and harnesses are test
@@ -60,6 +60,29 @@ central `tests/fs/remote-backend-contracts.test.ts` unit composition root.
 - Mobile compatible (`isDesktopOnly: false`) — no Node/Electron APIs (lint-enforced).
 - Minimize network calls; require explicit disclosure. Use `requestUrl()`, never `fetch`.
 - Command IDs are immutable once published.
+- **The Backend Module API is the backend extension boundary.** `src/backend-api/`
+  (`BackendModule` / `BackendRuntimeContext` / `RemoteBackendAdapter`) is the public
+  contract; its imports must stay inside itself (guarded by
+  `backend-module-boundary-guard.test.mjs` in `npm run lint:bot-repro`). A backend
+  module implements provider operations only — never `IFileSystem`, the metadata cache,
+  cursor, scope, checkpoint, or stores; core owns those via `ManagedRemoteFs`. Module
+  runtime shape is validated (`src/fs/modules/validate-module.ts`), not merely typed.
+  Canonical ids are `googledrive`/`onedrive`/`dropbox`; `*-custom` are settings aliases
+  only and are never registered as modules. See
+  [adr-20260920-backend-module-boundary.md](docs/adr/adr-20260920-backend-module-boundary.md).
+- **The remote filesystem owns the path↔identity bijection and namespace reconciliation.**
+  A filesystem holds one object per path, so the remote filesystem — the backend layer in
+  front of the sync engine — is the only layer that observes two live provider objects
+  claiming one derived address, and the only layer allowed to settle it. It renames the
+  non-keeper on the backend through the identity-addressed rename capability, updates its
+  derived cache from the provider's answer, aborts its working view, and reports that the
+  cycle must be retried. The sync engine consumes only a 1:1 view — `list`, `stat` and
+  `getChangedPaths` carry no collision — and must not plan or publish for a cycle the
+  filesystem reports as reconciled. The keeper policy (the claimant holding a committed
+  `SyncRecord`) and the scope filter are per-call arguments; the filesystem reads no sync
+  state and persists no collision record. This is one backend rename issued from the
+  backend layer, not an admitted sync action. See
+  [adr-20260922-backend-layer-namespace-reconciliation.md](docs/adr/adr-20260922-backend-layer-namespace-reconciliation.md).
 - **Sync durable authority is closed to two states:** the remote delta cursor commits
   only after a wholly clean cycle, and each file's `SyncRecord` commits only after its
   admitted I/O succeeds. The remote metadata cache is a derived projection, written as
@@ -81,7 +104,9 @@ central `tests/fs/remote-backend-contracts.test.ts` unit composition root.
   finish with exactly one lifecycle result: commit only after a wholly clean cycle, or
   abort on every incomplete outcome/exception before classification or retry. Abort may
   clear only live derived cache/cursor/scope state; it must not clear the durable
-  checkpoint or mutate the provider. Wait for scheduled sibling effects to settle before
+  checkpoint or mutate the provider. (A namespace reconciliation rename is the remote
+  filesystem's own operation, described above, not part of abort; its cycle does not
+  commit.) Wait for scheduled sibling effects to settle before
   aborting. Never add a prior-failure/recovery field to compensate for an unclosed view.
 - **Re-evaluate current facts; do not add stopped-state recovery branches.** COLD,
   WARM, and HOT are acquisition strategies only. They must produce the same Admission
@@ -92,15 +117,19 @@ central `tests/fs/remote-backend-contracts.test.ts` unit composition root.
 - No migration code — on IndexedDB schema changes, cold-start (drop all stores and
   recreate). Settings schema changes use sensible defaults for missing fields via
   `Object.assign({}, DEFAULT_SETTINGS, stored)`.
-  - **Sanctioned exception: `settings-normalize.ts`.** Two one-time *normalizations*
+  - **Sanctioned exception: `settings-normalize.ts`.** Three one-time *normalizations*
     run on load: `liftActiveBackendData` (lifts the active backend out of the old
     nested per-type `backendData` map into the flat single-bag shape, discarding the
-    rest) and `normalizeConflictStrategy` (coerces the removed `"ask"` strategy to its
-    effective `"duplicate"`). These reshape-or-discard an incompatible old shape rather
-    than transforming data field-by-field, and exist so a vault upgrading from the old
-    shape stays connected instead of silently breaking the resolver / stranding
-    foreign-backend params. Both are idempotent (a no-op on the current shape). Do not
-    grow this list without the same "reshape/discard, not transform" justification.
+    rest), `normalizeConflictStrategy` (coerces the removed `"ask"` strategy to its
+    effective `"duplicate"`), and `normalizeBackendModuleSettings` (canonicalizes a
+    legacy `*-custom` id to its module id and coerces the one `authMode` representation
+    — a stored `"custom"`/`"default"` string, or the boolean implied by a legacy alias —
+    to the persisted boolean, preserving every other field). These reshape-or-discard an
+    incompatible old shape rather than transforming data field-by-field, and exist so a
+    vault upgrading from the old shape stays connected instead of silently breaking the
+    resolver / stranding foreign-backend params. All three are idempotent (a no-op on the
+    current shape). Do not grow this list without the same "reshape/discard, not
+    transform" justification.
 - Sync correctness has exactly two durable publication points: a file's `SyncRecord`
   after that admitted action succeeds, and the remote cursor/derived cache/scope
   checkpoint after a wholly clean cycle. Do not persist operation intent, rename

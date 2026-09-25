@@ -2,6 +2,7 @@ import "fake-indexeddb/auto";
 import { describe, expect, it, vi } from "vitest";
 import { createMockLocalFs } from "../../src/__mocks__/sync-test-helpers";
 import type { IFileSystem } from "../../src/fs/interface";
+import { createChecksumRegistry } from "../../src/fs/modules/checksum-registry";
 import type { FileEntity, RenamePair } from "../../src/fs/types";
 import { DEFAULT_SETTINGS } from "../../src/settings";
 import { LocalChangeTracker } from "../../src/sync/local-tracker";
@@ -140,6 +141,7 @@ export function runRenameSafetyE2E(label: string, options: RenameSafetyOptions):
 				localFs: () => localFs,
 				remoteFs: () => remoteFs,
 				backendProvider: () => null,
+				checksumRegistry: createChecksumRegistry(),
 				onStatusChange: (status) => { statuses.push(status); },
 				onProgress: vi.fn(),
 				notify: vi.fn(),

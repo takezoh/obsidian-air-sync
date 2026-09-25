@@ -1,8 +1,23 @@
 import { describe, it, expect, vi } from "vitest";
 import { compareContent } from "./decision-engine";
-import { executePlan } from "./plan-executor";
-import { collectChanges } from "./change-detector";
+import { executePlan as executePlanRaw, type ExecutionContext } from "./plan-executor";
+import {
+	collectChanges as collectChangesRaw, type ChangeDetectorDeps, type CollectChangesOptions,
+} from "./change-detector";
 import { LocalChangeTracker } from "./local-tracker";
+import { createChecksumRegistry } from "../fs/modules/checksum-registry";
+
+const checksumRegistry = createChecksumRegistry();
+
+const executePlan = (
+	plan: Parameters<typeof executePlanRaw>[0],
+	ctx: Omit<ExecutionContext, "checksumRegistry">,
+) => executePlanRaw(plan, { ...ctx, checksumRegistry });
+
+const collectChanges = (
+	deps: Omit<ChangeDetectorDeps, "checksumRegistry">,
+	opts?: CollectChangesOptions,
+) => collectChangesRaw({ ...deps, checksumRegistry }, opts);
 import {
 	createMockLocalFs, createMockRemoteFs,
 	createMockStateStore,

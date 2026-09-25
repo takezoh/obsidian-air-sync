@@ -1,4 +1,5 @@
 import type { AirSyncSettings } from "./settings";
+import { canonicalBackendId, impliedAuthMode } from "./fs/modules/compatibility/legacy-backend-aliases";
 
 function isObject(v: unknown): v is Record<string, unknown> {
 	return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -53,6 +54,83 @@ export function liftActiveBackendData(
  *
  * @returns true if `settings.conflictStrategy` was changed (caller should persist).
  */
+/**
+ * Canonicalize the legacy backend selection onto a backend module id and reshape
+ * `authMode` to its boolean representation.
+ *
+ * WHY THIS EXISTS: the six legacy `backendType` values (three services, each with a
+ * `-custom` OAuth variant) become three modules whose built-in/custom choice is the
+ * `authMode` field inside the active `backendData` bag. The persisted representation
+ * is now a BOOLEAN: `true` = the user's own OAuth app, `false` = the built-in app. A
+ * vault saved by an older version still has a `*-custom` id and, on `main`, the
+ * STRING `"custom"`/`"default"`; left as-is it would not drive the boolean readers.
+ * This maps the id to its canonical module, converts a stored string to the boolean,
+ * and fills an absent field (an old `*-custom` id means the user's own app; a
+ * canonical id means the built-in app). A stored value always wins over the id's
+ * implication, so a real contradiction is not silently hidden. It is idempotent — on
+ * an already-boolean value it is a no-op (returns false).
+ *
+ * This is the ONLY compatibility reshape for `authMode`; readers never fall back to
+ * the legacy string.
+ *
+ * `lastSyncedIdentity` is persisted as `<backendType>:<targetId>`. Canonicalizing its
+ * prefix is ONLY safe when it provably describes the same connection: the part after
+ * the first colon must still equal the currently-bound target id. A stored identity
+ * pointing at a different root is left untouched, so the ordinary identity-change
+ * reset still fires in BackendManager. This never clears a baseline on its own.
+ *
+ * @returns true if any field changed (caller should persist).
+ */
+export function normalizeBackendModuleSettings(settings: AirSyncSettings): boolean {
+	let changed = false;
+	const originalType = settings.backendType;
+	const canonical = canonicalBackendId(originalType);
+
+	if (canonical !== originalType) {
+		settings.backendType = canonical;
+		changed = true;
+	}
+
+	const bag = settings.backendData;
+	if (isObject(bag)) {
+		const stored = bag.authMode;
+		if (stored === undefined) {
+			bag.authMode = impliedAuthMode(originalType);
+			changed = true;
+		} else if (stored === "custom") {
+			bag.authMode = true;
+			changed = true;
+		} else if (stored === "default") {
+			bag.authMode = false;
+			changed = true;
+		}
+	}
+
+	changed = canonicalizeStoredIdentity(settings, originalType) || changed;
+	return changed;
+}
+
+/** Canonicalize the stored identity's backend prefix only for the same target. */
+function canonicalizeStoredIdentity(settings: AirSyncSettings, originalType: string): boolean {
+	const stored = settings.lastSyncedIdentity;
+	if (!stored) return false;
+	const separator = stored.indexOf(":");
+	if (separator < 0) return false;
+	const prefix = stored.slice(0, separator);
+	const targetAndRest = stored.slice(separator);
+	const canonicalPrefix = canonicalBackendId(prefix);
+	// Same connection is proven by both halves: the prefix must canonicalize to the
+	// SAME service the active selection canonicalizes to, and the target id must be
+	// the currently-bound one. Either mismatch is a real target change — leave the
+	// identity alone so the ordinary reset runs.
+	if (canonicalPrefix === prefix) return false;
+	if (canonicalPrefix !== canonicalBackendId(originalType)) return false;
+	const targetId = settings.backendData.remoteVaultFolderId;
+	if (typeof targetId !== "string" || targetAndRest !== `:${targetId}`) return false;
+	settings.lastSyncedIdentity = `${canonicalPrefix}${targetAndRest}`;
+	return true;
+}
+
 export function normalizeConflictStrategy(settings: AirSyncSettings): boolean {
 	const strategy = settings.conflictStrategy as string;
 	if (strategy === "auto_merge" || strategy === "prefer_local" || strategy === "duplicate") return false;

@@ -41,7 +41,7 @@ Practical patterns:
 `as any` is forbidden in tests too — use the project's typed helpers instead of casting
 `vi.spyOn` targets or hand-rolling partial objects:
 
-- `spyRequestUrl()` (`src/fs/googledrive/test-helpers.ts`) — type-safe spy on obsidian's `requestUrl`.
+- `spyRequestUrl()` (`src/backends/googledrive/test-helpers.ts`) — type-safe spy on obsidian's `requestUrl`.
 - `mockSettings()` (`src/__mocks__/sync-test-helpers.ts`) — returns a complete `AirSyncSettings` default.
 - `createMockStateStore()` (`src/__mocks__/sync-test-helpers.ts`) — pass it directly; its intersection type satisfies `SyncStateStore`.
 
@@ -106,6 +106,58 @@ Each backend's shared-contract adapters live with the shared definitions under t
 corresponding `tests/fs/<backend>/` directory. Production coverage includes only `src/`,
 while the central `tests/fs/remote-backend-contracts.test.ts` composition root remains a
 discovered unit test.
+
+### Backend Module API boundary (v3)
+
+The public extension boundary is `src/backend-api/` (`BackendModule`,
+`BackendRuntimeContext`, `RemoteBackendAdapter`). A backend module implements provider
+operations only; it does not implement `IFileSystem`, the metadata cache, the delta cursor,
+scope, checkpoint commit/abort, or stores — core owns those (see
+[adr-20260920-backend-module-boundary.md](adr/adr-20260920-backend-module-boundary.md)).
+
+The backend implementation family is consolidated under `src/backends/`: the three
+built-ins (`googledrive/`, `dropbox/`, `onedrive/`) plus `shared/` for the
+provider-neutral helpers they build on. One module is one backend: a provider file may
+import only the public `src/backend-api/**`, `shared/`, and its own provider
+directory — never another provider — and `shared/` may import only the public API and
+itself. Every browser-safe shared helper now lives in the public API, so a backend
+cannot reach into the internal backend-module API (`src/fs/modules/**`), core state,
+or the plain `src/fs/**` helpers. That keeps it a provider integration and an exact
+candidate for the future external-artifact boundary.
+
+| | |
+|---|---|
+| **Prevents** | (a) `src/backend-api/**` importing `obsidian`, Node/Electron, or any path outside `src/backend-api/`; (b) a `src/backends/**` file importing outside `src/backend-api/**`, `src/backends/shared/**`, and its own provider directory — including a cross-provider import, a plain `src/fs/**`/`src/queue/**` helper, `obsidian`/`electron`, or a bare Node builtin (not only `node:*`) |
+| **Where** | `backend-module-boundary-guard.test.mjs`, run by `npm run lint:bot-repro` |
+| **How** | textual import scan over `src/backend-api/**/*.ts` and all non-test `src/backends/**/*.ts`; `tests/backend-api/fake-module.ts` is the compile fixture that builds a module with only the public API |
+| **Exception** | none. The public API carries the provider-neutral runtime helpers a module bundles; nothing under `src/fs/**` or `src/queue/` is reachable from a backend |
+
+Runtime validation (`src/fs/modules/validate-module.ts`) is authoritative for a candidate
+module shape; TypeScript compatibility alone is insufficient for a future dynamically loaded
+JavaScript artifact. `*-custom` ids are legacy settings aliases and are rejected as module
+ids; built-in vs custom OAuth is an `authMode` within a module.
+
+The single built-in import root (`src/fs/modules/builtin-modules.ts`) is the only place
+that imports the backend-specific module implementations; `src/fs/registry.ts` validates
+and registers them and wraps each in the core `BackendModuleProvider` (connection host
++ `ManagedRemoteFs`) used in production.
+
+### Limited compatibility exception (settings reshape)
+
+The "no migration code" rule in `AGENTS.md` has one bounded exception for the backend
+module migration: the three settings normalizations in `settings-normalize.ts` —
+`liftActiveBackendData`, `normalizeConflictStrategy`, and
+`normalizeBackendModuleSettings`. They reshape (or discard) an incompatible old
+settings shape so a vault upgrading stays connected; they do not transform data
+field-by-field. `normalizeBackendModuleSettings` canonicalizes a legacy `*-custom`
+backend id to its module id and coerces the one `authMode` representation — a stored
+`"custom"`/`"default"` string, or the boolean implied by a legacy alias — to the
+persisted boolean, leaving every other field intact; it is idempotent. A change to a
+persisted *metadata-record* format is handled by ordinary cold-start — a `MetadataStore`
+version bump drops and re-creates the derived checkpoint cache on open, so the old
+records and cursor disappear together, and same-generation corrupt/foreign records fail
+`bulkLoad` validation and re-scan — never by a codec. See
+[adr-20260920-backend-module-boundary.md](adr/adr-20260920-backend-module-boundary.md).
 
 ## 5. Pipeline as data (Principle #4)
 
@@ -182,20 +234,16 @@ the new size, with a comment saying why the split was deferred. The pin is a
 ratchet: it stops *silent* growth and flags the file as split-when-convenient — it
 is not a mandate to shrink the file by force.
 
-Eight modules currently carry such overrides as known debt in `eslint.config.mts`:
-`fs/googledrive/auth.ts` (337), `sync/orchestrator.ts` (444), `sync/plan-executor.ts`
-(334), `fs/caching/remote-fs.ts` (411), `fs/dropbox/index.ts` (317),
-`fs/backend-manager.ts` (369), `fs/caching/metadata-cache.ts` (595), and
-`fs/googledrive/index.ts` (321).
+Seven modules currently carry such overrides as known debt in `eslint.config.mts`:
+`backends/googledrive/auth.ts` (337), `sync/orchestrator.ts` (444), `sync/plan-executor.ts`
+(334), `fs/caching/remote-fs.ts` (411), `fs/backend-manager.ts` (373),
+`fs/modules/backend-module-provider.ts` (322), and `fs/caching/metadata-cache.ts` (595).
 Ratchet them down when a natural responsibility split presents itself.
-(`fs/googledrive/index.ts` was once here at 397; ADR 0001 lifted its cache/checkpoint
-machinery into `fs/caching/`, dropping it under 300. It is back, just over, for the
-Drive-only fan-out across same-named folders.)
 
 Four modules instead carry a **file-header `/* eslint max-lines */` comment**, which
 overrides the config entry for that file: `sync/scope-projection.ts` (340),
 `sync/conflict-resolver.ts` (350), `sync/identity-component-decision.ts` (822), and
-`sync/plan-executor.ts` (1020 — so its 334 config entry above is inert). Same ratchet,
+`sync/plan-executor.ts` (1034 — so its 334 config entry above is inert). Same ratchet,
 same obligation to justify the pin in the comment; the inline form keeps the reason
 next to the code it is about.
 
@@ -306,12 +354,12 @@ these green when touching the pipeline:
 |---|---|
 | **Two-authority durable sync state** — only the clean-cycle remote cursor and per-file successful `SyncRecord` are authoritative; the complete remote cache is a derived co-commit. The guard's mutating-method set is exactly `SyncStateStore`'s write surface: `put`, `putContent`, `delete`, `clear`, `compareAndPut`, `compareAndDelete`, `compareAndRewritePaths`, `compareAndPutContent` | `sync-state-ownership-guard.test.mjs` (run by `npm run lint:bot-repro`) |
 | **Single Admission identity authority** — bind current component facts before content comparison; no action-first APIs, foreign policy imports, action-bearing observations, or retained proof | `sync-admission-authority-guard.test.mjs`, `sync/plan-admission.test.ts` |
-| **Remote backend completeness** — every registered provider resolves to an exact catalogued filesystem family, and every family runs all four shared contracts | `fs/registry.test.ts`, `tests/fs/remote-backend-contracts.test.ts` |
+| **Remote backend completeness** — every registered provider resolves to an exact catalogued filesystem family, and every family runs all five shared contracts (the fifth is the adapter-level concurrency contract, which drives the real adapter directly so a change between its observation and its provider operation is not masked by core re-observation) | `fs/registry.test.ts`, `tests/fs/remote-backend-contracts.test.ts` |
 | **#3 delta-first** — the hot path stats only dirty paths and never calls `list()` (full scans are cold-start only) | `sync/delta-first.test.ts` |
 | **#5 crash-safe** — an interrupted action commits no baseline and re-syncs to convergence | `sync/crash-safety.test.ts`, `sync/convergence.test.ts` |
 | **Attempt-bounded remote working view** — a clean cycle commits; every incomplete result or pre-closeout exception aborts before classification/retry; the next COLD/WARM/HOT attempt derives only from durable/current facts | `sync/sync-cycle-finalization.test.ts`, `sync/orchestrator.test.ts`, `sync/plan-executor.test.ts`, `tests/fs/remote-backend-contracts.test.ts` |
 | **Case-alias canonicalization adds no owner** — Observation records raw-adapter actual casing and comparable content facts; Admission alone normalizes an explicit alias component and may canonicalize remote casing when endpoints, vacancy, unique identity, and content are complete. Temperature, global record count, database version, and prior failure are not decision inputs | `fs/local/local-fs.test.ts`, `sync/change-detector.test.ts`, `sync/plan-admission.test.ts`, `sync/orchestrator.test.ts` |
-| **Requested spelling has no topology authority** — `requested_echo` may refresh metadata at an identity's current path but cannot re-key it. Provider-resolved mutation responses and successful explicit rename endpoints alone may change the cache path; a mixed case-only parent component retains content work and uses one parent rename | `fs/googledrive/metadata-cache.test.ts`, `fs/googledrive/index.test.ts`, `fs/dropbox/index.test.ts`, `fs/onedrive/index.test.ts`, `sync/orchestrator.test.ts` |
+| **Requested spelling has no topology authority** — `requested_echo` may refresh metadata at an identity's current path but cannot re-key it. Provider-resolved mutation responses and successful explicit rename endpoints alone may change the cache path; a mixed case-only parent component retains content work and uses one parent rename | `tests/fs/managed/normalized-metadata-cache.test.ts`, `tests/fs/remote-backend-contracts.test.ts`, `sync/orchestrator.test.ts` |
 | **Command-ID immutability** — registered command IDs are a stable, published API | `main-commands.test.ts` (snapshot — update only for a genuinely new command, never to rename a shipped ID) |
 | **Coverage floors** — ratchet thresholds (lines 76 / statements 75 / functions 70 / branches 65) | `vitest.config.ts`, enforced by `npm run test:coverage` in CI. Raise as coverage improves; never lower to make CI pass |
 
@@ -336,6 +384,11 @@ inventories (`imports`, `references`, `constructors`, `mutationCallers`), so onl
 in one of those — not a fixture edit that follows a removal — is evidence of a new writer
 or owner. This makes a new durable owner, persistent-store owner, or in-memory recovery
 owner a deliberate review event rather than an incidental field or write.
+The Backend Module API's `src/fs/managed/managed-remote-fs.ts` is one such deliberate
+entry: core constructs and owns the checkpoint `MetadataStore<RemoteObject>` for the
+managed remote filesystem so no backend module ever receives a store. It is a core
+owner of the same non-authoritative, commit-last projection, recorded in the fixture
+beside the legacy per-provider owners.
 The record store's key shape is subordinate storage mechanism, not an authority:
 `sync-records` and `sync-content` are keyed by `remoteIdentityKey`, and the unique `path`
 index guards the filesystem layer's path-uniqueness guarantee rather than arbitrating

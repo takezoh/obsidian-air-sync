@@ -1,5 +1,6 @@
 import type { Logger } from "../logging/logger";
 import type { IFileSystem } from "../fs/interface";
+import type { ChecksumRegistry } from "../fs/modules/checksum-registry";
 import type { ChangeSet } from "./change-detector";
 import type { AdmissionResult } from "./plan-admission";
 import { applyScope, type ScopeProjectionPolicy } from "./scope-projection";
@@ -14,7 +15,6 @@ import type {
 } from "./types";
 import { enrichHashesForPreferLocal } from "./change-hash-enrichment";
 import { logScopeExclusions } from "./sync-cycle-diagnostics";
-import { awaitsRepair } from "./sync-cycle-finalization";
 
 export type CycleEvidenceItem =
 	| { readonly role: "local_rename_candidate"; readonly evidence: LocalRenameEvidence }
@@ -163,13 +163,14 @@ export async function prepareSyncCycleSnapshotForExecution(
 	strategy: ConflictStrategy,
 	localFs: IFileSystem,
 	remoteFs: IFileSystem,
+	checksumRegistry: ChecksumRegistry,
 	logger?: Logger,
 ) {
 	const { scopedChangeSet, projection, baselinePaths } = scopeSyncCycle(changeSet, policy, logger);
 	if (requiresConflictHashEnrichment(strategy)) {
 		await enrichHashesForPreferLocal(
 			scopedChangeSet.entries, scopedChangeSet.observations,
-			scopedChangeSet.identityEvidence, localFs, remoteFs,
+			scopedChangeSet.identityEvidence, localFs, remoteFs, checksumRegistry,
 		);
 	}
 	return captureScopedSnapshot(scopedChangeSet, projection, namespace, baselinePaths);
@@ -230,12 +231,6 @@ export function logSyncCyclePlan(
 		...actionBreakdown,
 	});
 	for (const component of admission.failures) {
-		// Waiting for the repair this plan carries is not a failure; the next cycle
-		// decides it. Say where it is, without a warning.
-		if (awaitsRepair(component)) {
-			logger?.info("Sync plan component awaits its repair", { paths: component.paths });
-			continue;
-		}
 		logger?.warn("Sync plan component failed Admission", {
 			reasons: component.reasons,
 			paths: component.paths,

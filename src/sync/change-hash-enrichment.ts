@@ -1,7 +1,8 @@
 import type { IFileSystem } from "../fs/interface";
+import type { ChecksumRegistry } from "../fs/modules/checksum-registry";
 import type { FileEntity } from "../fs/types";
-import { AsyncPool } from "../queue/async-queue";
-import { digest, isLocallyComputable, sha256 } from "../utils/hash";
+import { AsyncPool } from "../backend-api/async-queue";
+import { sha256 } from "../utils/hash";
 import { exactEntity, observePath, replaceObservation } from "./path-observation";
 import type { CandidateFact, IdentityEvidence, MixedEntity, PathObservation } from "./types";
 import { directConflictCandidateHint, insertConflictSuffix } from "./conflict";
@@ -25,6 +26,7 @@ export async function enrichHashesForPreferLocal(
 	identityEvidence: readonly IdentityEvidence[],
 	localFs: IFileSystem,
 	remoteFs: IFileSystem,
+	registry: ChecksumRegistry,
 ): Promise<PreferLocalHashEnrichmentResult> {
 	const repeatedRemoteIdentities = repeatedIdentityKeys(entries);
 	const candidates = entries.filter((entry) => entry.prevSync?.hash && entry.local && entry.remote &&
@@ -36,8 +38,8 @@ export async function enrichHashesForPreferLocal(
 		hasChanged(entry.local, entry.prevSync) && hasRemoteChanged(entry.remote, entry.prevSync));
 	const pool = new AsyncPool(10);
 	const settled = await Promise.allSettled(candidates.map((entry) => pool.run(async () => {
-		entry.local = await completeSha256Fact("local", entry.path, entry.local!, localFs, observations);
-		entry.remote = await completeSha256Fact("remote", entry.path, entry.remote!, remoteFs, observations);
+		entry.local = await completeSha256Fact("local", entry.path, entry.local!, localFs, observations, registry);
+		entry.remote = await completeSha256Fact("remote", entry.path, entry.remote!, remoteFs, observations, registry);
 	})));
 	const failure = settled.find((result): result is PromiseRejectedResult => result.status === "rejected");
 	if (failure) throw failure.reason;
@@ -82,6 +84,7 @@ async function completeSha256Fact(
 	entity: FileEntity,
 	fs: IFileSystem,
 	observations: PathObservation[],
+	registry: ChecksumRegistry,
 ): Promise<FileEntity> {
 	if (entity.hash) return entity;
 	if (entity.remoteChecksum?.algo === "sha256") {
@@ -89,7 +92,7 @@ async function completeSha256Fact(
 		replaceObservation(observations, observePath(side, path, enriched));
 		return enriched;
 	}
-	const snapshot = await captureContentSnapshot(fs, path, entity);
+	const snapshot = await captureContentSnapshot(fs, path, entity, registry);
 	const enriched = { ...snapshot.entity, hash: await sha256(snapshot.content) };
 	replaceObservation(observations, observePath(side, path, enriched));
 	return enriched;
@@ -99,6 +102,7 @@ async function completeSha256Fact(
 export async function enrichHashesForInitialMatch(
 	entries: MixedEntity[],
 	localFs: IFileSystem,
+	registry: ChecksumRegistry,
 ): Promise<HashEnrichmentResult> {
 	const candidates = entries.filter(
 		(entry) => entry.local && entry.remote && !entry.prevSync &&
@@ -106,7 +110,7 @@ export async function enrichHashesForInitialMatch(
 			!entry.local.hash && (
 				!!entry.remote.hash || (!entry.remote.hash &&
 					entry.remote.remoteChecksum !== undefined &&
-					isLocallyComputable(entry.remote.remoteChecksum.algo))
+					registry.has(entry.remote.remoteChecksum.algo))
 			),
 	);
 	const pool = new AsyncPool(10);
@@ -122,7 +126,7 @@ export async function enrichHashesForInitialMatch(
 				return false;
 			}
 			const remoteChecksum = entry.remote!.remoteChecksum!;
-			if (await digest(content, remoteChecksum.algo) === remoteChecksum.value) {
+			if (await registry.compute(content, remoteChecksum.algo) === remoteChecksum.value) {
 				const hash = await sha256(content);
 				entry.local = { ...entry.local!, hash };
 				entry.remote = { ...entry.remote!, hash };
@@ -254,6 +258,7 @@ export async function enrichHashesForRenames(
 	localFs: IFileSystem,
 	remoteFs: IFileSystem,
 	evidence: readonly IdentityEvidence[],
+	registry: ChecksumRegistry,
 ): Promise<void> {
 	const paths = new Set<string>();
 	const prefixes = new Set<string>();
@@ -283,10 +288,10 @@ export async function enrichHashesForRenames(
 		}
 		const remoteChecksum = entry.remote?.remoteChecksum;
 		if (!statEntity?.hash || !entry.remote || entry.remote.hash || !remoteChecksum ||
-			!isLocallyComputable(remoteChecksum.algo)) return;
+			!registry.has(remoteChecksum.algo)) return;
 		const content = await localFs.read(entry.path);
 		if (content.byteLength !== statEntity.size || await sha256(content) !== statEntity.hash) return;
-		if (await digest(content, remoteChecksum.algo) !== remoteChecksum.value) return;
+		if (await registry.compute(content, remoteChecksum.algo) !== remoteChecksum.value) return;
 		entry.remote = { ...entry.remote, hash: statEntity.hash };
 		replaceObservation(observations, observePath("remote", entry.path, entry.remote));
 	})));

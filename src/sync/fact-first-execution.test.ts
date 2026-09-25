@@ -2,10 +2,17 @@ import { describe, expect, it, vi } from "vitest";
 import { addFile, confirmMockPath, createMockLocalFs, createMockRemoteFs, createMockStateStore, readText } from "../__mocks__/sync-test-helpers";
 import { admitBatchObservation } from "./plan-admission";
 import { captureBatchObservation } from "./sync-cycle-planning";
-import { executePlan, type ExecutionContext } from "./plan-executor";
+import { executePlan as executePlanRaw, type ExecutionContext } from "./plan-executor";
 import { buildSyncRecord } from "./state-committer";
-import { digest } from "../utils/hash";
+import { createChecksumRegistry } from "../fs/modules/checksum-registry";
 import type { ConflictStrategy, MixedEntity, PathObservation } from "./types";
+
+const checksumRegistry = createChecksumRegistry();
+
+const executePlan = (
+	plan: Parameters<typeof executePlanRaw>[0],
+	ctx: Omit<ExecutionContext, "checksumRegistry">,
+) => executePlanRaw(plan, { ...ctx, checksumRegistry });
 
 /** Observe through filesystem/store interfaces; no caller-supplied action fixture. */
 async function renamedFixture(side: "local" | "remote" = "remote") {
@@ -563,7 +570,7 @@ describe("fact-first Admission through terminal publication", () => {
 	it("proves an unchanged rename through the committed cross-algorithm fingerprints without downloads", async () => {
 		const fixture = await renamedFixture();
 		addFile(fixture.remoteFs, "B.md", "original", 1000).identityKey = "R";
-		const checksum = { algo: "md5" as const, value: await digest(new TextEncoder().encode("original").buffer, "md5") };
+		const checksum = { algo: "md5" as const, value: await checksumRegistry.compute(new TextEncoder().encode("original").buffer, "md5") };
 		await fixture.stateStore.put({ ...fixture.baseline, remoteChecksum: checksum });
 		const stat = fixture.remoteFs.stat.bind(fixture.remoteFs);
 		fixture.remoteFs.stat = async (path) => {
@@ -688,7 +695,7 @@ describe("fact-first Admission through terminal publication", () => {
 
 	it("reuses the captured rename-copy bytes across different checksum algorithms", async () => {
 		const fixture = await renamedFixture();
-		const checksum = { algo: "md5" as const, value: await digest(new TextEncoder().encode("remote edit").buffer, "md5") };
+		const checksum = { algo: "md5" as const, value: await checksumRegistry.compute(new TextEncoder().encode("remote edit").buffer, "md5") };
 		const stat = fixture.remoteFs.stat.bind(fixture.remoteFs);
 		fixture.remoteFs.stat = async (path) => {
 			const entity = await stat(path);

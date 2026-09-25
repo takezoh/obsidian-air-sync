@@ -1,10 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { addFile, createMockLocalFs, createMockRemoteFs, createMockStateStore, readText } from "../__mocks__/sync-test-helpers";
-import { digest } from "../utils/hash";
 import { admitBatchObservation } from "./plan-admission";
-import { executePlan } from "./plan-executor";
+import { executePlan as executePlanRaw, type ExecutionContext } from "./plan-executor";
 import { buildSyncRecord } from "./state-committer";
 import { captureBatchObservation } from "./sync-cycle-planning";
+import { createChecksumRegistry } from "../fs/modules/checksum-registry";
+
+const checksumRegistry = createChecksumRegistry();
+
+const executePlan = (
+	plan: Parameters<typeof executePlanRaw>[0],
+	ctx: Omit<ExecutionContext, "checksumRegistry">,
+) => executePlanRaw(plan, { ...ctx, checksumRegistry });
 
 async function fixture(md5Only: boolean) {
 	const localFs = createMockLocalFs();
@@ -18,7 +25,7 @@ async function fixture(md5Only: boolean) {
 		remoteFs.stat = async (requested) => {
 			const entity = await stat(requested);
 			return entity ? { ...entity, hash: "", remoteChecksum: {
-				algo: "md5", value: await digest(await remoteFs.read(requested), "md5"),
+				algo: "md5", value: await checksumRegistry.compute(await remoteFs.read(requested), "md5"),
 			} } : null;
 		};
 	}

@@ -58,6 +58,27 @@ With **no** credentials, `npm run test:e2e` warns and skips every backend and ex
 it can never break anything if run by accident. A skipped run proves only that the harness
 is credential-gated; it is not live semantic evidence and must be reported as blocked.
 
+## Backend module composition
+
+The three services are registered as static `BackendModule`s (`googledrive` / `onedrive` /
+`dropbox`) sharing one `RemoteBackendAdapter` boundary and one core `ManagedRemoteFs`.
+Built-in vs custom OAuth is an `authMode` inside each module's declarative settings; the
+legacy `*-custom` ids are settings aliases only. See
+[design-backend-module-api.md](design/design-backend-module-api.md) and
+[design-core-backend-integration.md](design/design-core-backend-integration.md).
+
+Live E2E exercises the **real adapter + managed filesystem** path. It is credential-gated
+and out of the CI gate. The legacy-record migration, disconnect/switch lifecycle, and
+alias/authMode settings migration are covered by unit/contract/migration fixtures under
+`tests/backend-modules/` and `tests/fs/`; those fixtures are not a substitute for live
+evidence.
+
+> **Verification status:** live `npm run test:e2e*` runs and desktop/mobile smoke checks
+> require real Google/OneDrive/Dropbox credentials and physical devices. They are **not**
+> run in the environment that authored the module migration and MUST be recorded as
+> unverified until executed against an isolated test root. A skipped/blocked E2E run is not
+> release evidence.
+
 ## Prerequisites
 
 - Node 20 or 22 (the e2e transport uses the global `fetch`).
@@ -267,7 +288,7 @@ durability evidence.
 
 ## Notes
 
-- **Dropbox mtime.** `DropboxFs` reports `server_modified` (the upload wall-clock) as `mtime`,
+- **Dropbox mtime.** The Dropbox backend reports `server_modified` (the upload wall-clock) as `mtime`,
   so a written mtime does not round-trip — the fake echoes it back, the live backend does not.
   The Dropbox suite therefore runs the contract with `preservesWrittenMtime: false` (Google Drive
   keeps the default `true`), relaxing only the mtime-equality checks to "a plausible
@@ -292,14 +313,14 @@ durability evidence.
   by a truthiness test that would also swallow an id-less live entry.
 - **Dropbox case-only rename.** Dropbox documents that `move_v2` does not support
   case-only renaming, and casing-only changes are not returned by `list_folder/continue`.
-  `DropboxFs.rename()` therefore uses a deterministic intermediate sibling path, resumes
+  The Dropbox adapter's rename path therefore uses a deterministic intermediate sibling path, resumes
   the second leg when that path already contains the same stable id, rejects a foreign
   occupant before mutation, and rolls the first leg back when the final move fails. The
   live composed scenario performs the remote-origin rename through two raw client moves,
   modelling another Dropbox client without pre-updating Air Sync's cache. See
   [Issue #47](https://github.com/takezoh/obsidian-air-sync/issues/47) and the
   [official Dropbox SDK route contract](https://dropbox.github.io/dropbox-sdk-js/Dropbox.html#filesMoveV2__anchor).
-- **OneDrive mtime.** Unlike Dropbox, `OneDriveFs` PATCHes `fileSystemInfo.lastModifiedDateTime`
+- **OneDrive mtime.** Unlike Dropbox, the OneDrive adapter PATCHes `fileSystemInfo.lastModifiedDateTime`
   right after the content PUT, so the written mtime *is* preserved (not a server clock) — but
   this e2e proved Microsoft Graph stores it at **whole-second** precision (`12345 → 12000`,
   `99999 → 99000`). So the suite runs with `mtimePrecisionMs: 1000` (the written value must
@@ -339,7 +360,7 @@ durability evidence.
     that reports only one is raised as an `ISSUE #90 PREMISE FALSIFIED` error naming which of
     those happened — that result matters more than a green run, because the arbiter, the
     displacement facts, the absence attribution and the identity-addressed repair all rest on it.
-  - **The contention, then the repair.** Through `GoogleDriveFs`'s own surface: exactly one
+  - **The contention, then the repair.** Through `ManagedRemoteFs<googledrive>`'s own surface: exactly one
     claimant is addressable by `stat`, the delta's `contended` names both ids, and **`deleted` is
     empty in every drain of the window** — the displaced address is absent from the working view
     but present on the provider, so reporting it would authorise deleting a live file. The repair

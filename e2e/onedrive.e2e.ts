@@ -1,11 +1,11 @@
 import "fake-indexeddb/auto";
 import { afterAll, beforeAll, describe } from "vitest";
-import { OneDriveAuth } from "../src/fs/onedrive/auth";
-import { OneDriveClient } from "../src/fs/onedrive/client";
-import { OneDriveFs } from "../src/fs/onedrive/index";
-import type { OneDriveItem } from "../src/fs/onedrive/types";
+import { OneDriveAuth } from "../src/backends/onedrive/auth";
+import { OneDriveClient } from "../src/backends/onedrive/client";
+import { createPlatformTransport } from "../src/fs/platform-http-transport";
+import { OneDriveAdapter } from "../src/backends/onedrive/adapter";
+import { ManagedRemoteFs } from "../src/fs/managed/managed-remote-fs";
 import { runIFileSystemContract } from "../tests/fs/contracts/ifilesystem.contract";
-import { MetadataStore } from "../src/store/metadata-store";
 import { readCreds } from "./helpers/env";
 import {
 	cleanupOneDriveParent,
@@ -18,8 +18,8 @@ import type { MovedObjectIdentity } from "../tests/fs/contracts/caching-remote-f
 
 /**
  * What OneDrive's own entity projection makes of a moved object's identity, against the
- * LIVE API. Same disposition the family declares to the fake-backed unit contract
- * (`tests/fs/onedrive/caching-remote-fs.contract-harness.ts`) — stated separately here
+ * LIVE API. Same disposition the family declares to the fake-backed managed contract
+ * (`tests/backends/onedrive/managed.contract-harness.ts`) — stated separately here
  * because a fake that always hands over a complete driveItem cannot establish it for
  * `/delta`, which is the whole point of ADR 0003.
  */
@@ -54,19 +54,20 @@ if (!creds || !clientId) {
 			"AIRSYNC_E2E_ONEDRIVE_CLIENT_ID (run `npm run e2e:bootstrap -- onedrive`; " +
 			"see docs/e2e-testing.md).",
 	);
-	describe.skip("IFileSystem contract — OneDriveFs (real) [no creds]", () => {
+	describe.skip("IFileSystem contract — ManagedRemoteFs<onedrive> (real) [no creds]", () => {
 		/* skipped */
 	});
 } else {
 	// PKCE refresh needs only the (developer's own) public client id. Empty access
 	// token + expiry 0 forces a refresh on the first getAccessToken().
-	const auth = new OneDriveAuth(clientId);
+	const auth = new OneDriveAuth(clientId, createPlatformTransport());
 	auth.setTokens(creds.refreshToken, "", 0);
 	// Inject a node-safe sleep: the client's default sleep uses window.setTimeout,
 	// undefined under vitest's node environment — a 429 backoff would otherwise crash
 	// with "window is not defined" instead of retrying (same fix as the Dropbox e2e).
 	const client = new OneDriveClient(
 		(force) => auth.getAccessToken(force),
+		createPlatformTransport(),
 		undefined,
 		(ms) => new Promise((r) => setTimeout(r, ms)),
 	);
@@ -87,33 +88,38 @@ if (!creds || !clientId) {
 		}
 	});
 
+	/** The production composition's filesystem: real adapter + core-managed cache. */
+	function makeManagedOneDriveFs(childId: string, dbNamePrefix: string): ManagedRemoteFs {
+		return new ManagedRemoteFs({
+			adapter: new OneDriveAdapter(client, childId),
+			name: "onedrive",
+			rootFolderId: childId,
+			vaultId: crypto.randomUUID(),
+			store: { dbNamePrefix, version: 1 },
+		});
+	}
+
 	runIFileSystemContract(
-		"OneDriveFs (real)",
-		async () => new OneDriveFs(client, await makeOneDriveChild(client, parentId)),
-		// OneDriveFs PATCHes fileSystemInfo.lastModifiedDateTime after the content PUT,
-		// so the written mtime IS preserved (preservesWrittenMtime stays true, unlike
-		// Dropbox's server clock) — but Microsoft Graph stores it at WHOLE-SECOND
-		// precision (this e2e proved 12345 → 12000), so it round-trips only to the
-		// second: mtimePrecisionMs 1000. The OneDrive fake echoes full ms, hence the
-		// unit contract stays exact and only this live run carries the precision knob.
+		"ManagedRemoteFs<onedrive> (real)",
+		async () => makeManagedOneDriveFs(await makeOneDriveChild(client, parentId), "air-sync-onedrive-e2e-contract"),
+		// Microsoft Graph stores fileSystemInfo.lastModifiedDateTime at WHOLE-SECOND
+		// precision (this e2e proved 12345 → 12000), so a written mtime round-trips
+		// only to the second. The OneDrive fake echoes full ms, hence the unit contract
+		// stays exact and only this live run carries the precision knob.
 		{ computesHashOnStat: false, mtimePrecisionMs: 1000, stableIdentity: true },
 	);
 
 	runPriorityFidelityE2E(
-		"OneDriveFs",
-		async () => new OneDriveFs(client, await makeOneDriveChild(client, parentId)),
+		"ManagedRemoteFs<onedrive>",
+		async () => makeManagedOneDriveFs(await makeOneDriveChild(client, parentId), "air-sync-onedrive-e2e-priority"),
 	);
 
-	runRenameSafetyE2E("OneDriveFs", {
+	runRenameSafetyE2E("ManagedRemoteFs<onedrive>", {
 		backendType: "onedrive",
 		movedObjectIdentity: ONEDRIVE_MOVED_OBJECT_IDENTITY,
 		makeBackend: async () => {
 			const childId = await makeOneDriveChild(client, parentId);
-			const store = new MetadataStore<OneDriveItem>(crypto.randomUUID(), {
-				dbNamePrefix: "air-sync-onedrive-e2e-rename",
-				version: 1,
-			});
-			const fs = new OneDriveFs(client, childId, undefined, store);
+			const fs = makeManagedOneDriveFs(childId, "air-sync-onedrive-e2e-rename");
 			return {
 				fs,
 				renameOutOfBand: async (file, newPath) => {

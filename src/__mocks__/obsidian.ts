@@ -29,7 +29,9 @@ export const requestUrl = (_opts: unknown): Promise<unknown> => {
 };
 
 export class Notice {
-	constructor(_message: string, _timeout?: number) {}
+	constructor(message: string, _timeout?: number) {
+		__ui.notices.push(message);
+	}
 }
 
 export class SecretComponent {
@@ -45,7 +47,7 @@ export class SecretComponent {
  * the UI renders; reset these between tests.
  */
 export const __ui: {
-	buttons: { name: string; click: () => void }[];
+	buttons: { name: string; label: string; click: () => void }[];
 	dropdowns: {
 		name: string;
 		description: string;
@@ -53,14 +55,30 @@ export const __ui: {
 		value: string;
 		change: (value: string) => unknown;
 	}[];
+	texts: {
+		name: string;
+		description: string;
+		value: string;
+		change: (value: string) => unknown;
+	}[];
+	toggles: {
+		name: string;
+		description: string;
+		value: boolean;
+		change: (value: boolean) => unknown;
+	}[];
 	lastModal: { close: () => void } | null;
-} = { buttons: [], dropdowns: [], lastModal: null };
+	notices: string[];
+} = { buttons: [], dropdowns: [], texts: [], toggles: [], lastModal: null, notices: [] };
 
 /** Minimal stand-in for Obsidian's augmented HTMLElement (createEl/empty). */
 class FakeEl {
 	children: FakeEl[] = [];
 	empty(): void {
 		this.children = [];
+	}
+	addClass(_cls: string): FakeEl {
+		return this;
 	}
 	createEl(_tag: string, _opts?: { text?: string; cls?: string }): FakeEl {
 		const el = new FakeEl();
@@ -108,18 +126,44 @@ export class Setting {
 	}
 	addButton(cb: (b: unknown) => unknown) {
 		let handler: () => void = () => {};
+		let label = "";
 		const btn = {
-			setButtonText: (_t: string) => btn,
+			setButtonText: (text: string) => {
+				label = text;
+				return btn;
+			},
+			setCta: () => btn,
 			onClick: (h: () => void) => {
 				handler = h;
 				return btn;
 			},
 		};
 		cb(btn);
-		__ui.buttons.push({ name: this._name, click: () => handler() });
+		__ui.buttons.push({ name: this._name, label, click: () => handler() });
 		return this;
 	}
-	addText(_cb: (t: unknown) => unknown) {
+	addText(cb: (t: unknown) => unknown) {
+		let value = "";
+		let handler: (next: string) => unknown = () => {};
+		const text = {
+			setPlaceholder: (_placeholder: string) => text,
+			setValue: (next: string) => {
+				value = next;
+				return text;
+			},
+			setDisabled: (_disabled: boolean) => text,
+			onChange: (next: (value: string) => unknown) => {
+				handler = next;
+				return text;
+			},
+		};
+		cb(text);
+		__ui.texts.push({
+			name: this._name,
+			description: this._description,
+			get value() { return value; },
+			change: (next: string) => handler(next),
+		});
 		return this;
 	}
 	addDropdown(cb: (d: unknown) => unknown) {
@@ -151,7 +195,27 @@ export class Setting {
 		});
 		return this;
 	}
-	addToggle(_cb: (t: unknown) => unknown) {
+	addToggle(cb: (t: unknown) => unknown) {
+		let value = false;
+		let handler: (next: boolean) => unknown = () => {};
+		const toggle = {
+			setValue: (next: boolean) => {
+				value = next;
+				return toggle;
+			},
+			setDisabled: (_disabled: boolean) => toggle,
+			onChange: (next: (value: boolean) => unknown) => {
+				handler = next;
+				return toggle;
+			},
+		};
+		cb(toggle);
+		__ui.toggles.push({
+			name: this._name,
+			description: this._description,
+			get value() { return value; },
+			change: (next: boolean) => handler(next),
+		});
 		return this;
 	}
 	addTextArea(_cb: (t: unknown) => unknown) {

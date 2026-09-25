@@ -1,3 +1,4 @@
+import { errorMessage } from "../backend-api";
 import type { FileEntity } from "../fs/types";
 import type { SyncAction, SyncRecord } from "./types";
 import type { SyncStateStore } from "./state";
@@ -82,7 +83,7 @@ async function maybeStoreMergeBase(
 	} catch (err) {
 		logger?.warn("Failed to store content for 3-way merge", {
 			path,
-			error: err instanceof Error ? err.message : String(err),
+			error: errorMessage(err),
 		});
 	}
 }

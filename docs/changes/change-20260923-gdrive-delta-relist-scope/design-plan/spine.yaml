@@ -1,0 +1,601 @@
+acceptance:
+- criteria: Driven through applyIdDeltaPage and applyRemoteChanges, the per-call entered
+    target set contains exactly the folders whose prior cached path was undefined
+    and whose new path resolved, in first-entered order, is empty on a steady-state
+    page, and is discarded with the call.
+  id: AC-001
+  requirement_refs:
+  - FR-001
+  - FR-002
+  - FR-006
+- criteria: Zero declared-operation listings on a no-entry drain; exactly one for
+    the topmost remaining target otherwise; the account-wide walk on the delta path
+    is absent, pinned RED-first by an adapter unit
+  id: AC-002
+  requirement_refs:
+  - FR-002
+  - FR-003
+  - NFR-001
+- criteria: For Google Drive, OneDrive and Dropbox the shared scope-entry case reports
+    exactly F, F/a.md, F/sub and F/sub/b.md as modified with no deleted and no renamed
+    facts, and the same exact set is repeated after abortWorkingView.
+  id: AC-003
+  requirement_refs:
+  - FR-004
+- criteria: An injected listing rejection aborts the attempt, leaves the durable checkpoint
+    and scope fingerprint unchanged (cursor-sensitive fake), and the next attempt
+    re-derives the same complete subtree
+  id: AC-004
+  requirement_refs:
+  - FR-005
+  - NFR-003
+- criteria: cursor_invalid makes fetchChanges return needsFullScan and take the full-scan
+    fallback, publishing no partial delta and keeping a same-path content update the
+    diff cannot re-derive
+  id: AC-005
+  requirement_refs:
+  - FR-008
+- criteria: One invocation of the declared operation issues exactly one scoped listing
+    through the existing client for the supplied folder identity, returns the provider's
+    current subtree entries, and reads no cache, cursor, scope or store; an adapter
+    that omits the operation stays valid and is issued no completion request.
+  id: AC-006
+  requirement_refs:
+  - FR-004
+  - FR-007
+  - FR-009
+- criteria: The three canonical modules register and validate both with and without
+    the optional member, a declared-but-malformed member is rejected at registration
+    while a valid omitting adapter is accepted, and the required-contract catalog
+    reports zero issues with OneDrive and Dropbox production code unchanged.
+  id: AC-007
+  requirement_refs:
+  - FR-009
+  - NFR-002
+- criteria: The adapter class doc no longer claims an account-wide per-changed-folder
+    re-list and the list-all.ts comment no longer cites the removed incremental-sync
+    walk, each naming only the single entered-folder exception.
+  id: AC-008
+  requirement_refs:
+  - FR-010
+- criteria: The opt-in live Google Drive e2e exercises the move-in scenario and confirms
+    the complete entered subtree surfaces outside the gate; the steady-state zero-listing
+    count is evidenced by the deterministic managed delta test, not by the live e2e
+  id: AC-009
+  requirement_refs:
+  - NFR-001
+adrs:
+- decision_input_refs:
+  - decision-input-entered-target-selection
+  - decision-input-documentation-authority
+  - decision-input-whole-drive-drain
+  id: adr-20260923-core-entered-folder-target-selection
+  status: accepted
+- decision_input_refs:
+  - decision-input-delta-completion-seam
+  - decision-input-api-version-evolution
+  id: adr-20260923-backend-delta-completion-operation
+  status: accepted
+- decision_input_refs:
+  - decision-input-performance-evidence
+  id: adr-20260923-executable-relist-cost-measurement
+  status: accepted
+artifact: design-plan-spine
+components:
+- contract_refs:
+  - contract-entered-target-projection
+  - contract-completion-orchestration
+  - contract-entered-bookkeeping-lifetime
+  - contract-relist-attempt-atomicity
+  - contract-relist-cost-bound
+  id: component-core-delta
+  kind: existing
+  paths:
+  - src/fs/caching/id-delta.ts
+  - src/fs/managed/delta-projection.ts
+  - src/fs/managed/managed-remote-fs.ts
+- contract_refs:
+  - contract-provider-delta-completion
+  - contract-module-api-version-evolution
+  id: component-backend-api
+  kind: existing
+  paths:
+  - src/backend-api/remote-adapter.ts
+  - src/backend-api/module.ts
+  - src/backend-api/index.ts
+  - src/fs/modules/validate-module.ts
+- contract_refs:
+  - contract-googledrive-subtree-read
+  id: component-googledrive-adapter
+  kind: existing
+  paths:
+  - src/backends/googledrive/adapter.ts
+  - src/backends/googledrive/list-all.ts
+- contract_refs:
+  - contract-shared-scope-entry-completeness
+  id: component-contract-harness
+  kind: existing
+  paths:
+  - tests/fs/contracts/caching-remote-fs.contract.ts
+  - tests/fs/contracts/remote-backend-family.ts
+  - tests/fs/remote-backend-contracts.test.ts
+  - tests/fs/googledrive/managed.contract-harness.ts
+contracts:
+- adr_refs:
+  - adr-20260923-core-entered-folder-target-selection
+  dimension: data_model
+  discretion:
+  - escalate_when:
+    - The placement would add a provider request or a durable field.
+    - The placement would make the target set survive beyond the call.
+    - The placement would change the first-entered order the caller observes.
+    id: discretion-target-iteration-placement
+    question: Whether the ordered per-call target list is computed inline while reading
+      the apply accumulator, or projected as a frozen descriptor from delta-projection
+      to the caller.
+    scope:
+      component: component-core-delta
+      files:
+      - src/fs/caching/id-delta.ts
+      - src/fs/managed/delta-projection.ts
+      visibility: private
+    unit_ref: Project entered-folder targets from the shared apply accumulator
+  - escalate_when:
+    - The carrier would need to carry cache, cursor or scope state.
+    - The carrier would be read by a later cycle or copied into IncrementalChangesResult.
+    - The carrier would lose the first-entered membership order.
+    id: discretion-target-carrier-shape
+    question: Whether the per-call target carrier is an ordered Set<string> snapshot
+      or a frozen string[] in first-entered order.
+    scope:
+      component: component-core-delta
+      files:
+      - src/fs/caching/id-delta.ts
+      - src/fs/managed/delta-projection.ts
+      visibility: private
+    unit_ref: Project entered-folder targets from the shared apply accumulator
+  - escalate_when:
+    - The encoding would read prior-cycle state.
+    - The encoding would miss a folder evicted earlier in the same page by its ancestor's
+      tombstone.
+    - The encoding would record an already-cached folder.
+    id: discretion-entered-detection-encoding
+    question: Whether entered-ness is recorded by a !oldPath && isFolder predicate
+      inside applyEntry or by observing that the cache write yielded a path for an
+      id that had no resolved path immediately before the write.
+    scope:
+      component: component-core-delta
+      files:
+      - src/fs/caching/id-delta.ts
+      visibility: private
+    unit_ref: Project entered-folder targets from the shared apply accumulator
+  id: contract-entered-target-projection
+  owner: component-core-delta
+  requirement_refs:
+  - FR-001
+  - FR-002
+  - FR-006
+  unit_refs:
+  - Project entered-folder targets from the shared apply accumulator
+  verification:
+  - command: npm test -- src/fs/caching/id-delta.test.ts
+    id: verify-target-set-unit
+    tier: T0
+- adr_refs:
+  - adr-20260923-core-entered-folder-target-selection
+  dimension: control_flow
+  id: contract-completion-orchestration
+  owner: component-core-delta
+  requirement_refs:
+  - FR-002
+  - FR-004
+  - FR-005
+  - FR-008
+  unit_refs:
+  - Orchestrate delta completion over the per-call entered targets
+  verification:
+  - command: npm test -- tests/fs/managed/delta-completion.test.ts
+    id: verify-orchestration-unit
+    tier: T1
+  - command: npm test -- tests/fs/managed/delta-completion.test.ts
+    id: verify-cursor-invalid-fallback
+    tier: T1
+  - command: npm test -- tests/fs/remote-backend-contracts.test.ts
+    id: verify-scope-entry-contract
+    tier: T2
+- adr_refs:
+  - adr-20260923-backend-delta-completion-operation
+  dimension: integration_contract
+  id: contract-googledrive-subtree-read
+  owner: component-googledrive-adapter
+  requirement_refs:
+  - FR-004
+  - FR-007
+  - FR-008
+  - FR-009
+  unit_refs:
+  - Implement the Google Drive identity-addressed subtree read
+  verification:
+  - command: npm test -- src/backends/googledrive/adapter.test.ts
+    id: verify-subtree-read-unit
+    tier: T1
+  - command: npm test -- src/backends/googledrive/adapter.test.ts
+    id: verify-subtree-typed-410
+    tier: T1
+- adr_refs:
+  - adr-20260923-core-entered-folder-target-selection
+  dimension: failure_recovery
+  id: contract-relist-attempt-atomicity
+  owner: component-core-delta
+  requirement_refs:
+  - FR-005
+  - FR-006
+  - NFR-003
+  unit_refs:
+  - Orchestrate delta completion over the per-call entered targets
+  verification:
+  - command: npm test -- tests/fs/managed/delta-completion.test.ts
+    id: verify-abort-atomicity
+    tier: T1
+- adr_refs:
+  - adr-20260923-executable-relist-cost-measurement
+  dimension: performance_budget
+  id: contract-relist-cost-bound
+  owner: component-core-delta
+  requirement_refs:
+  - NFR-001
+  - FR-003
+  unit_refs:
+  - Orchestrate delta completion over the per-call entered targets
+  - Register the shared scope-entry case across all three families
+  verification:
+  - command: npm test -- tests/fs/managed/delta-completion.test.ts
+    id: verify-relist-request-count
+    tier: T1
+  - command: npm test -- src/backends/googledrive/adapter.test.ts
+    id: verify-account-wide-red
+    tier: T1
+- adr_refs: []
+  dimension: integration_contract
+  id: contract-shared-scope-entry-completeness
+  owner: component-contract-harness
+  requirement_refs:
+  - FR-004
+  - NFR-002
+  unit_refs:
+  - Register the shared scope-entry case across all three families
+  verification:
+  - command: npm test -- tests/fs/remote-backend-contracts.test.ts
+    id: verify-catalog-completeness
+    tier: T2
+- adr_refs:
+  - adr-20260923-backend-delta-completion-operation
+  dimension: integration_contract
+  id: contract-provider-delta-completion
+  owner: component-backend-api
+  requirement_refs:
+  - FR-004
+  - FR-007
+  - FR-009
+  unit_refs:
+  - Declare the optional provider delta-completion operation
+  verification:
+  - command: npm test -- tests/backend-api/validate-module.test.ts
+    id: verify-completion-api-shape
+    tier: T1
+  - command: npm test -- tests/fs/remote-backend-contracts.test.ts
+    id: verify-completion-facts-contract
+    tier: T2
+- adr_refs:
+  - adr-20260923-backend-delta-completion-operation
+  dimension: migration_compatibility
+  id: contract-module-api-version-evolution
+  owner: component-backend-api
+  requirement_refs:
+  - FR-009
+  - NFR-002
+  unit_refs:
+  - Declare the optional provider delta-completion operation
+  verification:
+  - command: npm test -- tests/backend-api/validate-module.test.ts
+    id: verify-module-compat
+    tier: T1
+- adr_refs: []
+  dimension: concurrency
+  id: contract-entered-bookkeeping-lifetime
+  owner: component-core-delta
+  requirement_refs:
+  - FR-006
+  - NFR-003
+  unit_refs:
+  - Project entered-folder targets from the shared apply accumulator
+  verification:
+  - command: npm run lint:bot-repro
+    id: verify-ownership-guards
+    tier: T1
+dispositions:
+- adr_refs:
+  - adr-20260923-core-entered-folder-target-selection
+  contract_refs:
+  - contract-entered-target-projection
+  - contract-completion-orchestration
+  decision_input_ref: decision-input-entered-target-selection
+  disposition: adopted
+- adr_refs:
+  - adr-20260923-backend-delta-completion-operation
+  contract_refs:
+  - contract-provider-delta-completion
+  decision_input_ref: decision-input-delta-completion-seam
+  disposition: adopted
+- adr_refs:
+  - adr-20260923-backend-delta-completion-operation
+  contract_refs:
+  - contract-module-api-version-evolution
+  decision_input_ref: decision-input-api-version-evolution
+  disposition: adopted
+- adr_refs: []
+  contract_refs:
+  - contract-shared-scope-entry-completeness
+  decision_input_ref: decision-input-scope-entry-completeness
+  disposition: adopted
+- adr_refs: []
+  contract_refs: []
+  decision_input_ref: decision-input-whole-drive-drain
+  disposition: not_applicable
+- adr_refs:
+  - adr-20260923-executable-relist-cost-measurement
+  contract_refs:
+  - contract-relist-cost-bound
+  decision_input_ref: decision-input-performance-evidence
+  disposition: adopted
+- adr_refs:
+  - adr-20260923-core-entered-folder-target-selection
+  contract_refs: []
+  decision_input_ref: decision-input-documentation-authority
+  disposition: adopted
+- adr_refs: []
+  contract_refs:
+  - contract-relist-attempt-atomicity
+  decision_input_ref: decision-input-walk-abort-acceptance
+  disposition: adopted
+- adr_refs: []
+  contract_refs: []
+  decision_input_ref: decision-input-target-iteration-placement
+  disposition: implementation_detail
+- adr_refs: []
+  contract_refs: []
+  decision_input_ref: decision-input-target-carrier-shape
+  disposition: implementation_detail
+- adr_refs: []
+  contract_refs: []
+  decision_input_ref: decision-input-entered-detection-encoding
+  disposition: implementation_detail
+granularity_profile: boundary-complete
+requirements:
+- id: FR-001
+  priority: must
+  statement: When an id-addressed delta upsert describes a folder that had no cached
+    path before its own application and resolves to a path, the system shall record
+    that folder's stable id in the per-call entered-folder target set in first-entered
+    order.
+  type: event_driven
+- id: FR-002
+  priority: must
+  statement: The system shall restrict the delta-completion subtree read to the per-call
+    entered-folder target set, reading each remaining topmost target exactly once
+    after the whole drain.
+  type: ubiquitous
+- id: FR-003
+  priority: must
+  statement: While a Google Drive delta drain reports no folder that newly entered
+    the bound root, the system shall issue zero subtree-listing requests.
+  type: state_driven
+- id: FR-004
+  priority: must
+  statement: When a folder enters the bound root, the system shall yield the folder
+    and its pre-existing descendants as complete modified facts in the same getChangedPaths()
+    result, with no deleted or renamed facts and without a COLD rescan, for Google
+    Drive, OneDrive, and Dropbox.
+  type: event_driven
+- id: FR-005
+  priority: must
+  statement: If a delta-completion listing request rejects, then the system shall
+    not advance the durable checkpoint and shall not publish a partial delta.
+  type: unwanted
+- id: FR-006
+  priority: must
+  statement: The system shall keep entered-folder bookkeeping per-call and discard
+    it with the call, never persisting it and never copying it into IncrementalChangesResult.
+  type: ubiquitous
+- id: FR-007
+  priority: must
+  statement: A backend module shall report provider facts and perform provider mutations
+    only, and shall not read the metadata cache, cursor, scope, or stores.
+  type: ubiquitous
+- id: FR-008
+  priority: must
+  statement: If any request in the delta-completion path returns HTTP 410, then the
+    system shall take the existing complete full-scan fallback rather than publish
+    a partial delta or advance the cursor past unfetched facts.
+  type: unwanted
+- id: FR-009
+  priority: must
+  statement: Where a backend adapter declares the delta-completion operation, the
+    system shall invoke it for the per-call target set; an adapter that does not declare
+    it shall remain valid and unchanged.
+  type: optional
+- id: FR-010
+  priority: should
+  statement: When documentation or a doc comment describes the incremental re-list
+    scope, the system shall describe only the single entered-folder exception and
+    shall not claim an account-wide per-changed-folder re-list and shall not claim
+    that the completion listing never runs on the incremental path.
+  type: event_driven
+- id: NFR-001
+  priority: null
+  statement: A warm/hot delta cycle with no folder entering the bound root issues
+    zero declared-operation (subtree-listing) requests, and a cycle whose only in-scope
+    change is an entered folder issues exactly one subtree listing per topmost entered
+    target.
+  type: performance
+- id: NFR-002
+  priority: null
+  statement: OneDrive and Dropbox production code and request shapes are unchanged,
+    the three canonical modules keep their behavior, and the required-contract catalog
+    stays complete.
+  type: compatibility
+- id: NFR-003
+  priority: null
+  statement: A failed delta-completion listing aborts the attempt, the durable checkpoint
+    is not advanced, and the next attempt re-derives the same targets from the same
+    committed window.
+  type: reliability
+units:
+- acceptance:
+  - delta-projection surfaces the entered target set for the current call only
+  - id-delta.test.ts covers apply-time recording and per-call discard
+  - npm run lint:bot-repro keeps the ownership guards green
+  chunk: chunk-core-target-selection
+  contract_refs:
+  - contract-entered-target-projection
+  - contract-entered-bookkeeping-lifetime
+  decision_closure_reason: null
+  depends_on: []
+  files:
+  - src/fs/caching/id-delta.ts
+  - src/fs/managed/delta-projection.ts
+  - src/fs/caching/id-delta.test.ts
+  objective: Surface the per-call entered-folder target set from the shared apply
+    result and discard it with the call.
+  output_format: Type and projection change in the core delta modules, with unit tests
+    for apply-time recording and per-call lifetime.
+  task_boundaries: Do not add any provider request, durable field, or cross-cycle
+    state; do not change the sort comparator, tombstone branch, or moved branch; do
+    not orchestrate or merge.
+  title: Project entered-folder targets from the shared apply accumulator
+  tool_guidance: Read src/fs/caching/id-delta.ts and src/fs/managed/delta-projection.ts;
+    follow adr-20260916 decision 1.
+- acceptance:
+  - an adapter declaring the operation validates; an adapter omitting it also validates;
+    a declared-but-malformed member is rejected
+  - the operation's typed result is complete entries or cursor_invalid
+  - the module conformance catalog remains complete
+  chunk: chunk-core-target-selection
+  contract_refs:
+  - contract-provider-delta-completion
+  - contract-module-api-version-evolution
+  decision_closure_reason: null
+  depends_on: []
+  files:
+  - src/backend-api/remote-adapter.ts
+  - src/backend-api/module.ts
+  - src/backend-api/index.ts
+  - src/fs/modules/validate-module.ts
+  objective: Add the optional, declared, typed provider delta-completion operation
+    to the Backend Module API and validate it additively, including malformed declarations.
+  output_format: Interface, typed result, and runtime-validation change with the module
+    catalog and adapter validation updated.
+  task_boundaries: Do not make the operation required; do not let a module read core
+    cache, cursor, scope, or stores; do not resolve paths or merge.
+  title: Declare the optional provider delta-completion operation
+  tool_guidance: Read src/backend-api/remote-adapter.ts, src/backend-api/module.ts,
+    src/fs/modules/validate-module.ts; keep the module boundary guard green.
+- acceptance:
+  - zero declared-operation invocations on a no-entry drain
+  - one invocation per remaining topmost target in first-entered order, one at a time
+  - nested and unresolved targets are dropped in core
+  - cursor_invalid yields needsFullScan with no partial delta
+  - a rejected listing aborts before any durable commit
+  chunk: chunk-core-target-selection
+  contract_refs:
+  - contract-completion-orchestration
+  - contract-relist-attempt-atomicity
+  - contract-relist-cost-bound
+  decision_closure_reason: null
+  depends_on:
+  - Declare the optional provider delta-completion operation
+  - Project entered-folder targets from the shared apply accumulator
+  files:
+  - src/fs/managed/managed-remote-fs.ts
+  - src/fs/managed/delta-projection.ts
+  objective: 'Drive the declared completion read from core: resolve and deduplicate
+    the entered targets, invoke the operation one at a time after the drain, merge
+    upsert-only, and translate cursor_invalid to the full-scan fallback.'
+  output_format: Core orchestration change in ManagedRemoteFs plus unit tests for
+    ordering, dedup, abort, and the 410 fallback.
+  task_boundaries: Do not add a per-page listing, concurrency, or retry layer; do
+    not resolve or merge inside the backend module; do not persist the target list.
+  title: Orchestrate delta completion over the per-call entered targets
+  tool_guidance: Read src/fs/managed/managed-remote-fs.ts and delta-projection.ts;
+    follow adr-20260916 decision 2 and adr-20260923-core-entered-folder-target-selection.
+- acceptance:
+  - one scoped listing per invocation via client.listAllFiles(folderId)
+  - returns provider entries with no cache read
+  - a 410 yields cursor_invalid
+  - an adapter omitting the operation remains valid
+  chunk: chunk-backend-completion-and-contracts
+  contract_refs:
+  - contract-googledrive-subtree-read
+  decision_closure_reason: null
+  depends_on:
+  - Declare the optional provider delta-completion operation
+  files:
+  - src/backends/googledrive/adapter.ts
+  objective: Implement the declared delta-completion operation as a pure folder-identity
+    subtree read with a typed complete/cursor_invalid result.
+  output_format: Adapter change plus unit tests recording one scoped listing per invocation
+    and the 410 outcome.
+  task_boundaries: Do not resolve a derived path, read core cache/cursor/scope/store,
+    or merge; do not add a retry or concurrency layer; do not change the whole-root
+    listAll().
+  title: Implement the Google Drive identity-addressed subtree read
+  tool_guidance: Read src/backends/googledrive/adapter.ts and list-all.ts; follow
+    adr-20260920 decision 4 and adr-20260923-backend-delta-completion-operation.
+- acceptance:
+  - validateRemoteBackendCatalog returns no issues
+  - all three families run the scope-entry case and report the exact set
+  - the shared harness fake records every declared-operation invocation so the cost
+    count is deterministic
+  chunk: chunk-backend-completion-and-contracts
+  contract_refs:
+  - contract-shared-scope-entry-completeness
+  - contract-relist-cost-bound
+  decision_closure_reason: null
+  depends_on:
+  - Implement the Google Drive identity-addressed subtree read
+  files:
+  - tests/fs/contracts/caching-remote-fs.contract.ts
+  - tests/fs/contracts/remote-backend-family.ts
+  - tests/fs/remote-backend-contracts.test.ts
+  - tests/fs/googledrive/managed.contract-harness.ts
+  objective: Register the one shared scope-entry case for Google Drive, OneDrive,
+    and Dropbox against their recorded delta shapes, and expose the declared-operation
+    invocation count deterministically.
+  output_format: Harness and catalog updates; the exact-set assertion repeated after
+    abortWorkingView, plus a recorded invocation count.
+  task_boundaries: Do not add a skip, an optional member, or a family-filtered module.
+  title: Register the shared scope-entry case across all three families
+  tool_guidance: Read tests/fs/contracts/caching-remote-fs.contract.ts and tests/fs/remote-backend-contracts.test.ts;
+    keep the catalog complete.
+- acceptance:
+  - the adapter class doc no longer claims an account-wide per-changed-folder re-list
+  - the list-all.ts comment no longer cites the removed incremental-sync walk and
+    names the single entered-folder exception
+  chunk: chunk-backend-completion-and-contracts
+  contract_refs: []
+  decision_closure_reason: Documentation and doc-comment wording changes no provider
+    fact, decision, owner, observable effect, failure semantics, or compatibility
+    bound; it only restates the accepted behavior.
+  depends_on: []
+  files:
+  - src/backends/googledrive/adapter.ts
+  - src/backends/googledrive/list-all.ts
+  objective: Keep the adapter class doc and the list-all.ts doc comment accurate about
+    the single entered-folder exception and the core-owned orchestration.
+  output_format: Code-comment edit only.
+  task_boundaries: Do not change provider behavior or any contract; the docs/google-drive-backend.md
+    page already states the exception correctly and is not edited.
+  title: Align the incremental re-list documentation
+  tool_guidance: Read the GoogleDriveAdapter class doc (adapter.ts) and the list-all.ts
+    doc comment; follow adr-20260916 Consequences and adr-20260923-core-entered-folder-target-selection.
+version: 2

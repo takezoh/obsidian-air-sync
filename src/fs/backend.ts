@@ -3,9 +3,18 @@ import type { IFileSystem } from "./interface";
 import type { IAuthProvider } from "./auth";
 import type { AirSyncSettings } from "../settings";
 import type { Logger } from "../logging/logger";
-import type { RemoteVaultResolution } from "./remote-vault-contract";
-import type { ErrorClassification } from "./errors";
+import type { RemoteVaultResolution } from "../backend-api/remote-vault-contract";
+import type { ErrorClassification } from "../backend-api/error-classification";
 import type { IBackendSettingsRenderer } from "./settings-renderer";
+
+/**
+ * Environment facts core uses to decide host behavior. Core-only: a module never
+ * sees host platform/locale/version. `mobile` selects how an external auth URL is
+ * opened (in-place navigation on mobile, a new browser tab on desktop).
+ */
+export interface BackendPlatformInfo {
+	readonly mobile: boolean;
+}
 
 /**
  * The bound remote target's display location. `path` is human-readable and
@@ -38,8 +47,23 @@ export interface IBackendProvider {
 	 */
 	createFs(app: App, settings: AirSyncSettings, logger?: Logger): IFileSystem | null;
 
-	/** Whether credentials are present and the backend is ready to sync */
+	/**
+	 * Await any asynchronous backing (e.g. a backend module's `createAdapter`)
+	 * needed before {@link createFs} can return an instance. Optional: a provider
+	 * that builds synchronously omits it. The connect boundary awaits it so no
+	 * adapter is ever created synchronously.
+	 */
+	prepare?(app: App, settings: AirSyncSettings, logger?: Logger): Promise<void>;
+
+	/** Whether a bound target AND the backend's credentials are present. */
 	isConnected(settings: AirSyncSettings): boolean;
+
+	/**
+	 * Whether the backend's credentials are present, independent of whether a
+	 * target is bound. The settings UI uses this as the auth gate: after auth but
+	 * before a folder is chosen the user still needs the folder controls.
+	 */
+	hasCredentials(): boolean;
 
 	/** Return a string uniquely identifying the current remote target (e.g. folder ID) */
 	getIdentity(settings: AirSyncSettings): string | null;

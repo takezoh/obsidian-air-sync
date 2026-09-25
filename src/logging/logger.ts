@@ -1,7 +1,7 @@
 import type { AirSyncSettings } from "../settings";
 import type { RawFsAdapter } from "../fs/raw-fs";
 import { ensureDir } from "../fs/raw-fs";
-import { AsyncMutex } from "../queue/async-queue";
+import { AsyncMutex } from "../backend-api/async-queue";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 

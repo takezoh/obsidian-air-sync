@@ -1,36 +1,36 @@
 # OneDrive Backend
 
-The OneDrive backend (`fs/onedrive/`) syncs against a folder inside the app's **App
+> **Backend module.** The canonical id is `onedrive`; the old `onedrive-custom` id is a
+> settings alias folded into `authMode: custom` (a public client id + authority). The
+> backend is implemented as `module.ts` + `adapter.ts` and runs over core
+> `ManagedRemoteFs`; see
+> [design-backend-module-api.md](design/design-backend-module-api.md). The former direct
+> `OneDriveFs` class and its provider layer were removed.
+
+The OneDrive backend (`backends/onedrive/`) syncs against a folder inside the app's **App
 Folder**. It is worker-less: authentication is in-plugin Authorization Code + PKCE, and the
 vault is addressed entirely by its **stable driveItem id** so a remote move/rename of the
 folder needs no migration.
 
 It is built on the same shared machinery as Google Drive, because OneDrive — like Google
 Drive, and unlike Dropbox — references each item's parent by id, so the id-chain path
-resolver in the shared caching base drives it unchanged. Only the wire protocol (Microsoft
-Graph v1.0) and the PKCE auth (Dropbox-style, no relay) are OneDrive-specific.
+resolver in the shared caching base drives it unchanged. Core `ManagedRemoteFs` owns the
+cache, checkpoint, and delta projection; only the wire protocol (Microsoft Graph v1.0) and
+the PKCE auth (Dropbox-style, no relay) are OneDrive-specific.
 
 > The **built-in** `onedrive` backend is personal Microsoft accounts only (the `consumers`
-> authority). The **`onedrive-custom`** backend (see below) lets the user pick the authority
-> (`common`/`organizations`/a tenant GUID), reaching work/school (Azure AD) accounts the
-> built-in cannot.
+> authority). The **`onedrive-custom`** setting (`authMode: custom`) lets the user pick the
+> authority (`common`/`organizations`/a tenant GUID), reaching work/school (Azure AD)
+> accounts the built-in cannot.
 
-## OneDriveFs
+## OneDriveAdapter
 
-The OneDrive filesystem extends the shared caching base. The crash-safe cache/checkpoint
-machinery (ADR 0001) lives in the base; this subclass supplies the OneDrive-specific seams
-and mutating operations:
-
-| Seam | Provided by |
-|---|---|
-| start cursor | the delta endpoint's `@odata.deltaLink` token |
-| full listing | draining the delta feed with no token via paging, excluding the root item, keyed by stable id across all pages so a repeated driveItem collapses to its last occurrence |
-| change fetch | draining the delta from the cursor token; an expired cursor returns a full-scan request |
-| download | the item content endpoint (the request follows the redirect) |
-| delete | the item endpoint (404 is an idempotent no-op) |
-| write | a simple content put plus a filesystem-info patch (mtime), or a resumable session for large items |
-| folder create | the children endpoint (`folder`, fail-on-conflict); a conflict falls back to an idempotent get |
-| rename | the item endpoint with name and/or parent reference |
+`OneDriveAdapter` (`adapter.ts`) implements the `RemoteBackendAdapter` over the Graph
+`OneDriveClient`. Core `ManagedRemoteFs` supplies the crash-safe cache/checkpoint machinery
+(ADR 0001) and the shared id-keyed delta apply; the adapter supplies the OneDrive-specific
+seams and mutating operations — start cursor, full listing, change fetch, download, delete,
+write (simple put plus a filesystem-info patch, or a resumable session), idempotent folder
+create, and rename/move.
 
 ### Addressing: id, never a path
 
@@ -47,7 +47,7 @@ time plus the remote checksum. Personal OneDrive exposes only Microsoft's QuickX
 drives cross-side dedup just like Google Drive's md5. The sha256/sha1 shapes are kept as
 fallbacks for the Business shape.
 
-## OneDriveMetadataCache
+## Metadata cache
 
 The metadata cache only reads Graph's driveItem shape (parent reference as a one-element
 parent array, the folder facet) and projects a filesystem entity. All path/tree logic is
@@ -102,19 +102,17 @@ code for tokens directly with Microsoft.
 
 - **Scope**: `Files.ReadWrite.AppFolder offline_access` — access confined to the App Folder; `offline_access` enables the refresh token.
 - **Token storage**: refresh + access tokens in SecretStorage (keyed per backend type); the access-token expiry lives in settings. A rotated refresh token is written and immediately read back before the refreshed response becomes reusable; cycle closeout is not a credential publication point. Microsoft's consumer endpoint has no programmatic token revoke, so disconnect just clears the SecretStorage tokens and drops the in-memory manager.
-- The built-in client id is the real Entra application id, registered for personal accounts only with the custom-protocol redirect. Work/school accounts use the custom backend instead.
+- The built-in client id is the real Entra application id, registered for personal accounts only with the custom-protocol redirect. Work/school accounts use the custom setting instead.
 
 ## Custom app (`onedrive-custom`)
 
-The custom provider is a thin subclass of the shared base — identical client/filesystem/
-folder-binding/error behaviour, same App Folder scope — that swaps the auth identity. The
-user supplies their own Entra **Application (client) ID** and an **account type**, both
-stored as plain values (the client id is a public PKCE identifier — no secret). The custom
-auth provider snapshots the effective client id and authority beside the pending
-state/verifier when authorization starts, so settings edited before callback cannot change
-the token endpoint or client identity for that attempt. Tokens live under separate
-SecretStorage keys. Disconnect clears the tokens but preserves the client id and authority so
-a reconnect needs no re-entry.
+With `authMode: custom` the module swaps the auth identity. The user supplies their own Entra
+**Application (client) ID** and an **account type**, both stored as plain values (the client
+id is a public PKCE identifier — no secret). The effective client id and authority are
+snapshotted beside the pending state/verifier when authorization starts, so settings edited
+before callback cannot change the token endpoint or client identity for that attempt. Tokens
+live under separate SecretStorage keys. Disconnect clears the tokens but preserves the client
+id and authority so a reconnect needs no re-entry.
 
 The account-type dropdown maps to the authority host segment: Personal, Work+personal,
 Work-only, or a specific tenant GUID — the lever that reaches **work/school (Azure AD)**
@@ -125,33 +123,30 @@ accounts.
 > so change detection works without a filesystem-layer change. This path is exercised only by
 > the opt-in e2e — a real Business tenant is the remaining verification gap.
 
-## Provider model
+## Module composition & remote vault
 
-The OneDrive provider:
-
-- `isConnected` = a token is present **and** a remote vault folder id is bound; identity is derived from the folder id (drives identity-change handling).
-- The incremental checkpoint (delta cursor + file-map cache) is owned by the filesystem's checkpoint capability, inherited from the shared caching base: both live in the per-target IndexedDB store and commit in **one transaction** (ADR 0001) — the cursor is never kept in settings.
-- `readBackendState` writes back refreshed tokens only and never touches the cursor; the remote path is never persisted (resolved from the id on demand for the settings display, through a **detached** auth so the UI read cannot reset the live sync's tokens).
-- `clearCheckpointStore` drops the per-target store by its settings key when there is no live filesystem, so a stale checkpoint cannot survive a disconnect.
-
-### Remote vault resolution & default
-
-The resolver binds the vault by find-or-creating a folder directly under the App Folder root
-— the **default sync folder is `App Folder/<vault>`** (the App Folder scope already
-namespaces the app, so there is no wrapper folder). Folder creation is idempotent (a conflict
-returns the existing folder), so a second device with the same name binds to the same folder.
-A LOCAL vault rename does not move the remote folder (tracked by id).
+`module.ts` declares the module: its settings (`authMode`, remote folder id, custom
+client id/authority), the PKCE auth seams, and binding. The resolver binds the vault by
+find-or-creating a folder directly under the App Folder root — the **default sync folder is
+`App Folder/<vault>`** (the App Folder scope already namespaces the app, so there is no
+wrapper folder). Folder creation is idempotent (a conflict returns the existing folder), so
+a second device with the same name binds to the same folder. A LOCAL vault rename does not
+move the remote folder (tracked by id).
 
 ### Choosing a different folder (in-app modal)
 
 Because the App Folder scope confines access to the app root, there is **no web picker** (a
 full-drive picker would only mislead). Instead, settings offers **Choose folder**, opening
-the shared in-plugin picker modal: it lists the folders directly under the app root and lets
-the user pick one or type a new name. On confirm it queues the chosen name and triggers the
-existing default-bind action, so the resolver find-or-creates and binds its id. No manager
-surface is added and no protocol round-trip is needed.
+the shared in-plugin `AppFolderPickerModal` (`ui/app-folder-picker.ts`): it lists the folders
+directly under the app root and lets the user pick one or type a new name. Because the App
+Folder scope only ever sees folders under the App Folder, an in-app list is honest. On
+confirm it queues the chosen name and triggers the default-bind action, so the resolver
+find-or-creates and binds its id. The bound folder's display path is resolved from its id
+through a **detached** auth so the UI read cannot reset the live sync's tokens.
 
-### createFs() contract
-
-Filesystem creation returns nothing unless a token and a remote vault folder id are both
-present; otherwise it builds the filesystem from the id and the per-target checkpoint store.
+Core `BackendModuleProvider` wraps the module, owns the connection host, and builds the
+single `ManagedRemoteFs` (the cursor + file-map checkpoint live in the per-target IndexedDB
+store and commit in one transaction per [ADR 0001](adr/0001-metadata-cache-is-subordinate-to-commit-last.md);
+`clearCheckpointStore` drops that store by its settings key when there is no live
+filesystem). Live OneDrive verification is covered by the opt-in e2e
+(`e2e/onedrive.e2e.ts`) — see [docs/e2e-testing.md](e2e-testing.md).

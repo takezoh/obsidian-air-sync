@@ -1,7 +1,3 @@
-import type { ChecksumAlgo } from "../fs/types";
-import { md5 } from "./md5";
-import { quickXorHashBase64 } from "./quickxor";
-
 const HEX_DIGITS = "0123456789abcdef";
 
 function hexDigit(value: number): string {
@@ -55,31 +51,4 @@ export async function dropboxContentHash(data: ArrayBuffer): Promise<string> {
 		pos += d.length;
 	}
 	return toHex(await crypto.subtle.digest("SHA-256", concat));
-}
-
-/** Whether a checksum algorithm can be reproduced from local file content. */
-export function isLocallyComputable(algo: ChecksumAlgo): boolean {
-	return algo !== "opaque";
-}
-
-/**
- * Compute the content digest for a locally-computable algorithm.
- *
- * @throws for `"opaque"` — backend-internal checksums cannot be reproduced locally.
- */
-export async function digest(data: ArrayBuffer, algo: ChecksumAlgo): Promise<string> {
-	switch (algo) {
-		case "md5":
-			return md5(data);
-		case "sha1":
-			return sha1(data);
-		case "sha256":
-			return sha256(data);
-		case "dropbox":
-			return dropboxContentHash(data);
-		case "quickxor":
-			return quickXorHashBase64(data);
-		case "opaque":
-			throw new Error("Cannot compute an opaque checksum locally");
-	}
 }

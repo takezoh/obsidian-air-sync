@@ -195,7 +195,7 @@ type PluginSettingTabConstructor = new (app: App, plugin: Plugin) => PluginSetti
 
 export interface Plugin {
 	app: App;
-	manifest: { id: string };
+	manifest: { id: string; version?: string };
 	loadData(): Promise<unknown>;
 	saveData(data: unknown): Promise<void>;
 	register(callback: () => unknown): void;

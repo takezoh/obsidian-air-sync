@@ -1,9 +1,10 @@
 import { stdout } from "node:process";
-import { GoogleAuthDirect } from "../src/fs/googledrive/auth";
-import { buildDropboxAuthorizeUrl, DropboxAuth } from "../src/fs/dropbox/auth";
-import { DROPBOX_AUTH } from "../src/fs/auth-config";
-import { buildOneDriveAuthorizeUrl, OneDriveAuth } from "../src/fs/onedrive/auth";
-import { buildOAuthState, computeS256Challenge, generateRandomString } from "../src/fs/oauth-pkce";
+import { GoogleAuthDirect } from "../src/backends/googledrive/auth";
+import { buildDropboxAuthorizeUrl, DropboxAuth } from "../src/backends/dropbox/auth";
+import { DROPBOX_AUTH } from "../src/backends/shared/auth-config";
+import { buildOneDriveAuthorizeUrl, OneDriveAuth } from "../src/backends/onedrive/auth";
+import { buildOAuthState, computeS256Challenge, generateRandomString } from "../src/backend-api/oauth-pkce";
+import { createPlatformTransport } from "../src/fs/platform-http-transport";
 import { loadDotEnvE2e } from "./helpers/env";
 import { announceAuthorizeUrl, loopbackPort, startLoopback, writeEnvE2e } from "./helpers/loopback";
 
@@ -35,6 +36,7 @@ async function bootstrapGoogle(): Promise<void> {
 		const auth = new GoogleAuthDirect({
 			clientId: requireEnv("AIRSYNC_E2E_GOOGLE_CLIENT_ID"),
 			clientSecret: requireEnv("AIRSYNC_E2E_GOOGLE_CLIENT_SECRET"),
+			transport: createPlatformTransport(),
 			redirectUri: loopback.redirectUri,
 		});
 		const url = await auth.getAuthorizationUrl();
@@ -68,7 +70,7 @@ async function bootstrapDropbox(): Promise<void> {
 		const params = await loopback.waitForCallback(state);
 		if (params.state !== state) throw new Error("State mismatch — possible CSRF; aborting.");
 		if (!params.code) throw new Error("No authorization code in the callback.");
-		const auth = new DropboxAuth(DROPBOX_AUTH.clientId);
+		const auth = new DropboxAuth(DROPBOX_AUTH.clientId, createPlatformTransport());
 		await auth.exchangeCode(params.code, codeVerifier, loopback.redirectUri);
 		const path = writeEnvE2e("AIRSYNC_E2E_DROPBOX_REFRESH_TOKEN", auth.getTokenState().refreshToken);
 		stdout.write(`\n✓ Dropbox refresh token written to ${path}\n`);
@@ -99,7 +101,7 @@ async function bootstrapOnedrive(): Promise<void> {
 		const params = await loopback.waitForCallback(state);
 		if (params.state !== state) throw new Error("State mismatch — possible CSRF; aborting.");
 		if (!params.code) throw new Error("No authorization code in the callback.");
-		const auth = new OneDriveAuth(clientId);
+		const auth = new OneDriveAuth(clientId, createPlatformTransport());
 		await auth.exchangeCode(params.code, codeVerifier, loopback.redirectUri);
 		const path = writeEnvE2e("AIRSYNC_E2E_ONEDRIVE_REFRESH_TOKEN", auth.getTokenState().refreshToken);
 		stdout.write(`\n✓ OneDrive refresh token written to ${path}\n`);

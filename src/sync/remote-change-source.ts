@@ -1,5 +1,5 @@
 import type { IFileSystem } from "../fs/interface";
-import type { AddressDisplacement } from "../fs/caching/claim-set-assignment";
+import type { RemoteDelta } from "../fs/caching/remote-fs";
 import type { FileEntity } from "../fs/types";
 import type { RenameEvidence } from "./types";
 import { collectRemoteRenameEvidence } from "./identity-evidence";
@@ -25,19 +25,22 @@ export async function remoteSnapshotAfterDelta(remoteFs: IFileSystem): Promise<F
 /**
  * Collect this cycle's remote delta.
  *
- * `onContention` carries the addresses the filesystem found claimed by two live
- * ids, in the same shape as `onIdentityEvidence`: a fact about this cycle handed
- * straight to the caller, so `RemoteChanges` stays the path-level view it has
- * always been. The facts are not stored anywhere — the next cycle re-observes
- * whatever still stands.
+ * Namespace collisions are settled inside the remote filesystem before this runs
+ * (see `IFileSystem.namespaceReconciliation`), so the delta is a path-level 1:1 view
+ * and this seam never carries a collision fact.
  */
 export async function getRemoteChanges(
 	remoteFs: IFileSystem,
 	onIdentityEvidence?: (evidence: readonly RenameEvidence[]) => void,
-	onContention?: (contended: readonly AddressDisplacement[]) => void,
+	prefetchedDelta?: RemoteDelta | null,
 ): Promise<RemoteChanges> {
 	if (!remoteFs.checkpoint) return emptyRemoteChanges();
-	const result = await remoteFs.checkpoint.getChangedPaths();
+	// A delta already built by namespace reconciliation this cycle is reused, so the
+	// cursor is not replayed (a second replay sees no changes) and the view consumed is
+	// the one reconciliation settled.
+	const result = prefetchedDelta !== undefined
+		? prefetchedDelta
+		: await remoteFs.checkpoint.getChangedPaths();
 	if (!result) return emptyRemoteChanges();
 	// The checkpoint's pairs reach evidence untouched, identity included. Two claims on
 	// one edge naming different objects now both survive collection, so the flattened
@@ -45,7 +48,6 @@ export async function getRemoteChanges(
 	// the conflict itself is the report family's to classify, not this seam's to hide.
 	const renameEvidence = collectRemoteRenameEvidence(result.renamed ?? []);
 	onIdentityEvidence?.(renameEvidence);
-	onContention?.(result.contended ?? []);
 	return {
 		paths: [
 			...result.modified,

@@ -1,3 +1,4 @@
+import { errorMessage } from "../backend-api";
 import type { IFileSystem } from "../fs/interface";
 import type { Logger } from "../logging/logger";
 import { hasChanged, hasRemoteChanged } from "./change-compare";
@@ -98,7 +99,7 @@ export async function syncOpenedFilePriority(
 				nextRecord = undefined;
 				ctx.logger?.warn("file-open priority baseline commit failed", {
 					path: ctx.path,
-					message: error instanceof Error ? error.message : String(error),
+					message: errorMessage(error),
 				});
 			}
 			if (!nextRecord) {
@@ -122,7 +123,7 @@ export async function syncOpenedFilePriority(
 	} catch (error) {
 		ctx.logger?.warn("file-open priority attempt failed", {
 			path: ctx.path,
-			message: error instanceof Error ? error.message : String(error),
+			message: errorMessage(error),
 		});
 		ctx.requestNormalLifecycle();
 		return "failed_retryable";

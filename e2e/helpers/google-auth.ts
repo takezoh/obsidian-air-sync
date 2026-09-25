@@ -1,5 +1,6 @@
-import type { IGoogleAuth } from "../../src/fs/googledrive/auth";
-import { GoogleAuth, GoogleAuthDirect } from "../../src/fs/googledrive/auth";
+import type { IGoogleAuth } from "../../src/backends/googledrive/auth";
+import { GoogleAuth, GoogleAuthDirect } from "../../src/backends/googledrive/auth";
+import { createPlatformTransport } from "../../src/fs/platform-http-transport";
 import type { BackendCreds } from "./env";
 import { loadDotEnvE2e, readCreds } from "./env";
 
@@ -21,8 +22,8 @@ export function createGoogleE2EAuth(refreshToken: string): IGoogleAuth {
 	const clientSecret = process.env.AIRSYNC_E2E_GOOGLE_CLIENT_SECRET;
 	const auth: IGoogleAuth =
 		clientId && clientSecret
-			? new GoogleAuthDirect({ clientId, clientSecret })
-			: new GoogleAuth();
+			? new GoogleAuthDirect({ clientId, clientSecret, transport: createPlatformTransport() })
+			: new GoogleAuth(createPlatformTransport());
 	auth.setTokens(refreshToken, "", 0);
 	return auth;
 }

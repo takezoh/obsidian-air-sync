@@ -1,5 +1,6 @@
-/* eslint max-lines: ["error", 1020] -- the executor owns all fixed protocols, direction-specific transfer proof, immediate pre-effect observation, and proof-gated commit routing. Re-pinned from 970 for the identity-addressed namespace repair: which addressing a rename uses, and the fact that the repair route runs none of the publication machinery, must be readable against the path-addressed protocol it deliberately bypasses. */
+/* eslint max-lines: ["error", 1034] -- the executor owns all fixed protocols, direction-specific transfer proof, immediate pre-effect observation, and proof-gated commit routing. Re-pinned from 970 for the identity-addressed namespace repair: which addressing a rename uses, and the fact that the repair route runs none of the publication machinery, must be readable against the path-addressed protocol it deliberately bypasses. Re-pinned from 1020 for the structural auth-failure normalization (a separately bundled module's AuthError class identity is not authoritative and its plain shape may arrive wrapped by ContentProofError), which adds the unwrap/normalize at each cycle-abort site. */
 import type { IFileSystem } from "../fs/interface";
+import type { ChecksumRegistry } from "../fs/modules/checksum-registry";
 import type { FileEntity } from "../fs/types";
 import type {
 	ConflictAction,
@@ -17,10 +18,10 @@ import type { VerifiedConflictOutput } from "./conflict";
 import type { Logger } from "../logging/logger";
 import { commitAction, commitExactCleanup } from "./state-committer";
 import { resolveConflict } from "./conflict-resolver";
-import { AuthError, classifyHttpError } from "../fs/errors";
-import type { ErrorClassification } from "../fs/errors";
-import { AsyncPool, AdaptivePool } from "../queue/async-queue";
-import type { AdaptivePoolOpts } from "../queue/async-queue";
+import { classifyHttpError, isAuthFailure, toAuthError, toError } from "../backend-api/error-classification";
+import type { ErrorClassification } from "../backend-api/error-classification";
+import { AsyncPool, AdaptivePool } from "../backend-api/async-queue";
+import type { AdaptivePoolOpts } from "../backend-api/async-queue";
 import { decideRetry, sleep } from "./error";
 import type { CompletedAction, ExecutionResult, SupersededAction } from "./execution-result";
 import { orderedChildReceipts } from "./execution-result";
@@ -53,6 +54,8 @@ class TerminalInvariantError extends Error {
 export interface ExecutionContext {
 	localFs: IFileSystem;
 	remoteFs: IFileSystem;
+	/** The single injected checksum resolver; unknown algorithms fail closed. */
+	checksumRegistry: ChecksumRegistry;
 	committer: StateCommitterContext;
 	onProgress?: (completed: number, total: number) => void;
 	logger?: Logger;
@@ -238,11 +241,18 @@ async function withIoRetry<T>(
 		try {
 			return await io();
 		} catch (err) {
-			const failure = err instanceof ContentProofError && err.kind !== "proof_mismatch" && err.cause instanceof Error ? err.cause : err;
-			if (failure instanceof AuthError || failure instanceof ContentProofError) throw failure;
+			// A non-proof ContentProofError wraps the external failure that caused it.
+			// That cause may be a plain structural BackendErrorShape (a module is
+			// allowed to throw one), so unwrap on any defined cause — not only an
+			// `Error` — before the fatal/retry decision.
+			const failure = err instanceof ContentProofError && err.kind !== "proof_mismatch" && err.cause !== undefined
+				? err.cause
+				: err;
+			if (failure instanceof ContentProofError) throw failure;
+			if (isAuthFailure(failure)) throw toAuthError(failure);
 			const classification = classify(failure);
 			const decision = decideRetry(classification, attempt, MAX_ACTION_RETRIES, rng);
-			if (decision.action !== "retry") throw failure;
+			if (decision.action !== "retry") throw toError(failure);
 			if (classification.kind === "rateLimit") onRateLimit?.();
 			await doSleep(decision.delayMs);
 		}
@@ -284,11 +294,19 @@ async function executeAction(
 			result.blocked.push({ action, reason: err.message });
 			return;
 		}
-		if (err instanceof AuthError) {
-			ctx.onActionFatal?.(action, err);
-			throw err;
+		if (err instanceof ContentProofError && err.kind === "external_auth_failure") {
+			// The wrapped cause may be a plain structural BackendErrorShape, so
+			// normalize it rather than depending on `instanceof AuthError`.
+			const fatal = toAuthError(err.cause ?? { message: err.message, kind: "auth" });
+			ctx.onActionFatal?.(action, fatal);
+			throw fatal;
 		}
-		const error = err instanceof Error ? err : new Error(String(err));
+		if (isAuthFailure(err)) {
+			const fatal = toAuthError(err);
+			ctx.onActionFatal?.(action, fatal);
+			throw fatal;
+		}
+		const error = toError(err);
 		ctx.logger?.error("executePlan: action failed", {
 			path: action.path,
 			action: action.action,
@@ -314,63 +332,9 @@ async function publishObservedMatch(
 	return { localEntity, remoteEntity, terminalRecord };
 }
 
-/**
- * The provider id a remote-only namespace repair is addressed by, or `undefined`
- * for every other action — including an ordinary `rename_remote`, which keeps its
- * admitted local/remote/baseline triple and its path addressing.
- *
- * This is the single test for the shape, so "identity-addressed or not" is decided
- * once and cannot drift between the execution branch and the publication branch.
- */
-function namespaceRepair(
-	action: SyncAction,
-): { readonly action: RenameAction; readonly identity: string } | undefined {
-	if (action.action !== "rename_remote") return undefined;
-	const identity = action.providerIdentity;
-	if (identity === undefined) return undefined;
-	// Both halves of the addressing invariant, stated where the shape is decided:
-	// an identity-addressed rename carries no resolvable local/remote/baseline
-	// triple, and an action that carries one is never renamed by identity.
-	if (action.local ?? action.remote ?? action.baseline ?? action.content ?? action.descendantRecords) {
-		throw new Error(`Rename action mixes provider-identity and path addressing: ${action.path}`);
-	}
-	return { action, identity };
-}
-
-/**
- * Execute a remote-only namespace repair: rename one provider object, addressed by
- * its own id, so two live objects stop claiming one address.
- *
- * It has no local counterpart, no baseline and no record to publish — the object
- * has never been in the vault, and `RecordPublication` already excludes
- * `rename_remote` — so this route deliberately runs none of the publication-input
- * check, the terminal endpoint proof or the state commit those inputs feed.
- *
- * There is NO path-addressed fallback. The contended path resolves, in the cache
- * and on the provider, to the claimant that KEEPS it; renaming by path would move
- * exactly the object that must not move. A backend without the capability fails
- * the action, which blocks its component suffix and leaves the next cycle to
- * re-observe the same facts.
- *
- * Descendants of a renamed folder are not remapped locally, because none of them
- * are synced; they arrive through the next cycle's re-listing.
- */
-async function repairProviderNamespace(
-	repair: { readonly action: RenameAction; readonly identity: string }, ctx: ExecutionContext,
-): Promise<Omit<CompletedAction, "action">> {
-	const capability = ctx.remoteFs.identityRename;
-	if (!capability) {
-		throw new Error(`Remote filesystem cannot rename by provider identity: ${repair.action.path}`);
-	}
-	await capability.renameById(repair.identity, repair.action.path);
-	return {};
-}
-
 async function executeVerifiedAction(
 	action: SyncAction, ctx: ExecutionContext, completed: readonly CompletedAction[], onRateLimit?: () => void,
 ): Promise<Omit<CompletedAction, "action">> {
-	const repair = namespaceRepair(action);
-	if (repair) return repairProviderNamespace(repair, ctx);
 	await checkPublicationInputs(action, ctx, completed);
 	const io = () => runActionIO(action, ctx);
 	// Renames cannot replay safely after their source has already moved.
@@ -411,7 +375,7 @@ async function runActionIO(
 			const source = pushing ? localFs : remoteFs;
 			const target = pushing ? remoteFs : localFs;
 			const targetPath = (pushing ? action.remotePath : action.localPath) ?? path;
-			const captured = await captureContentSnapshot(source, expected.path, expected);
+			const captured = await captureContentSnapshot(source, expected.path, expected, ctx.checksumRegistry);
 			const { content } = captured;
 			// Reading may yield to local edits or another writer. Revalidate the
 			// captured destination and record expectations before destructive use.
@@ -525,7 +489,7 @@ async function runAdmittedRenameIO(action: RenameAction, ctx: ExecutionContext) 
 	if (action.content?.mode === "copy") {
 		const read = action.content.read;
 		const fs = read.side === "local" ? ctx.localFs : ctx.remoteFs;
-		content = (await captureContentSnapshot(fs, read.entity.path, read.entity)).content;
+		content = (await captureContentSnapshot(fs, read.entity.path, read.entity, ctx.checksumRegistry)).content;
 		await unchangedEndpoint(fs, read.entity);
 	}
 	await unchangedEndpoint(moving, action.action === "rename_local" ? action.local : action.remote);
@@ -580,14 +544,14 @@ async function proveAdmittedTerminal(
 				? [[ctx.remoteFs, remoteEntity]] as const
 				: [[ctx.localFs, localEntity], [ctx.remoteFs, remoteEntity]] as const;
 			for (const [fs, entity] of terminals) {
-				if (!await bytesMatch(entities.intendedContent, entity) &&
+				if (!await bytesMatch(entities.intendedContent, entity, ctx.checksumRegistry) &&
 					!buffersEqual(entities.intendedContent, await fs.read(entity.path))) {
 					throw new ContentProofError("proof_mismatch", "Rename terminal bytes changed");
 				}
 			}
 		} else if (!sameSynchronizedContent(localEntity, remoteEntity, action.baseline)) {
 			const content = await ctx.localFs.read(localPath);
-			if (!await bytesMatch(content, remoteEntity)) {
+			if (!await bytesMatch(content, remoteEntity, ctx.checksumRegistry)) {
 				if (!buffersEqual(content, await ctx.remoteFs.read(remotePath))) {
 					throw new ContentProofError("proof_mismatch", "Terminal content differs");
 				}
@@ -620,7 +584,7 @@ async function proveFolderDescendants(action: RenameAction, ctx: ExecutionContex
 				// A preservation address may resolve through a case alias on the
 				// unmoved side. Its bytes, not caller spelling, are the obligation.
 				if (!entity || entity.isDirectory ||
-					(!await bytesMatch(output.sourceContent, entity) && !buffersEqual(output.sourceContent, await fs.read(path)))) {
+					(!await bytesMatch(output.sourceContent, entity, ctx.checksumRegistry) && !buffersEqual(output.sourceContent, await fs.read(path)))) {
 					throw new ContentProofError("proof_mismatch", `Folder preservation output changed: ${path}`);
 				}
 			}
@@ -716,7 +680,7 @@ async function executePreparedConflictEffects(
 		if (!entity) continue;
 		if (!snapshot) throw new TerminalInvariantError(`Resolver omitted captured input: ${entity.path}`);
 		await assertPreservedSourceUnchanged(fs, entity.path, entity.identityKey,
-			{ sourcePath: snapshot.path, sourceEntity: snapshot.entity, sourceContent: snapshot.content });
+			{ sourcePath: snapshot.path, sourceEntity: snapshot.entity, sourceContent: snapshot.content }, ctx.checksumRegistry);
 	}
 	const localTarget = action.localPath ?? action.path;
 	const remoteTarget = action.remotePath ?? action.path;
@@ -732,11 +696,11 @@ async function executePreparedConflictEffects(
 	const localOutput = outputs.find((output) => output.role === "local");
 	if (action.additionalLocal) {
 		if (!localOutput) throw new TerminalInvariantError(`Local preservation proof missing: ${action.path}`);
-		await assertPreservedSourceUnchanged(ctx.localFs, action.additionalLocal.path, action.additionalLocal.identityKey, localOutput);
+		await assertPreservedSourceUnchanged(ctx.localFs, action.additionalLocal.path, action.additionalLocal.identityKey, localOutput, ctx.checksumRegistry);
 	}
 	if (action.additionalRemote) {
 		if (!additionalOutput) throw new TerminalInvariantError(`Conflict omitted target snapshot: ${action.path}`);
-		await assertPreservedSourceUnchanged(ctx.remoteFs, remoteTarget, action.additionalRemote.identityKey, additionalOutput);
+		await assertPreservedSourceUnchanged(ctx.remoteFs, remoteTarget, action.additionalRemote.identityKey, additionalOutput, ctx.checksumRegistry);
 	} else if ((rotationRequired || !action.remote) && await ctx.remoteFs.stat(remoteTarget)) {
 		throw new ContentProofError(
 			"proof_mismatch", `Conflict destination changed: ${remoteTarget}`,
@@ -770,7 +734,7 @@ async function executePreparedConflictEffects(
 			// The allocated address may resolve through an existing case-only parent alias.
 			// Prove stored bytes here; only Admission's original endpoints govern topology.
 			if (!entity || entity.isDirectory ||
-				(!await bytesMatch(output.sourceContent, entity) && !buffersEqual(output.sourceContent, await fs.read(output.path)))) {
+				(!await bytesMatch(output.sourceContent, entity, ctx.checksumRegistry) && !buffersEqual(output.sourceContent, await fs.read(output.path)))) {
 				throw new ContentProofError("proof_mismatch", `Conflict preservation output changed: ${output.path}`);
 			}
 		}
@@ -785,7 +749,7 @@ async function assertPreservedSourceUnchanged(
 	remoteFs: IFileSystem,
 	path: string,
 	expectedIdentity: string | undefined,
-	output: Pick<VerifiedConflictOutput, "sourcePath" | "sourceEntity" | "sourceContent">,
+	output: Pick<VerifiedConflictOutput, "sourcePath" | "sourceEntity" | "sourceContent">, registry: ChecksumRegistry,
 ): Promise<void> {
 	const current = await remoteFs.stat(path);
 	if (!current || output.sourcePath !== path ||
@@ -793,7 +757,7 @@ async function assertPreservedSourceUnchanged(
 		output.sourceEntity.identityKey !== expectedIdentity) {
 		throw new ContentProofError("proof_mismatch", `Fresh conflict source changed: ${path}`);
 	}
-	if (!await bytesMatch(output.sourceContent, current) &&
+	if (!await bytesMatch(output.sourceContent, current, registry) &&
 		!buffersEqual(await remoteFs.read(path), output.sourceContent)) {
 		throw new ContentProofError("proof_mismatch", `Fresh conflict source bytes changed: ${path}`);
 	}
@@ -841,6 +805,7 @@ async function executeConflictAction(
 			baseline: action.baseline,
 			stateStore: action.baseline &&
 				action.remote?.identityKey === action.baseline.remoteIdentityKey ? ctx.committer.stateStore : undefined,
+			checksumRegistry: ctx.checksumRegistry,
 			logger: ctx.logger,
 			remoteIdentitySource: action.remoteIdentitySource,
 			additionalRemote: action.additionalRemote,
@@ -886,17 +851,16 @@ async function executeConflictAction(
 		}
 		if (err instanceof ContentProofError && err.kind === "external_auth_failure") {
 			result.blocked.push({ action, reason: err.message });
-			const cause = err.cause instanceof AuthError
-				? err.cause
-				: new AuthError(err.message, 401);
+			const cause = toAuthError(err.cause ?? { message: err.message, kind: "auth" });
 			ctx.onActionFatal?.(action, cause);
 			throw cause;
 		}
-		if (err instanceof AuthError) {
-			ctx.onActionFatal?.(action, err);
-			throw err;
+		if (isAuthFailure(err)) {
+			const fatal = toAuthError(err);
+			ctx.onActionFatal?.(action, fatal);
+			throw fatal;
 		}
-		const error = err instanceof Error ? err : new Error(String(err));
+		const error = toError(err);
 		ctx.logger?.error("executePlan: conflict action failed", {
 			path: action.path,
 			error: error.message,
@@ -955,7 +919,7 @@ async function executePreservationChild(
 	ctx: ExecutionContext,
 ): Promise<void> {
 	const sourceFs = child.source.side === "local" ? ctx.localFs : ctx.remoteFs;
-	const captured = await captureContentSnapshot(sourceFs, child.source.entity.path, child.source.entity);
+	const captured = await captureContentSnapshot(sourceFs, child.source.entity.path, child.source.entity, ctx.checksumRegistry);
 	if (captured.content.byteLength !== child.content.size ||
 		await sha256(captured.content) !== child.content.sha256) {
 		throw new ContentProofError("proof_mismatch", `Preservation source changed: ${child.source.entity.path}`);
@@ -981,7 +945,7 @@ async function executePreservationChild(
 		const admittedPath = expected?.path ?? child.candidatePath;
 		if (entity.pathAuthority !== "actual_resolved" || entity.path !== admittedPath ||
 			entity.size !== child.content.size ||
-			(!await bytesMatch(captured.content, entity) && !buffersEqual(captured.content, await fs.read(child.candidatePath)))) {
+			(!await bytesMatch(captured.content, entity, ctx.checksumRegistry) && !buffersEqual(captured.content, await fs.read(child.candidatePath)))) {
 			throw new ContentProofError("proof_mismatch", `Preservation terminal bytes changed: ${child.candidatePath}`);
 		}
 	}

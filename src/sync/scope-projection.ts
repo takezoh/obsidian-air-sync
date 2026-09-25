@@ -1,10 +1,10 @@
-/* eslint max-lines: ["error", 340] -- one policy owner must project entries, observations, candidate facts, and relation consequences atomically. */
+/* eslint max-lines: ["error", 375] -- one policy owner must project entries, observations, candidate facts, and relation consequences atomically; the bound is raised from 340 to hold the prefix-indexed scope-crossing check that keeps Admission linear in the batch size. */
 import type { ChangeSet } from "./change-detector";
 import type { AirSyncSettings } from "../settings";
 import { getEffectiveIgnorePatterns, getEffectiveSyncDotPaths } from "../config-sync";
-import { INTERNAL_METADATA_PATH } from "../fs/remote-vault-contract";
+import { INTERNAL_METADATA_PATH } from "../backend-api/remote-vault-contract";
 import { isIgnored, isSystemJunkFile } from "../utils/ignore";
-import { isDotPathOutOfScope } from "../utils/path";
+import { isDotPathOutOfScope, pathsWithPrefix } from "../utils/path";
 import type {
 	IdentityEvidence,
 	PathObservation,
@@ -74,7 +74,10 @@ export function applyScope(
 			? [observation.requestedPath]
 			: []));
 	const isIncluded = (path: string) => !outsideRoot.has(path) && !isExcludedFromScope(path, policy);
-	const surfacePaths = collectChangeSetPaths(changeSet);
+	// Sorted once so a rename's crossing check reads only the paths under its two
+	// prefixes (see `crossesScope`). Iterating the whole surface per rename makes
+	// Admission quadratic in the batch size, which freezes the app on a large vault.
+	const surfacePaths = [...collectChangeSetPaths(changeSet)].sort();
 	const scoped: ChangeSet = {
 		...changeSet,
 		entries: changeSet.entries.flatMap((entry) => {
@@ -128,7 +131,7 @@ function normalizeObservation(
 
 function normalizeIdentityEvidence(
 	evidence: IdentityEvidence,
-	surfacePaths: ReadonlySet<string>,
+	surfacePaths: readonly string[],
 	isIncluded: (path: string) => boolean,
 ): IdentityEvidence[] {
 	if (evidence.kind === "rename") {
@@ -168,12 +171,22 @@ function collectChangeSetPaths(changeSet: ChangeSet): Set<string> {
 
 function crossesScope(
 	rename: Pick<RenameEvidence, "oldPath" | "newPath">,
-	paths: ReadonlySet<string>,
+	sortedPaths: readonly string[],
 	isIncluded: (path: string) => boolean,
 ): boolean {
+	// A path mapped to itself cannot cross the boundary, and self-pairs are the
+	// common Admission case (every entry compares its own path); short-circuiting
+	// them keeps a whole-batch Admission linear.
+	if (rename.oldPath === rename.newPath) return false;
 	const oldPrefix = `${rename.oldPath}/`;
 	const newPrefix = `${rename.newPath}/`;
-	for (const path of paths) {
+	// Only the paths under either prefix can carry a relative suffix, so read that
+	// bounded subtree instead of scanning every surface path for each rename.
+	const candidates = new Set([
+		...pathsWithPrefix(sortedPaths, oldPrefix),
+		...pathsWithPrefix(sortedPaths, newPrefix),
+	]);
+	for (const path of candidates) {
 		const relative = path.startsWith(oldPrefix)
 			? path.substring(oldPrefix.length)
 			: path.startsWith(newPrefix) ? path.substring(newPrefix.length) : undefined;

@@ -1,11 +1,11 @@
-import { DropboxClient } from "../../src/fs/dropbox/client";
-import { DropboxApiError } from "../../src/fs/dropbox/types";
-import type { DropboxEntry } from "../../src/fs/dropbox/types";
+import { DropboxClient } from "../../src/backends/dropbox/client";
+import { DropboxApiError } from "../../src/backends/dropbox/types";
+import type { DropboxEntry } from "../../src/backends/dropbox/types";
 
 /**
  * e2e-only `DropboxClient` that retries the FRESH-FOLDER-ID propagation transient.
  *
- * DropboxFs addresses every op by the vault's stable folder id (`id:<id>/<sub>`).
+ * The Dropbox adapter addresses every op by the vault's stable folder id (`id:<id>/<sub>`).
  * A BRAND-NEW folder id (this contract creates one child folder per test) does not
  * resolve immediately: `create_folder_v2` / `upload` against it 400 with the body
  * `'id:…' did not match pattern …` for a short window until the id propagates. The

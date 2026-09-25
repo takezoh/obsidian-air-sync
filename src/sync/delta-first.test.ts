@@ -1,6 +1,14 @@
 import { describe, it, expect, vi } from "vitest";
-import { collectChanges } from "./change-detector";
+import { collectChanges as collectChangesRaw, type ChangeDetectorDeps, type CollectChangesOptions } from "./change-detector";
 import { LocalChangeTracker } from "./local-tracker";
+import { createChecksumRegistry } from "../fs/modules/checksum-registry";
+
+const checksumRegistry = createChecksumRegistry();
+
+const collectChanges = (
+	deps: Omit<ChangeDetectorDeps, "checksumRegistry">,
+	opts?: CollectChangesOptions,
+) => collectChangesRaw({ ...deps, checksumRegistry }, opts);
 import {
 	createMockLocalFs, createMockRemoteFs,
 	createMockStateStore,

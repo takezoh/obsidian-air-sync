@@ -192,10 +192,10 @@ describe("finalizeSyncCycle", () => {
 		expect(cycleCheckpoint.abortWorkingView).toHaveBeenCalledOnce();
 	});
 
-	it("owes a follow-up for a component awaiting the repair its own plan carries", async () => {
+	it("owes a follow-up when the cycle's checkpoint is blocked", async () => {
 		const remote = checkpoint(vi.fn().mockResolvedValue(undefined));
 		const awaiting = { dispositions: [{ kind: "failed", paths: ["note.md"], actions: [], evidence: [],
-			reasons: ["awaiting_repair"] }] } as never;
+			reasons: ["present_unresolved"] }] } as never;
 
 		const completion = await finalizeSyncCycle({
 			admission: awaiting,
@@ -207,11 +207,11 @@ describe("finalizeSyncCycle", () => {
 		expect(remote.abortWorkingView).toHaveBeenCalledOnce();
 	});
 
-	it("still owes the follow-up when an unrelated component failed beside the repair", async () => {
+	it("still owes the follow-up when an unrelated component failed beside a blocked checkpoint", async () => {
 		const remote = checkpoint(vi.fn().mockResolvedValue(undefined));
 		const mixed = { dispositions: [
-			{ kind: "failed", paths: ["repaired.md"], actions: [], evidence: [], reasons: ["awaiting_repair"] },
-			{ kind: "failed", paths: ["other.md"], actions: [], evidence: [], reasons: ["present_unresolved"] },
+			{ kind: "failed", paths: ["withheld.md"], actions: [], evidence: [], reasons: ["present_unresolved"] },
+			{ kind: "failed", paths: ["other.md"], actions: [], evidence: [], reasons: ["conflicting_identity"] },
 		] } as never;
 
 		const completion = await finalizeSyncCycle({
@@ -220,8 +220,8 @@ describe("finalizeSyncCycle", () => {
 			checkpoint: remote.value, scopeFingerprint: "scope", checkpointBlocked: true,
 		});
 
-		// The repair converges only in the next cycle, whatever else failed here; that
-		// cycle plans no repair for `other.md`, so it is the last, and reports it.
+		// A blocked checkpoint queues the next cycle whatever else failed here; that
+		// cycle re-derives its own facts.
 		expect(completion).toEqual({ kind: "follow_up" });
 		expect(remote.abortWorkingView).toHaveBeenCalledOnce();
 	});
