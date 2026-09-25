@@ -298,12 +298,19 @@ export async function requestUrl(params: RequestUrlParam): Promise<RequestUrlRes
 	};
 }
 
+/**
+ * Mirrors Obsidian's `debounce(cb, timeout?, resetTimer?)`. `resetTimer` (not
+ * "immediate") is the real parameter name, and `true` means every call resets the
+ * timer so only the trailing edge fires — the coalescing behavior the scheduler
+ * relies on. Naming it accurately keeps a `false` here from being misread as
+ * "invoke now"; Obsidian has no leading-edge mode.
+ */
 export function debounce<T extends (...args: never[]) => unknown>(
 	callback: T,
 	wait: number,
-	immediate?: boolean,
+	resetTimer?: boolean,
 ): T & { cancel(): void } {
-	const value = requireCallable("debounce")(callback, wait, immediate);
+	const value = requireCallable("debounce")(callback, wait, resetTimer);
 	if (!isCallable(value) || !("cancel" in value) || typeof value.cancel !== "function") {
 		throw new Error("Obsidian debounce returned an invalid function");
 	}
