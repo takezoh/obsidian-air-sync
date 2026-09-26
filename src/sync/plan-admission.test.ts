@@ -4224,3 +4224,92 @@ describe("cross-source remote rename validation", () => {
 		expect(split.actions).toEqual(ordinaryAfterAbandonmentCarried);
 	});
 });
+
+describe("empty-parent prune candidate chain", () => {
+	function scopedScope(paths: readonly string[], includes: (path: string) => boolean): ScopeProjection {
+		return {
+			byEndpoint: new Map(paths.map((path) => [path, "included" as const])),
+			isConfiguredScopeCompatible: () => true,
+			includes,
+		};
+	}
+
+	function deleteLocalFixture(path: string): FixtureAction {
+		const local = entity(path);
+		return { path, action: "delete_local", local, baseline: recordFor(local) };
+	}
+
+	function absentRemote(path: string): PathObservation {
+		return { kind: "absent", side: "remote", requestedPath: path, authority: "checkpoint_deleted" };
+	}
+
+	it("binds the scope-filtered ancestor chain, deepest first, to a delete action", () => {
+		const path = "a/b/c.md";
+
+		const result = admitBatchObservation(captureFixtureFacts(
+			{ actions: [deleteLocalFixture(path)] }, [],
+			[absentRemote(path)], scopedScope([path], () => true), "backend\0root",
+		));
+
+		expect(result.executable.actions[0]).toMatchObject({
+			action: "delete_local", pruneEmptyAncestors: ["a/b", "a"],
+		});
+	});
+
+	it("offers no candidate when an ancestor is out of scope", () => {
+		// The un-ignore shape: the file is in scope but its parent directory is not,
+		// so the parent and everything above it must survive.
+		const path = ".hidden/community-plugins.json";
+
+		const result = admitBatchObservation(captureFixtureFacts(
+			{ actions: [deleteLocalFixture(path)] }, [],
+			[absentRemote(path)],
+			scopedScope([path], (candidate) => !candidate.startsWith(".hidden")), "backend\0root",
+		));
+
+		expect(result.executable.actions[0]?.pruneEmptyAncestors).toBeUndefined();
+	});
+
+	it("offers no candidate for a file at the sync root", () => {
+		const path = "root.md";
+
+		const result = admitBatchObservation(captureFixtureFacts(
+			{ actions: [deleteLocalFixture(path)] }, [],
+			[absentRemote(path)], scopedScope([path], () => true), "backend\0root",
+		));
+
+		expect(result.executable.actions[0]?.pruneEmptyAncestors).toBeUndefined();
+	});
+
+	it("binds the source-side chain to an admitted file rename", () => {
+		// A local rename propagates as rename_remote, whose target is the remote side;
+		// the emptied source folder is the remote `Old/`.
+		const baseline: SyncRecord = {
+			path: "Old/a.md", hash: "H0", localMtime: 1, remoteMtime: 1,
+			localSize: 1, remoteSize: 1, remoteIdentityKey: "R", syncedAt: 1,
+		};
+		const local = freshEntity("New/a.md", "H1");
+		const remoteOld = freshEntity("Old/a.md", "H0", "R");
+		const evidence = remoteRename({
+			side: "local", oldPath: "Old/a.md", newPath: "New/a.md", identityKey: undefined,
+		});
+		const observations: PathObservation[] = [
+			{ kind: "absent", side: "local", requestedPath: "Old/a.md", authority: "stat" },
+			{ kind: "exact", side: "local", requestedPath: "New/a.md", entity: local },
+			{ kind: "exact", side: "remote", requestedPath: "Old/a.md", entity: remoteOld },
+			{ kind: "absent", side: "remote", requestedPath: "New/a.md", authority: "stat" },
+		];
+
+		const result = admitBatchObservation(captureFixtureFacts(
+			{ actions: [
+				{ path: "Old/a.md", action: "delete_remote", remote: remoteOld, baseline },
+				{ path: "New/a.md", action: "push", local },
+			] }, [evidence], observations,
+			scopedScope(["Old/a.md", "New/a.md"], (candidate) => candidate === "Old"), "backend\0root",
+		));
+
+		expect(result.executable.actions[0]).toMatchObject({
+			action: "rename_remote", oldPath: "Old/a.md", pruneEmptyAncestors: ["Old"],
+		});
+	});
+});

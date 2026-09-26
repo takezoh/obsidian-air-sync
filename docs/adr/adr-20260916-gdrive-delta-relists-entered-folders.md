@@ -5,7 +5,7 @@ title: Google Drive delta application re-lists folders that newly enter the boun
   root
 status: accepted
 created: '2026-09-16'
-updated: '2026-09-16'
+updated: '2026-09-27'
 decision_makers:
 - project owner
 consulted:
@@ -162,7 +162,7 @@ re-derivation from current facts.
 | Amend RB-CHK-003 and add a qualification-worksheet bullet | The existing text already requires complete `modified` facts regardless of order. A backend author's own fake could satisfy the proposed enforcement vacuously. |
 | Register the scope-entry case only for Google Drive and OneDrive, in a separate module | The remote backend contract forbids opting a backend out of a shared case. Leaving Dropbox unchecked turns missing evidence into an unstated exemption. |
 | Amend ADR 0006 | ADR 0006 reorders a complete path-addressed delta. This decision recovers entries a provider never sends. The mechanisms and their failure modes are different. |
-| Treat the empty local folder left after a move-out as part of this change | The empty folder is left by `change-detector.ts`'s directory filtering, a separate mechanism. The project owner accepted it as current behavior. |
+| Treat the empty local folder left after a move-out as part of this change | The empty folder is left by `change-detector.ts`'s directory filtering, a separate mechanism. Originally accepted as current behavior. The narrower case — a folder emptied by an opposite-side file delete or rename propagating into it — is now decided by `adr-20260927-receiver-side-empty-parent-cleanup`; an already-empty folder that is created, renamed, or deleted still propagates nothing. |
 
 ## Consequences
 

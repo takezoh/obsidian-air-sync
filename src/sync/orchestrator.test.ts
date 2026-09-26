@@ -3667,4 +3667,89 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.close();
 		});
 	});
+
+	describe("empty-parent prune through the full cycle", () => {
+		it("prunes the remote folder a propagated local delete emptied, keeping the local folder", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			addFile(localFs, "notes/a.md", "x", 1000);
+			addFile(remoteFs, "notes/a.md", "x", 1000);
+			const settings = baseMockSettings({ backendType: "test", vaultId: `test-${Math.random()}` });
+			const deps = createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			await orchestrator.state.put({
+				path: "notes/a.md", hash: "", localMtime: 1000, remoteMtime: 1000,
+				localSize: 1, remoteSize: 1, remoteIdentityKey: "id:notes/a.md", syncedAt: 900,
+			});
+			// The user deletes the last file locally; the local `notes/` folder remains.
+			await localFs.delete("notes/a.md");
+
+			await orchestrator.runSync();
+
+			expect(remoteFs.files.has("notes/a.md")).toBe(false);
+			expect(remoteFs.files.has("notes")).toBe(false);
+			expect(localFs.files.has("notes")).toBe(true);
+			await orchestrator.close();
+		});
+
+		it("prunes the local folder a propagated remote delete emptied, keeping the remote folder", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			addFile(localFs, "notes/a.md", "x", 1000);
+			addFile(remoteFs, "notes/a.md", "x", 1000);
+			const settings = baseMockSettings({ backendType: "test", vaultId: `test-${Math.random()}` });
+			remoteFs.checkpoint!.hasCheckpoint = vi.fn().mockResolvedValue(true);
+			remoteFs.checkpoint!.getChangedPaths = vi.fn().mockResolvedValue({
+				modified: [], deleted: ["notes/a.md"],
+			});
+			remoteFs.checkpoint!.commitCheckpoint = vi.fn().mockResolvedValue(undefined);
+			const deps = createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			await orchestrator.state.put({
+				path: "notes/a.md", hash: "", localMtime: 1000, remoteMtime: 1000,
+				localSize: 1, remoteSize: 1, remoteIdentityKey: "id:notes/a.md", syncedAt: 900,
+			});
+			// The remote side deletes the last file; the remote `notes/` folder remains.
+			await remoteFs.delete("notes/a.md");
+
+			await orchestrator.runSync();
+
+			expect(localFs.files.has("notes/a.md")).toBe(false);
+			expect(localFs.files.has("notes")).toBe(false);
+			expect(remoteFs.files.has("notes")).toBe(true);
+			await orchestrator.close();
+		});
+
+		it("prunes the source folder of a propagated local rename on the receiving side only", async () => {
+			const localFs = createMockLocalFs();
+			const remoteFs = createMockRemoteFs();
+			const hash = await sha256(new TextEncoder().encode("x").buffer);
+			addFile(localFs, "archive/a.md", "x", 2000);
+			await localFs.mkdir("notes"); // the user's now-empty source folder remains locally
+			addFile(remoteFs, "notes/a.md", "x", 1000);
+			const settings = baseMockSettings({ backendType: "test", vaultId: `test-${Math.random()}` });
+			const tracker = new LocalChangeTracker();
+			tracker.markRenamed("archive/a.md", "notes/a.md");
+			const deps = createDeps({
+				getSettings: () => settings, localFs: () => localFs, remoteFs: () => remoteFs,
+				localTracker: tracker,
+			});
+			const orchestrator = new SyncOrchestrator(deps);
+			await orchestrator.state.put({
+				path: "notes/a.md", hash, localMtime: 1000, remoteMtime: 1000,
+				localSize: 1, remoteSize: 1, remoteIdentityKey: "id:notes/a.md", syncedAt: 900,
+			});
+
+			await orchestrator.runSync();
+
+			expect(remoteFs.files.has("archive/a.md")).toBe(true);
+			expect(remoteFs.files.has("notes")).toBe(false);
+			expect(localFs.files.has("notes")).toBe(true);
+			await orchestrator.close();
+		});
+	});
 });

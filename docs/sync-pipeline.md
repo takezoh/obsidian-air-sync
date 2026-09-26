@@ -191,6 +191,21 @@ There is no volume-based abort gate. Deletion safety rests on four independent l
 3. **Authoritative observation** -- listing absence is re-`stat()`'d before it can authorize deletion; a thrown stat aborts the cycle, and HOT checkpoint tombstones remain authoritative remote absence. The local stat falls back to the vault adapter on an index miss, so it is a genuine independent check; the remote stat reads the same cache the listing came from, so on the remote side the authority is the cache itself (a complete projection of a wholly clean scan, ADR 0001), not the re-read. The one cause the cache knows about is a contended derived address, which is arbitrated and returned as a fact rather than silently evicted, and every producer of remote deletions subtracts a path whose absence that displacement explains.
 4. **Whole-component admission** -- rename, alias, unresolved-presence, and stable-ID edges connect related managed paths. Excluded paths are absent from the Admission snapshot and are not identity nodes. If the component decision cannot prove every managed resource survives, Admission fails it before execution. Deletions are additionally soft (trash), but recoverability is not used as authorization.
 
+**Empty-parent cleanup** is a fifth, narrower consequence of an admitted deletion or file
+rename, not a new deletion authority. Admission attaches a `pruneEmptyAncestors` protocol
+to the action: the deepest-first ancestry of the removed source path, filtered to
+directories that are themselves in sync scope and excluding the sync root. After every
+serial removal in the cycle, Execution runs one deduplicated pass over the union of the
+succeeded actions' chains, keyed by side and directory, so each candidate directory is
+read at most once per cycle; a directory is deleted only after `IFileSystem.listDir`
+proves it has no children at all (an in-scope sibling, an ignored or dot-prefixed child,
+or an unreadable directory keeps it and skips its ancestors unread). The target is the
+filesystem the action mutated, which is the side that received the opposite-side change,
+so the originating side keeps its own now-empty folder. Nothing is persisted and no
+action kind is added. `LocalFs.listDir` is the authoritative on-disk direct-child read
+(the vault index omits hidden children); `CachingRemoteFs.listDir` reads the derived
+cache, which holds out-of-scope objects too.
+
 ## Identity-component action shaping
 
 There is no standalone whole-plan optimizer. Admission builds the cycle-local component

@@ -49,6 +49,12 @@ export interface ScopeProjection {
 	byEndpoint: ReadonlyMap<string, ScopeDisposition>;
 	/** Inclusion compatibility only; never identity or rename authorization. */
 	isConfiguredScopeCompatible(this: void, from: string, to: string): boolean;
+	/**
+	 * Whether one address is inside the configured sync scope. Used only to bound
+	 * the empty-parent prune candidate set; absent means the scope cannot be proven,
+	 * so no candidate is offered.
+	 */
+	includes?(this: void, path: string): boolean;
 }
 
 export type PathObservation =
@@ -209,6 +215,13 @@ interface SyncActionBase {
 	additionalLocal?: FileEntity;
 	/** Conflict-only mechanism contract; required by ConflictAction. */
 	protocol?: ConflictProtocol;
+	/**
+	 * Admitted, scope-filtered ancestor chain of the removed source path, deepest
+	 * first, exclusive of the sync root. Execution deletes a listed directory only
+	 * after re-proving it has no children. Fixed protocol for a delete/file-rename
+	 * action, not a new action kind.
+	 */
+	pruneEmptyAncestors?: readonly string[];
 }
 
 export interface ConflictAction extends SyncActionBase {

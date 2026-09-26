@@ -178,26 +178,16 @@ export class LocalFs implements IFileSystem {
 		return { path, pathAuthority: "requested_echo", isDirectory: true, size: 0, mtime: 0, hash: "" };
 	}
 
+	/**
+	 * Authoritative direct-child listing for occupancy decisions. Obsidian's vault
+	 * index excludes dot-prefixed paths, so a normal folder's `TFolder.children` can
+	 * omit a hidden child and make an occupied folder look empty. Read the actual
+	 * on-disk children through the raw adapter for every path, as the dot-path adapter
+	 * already does for hidden paths.
+	 */
 	async listDir(path: string): Promise<FileEntity[]> {
 		path = normalizeSyncPath(path);
-		if (isDotPrefixed(path)) {
-			return this.dotPath.listDir(path);
-		}
-		const folder = this.vault.getAbstractFileByPath(path);
-		if (!(folder instanceof TFolder)) return [];
-		return folder.children.map((child) => {
-			if (child instanceof TFile) {
-				return {
-					path: child.path,
-					pathAuthority: "actual_resolved",
-					isDirectory: false,
-					size: child.stat.size,
-					mtime: child.stat.mtime,
-					hash: "",
-				};
-			}
-			return { path: child.path, pathAuthority: "actual_resolved", isDirectory: true, size: 0, mtime: 0, hash: "" };
-		});
+		return this.dotPath.listDir(path);
 	}
 
 	async delete(path: string): Promise<void> {

@@ -18,6 +18,7 @@ import type { VerifiedConflictOutput } from "./conflict";
 import type { Logger } from "../logging/logger";
 import { commitAction, commitExactCleanup } from "./state-committer";
 import { resolveConflict } from "./conflict-resolver";
+import { pruneEmptiedDirectories } from "./prune-empty-parents";
 import { classifyHttpError, isAuthFailure, toAuthError, toError } from "../backend-api/error-classification";
 import type { ErrorClassification } from "../backend-api/error-classification";
 import { AsyncPool, AdaptivePool } from "../backend-api/async-queue";
@@ -193,6 +194,11 @@ export async function executePlan(
 				prefixFailed = result.failed.length + result.blocked.length !== incompleteBefore;
 			}
 		}
+		// All serial removals are done, so one deduplicated pass can read each emptied
+		// directory once and settle the whole cycle's cascade.
+		await pruneEmptiedDirectories(result.succeeded, {
+			localFs: ctx.localFs, remoteFs: ctx.remoteFs, logger: ctx.logger,
+		});
 	} finally {
 		permit?.release();
 	}

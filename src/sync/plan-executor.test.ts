@@ -1037,6 +1037,202 @@ describe("executePlan", () => {
 		});
 	});
 
+	describe("empty-parent prune", () => {
+		it("deletes the remote ancestors an admitted delete emptied", async () => {
+			const ctx = makeCtx();
+			const remoteFs = ctx.remoteFs as MockFileSystem;
+			addFile(remoteFs, "notes/a.md", "x");
+			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
+			stateStore.records.set("notes/a.md", {
+				path: "notes/a.md", hash: "", localMtime: 1000, remoteMtime: 1000,
+				localSize: 1, remoteSize: 1, remoteIdentityKey: "id:notes/a.md", syncedAt: 900,
+			});
+
+			const plan = makePlan([{ path: "notes/a.md", action: "delete_remote",
+				remote: (await remoteFs.stat("notes/a.md"))!, baseline: stateStore.records.get("notes/a.md"),
+				pruneEmptyAncestors: ["notes"],
+			}]);
+
+			const result = await executePlan(plan, ctx);
+
+			expect(result.succeeded).toHaveLength(1);
+			expect(remoteFs.files.has("notes/a.md")).toBe(false);
+			expect(remoteFs.files.has("notes")).toBe(false);
+		});
+
+		it("cascades deepest-first and stops at a non-empty ancestor", async () => {
+			const ctx = makeCtx();
+			const remoteFs = ctx.remoteFs as MockFileSystem;
+			addFile(remoteFs, "a/b/c.md", "x");
+			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
+			stateStore.records.set("a/b/c.md", {
+				path: "a/b/c.md", hash: "", localMtime: 1000, remoteMtime: 1000,
+				localSize: 1, remoteSize: 1, remoteIdentityKey: "id:a/b/c.md", syncedAt: 900,
+			});
+
+			const plan = makePlan([{ path: "a/b/c.md", action: "delete_remote",
+				remote: (await remoteFs.stat("a/b/c.md"))!, baseline: stateStore.records.get("a/b/c.md"),
+				pruneEmptyAncestors: ["a/b", "a"],
+			}]);
+
+			await executePlan(plan, ctx);
+
+			expect(remoteFs.files.has("a/b")).toBe(false);
+			expect(remoteFs.files.has("a")).toBe(false);
+		});
+
+		it("keeps a folder that still has a sibling, ignoring hidden and ignored children", async () => {
+			const ctx = makeCtx();
+			const remoteFs = ctx.remoteFs as MockFileSystem;
+			addFile(remoteFs, "notes/a.md", "x");
+			addFile(remoteFs, "notes/.keep", "keep");
+			addFile(remoteFs, "notes/ignored.log", "log");
+			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
+			stateStore.records.set("notes/a.md", {
+				path: "notes/a.md", hash: "", localMtime: 1000, remoteMtime: 1000,
+				localSize: 1, remoteSize: 1, remoteIdentityKey: "id:notes/a.md", syncedAt: 900,
+			});
+
+			const plan = makePlan([{ path: "notes/a.md", action: "delete_remote",
+				remote: (await remoteFs.stat("notes/a.md"))!, baseline: stateStore.records.get("notes/a.md"),
+				pruneEmptyAncestors: ["notes"],
+			}]);
+
+			const result = await executePlan(plan, ctx);
+
+			expect(result.succeeded).toHaveLength(1);
+			expect(remoteFs.files.has("notes")).toBe(true);
+		});
+
+		it("deletes the local ancestors a propagated delete emptied", async () => {
+			const ctx = makeCtx();
+			const localFs = ctx.localFs as MockFileSystem;
+			addFile(localFs, "notes/a.md", "x");
+			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
+			stateStore.records.set("notes/a.md", {
+				path: "notes/a.md", hash: "", localMtime: 1000, remoteMtime: 1000,
+				localSize: 1, remoteSize: 1, remoteIdentityKey: "id:notes/a.md", syncedAt: 900,
+			});
+
+			const plan = makePlan([{ path: "notes/a.md", action: "delete_local",
+				local: (await localFs.stat("notes/a.md"))!, baseline: stateStore.records.get("notes/a.md"),
+				pruneEmptyAncestors: ["notes"],
+			}]);
+
+			await executePlan(plan, ctx);
+
+			expect(localFs.files.has("notes/a.md")).toBe(false);
+			expect(localFs.files.has("notes")).toBe(false);
+		});
+
+		it("keeps the primary delete successful when the emptiness read fails", async () => {
+			const ctx = makeCtx();
+			const remoteFs = ctx.remoteFs as MockFileSystem;
+			addFile(remoteFs, "notes/a.md", "x");
+			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
+			stateStore.records.set("notes/a.md", {
+				path: "notes/a.md", hash: "", localMtime: 1000, remoteMtime: 1000,
+				localSize: 1, remoteSize: 1, remoteIdentityKey: "id:notes/a.md", syncedAt: 900,
+			});
+			vi.spyOn(remoteFs, "listDir").mockRejectedValue(new Error("listing unavailable"));
+
+			const plan = makePlan([{ path: "notes/a.md", action: "delete_remote",
+				remote: (await remoteFs.stat("notes/a.md"))!, baseline: stateStore.records.get("notes/a.md"),
+				pruneEmptyAncestors: ["notes"],
+			}]);
+
+			const result = await executePlan(plan, ctx);
+
+			expect(result.succeeded).toHaveLength(1);
+			expect(result.failed).toHaveLength(0);
+			expect(remoteFs.files.has("notes/a.md")).toBe(false);
+			expect(remoteFs.files.has("notes")).toBe(true);
+		});
+
+		it("reads a shared directory at most once per cycle across actions", async () => {
+			const ctx = makeCtx();
+			const remoteFs = ctx.remoteFs as MockFileSystem;
+			addFile(remoteFs, "notes/a.md", "a");
+			addFile(remoteFs, "notes/b.md", "b");
+			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
+			for (const name of ["notes/a.md", "notes/b.md"]) {
+				stateStore.records.set(name, {
+					path: name, hash: "", localMtime: 1000, remoteMtime: 1000,
+					localSize: 1, remoteSize: 1, remoteIdentityKey: `id:${name}`, syncedAt: 900,
+				});
+			}
+			const listDir = vi.spyOn(remoteFs, "listDir");
+			const plan = makePlan([
+				{ path: "notes/a.md", action: "delete_remote",
+					remote: (await remoteFs.stat("notes/a.md"))!, baseline: stateStore.records.get("notes/a.md"),
+					pruneEmptyAncestors: ["notes"],
+				},
+				{ path: "notes/b.md", action: "delete_remote",
+					remote: (await remoteFs.stat("notes/b.md"))!, baseline: stateStore.records.get("notes/b.md"),
+					pruneEmptyAncestors: ["notes"],
+				},
+			]);
+
+			const result = await executePlan(plan, ctx);
+
+			expect(result.succeeded).toHaveLength(2);
+			expect(listDir.mock.calls.filter(([path]) => path === "notes")).toHaveLength(1);
+			expect(remoteFs.files.has("notes")).toBe(false);
+		});
+
+		it("skips reading the ancestors of a folder that is still occupied", async () => {
+			const ctx = makeCtx();
+			const remoteFs = ctx.remoteFs as MockFileSystem;
+			addFile(remoteFs, "a/b/c.md", "c");
+			addFile(remoteFs, "a/b/keep.md", "keep");
+			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
+			stateStore.records.set("a/b/c.md", {
+				path: "a/b/c.md", hash: "", localMtime: 1000, remoteMtime: 1000,
+				localSize: 1, remoteSize: 1, remoteIdentityKey: "id:a/b/c.md", syncedAt: 900,
+			});
+			const listDir = vi.spyOn(remoteFs, "listDir");
+			const plan = makePlan([{ path: "a/b/c.md", action: "delete_remote",
+				remote: (await remoteFs.stat("a/b/c.md"))!, baseline: stateStore.records.get("a/b/c.md"),
+				pruneEmptyAncestors: ["a/b", "a"],
+			}]);
+
+			await executePlan(plan, ctx);
+
+			// `a/b` is occupied by keep.md, so it and its ancestor `a` are kept and `a`
+			// is never read: a kept directory proves every ancestor occupied.
+			expect(listDir.mock.calls.map(([path]) => path)).toEqual(["a/b"]);
+			expect(remoteFs.files.has("a/b/keep.md")).toBe(true);
+			expect(remoteFs.files.has("a")).toBe(true);
+		});
+
+		it("keeps the cycle clean when the emptied directory delete fails", async () => {
+			const ctx = makeCtx();
+			const remoteFs = ctx.remoteFs as MockFileSystem;
+			addFile(remoteFs, "notes/a.md", "x");
+			const stateStore = ctx.committer.stateStore as unknown as ReturnType<typeof createMockStateStore>;
+			stateStore.records.set("notes/a.md", {
+				path: "notes/a.md", hash: "", localMtime: 1000, remoteMtime: 1000,
+				localSize: 1, remoteSize: 1, remoteIdentityKey: "id:notes/a.md", syncedAt: 900,
+			});
+			const originalDelete = remoteFs.delete.bind(remoteFs);
+			vi.spyOn(remoteFs, "delete").mockImplementation(async (path) => {
+				if (path === "notes") throw new Error("delete refused");
+				return originalDelete(path);
+			});
+			const plan = makePlan([{ path: "notes/a.md", action: "delete_remote",
+				remote: (await remoteFs.stat("notes/a.md"))!, baseline: stateStore.records.get("notes/a.md"),
+				pruneEmptyAncestors: ["notes"],
+			}]);
+
+			const result = await executePlan(plan, ctx);
+
+			expect(result.succeeded).toHaveLength(1);
+			expect(result.failed).toHaveLength(0);
+			expect(remoteFs.files.has("notes/a.md")).toBe(false);
+			expect(remoteFs.files.has("notes")).toBe(true);
+		});
+	});
+
 	describe("rename_remote", () => {
 		it("does not commit an unbaselined case-alias rename when content races after the move", async () => {
 			const ctx = makeCtx();

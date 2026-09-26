@@ -181,6 +181,16 @@ central `tests/fs/remote-backend-contracts.test.ts` unit composition root.
   Case-only parent transitions are decided once by Admission from complete current-cycle
   facts: child content is handled at the existing provider path, followed by one parent
   folder rename. Do not add per-child recovery, a new status/action, or cross-cycle state.
+- **Empty-parent cleanup is a consequence of an admitted delete/file-rename, not a new
+  action kind.** Admission attaches `pruneEmptyAncestors` (the removed source path's
+  deepest-first ancestry, scope-filtered, root-excluded) and execution runs one
+  deduplicated pass after all serial removals — each candidate directory read at most
+  once per cycle — deleting a directory only after `IFileSystem.listDir` proves it has
+  no children. It runs on the action's target filesystem — the side emptied by the
+  opposite-side operation — so the origin side keeps its folder. Never prune from
+  listing absence, the sync root, an out-of-scope directory, or a directory holding an
+  ignored/hidden child; `LocalFs.listDir` is the authoritative on-disk direct-child read
+  for this.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the rationale behind these.
 

@@ -107,6 +107,7 @@ export function applyScope(
 			...projection,
 			isConfiguredScopeCompatible: (from, to) => isIncluded(from) && isIncluded(to) &&
 				!crossesScope({ oldPath: from, newPath: to }, surfacePaths, isIncluded),
+			includes: (path) => isIncluded(path),
 		},
 	};
 }

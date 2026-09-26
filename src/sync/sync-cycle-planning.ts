@@ -65,6 +65,7 @@ export function captureBatchObservation(
 		scope: {
 			byEndpoint: new Map(scope.byEndpoint),
 			isConfiguredScopeCompatible: scope.isConfiguredScopeCompatible,
+			...(scope.includes ? { includes: scope.includes } : {}),
 		},
 		namespace,
 	});

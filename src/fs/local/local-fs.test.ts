@@ -517,4 +517,30 @@ describe("LocalFs", () => {
 			);
 		});
 	});
+
+	describe("listDir", () => {
+		it("reports the actual on-disk children of a normal folder, including hidden entries", async () => {
+			// Obsidian's vault index excludes dot-prefixed paths, so an index-backed
+			// listing would omit `.keep` and make an occupied folder look empty. An
+			// empty-parent prune must never mistake that for emptiness.
+			const { vault, fs } = createLocalFs();
+			await vault.adapter.mkdir("notes");
+			await vault.adapter.mkdir("notes/sub");
+			await vault.adapter.writeBinary("notes/.keep", new TextEncoder().encode("k").buffer);
+			await vault.adapter.writeBinary("notes/note.md", new TextEncoder().encode("n").buffer);
+
+			const children = await fs.listDir("notes");
+
+			expect(children.map((entry) => entry.path).sort())
+				.toEqual(["notes/.keep", "notes/note.md", "notes/sub"]);
+		});
+
+		it("returns an empty array for an empty or missing directory", async () => {
+			const { vault, fs } = createLocalFs();
+			await vault.adapter.mkdir("empty");
+
+			expect(await fs.listDir("empty")).toEqual([]);
+			expect(await fs.listDir("missing")).toEqual([]);
+		});
+	});
 });

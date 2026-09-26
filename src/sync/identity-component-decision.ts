@@ -1,4 +1,4 @@
-/* eslint max-lines: ["error", 901] -- relation abandonment, exact-path binding, preservation-cover authorization, and Prefer-local eligibility must stay under the sole identity-policy owner. Re-pinned from 785 for the two corrected publication expectations: a replacement continues no row, so the incumbent it names is the occupant of the claimed address and nothing else. Re-pinned from 789 for the rename guard's cross-source note, which precedes the loop it explains; this directive counts comments. Re-pinned from 800 for the contended-address precondition: which provider object an address denotes is current topology, bound here with the endpoint and record facts below rather than filtered out of the result afterwards, so every rule reads one `CurrentFacts` and no caller can re-decide an address this owner already refused. Re-pinned from 815 for `awaiting_repair`, the reason that tells a withheld address whose repair its own plan carries apart from one nothing will settle — the closeout owes the first a follow-up cycle and the second nothing — and it belongs in the closed vocabulary this owner defines. Re-pinned from 822 for the abandoned-relation fallback's identity join: a committed row belongs to the current address its provider identity is observed at, and abandoning a relation must re-seat it there (through the relocated-match fallback) rather than decide the endpoint unbaselined. Re-pinned from 848 to also mark a stored row whose identity is observed elsewhere as relocated away, so a continuation and a replacement cannot both name the same incumbent row. Re-pinned from 858 for ordering a carrying action before the address it vacates, so a stored path that sorts first cannot outrun the row it must lose. Re-pinned from 869 for carrying a remote rename's local counterpart to the rename destination, so a folder rename onto an occupied address moves the local file instead of pushing the stale old address. */
+/* eslint max-lines: ["error", 931] -- relation abandonment, exact-path binding, preservation-cover authorization, and Prefer-local eligibility must stay under the sole identity-policy owner. Re-pinned from 785 for the two corrected publication expectations: a replacement continues no row, so the incumbent it names is the occupant of the claimed address and nothing else. Re-pinned from 789 for the rename guard's cross-source note, which precedes the loop it explains; this directive counts comments. Re-pinned from 800 for the contended-address precondition: which provider object an address denotes is current topology, bound here with the endpoint and record facts below rather than filtered out of the result afterwards, so every rule reads one `CurrentFacts` and no caller can re-decide an address this owner already refused. Re-pinned from 815 for `awaiting_repair`, the reason that tells a withheld address whose repair its own plan carries apart from one nothing will settle — the closeout owes the first a follow-up cycle and the second nothing — and it belongs in the closed vocabulary this owner defines. Re-pinned from 822 for the abandoned-relation fallback's identity join: a committed row belongs to the current address its provider identity is observed at, and abandoning a relation must re-seat it there (through the relocated-match fallback) rather than decide the endpoint unbaselined. Re-pinned from 848 to also mark a stored row whose identity is observed elsewhere as relocated away, so a continuation and a replacement cannot both name the same incumbent row. Re-pinned from 858 for ordering a carrying action before the address it vacates, so a stored path that sorts first cannot outrun the row it must lose. Re-pinned from 869 for carrying a remote rename's local counterpart to the rename destination, so a folder rename onto an occupied address moves the local file instead of pushing the stale old address. Re-pinned from 901 for the empty-parent prune candidate helper: it binds the scope-filtered ancestor chain to the exact delete/file-rename action this owner materializes, so no other layer re-derives candidate addresses. */
 import type { FileEntity } from "../fs/types";
 import type { IdentityComponent } from "./plan-admission-graph";
 import { selectReportFamily } from "./identity-component-report-family";
@@ -686,10 +686,12 @@ function materializeFile(
 	if (kind === "delete_local" || kind === "delete_remote") {
 		// Delete the captured record at its committed key, and perform I/O at the
 		// current endpoint. A parent's spelling must not redirect a child delete.
-		return { action: kind, path: baseline?.path ?? path, local, remote, baseline,
+		const action: SyncAction = { action: kind, path: baseline?.path ?? path, local, remote, baseline,
 			localPath: local?.path ?? file.localPath ?? path,
 			remotePath: remote?.path ?? file.remotePath ?? path,
 			publication: { source: baseline, destination: baseline } };
+		return withPruneCandidates(action, facts.scope, kind === "delete_local"
+			? action.localPath! : action.remotePath!);
 	}
 	if (move) {
 		if (!local || !remote || (!remote.identityKey && !equal(local, remote))) return "remote_identity_missing";
@@ -705,8 +707,8 @@ function materializeFile(
 			content = { mode: "copy", read: { side: readSide, entity: kind === "push" ? local : remote },
 				write: { side: kind === "push" ? "remote" : "local", path } };
 		} else return "identity_postcondition_unproven";
-		return { action: move.side === "local" ? "rename_local" : "rename_remote",
-			oldPath: move.from, path, local, remote, baseline, publication, content };
+		return withPruneCandidates({ action: move.side === "local" ? "rename_local" : "rename_remote",
+			oldPath: move.from, path, local, remote, baseline, publication, content }, facts.scope, move.from);
 	}
 	if (kind === "conflict") return { action: kind, path, local, remote, baseline, publication,
 		...compileSamePathConflictContract(conflictFacts(file), conflictStrategy, allowPreferLocalWin),
@@ -720,6 +722,34 @@ function materializeFile(
 		...(file.remotePath ? { remotePath: file.remotePath } : {}),
 	};
 	return null;
+}
+
+/**
+ * Bound the empty-parent prune candidate set to directories that are themselves in
+ * sync scope. A directory outside scope stops the chain: it still contains the
+ * in-scope path below it, so it and every ancestor must survive. These are candidate
+ * addresses only — execution re-proves emptiness from current facts before deleting.
+ */
+function withPruneCandidates(
+	action: SyncAction,
+	scope: ScopeProjection,
+	sourcePath: string,
+): SyncAction {
+	const chain = pruneCandidateChain(scope, sourcePath);
+	return chain.length > 0 ? { ...action, pruneEmptyAncestors: chain } : action;
+}
+
+function pruneCandidateChain(scope: ScopeProjection, sourcePath: string): string[] {
+	if (!scope.includes) return [];
+	const chain: string[] = [];
+	let separator = sourcePath.lastIndexOf("/");
+	while (separator > 0) {
+		const parent = sourcePath.slice(0, separator);
+		if (!scope.includes(parent)) break;
+		chain.push(parent);
+		separator = parent.lastIndexOf("/");
+	}
+	return chain;
 }
 
 function conflictFacts(file: BoundFile) {
