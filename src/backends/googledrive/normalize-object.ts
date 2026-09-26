@@ -1,7 +1,41 @@
 import type { RemoteObject, RemoteLocation } from "../../backend-api";
 import { parseIsoTime } from "../shared/module-utils";
-import { FOLDER_MIME } from "./types";
+import { FOLDER_MIME, isGoogleDriveNativeObject } from "./types";
 import type { GoogleDriveFile } from "./types";
+
+/**
+ * Whether a provider DTO may enter the remote sync view as a synchronizable object.
+ *
+ * RB-SVC-010: Google Workspace-native objects (Docs Editors, shortcuts, forms, …) are
+ * excluded from the view rather than projected as an ordinary file with no size/checksum
+ * and an unreadable media route. These helpers are the single seam every read path filters
+ * through, so a native object cannot reach core's plan or Admission by any route.
+ */
+function isSyncableGoogleDriveObject(file: GoogleDriveFile): boolean {
+	return !isGoogleDriveNativeObject(file.mimeType);
+}
+
+/**
+ * Normalize one provider DTO, or `null` when it is a native object that must not
+ * enter the remote sync view. A `null` input (authoritative absence) is also `null`.
+ */
+export function toSyncableRemoteObject(
+	file: GoogleDriveFile | null,
+	rootId: string,
+): RemoteObject | null {
+	if (file === null || !isSyncableGoogleDriveObject(file)) return null;
+	return normalizeGoogleDriveObject(file, rootId);
+}
+
+/** Normalize a provider listing, dropping native objects the view cannot represent. */
+export function mapSyncableGoogleDriveObjects(
+	files: readonly GoogleDriveFile[],
+	rootId: string,
+): RemoteObject[] {
+	return files
+		.filter(isSyncableGoogleDriveObject)
+		.map((file) => normalizeGoogleDriveObject(file, rootId));
+}
 
 /**
  * Project a provider-native Google Drive file DTO onto the normalized

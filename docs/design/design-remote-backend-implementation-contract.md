@@ -153,7 +153,10 @@ then reads only the local file, computes the advertised remote algorithm, and co
 it with `remoteChecksum`. This is the required direction of comparison. A provider
 version token may bind a later read to the observation, but is not a content digest.
 Google Drive native Workspace objects do not expose `md5Checksum`; they therefore cannot
-be counted as synchronizable byte-backed files under RB-SVC-010.
+be counted as synchronizable byte-backed files under RB-SVC-010. The Google Drive adapter
+enforces this by excluding objects whose mimeType carries the `application/vnd.google-apps.*`
+prefix (except folders) from every view-feeding read path, so they are never projected as
+ordinary files.
 
 ### Filesystem implementation
 

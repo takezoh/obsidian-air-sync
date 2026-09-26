@@ -23,7 +23,7 @@ import { LIST_PAGE_CAP } from "./client";
 import type { GoogleDriveClient } from "./client";
 import type { GoogleDriveChange, GoogleDriveFile } from "./types";
 import { FOLDER_MIME, isGoogleDriveTrashed } from "./types";
-import { normalizeGoogleDriveObject } from "./normalize-object";
+import { normalizeGoogleDriveObject, toSyncableRemoteObject, mapSyncableGoogleDriveObjects } from "./normalize-object";
 import { inspectGoogleDriveFolder } from "./folder-usability";
 
 /**
@@ -71,7 +71,7 @@ export class GoogleDriveAdapter implements RemoteBackendAdapter {
 
 	async listAll(): Promise<readonly RemoteObject[]> {
 		const files = await this.map(() => this.client.listAllFiles(this.rootId));
-		return files.map((file) => normalizeGoogleDriveObject(file, this.rootId));
+		return mapSyncableGoogleDriveObjects(files, this.rootId);
 	}
 
 	async assertRootAlive(): Promise<void> {
@@ -126,7 +126,7 @@ export class GoogleDriveAdapter implements RemoteBackendAdapter {
 			const files = await this.client.listAllFiles(id);
 			return {
 				kind: "subtree",
-				objects: files.map((file) => normalizeGoogleDriveObject(file, this.rootId)),
+				objects: mapSyncableGoogleDriveObjects(files, this.rootId),
 			};
 		} catch (err) {
 			if (isStatus(err, 410)) return { kind: "cursor_invalid" };
@@ -135,8 +135,7 @@ export class GoogleDriveAdapter implements RemoteBackendAdapter {
 	}
 
 	async getById(id: string): Promise<RemoteObject | null> {
-		const file = await this.fetchFile(id);
-		return file === null ? null : normalizeGoogleDriveObject(file, this.rootId);
+		return toSyncableRemoteObject(await this.fetchFile(id), this.rootId);
 	}
 
 	async getByPath(path: string): Promise<readonly RemoteObject[]> {
@@ -146,9 +145,8 @@ export class GoogleDriveAdapter implements RemoteBackendAdapter {
 		for (const [index, segment] of segments.entries()) {
 			const candidates = await this.map(() => this.client.listChildrenByName(parentId, segment));
 			if (index === segments.length - 1) {
-				return candidates
-					.filter((file) => !isGoogleDriveTrashed(file))
-					.map((file) => normalizeGoogleDriveObject(file, this.rootId));
+				return mapSyncableGoogleDriveObjects(
+					candidates.filter((file) => !isGoogleDriveTrashed(file)), this.rootId);
 			}
 			if (candidates.length !== 1 || candidates[0]!.mimeType !== FOLDER_MIME) return [];
 			parentId = candidates[0]!.id;
@@ -159,7 +157,10 @@ export class GoogleDriveAdapter implements RemoteBackendAdapter {
 	async read(input: VersionBoundReadInput): Promise<VersionBoundReadResult> {
 		const file = await this.fetchFile(input.id);
 		if (file === null) return { kind: "target_changed" };
-		const observed = normalizeGoogleDriveObject(file, this.rootId);
+		const observed = toSyncableRemoteObject(file, this.rootId);
+		if (observed === null) {
+			return { kind: "unverifiable", reason: "Google Drive native Workspace object has no byte content" };
+		}
 		if (observed.kind !== "file" || observed.versionToken === undefined) {
 			return { kind: "unverifiable", reason: "Google Drive reported no version evidence" };
 		}
@@ -287,8 +288,8 @@ function collectChanges(
 			out.push({ kind: "delete", id: change.fileId });
 			continue;
 		}
-		if (!change.file) continue;
-		out.push({ kind: "upsert", object: normalizeGoogleDriveObject(change.file, rootId) });
+		const object = toSyncableRemoteObject(change.file ?? null, rootId);
+		if (object !== null) out.push({ kind: "upsert", object });
 	}
 }
 

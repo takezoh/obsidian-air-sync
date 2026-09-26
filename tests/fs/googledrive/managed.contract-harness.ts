@@ -116,6 +116,20 @@ class FakeGoogleDrive {
 		return id;
 	}
 
+	/** Stage a Google Workspace-native object: no size, no md5Checksum, unreadable bytes. */
+	seedNativeFile(path: string): string {
+		const id = this.id("n");
+		this.seed(id, path, ROOT, "application/vnd.google-apps.document");
+		return id;
+	}
+
+	/** Add a native object after a committed cycle so it arrives on the delta feed. */
+	stageNativeFile(path: string): string {
+		const id = this.seedNativeFile(path);
+		this.events.push({ type: "file", fileId: id, removed: false, file: this.copy(this.nodes.get(id)!) });
+		return id;
+	}
+
 	seedFolderWithChild(folderPath: string, childName: string): void {
 		const folderId = this.id("d");
 		this.seed(folderId, folderPath, ROOT, FOLDER_MIME);
@@ -491,6 +505,37 @@ export function registerGoogleDriveManagedCachingContract(): void {
 			await resumed.delete(conflictTarget);
 			expect(await resumed.stat(conflictTarget)).toBeNull();
 			await resumed.close();
+		});
+	});
+
+	describe("ManagedRemoteFs<googledrive> provider-native exclusion (RB-SVC-010)", () => {
+		it("keeps a Workspace-native object out of the committed remote view", async () => {
+			const client = new FakeGoogleDrive();
+			client.seedFile("note.md");
+			client.seedNativeFile("CGWORLD Archive 視聴リスト");
+			const fs = makeFs(client, "managed-native-cold");
+
+			const objects = await fs.list();
+
+			expect(objects.map((object) => object.path)).toEqual(["note.md"]);
+			await fs.close();
+		});
+
+		it("does not surface a native object that arrives on the delta feed", async () => {
+			const client = new FakeGoogleDrive();
+			client.seedFile("note.md");
+			const store = new MetadataStore<RemoteObject>("managed-native-delta", STORE);
+			const fs = makeFs(client, "managed-native-delta", store);
+			await fs.list();
+			await fs.commitCheckpoint();
+
+			client.stageNativeFile("Doc");
+			const delta = await fs.getChangedPaths();
+
+			expect(delta?.modified ?? []).not.toContain("Doc");
+			expect(await fs.stat("Doc")).toBeNull();
+			expect((await fs.list()).map((object) => object.path)).toEqual(["note.md"]);
+			await fs.close();
 		});
 	});
 }

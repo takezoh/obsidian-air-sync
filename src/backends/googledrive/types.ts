@@ -2,6 +2,25 @@
 export const FOLDER_MIME = "application/vnd.google-apps.folder";
 
 /**
+ * MIME prefix shared by Google Workspace-native objects (Docs Editors documents,
+ * spreadsheets, presentations, drawings, forms, scripts, shortcuts).
+ */
+export const GOOGLE_WORKSPACE_MIME_PREFIX = "application/vnd.google-apps.";
+
+/**
+ * The one predicate for a provider-native Workspace object.
+ *
+ * These objects have no byte content on the Drive media route (`files.get?alt=media`
+ * answers 403 `fileNotDownloadable`) and expose no `md5Checksum`, so under RB-SVC-010
+ * they must never be projected as an ordinary file with incomplete content evidence.
+ * Folders share the native prefix but carry synchronizable topology, so they are not
+ * native for this purpose.
+ */
+export function isGoogleDriveNativeObject(mimeType: string): boolean {
+	return mimeType.startsWith(GOOGLE_WORKSPACE_MIME_PREFIX) && mimeType !== FOLDER_MIME;
+}
+
+/**
  * Hard cap on pagination drain loops (full list and changes.list). At pageSize
  * 1000 this is 10M entries — beyond any real vault — so reaching it means the
  * server isn't clearing its page token; we throw instead of looping forever.
