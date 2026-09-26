@@ -130,6 +130,23 @@ class FakeGoogleDrive {
 		return id;
 	}
 
+	/** Add a byte-backed object with no provider parent (e.g. "Shared with me") after a committed cycle. */
+	stageUnparentedFile(path: string): string {
+		const id = this.id("u");
+		const file: GoogleDriveFile = {
+			id,
+			name: path,
+			mimeType: "application/pdf",
+			parents: [],
+			modifiedTime: MODIFIED,
+			size: "1",
+			md5Checksum: "shared",
+		};
+		this.place(file);
+		this.events.push({ type: "file", fileId: id, removed: false, file: this.copy(file) });
+		return id;
+	}
+
 	seedFolderWithChild(folderPath: string, childName: string): void {
 		const folderId = this.id("d");
 		this.seed(folderId, folderPath, ROOT, FOLDER_MIME);
@@ -534,6 +551,23 @@ export function registerGoogleDriveManagedCachingContract(): void {
 
 			expect(delta?.modified ?? []).not.toContain("Doc");
 			expect(await fs.stat("Doc")).toBeNull();
+			expect((await fs.list()).map((object) => object.path)).toEqual(["note.md"]);
+			await fs.close();
+		});
+
+		it("does not surface a no-parent object that arrives on the delta feed", async () => {
+			const client = new FakeGoogleDrive();
+			client.seedFile("note.md");
+			const store = new MetadataStore<RemoteObject>("managed-out-of-subtree-delta", STORE);
+			const fs = makeFs(client, "managed-out-of-subtree-delta", store);
+			await fs.list();
+			await fs.commitCheckpoint();
+
+			client.stageUnparentedFile("shared.pdf");
+			const delta = await fs.getChangedPaths();
+
+			expect(delta?.modified ?? []).not.toContain("shared.pdf");
+			expect(await fs.stat("shared.pdf")).toBeNull();
 			expect((await fs.list()).map((object) => object.path)).toEqual(["note.md"]);
 			await fs.close();
 		});

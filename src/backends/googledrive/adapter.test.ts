@@ -38,6 +38,18 @@ const native = (id: string, parents: string[], version = "2") => ({
 	modifiedTime: "2026-01-01T00:00:00.000Z",
 });
 
+/** A byte-backed object the provider reports with no parent (e.g. an item in "Shared with me"). */
+const unparented = (id: string, version = "2") => ({
+	id,
+	name: `${id}.pdf`,
+	mimeType: "application/pdf",
+	parents: [] as string[],
+	version,
+	modifiedTime: "2026-01-01T00:00:00.000Z",
+	md5Checksum: `md5-${id}`,
+	size: "10",
+});
+
 describe("GoogleDriveAdapter delta completion", () => {
 	it("does not walk a changed folder on the delta path", async () => {
 		const listAllFiles = vi.fn();
@@ -136,5 +148,37 @@ describe("GoogleDriveAdapter excludes provider-native Workspace objects (RB-SVC-
 
 		expect(result.kind).toBe("unverifiable");
 		expect(downloadFile).not.toHaveBeenCalled();
+	});
+});
+
+describe("GoogleDriveAdapter keeps out-of-subtree objects out of the view", () => {
+	it("omits an object with no provider parent from the listing and the delta feed", async () => {
+		const listAllFiles = vi.fn().mockResolvedValue([file("c", ["root"]), unparented("u")]);
+		const listChanges = vi.fn().mockResolvedValue({
+			changes: [
+				{ type: "file", fileId: "c", removed: false, file: file("c", ["root"]) },
+				{ type: "file", fileId: "u", removed: false, file: unparented("u") },
+			],
+		});
+		const adapter = new GoogleDriveAdapter(stubClient({ listAllFiles, listChanges }), "root");
+
+		expect((await adapter.listAll()).map((object) => object.id)).toEqual(["c"]);
+
+		const result = await adapter.getChanges("cursor");
+		if (result.kind !== "changes") throw new Error("expected changes");
+		const upserts: string[] = [];
+		for (const change of result.changes) {
+			if (change.kind === "upsert") upserts.push(change.object.id);
+		}
+		expect(upserts).toEqual(["c"]);
+	});
+
+	it("resolves a no-parent object to absence by identity and path", async () => {
+		const getFile = vi.fn().mockResolvedValue(unparented("u"));
+		const listChildrenByName = vi.fn().mockResolvedValue([unparented("u")]);
+		const adapter = new GoogleDriveAdapter(stubClient({ getFile, listChildrenByName }), "root");
+
+		expect(await adapter.getById("u")).toBeNull();
+		expect(await adapter.getByPath("u.pdf")).toEqual([]);
 	});
 });

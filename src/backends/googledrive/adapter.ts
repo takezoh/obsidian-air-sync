@@ -159,7 +159,7 @@ export class GoogleDriveAdapter implements RemoteBackendAdapter {
 		if (file === null) return { kind: "target_changed" };
 		const observed = toSyncableRemoteObject(file, this.rootId);
 		if (observed === null) {
-			return { kind: "unverifiable", reason: "Google Drive native Workspace object has no byte content" };
+			return { kind: "unverifiable", reason: "Google Drive object is not synchronizable by Air Sync" };
 		}
 		if (observed.kind !== "file" || observed.versionToken === undefined) {
 			return { kind: "unverifiable", reason: "Google Drive reported no version evidence" };

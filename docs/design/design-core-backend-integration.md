@@ -47,7 +47,9 @@ cache-write protocol.
 
 `NormalizedMetadataCache` is `AbstractMetadataCache<RemoteObject>` with the four
 extractors plus `toEntity`. Addressing is the only place the two location forms differ:
-`parent_id` passes the provider parent through; `provider_path` resolves the parent from
+`parent_id` passes the provider parent through, with `null` reserved for the bound root
+and only the bound root — a module must not emit `null` for an object that has no parent,
+because core reads `null` as a bound-root address; `provider_path` resolves the parent from
 a core-maintained provider-path index built during the same complete snapshot, and drops
 an entry whose parent chain does not reach the root rather than seating it at a bare-name
 root address. Merged folders keep every id at one path.

@@ -8,16 +8,32 @@ import type { GoogleDriveFile } from "./types";
  *
  * RB-SVC-010: Google Workspace-native objects (Docs Editors, shortcuts, forms, …) are
  * excluded from the view rather than projected as an ordinary file with no size/checksum
- * and an unreadable media route. These helpers are the single seam every read path filters
- * through, so a native object cannot reach core's plan or Admission by any route.
+ * and an unreadable media route.
+ *
+ * An object with no parent at all is likewise excluded. The `parent_id` location reserves
+ * `null` for the bound root AND ONLY the bound root (see `RemoteLocation`), so a Drive item
+ * whose `parents` is empty — an item in "Shared with me", or the My Drive root itself — is
+ * outside the bound subtree. Projecting it as `parentId: null` would seat it at a bare-name
+ * root address and pull a file the vault does not contain.
  */
 function isSyncableGoogleDriveObject(file: GoogleDriveFile): boolean {
-	return !isGoogleDriveNativeObject(file.mimeType);
+	return !isGoogleDriveNativeObject(file.mimeType) && hasGoogleDriveParent(file);
 }
 
 /**
- * Normalize one provider DTO, or `null` when it is a native object that must not
- * enter the remote sync view. A `null` input (authoritative absence) is also `null`.
+ * Whether the provider reported at least one parent for this object. A Google Drive
+ * object with an empty `parents` is not inside any folder the account can address, so it
+ * cannot be placed under the bound root; only a real parent id (the bound root included)
+ * makes its in-tree position representable.
+ */
+function hasGoogleDriveParent(file: GoogleDriveFile): boolean {
+	return (file.parents?.length ?? 0) > 0;
+}
+
+/**
+ * Normalize one provider DTO, or `null` when it must not enter the remote sync view
+ * (a provider-native object or one with no provider parent). A `null` input
+ * (authoritative absence) is also `null`.
  */
 export function toSyncableRemoteObject(
 	file: GoogleDriveFile | null,
@@ -27,7 +43,7 @@ export function toSyncableRemoteObject(
 	return normalizeGoogleDriveObject(file, rootId);
 }
 
-/** Normalize a provider listing, dropping native objects the view cannot represent. */
+/** Normalize a provider listing, dropping objects the view cannot represent. */
 export function mapSyncableGoogleDriveObjects(
 	files: readonly GoogleDriveFile[],
 	rootId: string,
