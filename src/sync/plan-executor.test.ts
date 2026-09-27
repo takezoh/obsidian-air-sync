@@ -1060,7 +1060,7 @@ describe("executePlan", () => {
 			expect(remoteFs.files.has("notes")).toBe(false);
 		});
 
-		it("cascades deepest-first and stops at a non-empty ancestor", async () => {
+		it("cascades deepest-first through every ancestor the removal emptied", async () => {
 			const ctx = makeCtx();
 			const remoteFs = ctx.remoteFs as MockFileSystem;
 			addFile(remoteFs, "a/b/c.md", "x");
@@ -1081,7 +1081,7 @@ describe("executePlan", () => {
 			expect(remoteFs.files.has("a")).toBe(false);
 		});
 
-		it("keeps a folder that still has a sibling, ignoring hidden and ignored children", async () => {
+		it("keeps a folder that still has a sibling, even a hidden or ignored one", async () => {
 			const ctx = makeCtx();
 			const remoteFs = ctx.remoteFs as MockFileSystem;
 			addFile(remoteFs, "notes/a.md", "x");

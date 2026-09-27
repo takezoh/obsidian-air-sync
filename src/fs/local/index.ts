@@ -2,7 +2,6 @@ import { TFile, TFolder } from "../../platform/obsidian";
 import type { App } from "../../platform/obsidian";
 import type { IFileSystem } from "../interface";
 import type { FileEntity } from "../types";
-import { sha256 } from "../../utils/hash";
 import { normalizeSyncPath, validateRename, isDotPrefixed } from "../../utils/path";
 import { DiskSurface } from "./disk-surface";
 import { VaultSurface } from "./vault-surface";
@@ -40,6 +39,10 @@ export class LocalFs implements IFileSystem {
 	 * disk scan of the configured dot roots. The disk authority is consulted only to
 	 * resolve a case-collision alias the index may have retained. This view is scoped
 	 * to the vault's concept of its contents; it is not the occupancy authority.
+	 *
+	 * The index snapshot can under-report before the workspace layout is ready. That
+	 * gate is the orchestrator's (the timing authority), not this low-level adapter's,
+	 * so new callers MUST be in a layout-ready-gated context.
 	 */
 	async list(): Promise<FileEntity[]> {
 		const entities = await this.removeStaleCaseAliases(this.indexed.snapshot());
@@ -122,20 +125,10 @@ export class LocalFs implements IFileSystem {
 		if (existing instanceof TFolder) {
 			throw new Error(`Cannot write file: "${path}" is an existing directory`);
 		}
-		if (existing instanceof TFile) {
-			await this.indexed.modifyBinary(existing, content, mtime);
-			return {
-				path,
-				pathAuthority: "requested_echo",
-				isDirectory: false,
-				size: existing.stat.size,
-				mtime: existing.stat.mtime,
-				hash: await sha256(content),
-			};
-		}
+		if (existing instanceof TFile) return this.indexed.overwrite(existing, content, mtime);
 		const parentPath = path.substring(0, path.lastIndexOf("/"));
 		if (parentPath) await this.mkdirRecursive(parentPath);
-		return this.indexed.createBinary(path, content, mtime);
+		return this.indexed.create(path, content, mtime);
 	}
 
 	async mkdir(path: string): Promise<FileEntity> {

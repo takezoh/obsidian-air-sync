@@ -52,7 +52,7 @@ export async function pruneEmptiedDirectories(
 			occupied = await fs.hasChildren(directory);
 		} catch (err) {
 			blockPruneAncestors(candidates, blocked, side, directory);
-			ctx.logger?.warn("executePlan: prune directory listing failed", {
+			ctx.logger?.warn("executePlan: prune occupancy check failed", {
 				path: directory, side, error: toError(err).message,
 			});
 			continue;

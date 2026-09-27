@@ -70,18 +70,29 @@ export class VaultSurface {
 		return this.vault.readBinary(file);
 	}
 
-	async modifyBinary(file: TFile, content: ArrayBuffer, mtime: number): Promise<void> {
+	/** Overwrite an existing indexed file and return its post-write entity. */
+	async overwrite(file: TFile, content: ArrayBuffer, mtime: number): Promise<FileEntity> {
 		await this.vault.modifyBinary(file, content, { mtime });
+		return this.toEntity(file.path, file.stat, content);
 	}
 
-	async createBinary(path: string, content: ArrayBuffer, mtime: number): Promise<FileEntity> {
+	/** Create an indexed file whose parent already exists, and return its entity. */
+	async create(path: string, content: ArrayBuffer, mtime: number): Promise<FileEntity> {
 		const written = await this.vault.createBinary(path, content, { mtime });
+		return this.toEntity(path, written.stat, content);
+	}
+
+	private async toEntity(
+		path: string,
+		stat: { size: number; mtime: number },
+		content: ArrayBuffer,
+	): Promise<FileEntity> {
 		return {
 			path,
 			pathAuthority: "requested_echo",
 			isDirectory: false,
-			size: written.stat.size,
-			mtime: written.stat.mtime,
+			size: stat.size,
+			mtime: stat.mtime,
 			hash: await sha256(content),
 		};
 	}
