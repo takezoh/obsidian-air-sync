@@ -12,6 +12,10 @@ import { sha256 } from "../../utils/hash";
  * Vault index cannot represent. It is deliberately not the authority for an
  * indexed-path mutation, which must keep Obsidian's index and events coherent;
  * that belongs to the Vault surface, and `LocalFs` composes the two.
+ *
+ * `mkdirFn` is the composition's parent-ensuring hook: creating an ancestor can
+ * cross into the indexed surface, so `LocalFs` owns it and supplies it here rather
+ * than the disk surface guessing a regime per segment.
  */
 export class DiskSurface {
 	constructor(
@@ -35,7 +39,7 @@ export class DiskSurface {
 		}
 	}
 
-	async list(dir: string, entities: FileEntity[]): Promise<void> {
+	private async list(dir: string, entities: FileEntity[]): Promise<void> {
 		if (!(await this.vault.adapter.exists(dir))) return;
 		const listed = await this.vault.adapter.list(dir);
 		for (const folder of listed.folders) {
