@@ -1,4 +1,5 @@
 import type { FileEntity } from "../fs/types";
+import type { ErrorKind } from "../backend-api/error-classification";
 import type { ConflictAction, ConflictRecord, RenameAction, SyncAction, SyncRecord } from "./types";
 import type { ConflictResolutionResult } from "./conflict-resolver";
 import type { TerminalActionProof } from "./plan-executor";
@@ -15,6 +16,14 @@ export interface CompletedAction {
 export interface FailedAction {
 	action: SyncAction;
 	error: Error;
+	/**
+	 * The neutral classification the applied retry policy used for this failure, carried
+	 * from the site that classified it (so a provider re-tag such as a Google Drive
+	 * 403-rate-limit is preserved). Absent when the failure was recorded without an
+	 * applied classification; the notice projection then falls back to the neutral HTTP
+	 * classifier. This is an observational field only — it never feeds retry/abort policy.
+	 */
+	classification?: ErrorKind;
 }
 
 /** Successful priority publication replacing this exact admitted pull. */

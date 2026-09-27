@@ -6,6 +6,7 @@ import { AirSyncSettingTab } from "./ui/settings";
 import { LocalFs } from "./fs/local/index";
 import { BackendManager } from "./fs/backend-manager";
 import { errorMessage } from "./backend-api";
+import { formatSyncAbortNotice } from "./sync/failure-notice";
 import { initRegistry } from "./fs/registry";
 import { CANONICAL_BACKEND_IDS, LEGACY_BACKEND_ALIASES } from "./fs/modules/validate-module";
 import { createChecksumRegistry } from "./fs/modules/checksum-registry";
@@ -287,7 +288,11 @@ export default class AirSyncPlugin extends Plugin {
 			const msg = errorMessage(err);
 			this.syncStatus = "error";
 			this.updateStatusBar();
-			new Notice(`Sync error: ${msg}`);
+			// A sync failure reports itself in the same structured clause as every other
+			// failure notice; the notice stays ungated so an abort is never hidden.
+			const provider = this.backendManager.getBackendProvider();
+			const classify = provider?.classifyError?.bind(provider);
+			new Notice(formatSyncAbortNotice(err, classify));
 			this.logger.error("Unhandled sync error", { error: msg });
 		}
 	}

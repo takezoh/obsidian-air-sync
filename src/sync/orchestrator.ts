@@ -13,6 +13,7 @@ import { executePlan, toConflictRecords, DESKTOP_TRANSFER_POOL, MOBILE_TRANSFER_
 import type { ExecutionContext } from "./plan-executor";
 import type { ExecutionResult } from "./execution-result";
 import { classifyHttpError, errorMessage, toError } from "../backend-api/error-classification";
+import type { ErrorKind } from "../backend-api/error-classification";
 import { decideRetry, sleep } from "./error";
 import type { ConflictRecord, ConflictStrategy, SyncStatus } from "./types";
 import {
@@ -21,6 +22,8 @@ import {
 	type SyncCycleResult,
 } from "./sync-notification";
 import { logChangeDetection } from "./sync-cycle-diagnostics";
+import { formatFailureClause } from "./failure-notice";
+import { projectAbortFact, projectUnclassifiedAbortFact } from "./failure-facts";
 import {
 	captureBatchObservation,
 	logSyncCyclePlan,
@@ -275,6 +278,7 @@ export class SyncOrchestrator {
 		conflictStrategy: ConflictStrategy,
 	): Promise<SyncCycleResult | null> {
 		let lastError: unknown = null;
+		let lastKind: ErrorKind | null = null;
 		let lastOutcome: SyncCycleOutcome | null = null;
 
 		for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -304,6 +308,7 @@ export class SyncOrchestrator {
 				// classifier for backends that don't override it.
 				const provider = this.deps.backendProvider();
 				const classification = provider?.classifyError?.(original) ?? classifyHttpError(original);
+				lastKind = classification.kind;
 				this.deps.logger?.error(
 					`Sync error (attempt ${attempt}/${MAX_RETRIES})`,
 					{ kind: classification.kind, message: original.message },
@@ -312,9 +317,14 @@ export class SyncOrchestrator {
 				const decision = decideRetry(classification, attempt, MAX_RETRIES, Math.random);
 				if (decision.action === "abort") {
 					this.deps.onStatusChange("error");
-					this.deps.notify(decision.kind === "auth"
-						? "Authentication error. Please reconnect in settings."
-						: `Permission denied. Please check your ${provider?.displayName ?? "remote backend"} permissions.`);
+					// The sync-failure notice reports the fact only (`auth`, `permission`,
+					// status) and carries no user instruction. This asymmetry with the
+					// connect/token paths (BackendManager / OAuth) that still say
+					// "reconnect in settings" is intentional: those paths run only when the
+					// user is already acting on the connection, while an ordinary sync keeps
+					// retrying and must not turn every abort into a task. See
+					// docs/note/note-20260927-abort-notice-auth-asymmetry.md.
+					this.deps.notify(formatFailureClause(projectAbortFact(original, classification.kind)));
 					return null;
 				}
 				// "stop" (e.g. 404) and "exhausted" both fall through to the generic
@@ -326,7 +336,10 @@ export class SyncOrchestrator {
 
 		this.deps.onStatusChange("error");
 		const msg = lastError === null ? "Unknown error" : errorMessage(lastError);
-		this.deps.notify(`Sync error: ${msg}`);
+		const abortFact = lastError === null || lastKind === null
+			? projectUnclassifiedAbortFact(lastError)
+			: projectAbortFact(lastError, lastKind);
+		this.deps.notify(formatFailureClause(abortFact));
 		this.deps.logger?.error("Sync failed after retries", { message: msg });
 		await this.deps.logger?.flush();
 		return null;

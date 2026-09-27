@@ -893,6 +893,8 @@ describe("executePlan", () => {
 			// The safe provider diagnostic survives the final throw; it must not
 			// collapse to "[object Object]".
 			expect(result.failed[0]!.error.message).toBe("slow down");
+			// The applied classification is carried on the failure fact for the notice.
+			expect(result.failed[0]!.classification).toBe("rateLimit");
 		});
 
 		it("preserves a plain structural not_found message on the final failure", async () => {
@@ -912,6 +914,34 @@ describe("executePlan", () => {
 			expect(readSpy).toHaveBeenCalledTimes(1); // notFound → no retry
 			expect(result.failed).toHaveLength(1);
 			expect(result.failed[0]!.error.message).toBe("the object is gone");
+			expect(result.failed[0]!.classification).toBe("notFound");
+		});
+
+		it("records the provider re-tagged kind for a 403 the classifier calls a rate limit", async () => {
+			// A Google Drive-style classifier: a 403 that is actually a rate limit is
+			// re-tagged so the notice and the retry policy agree.
+			const classifyError = vi.fn((err: unknown) => {
+				const status = (err as { status?: unknown } | null)?.status;
+				return status === 403 ? { kind: "rateLimit" as const } : classifyHttpError(err);
+			});
+			const ctx = makeCtx({ classifyError });
+			addFile(ctx.remoteFs as MockFileSystem, "gated.md", "x");
+			const remote = (await ctx.remoteFs.stat("gated.md"))!;
+			vi.spyOn(ctx.remoteFs, "read")
+				.mockRejectedValue(Object.assign(new Error("forbidden"), { status: 403 }));
+
+			const result = await executePlan(makePlan([{
+				path: "gated.md", action: "pull",
+				remote,
+			}]), ctx);
+
+			expect(result.failed).toHaveLength(1);
+			// The carried kind is the applied re-tag, not the neutral 403 permission default.
+			expect(result.failed[0]!.classification).toBe("rateLimit");
+			// The classification is carried from the retry site: recording the failure
+			// must not invoke the provider classifier a fourth time (it ran once per
+			// bounded retry attempt).
+			expect(classifyError).toHaveBeenCalledTimes(3);
 		});
 	});
 

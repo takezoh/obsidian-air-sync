@@ -1,0 +1,511 @@
+acceptance:
+- criteria: 'By verify-fact-projection: Unit test over fabricated SyncCycleOutcome
+    values asserting the projected operation, status, kind, and the representative
+    selection order. (tier T1, command npm test)'
+  id: UAC-001
+  requirement_refs:
+  - req-failure-fact-single-owner
+  - req-classification-matches-applied-policy
+  - req-representative-selection
+  - req-unclassified-marker
+- criteria: 'By verify-classification-carrier: Unit test over plan-executor''s executeAction
+    asserting that a provider re-tagged 403 failure records the FailedAction carrying
+    the applied rateLimit kind, and that the projection uses that carried kind instead
+    of the neutral 403 permission default. (tier T1, command npm test)'
+  id: UAC-002
+  requirement_refs:
+  - req-classification-matches-applied-policy
+- criteria: 'By verify-format-clause: Unit test asserting the exact clause for a 401,
+    403, 404, 429, 5xx and a provider-translated failure, and for a null classification.
+    (tier T1, command npm test)'
+  id: UAC-003
+  requirement_refs:
+  - req-notice-no-user-instructions
+  - req-notice-privacy
+  - req-unclassified-marker
+  - req-representative-selection
+  - req-notice-one-breakdown-per-cycle
+- criteria: 'By verify-format-privacy: Unit test feeding hostile fact values (path-like,
+    token-like, provider-message-like strings) and asserting none appears in the output
+    and no instruction verb is present. (tier T1, command npm test)'
+  id: UAC-004
+  requirement_refs:
+  - req-notice-privacy
+  - req-notice-no-user-instructions
+- criteria: 'By verify-routing-sites: Orchestrator and main tests injecting a notifier
+    and asserting the emitted notices carry the clause and no raw message on each
+    failure path. (tier T1, command npm test)'
+  id: UAC-005
+  requirement_refs:
+  - req-notice-one-breakdown-per-cycle
+  - req-abort-notice-covered
+  - req-notice-no-user-instructions
+  - req-log-optin-unchanged
+- criteria: 'By verify-routing-gating: Tests asserting one notice per burst with showSyncNotifications
+    on and off, no per-file notice for a many-failure partial cycle, and the abort
+    notice present with notifications off. (tier T1, command npm test)'
+  id: UAC-006
+  requirement_refs:
+  - req-notice-one-breakdown-per-cycle
+  - req-abort-notice-covered
+- criteria: 'By verify-log-preservation: Backend-error-log tests asserting a nested
+    provider code survives in the logged body and that no projection or path stripping
+    is applied. (tier T1, command npm test)'
+  id: UAC-007
+  requirement_refs:
+  - req-log-evidence-preserved
+- criteria: 'By verify-log-optin: Logger tests asserting no line is written with logging
+    disabled, the settings shape is unchanged, and the notice breakdown is produced
+    independently of the log. (tier T1, command npm test)'
+  id: UAC-008
+  requirement_refs:
+  - req-log-optin-unchanged
+- criteria: 'By verify-doc-pointer: Documentation check over docs/error-handling.md
+    only, asserting it references src/backend-api/error-classification.ts and contains
+    no removed fs/errors pointer; historical change records under docs/changes are
+    deliberately out of scope. (tier T0, command rg -n "src/backend-api/error-classification"
+    docs/error-handling.md)'
+  id: UAC-009
+  requirement_refs:
+  - req-error-doc-pointer
+adrs:
+- decision_input_refs:
+  - decision-input-dp-classification-vocabulary
+  id: adr-20260927-classification-carried-from-retry-site
+  status: accepted
+- decision_input_refs:
+  - decision-input-dp-failure-surfaces
+  - decision-input-dp-breakdown-content
+  id: adr-20260927-notice-breakdown-without-instructions
+  status: accepted
+- decision_input_refs:
+  - decision-input-dp-provider-body
+  id: adr-20260927-preserve-whole-body-evidence
+  status: accepted
+artifact: design-plan-spine
+components:
+- contract_refs:
+  - contract-failure-fact-projection
+  id: component-failure-facts
+  kind: planned
+  paths:
+  - src/sync/failure-facts.ts
+- contract_refs:
+  - contract-notice-breakdown-format
+  id: component-notice-formatter
+  kind: planned
+  paths:
+  - src/sync/failure-notice.ts
+- contract_refs:
+  - contract-notice-routing
+  id: component-notice-routing
+  kind: existing
+  paths:
+  - src/sync/orchestrator.ts
+  - src/main.ts
+- contract_refs:
+  - contract-log-evidence-invariance
+  id: component-log-evidence
+  kind: existing
+  paths:
+  - src/logging/logger.ts
+  - src/backend-api/backend-error-log.ts
+- contract_refs: []
+  id: component-cycle-execution
+  kind: existing
+  paths:
+  - src/sync/plan-executor.ts
+  - src/sync/execution-result.ts
+contracts:
+- adr_refs:
+  - adr-20260927-classification-carried-from-retry-site
+  dimension: integration_contract
+  id: contract-failure-fact-projection
+  owner: component-failure-facts
+  requirement_refs:
+  - req-failure-fact-single-owner
+  - req-classification-matches-applied-policy
+  - req-representative-selection
+  - req-unclassified-marker
+  unit_refs:
+  - Project the bounded failure facts
+  verification:
+  - command: npm test
+    id: verify-fact-projection
+    tier: T1
+  - command: npm test
+    id: verify-classification-carrier
+    tier: T1
+- adr_refs:
+  - adr-20260927-notice-breakdown-without-instructions
+  dimension: security_boundary
+  id: contract-notice-breakdown-format
+  owner: component-notice-formatter
+  requirement_refs:
+  - req-notice-no-user-instructions
+  - req-notice-privacy
+  - req-unclassified-marker
+  - req-representative-selection
+  - req-notice-one-breakdown-per-cycle
+  unit_refs:
+  - Render the bounded failure notice breakdown
+  verification:
+  - command: npm test
+    id: verify-format-clause
+    tier: T1
+  - command: npm test
+    id: verify-format-privacy
+    tier: T1
+- adr_refs:
+  - adr-20260927-notice-breakdown-without-instructions
+  dimension: control_flow
+  id: contract-notice-routing
+  owner: component-notice-routing
+  requirement_refs:
+  - req-notice-one-breakdown-per-cycle
+  - req-abort-notice-covered
+  - req-notice-no-user-instructions
+  - req-log-optin-unchanged
+  unit_refs:
+  - Route every failure notice through the breakdown
+  verification:
+  - command: npm test
+    id: verify-routing-sites
+    tier: T1
+  - command: npm test
+    id: verify-routing-gating
+    tier: T1
+- adr_refs:
+  - adr-20260927-preserve-whole-body-evidence
+  dimension: security_boundary
+  id: contract-log-evidence-invariance
+  owner: component-log-evidence
+  requirement_refs:
+  - req-log-evidence-preserved
+  - req-log-optin-unchanged
+  - req-error-doc-pointer
+  unit_refs:
+  - Pin the preserved log evidence and correct the error-handling pointer
+  verification:
+  - command: npm test
+    id: verify-log-preservation
+    tier: T1
+  - command: npm test
+    id: verify-log-optin
+    tier: T1
+  - command: rg -n "src/backend-api/error-classification" docs/error-handling.md
+    id: verify-doc-pointer
+    tier: T0
+dispositions:
+- adr_refs: []
+  contract_refs:
+  - contract-failure-fact-projection
+  decision_input_ref: decision-input-dp-breakdown-content
+  disposition: adopted — The breakdown names the operation, the neutral classification,
+    and the HTTP status when present, as the selected OPT-PHASE-CLASS-STATUS requires.
+- adr_refs:
+  - adr-20260927-notice-breakdown-without-instructions
+  contract_refs:
+  - contract-notice-routing
+  decision_input_ref: decision-input-dp-failure-surfaces
+  disposition: adopted — Both the completion notice and every cycle-abort notice carry
+    the same structured clause, per OPT-BOTH.
+- adr_refs: []
+  contract_refs:
+  - contract-notice-breakdown-format
+  decision_input_ref: decision-input-dp-multi-failure-reduction
+  disposition: adopted — The formatter reduces a multi-failure cycle to one representative
+    failure plus the total count, per OPT-REPRESENTATIVE.
+- adr_refs: []
+  contract_refs:
+  - contract-notice-breakdown-format
+  decision_input_ref: decision-input-dp-unknown-classification
+  disposition: adopted — An explicit unclassified marker is rendered instead of guessing,
+    per OPT-SHOW-UNCLASSIFIED.
+- adr_refs:
+  - adr-20260927-preserve-whole-body-evidence
+  contract_refs:
+  - contract-log-evidence-invariance
+  decision_input_ref: decision-input-dp-provider-body
+  disposition: adopted — The whole-body evidence is preserved and no projection is
+    introduced, per OPT-KEEP-WHOLE-BODY.
+- adr_refs:
+  - adr-20260927-classification-carried-from-retry-site
+  contract_refs:
+  - contract-failure-fact-projection
+  decision_input_ref: decision-input-dp-classification-vocabulary
+  disposition: adopted — The core ErrorKind is the vocabulary the notice names, carried
+    from the retry site; BackendErrorKind stays the module boundary vocabulary.
+- adr_refs: []
+  contract_refs:
+  - contract-log-evidence-invariance
+  decision_input_ref: decision-input-dp-record-emitter
+  disposition: 'rejected — No separate per-failure diagnostic record is emitted: the
+    notice is the only per-failure surface, so the core-versus-module emitter question
+    is closed by not adding a record and leaving the opt-in log unchanged.'
+granularity_profile: boundary-complete
+requirements:
+- id: req-failure-fact-single-owner
+  priority: must
+  statement: The cycle's user-visible failure facts (operation/phase, HTTP status
+    when present, and neutral classification) SHALL be derived by exactly one core
+    owner from in-memory current-cycle facts, without reading the log file and without
+    introducing a second error taxonomy.
+  type: ubiquitous
+- id: req-classification-matches-applied-policy
+  priority: must
+  statement: The classification shown for a failure SHALL be the neutral ErrorKind
+    that the engine's retry policy applied to that failure, including a provider re-tag,
+    and SHALL never be a provider code string.
+  type: ubiquitous
+- id: req-representative-selection
+  priority: must
+  statement: When a cycle contains more than one failure, the notice SHALL reduce
+    them to one representative failure (the most severe by the neutral classification,
+    else the first observed) together with the total error count.
+  type: state_driven
+- id: req-unclassified-marker
+  priority: must
+  statement: When a failure has no HTTP status or no recognized neutral classification,
+    the notice SHALL state the operation and an explicit unclassified marker instead
+    of guessing a category, a retryability, or a next step.
+  type: state_driven
+- id: req-notice-one-breakdown-per-cycle
+  priority: must
+  statement: When a sync burst with one or more failures completes and showSyncNotifications
+    is enabled, the plugin SHALL emit at most one completion notice, retaining the
+    existing counts summary and appending one bounded failure clause; it SHALL NOT
+    emit a per-file notice.
+  type: event_driven
+- id: req-notice-no-user-instructions
+  priority: must
+  statement: 'No user-visible sync failure notice SHALL assign work to the user: it
+    SHALL contain no retryable-versus-user-action split, no suggested next step, no
+    reconnect or permission instruction, and no raw provider message text.'
+  type: ubiquitous
+- id: req-notice-privacy
+  priority: must
+  statement: No notice string produced by this change SHALL contain a file path, a
+    file name, a provider code, raw provider text, or credential material; only the
+    closed operation vocabulary, the closed ErrorKind vocabulary, and a numeric HTTP
+    status may be emitted.
+  type: ubiquitous
+- id: req-abort-notice-covered
+  priority: must
+  statement: Every user-visible sync failure path, including each ungated cycle-abort
+    notice, SHALL carry the same structured failure clause instead of a raw error
+    message, and each such notice SHALL remain ungated so an aborted sync is never
+    silently hidden.
+  type: event_driven
+- id: req-log-evidence-preserved
+  priority: must
+  statement: The opt-in diagnostic log SHALL retain the whole provider error body
+    (nested provider codes included) and headers minus set-cookie with truncation
+    announced, and SHALL NOT replace it with an allowlisted projection or strip paths
+    from retained evidence.
+  type: ubiquitous
+- id: req-log-optin-unchanged
+  priority: must
+  statement: Logging SHALL remain opt-in under the existing 'Enable logging' setting,
+    this change SHALL add no setting, command, or persisted field, and the notice
+    breakdown SHALL be produced with logging disabled.
+  type: ubiquitous
+- id: req-error-doc-pointer
+  priority: should
+  statement: docs/error-handling.md SHALL point error classification and decideRetry
+    at src/backend-api/error-classification.ts and SHALL reference no removed fs/errors
+    path.
+  type: ubiquitous
+units:
+- acceptance:
+  - A fabricated cycle outcome projects operation, status and neutral kind; no path,
+    message or provider code appears.
+  - A provider re-tagged 403 records the applied rateLimit kind on the FailedAction
+    and the projection uses it, not the neutral 403 default.
+  - A multi-failure cycle selects one representative by severity plus the total error
+    count; a failure with no status or no recognized kind carries the unclassified
+    marker.
+  chunk: Failure facts and notice clause
+  contract_refs:
+  - contract-failure-fact-projection
+  decision_closure_reason: null
+  depends_on: []
+  files:
+  - src/sync/failure-facts.ts
+  - src/sync/failure-facts.test.ts
+  - src/sync/plan-executor.ts
+  - src/sync/plan-executor.test.ts
+  - src/sync/execution-result.ts
+  objective: Project a cycle's user-visible failures into a bounded, ordered list
+    of failure facts carrying an operation label, the HTTP status when present, and
+    the neutral classification the applied retry policy used, held in memory for the
+    current cycle only.
+  output_format: Source changes and discriminating tests limited to the listed files;
+    no new setting, command or persisted field.
+  task_boundaries: '{"in_scope": ["src/sync/failure-facts.ts: the single bounded failure-fact
+    projection consumed by the notice; the classification it reads is recorded upstream
+    where the retry policy classified the failure", "src/sync/plan-executor.ts (and
+    its test): record on the failed action the neutral classification the provider-aware
+    retry policy computed, the only site that can reproduce a provider re-tag such
+    as the Google Drive 403 rate-limit", "src/sync/failure-notice.ts: the pure failure-clause
+    formatter (operation/status/classification wording and the notice privacy rule)",
+    "src/sync/sync-notification.ts: append the coalesced failure clause to the existing
+    counts summary without changing the counts", "src/sync/orchestrator.ts: route
+    the gated completion notice and each ungated cycle-abort notice through the shared
+    clause; preserve gating and abort/retry policy", "src/main.ts: replace the unhandled-error
+    raw message with the structured clause; keep the notice ungated", "docs/error-handling.md:
+    point classification and decideRetry at src/backend-api/error-classification.ts
+    instead of the removed fs/errors.ts", "tests for the above, including deliberate
+    updates to the pinned sync-notification, logger and backend-error-log suites and
+    the boundary/ownership guards"], "out_of_scope": ["Any change to the opt-in log''s
+    whole-body provider evidence, any allowlisted provider-code projection, or any
+    path/name stripping of retained evidence", "Any new setting, command, Settings
+    section, copy/export control, persisted field, or migration", "Any change to retry/abort
+    policy, decideRetry, or AuthError cycle-abort semantics", "Re-gating the cycle-abort
+    notice on showSyncNotifications"]}'
+  title: Project the bounded failure facts
+  tool_guidance: '{"contract_refs": ["contract-failure-fact-projection"], "verification_refs":
+    ["verify-fact-projection", "verify-classification-carrier"]}'
+- acceptance:
+  - The exact clause is asserted for 401, 403, 404, 429, 5xx and a provider-translated
+    failure.
+  - A transport failure with no HTTP status and a null classification both render
+    the explicit unclassified marker rather than a named category.
+  - Hostile path-like, token-like and provider-message-like fact values never appear
+    in the output, and no instruction verb is present.
+  chunk: Failure facts and notice clause
+  contract_refs:
+  - contract-notice-breakdown-format
+  decision_closure_reason: null
+  depends_on: []
+  files:
+  - src/sync/failure-notice.ts
+  - src/sync/failure-notice.test.ts
+  - src/sync/sync-notification.ts
+  - src/sync/sync-notification.test.ts
+  objective: 'Render one bounded sentence-case failure clause from projected failure
+    facts under a single notice privacy rule: emit only the closed operation vocabulary,
+    the closed ErrorKind vocabulary, and a numeric HTTP status.'
+  output_format: Source changes and discriminating tests limited to the listed files;
+    no new setting, command or persisted field.
+  task_boundaries: '{"in_scope": ["src/sync/failure-facts.ts: the single bounded failure-fact
+    projection consumed by the notice; the classification it reads is recorded upstream
+    where the retry policy classified the failure", "src/sync/plan-executor.ts (and
+    its test): record on the failed action the neutral classification the provider-aware
+    retry policy computed, the only site that can reproduce a provider re-tag such
+    as the Google Drive 403 rate-limit", "src/sync/failure-notice.ts: the pure failure-clause
+    formatter (operation/status/classification wording and the notice privacy rule)",
+    "src/sync/sync-notification.ts: append the coalesced failure clause to the existing
+    counts summary without changing the counts", "src/sync/orchestrator.ts: route
+    the gated completion notice and each ungated cycle-abort notice through the shared
+    clause; preserve gating and abort/retry policy", "src/main.ts: replace the unhandled-error
+    raw message with the structured clause; keep the notice ungated", "docs/error-handling.md:
+    point classification and decideRetry at src/backend-api/error-classification.ts
+    instead of the removed fs/errors.ts", "tests for the above, including deliberate
+    updates to the pinned sync-notification, logger and backend-error-log suites and
+    the boundary/ownership guards"], "out_of_scope": ["Any change to the opt-in log''s
+    whole-body provider evidence, any allowlisted provider-code projection, or any
+    path/name stripping of retained evidence", "Any new setting, command, Settings
+    section, copy/export control, persisted field, or migration", "Any change to retry/abort
+    policy, decideRetry, or AuthError cycle-abort semantics", "Re-gating the cycle-abort
+    notice on showSyncNotifications"]}'
+  title: Render the bounded failure notice breakdown
+  tool_guidance: '{"contract_refs": ["contract-notice-breakdown-format"], "verification_refs":
+    ["verify-format-clause", "verify-format-privacy"]}'
+- acceptance:
+  - Each failure path emits the structured clause and no raw error message.
+  - One completion notice per burst with showSyncNotifications on and off; no per-file
+    notice for a many-failure partial cycle.
+  - The cycle-abort notice still appears with notifications off, carries the clause,
+    and the Sync error status transition is unchanged.
+  chunk: Failure notice routing and log invariance
+  contract_refs:
+  - contract-notice-routing
+  decision_closure_reason: null
+  depends_on:
+  - Project the bounded failure facts
+  - Render the bounded failure notice breakdown
+  files:
+  - src/sync/orchestrator.ts
+  - src/main.ts
+  - src/sync/orchestrator.test.ts
+  - src/main.test.ts
+  objective: 'Route every user-visible sync failure notice through the shared failure
+    clause: the gated completion notice carries one coalesced clause, and each ungated
+    cycle-abort notice carries the same structured clause instead of a raw error message,
+    without changing which notices are emitted or the abort/retry policy.'
+  output_format: Source changes and discriminating tests limited to the listed files;
+    no new setting, command or persisted field.
+  task_boundaries: '{"in_scope": ["src/sync/failure-facts.ts: the single bounded failure-fact
+    projection consumed by the notice; the classification it reads is recorded upstream
+    where the retry policy classified the failure", "src/sync/plan-executor.ts (and
+    its test): record on the failed action the neutral classification the provider-aware
+    retry policy computed, the only site that can reproduce a provider re-tag such
+    as the Google Drive 403 rate-limit", "src/sync/failure-notice.ts: the pure failure-clause
+    formatter (operation/status/classification wording and the notice privacy rule)",
+    "src/sync/sync-notification.ts: append the coalesced failure clause to the existing
+    counts summary without changing the counts", "src/sync/orchestrator.ts: route
+    the gated completion notice and each ungated cycle-abort notice through the shared
+    clause; preserve gating and abort/retry policy", "src/main.ts: replace the unhandled-error
+    raw message with the structured clause; keep the notice ungated", "docs/error-handling.md:
+    point classification and decideRetry at src/backend-api/error-classification.ts
+    instead of the removed fs/errors.ts", "tests for the above, including deliberate
+    updates to the pinned sync-notification, logger and backend-error-log suites and
+    the boundary/ownership guards"], "out_of_scope": ["Any change to the opt-in log''s
+    whole-body provider evidence, any allowlisted provider-code projection, or any
+    path/name stripping of retained evidence", "Any new setting, command, Settings
+    section, copy/export control, persisted field, or migration", "Any change to retry/abort
+    policy, decideRetry, or AuthError cycle-abort semantics", "Re-gating the cycle-abort
+    notice on showSyncNotifications"]}'
+  title: Route every failure notice through the breakdown
+  tool_guidance: '{"contract_refs": ["contract-notice-routing"], "verification_refs":
+    ["verify-routing-sites", "verify-routing-gating"]}'
+- acceptance:
+  - A nested provider code survives in the logged body; no projection or path stripping
+    is applied.
+  - No line is written with logging disabled, the settings shape is unchanged, and
+    the notice breakdown works independently of the log.
+  - docs/error-handling.md references src/backend-api/error-classification.ts and
+    contains no removed fs/errors pointer.
+  chunk: Failure notice routing and log invariance
+  contract_refs:
+  - contract-log-evidence-invariance
+  decision_closure_reason: null
+  depends_on:
+  - Project the bounded failure facts
+  - Render the bounded failure notice breakdown
+  files:
+  - docs/error-handling.md
+  - src/backend-api/backend-error-log.test.ts
+  - src/logging/logger.test.ts
+  objective: 'Keep the opt-in diagnostic log''s whole-body provider evidence and its
+    opt-in boundary invariant: no allowlisted projection, no stripping of retained
+    evidence, no new setting, and no new emitting call site that could carry note
+    contents.'
+  output_format: Source changes and discriminating tests limited to the listed files;
+    no new setting, command or persisted field.
+  task_boundaries: '{"in_scope": ["src/sync/failure-facts.ts: the single bounded failure-fact
+    projection consumed by the notice; the classification it reads is recorded upstream
+    where the retry policy classified the failure", "src/sync/plan-executor.ts (and
+    its test): record on the failed action the neutral classification the provider-aware
+    retry policy computed, the only site that can reproduce a provider re-tag such
+    as the Google Drive 403 rate-limit", "src/sync/failure-notice.ts: the pure failure-clause
+    formatter (operation/status/classification wording and the notice privacy rule)",
+    "src/sync/sync-notification.ts: append the coalesced failure clause to the existing
+    counts summary without changing the counts", "src/sync/orchestrator.ts: route
+    the gated completion notice and each ungated cycle-abort notice through the shared
+    clause; preserve gating and abort/retry policy", "src/main.ts: replace the unhandled-error
+    raw message with the structured clause; keep the notice ungated", "docs/error-handling.md:
+    point classification and decideRetry at src/backend-api/error-classification.ts
+    instead of the removed fs/errors.ts", "tests for the above, including deliberate
+    updates to the pinned sync-notification, logger and backend-error-log suites and
+    the boundary/ownership guards"], "out_of_scope": ["Any change to the opt-in log''s
+    whole-body provider evidence, any allowlisted provider-code projection, or any
+    path/name stripping of retained evidence", "Any new setting, command, Settings
+    section, copy/export control, persisted field, or migration", "Any change to retry/abort
+    policy, decideRetry, or AuthError cycle-abort semantics", "Re-gating the cycle-abort
+    notice on showSyncNotifications"]}'
+  title: Pin the preserved log evidence and correct the error-handling pointer
+  tool_guidance: '{"contract_refs": ["contract-log-evidence-invariance"], "verification_refs":
+    ["verify-log-preservation", "verify-log-optin", "verify-doc-pointer"]}'
+version: 2

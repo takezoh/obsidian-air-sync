@@ -1,6 +1,8 @@
 import type { ExecutionResult } from "./plan-executor";
 import type { AdmissionFailureComponent } from "./plan-admission";
 import type { SyncCycleCompletion } from "./sync-cycle-finalization";
+import { formatFailureClause } from "./failure-notice";
+import { projectFailureFacts } from "./failure-facts";
 
 /** One complete cycle outcome across the Admission and execution boundaries. */
 export interface SyncCycleOutcome {
@@ -42,7 +44,20 @@ export function buildNotificationMessage(outcome: SyncCycleOutcome): string {
 	if (errors > 0) parts.push(`${errors} ${errors === 1 ? "error" : "errors"}`);
 	if (execution.blocked.length > 0) parts.push(`${execution.blocked.length} blocked`);
 	if (outcome.completion.kind === "incomplete" && errors === 0 && execution.blocked.length === 0) parts.push("incomplete");
-	return parts.length === 0 ? "Everything up to date" : `Sync: ${parts.join(", ")}`;
+	const summary = parts.length === 0 ? "Everything up to date" : `Sync: ${parts.join(", ")}`;
+	// One bounded clause per cycle, appended to the unchanged counts summary. It reads
+	// only in-memory cycle facts and is produced even when logging is disabled. A build
+	// failure falls back to the counts summary rather than breaking the notice.
+	let clause: string | null = null;
+	try {
+		const projection = projectFailureFacts(outcome);
+		clause = projection.totalErrors > 0 && projection.representative
+			? formatFailureClause(projection.representative)
+			: null;
+	} catch {
+		clause = null;
+	}
+	return clause === null ? summary : `${summary} — ${clause}`;
 }
 
 /**

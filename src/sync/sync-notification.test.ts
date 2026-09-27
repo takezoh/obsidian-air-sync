@@ -23,7 +23,7 @@ describe("sync notification Admission failure visibility", () => {
 		expect(summary.message).toBe("Sync: incomplete");
 	});
 	it("presents rejected components as errors without a retryability claim", () => {
-		expect(buildNotificationMessage(outcome(2))).toBe("Sync: 2 errors");
+		expect(buildNotificationMessage(outcome(2))).toBe("Sync: 2 errors — Admission failed (unclassified)");
 	});
 
 	it("does not report a queued follow-up as an error", () => {
@@ -54,6 +54,6 @@ describe("sync notification Admission failure visibility", () => {
 		summary.add(outcome(1));
 		summary.add(outcome(2));
 
-		expect(summary.message).toBe("Sync: 3 errors");
+		expect(summary.message).toBe("Sync: 3 errors — Admission failed (unclassified)");
 	});
 });
