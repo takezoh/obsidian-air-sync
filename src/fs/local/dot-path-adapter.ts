@@ -115,27 +115,6 @@ export class DotPathAdapter {
 		}
 	}
 
-	async listDir(dir: string): Promise<FileEntity[]> {
-		const entities: FileEntity[] = [];
-		if (!(await this.vault.adapter.exists(dir))) return entities;
-		const listed = await this.vault.adapter.list(dir);
-		for (const folder of listed.folders) {
-			entities.push({ path: folder, pathAuthority: "actual_resolved", isDirectory: true, size: 0, mtime: 0, hash: "" });
-		}
-		for (const file of listed.files) {
-			const s = await this.vault.adapter.stat(file);
-			entities.push({
-				path: file,
-				pathAuthority: "actual_resolved",
-				isDirectory: false,
-				size: s?.size ?? 0,
-				mtime: s?.mtime ?? 0,
-				hash: "",
-			});
-		}
-		return entities;
-	}
-
 	async rename(oldPath: string, newPath: string): Promise<void> {
 		if (!(await this.vault.adapter.exists(oldPath))) {
 			throw new Error(`File not found: ${oldPath}`);

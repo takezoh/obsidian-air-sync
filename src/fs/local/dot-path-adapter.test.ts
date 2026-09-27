@@ -83,55 +83,6 @@ describe("DotPathAdapter", () => {
 		});
 	});
 
-	describe("listDir", () => {
-		it("marks direct raw adapter listings as resolved provider paths", async () => {
-			const { vault, adapter } = createAdapter([".templates"]);
-			const vaultInternal = vault as unknown as { files: Map<string, unknown> };
-			vaultInternal.files.set(".templates", { type: "folder" });
-			vaultInternal.files.set(".templates/sub", { type: "folder" });
-			vaultInternal.files.set(".templates/daily.md", {
-				type: "file",
-				content: new ArrayBuffer(5),
-				mtime: 100,
-			});
-
-			const entities = await adapter.listDir(".templates");
-
-			expect(entities).not.toHaveLength(0);
-			expect(entities.every((entity) => entity.pathAuthority === "actual_resolved")).toBe(true);
-		});
-
-		it("lists direct children of a dot path", async () => {
-			const { vault, adapter } = createAdapter([".templates"]);
-			const vaultInternal = vault as unknown as { files: Map<string, unknown> };
-			vaultInternal.files.set(".templates", { type: "folder" });
-			vaultInternal.files.set(".templates/sub", { type: "folder" });
-			vaultInternal.files.set(".templates/daily.md", {
-				type: "file",
-				content: new ArrayBuffer(5),
-				mtime: 100,
-			});
-			// Nested file should not appear (not a direct child)
-			vaultInternal.files.set(".templates/sub/nested.md", {
-				type: "file",
-				content: new ArrayBuffer(5),
-				mtime: 100,
-			});
-
-			const entities = await adapter.listDir(".templates");
-			const paths = entities.map((e) => e.path);
-			expect(paths).toContain(".templates/sub");
-			expect(paths).toContain(".templates/daily.md");
-			expect(paths).not.toContain(".templates/sub/nested.md");
-		});
-
-		it("returns empty array for non-existent path", async () => {
-			const { adapter } = createAdapter([".templates"]);
-			const entities = await adapter.listDir(".templates");
-			expect(entities).toHaveLength(0);
-		});
-	});
-
 	describe("rename", () => {
 		it("renames a file within a dot path", async () => {
 			const { vault, adapter } = createAdapter([".templates"]);
