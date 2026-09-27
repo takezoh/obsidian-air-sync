@@ -1,76 +1,49 @@
 import { TFile, TFolder } from "../../platform/obsidian";
-import type { App, Vault } from "../../platform/obsidian";
+import type { App } from "../../platform/obsidian";
 import type { IFileSystem } from "../interface";
 import type { FileEntity } from "../types";
 import { sha256 } from "../../utils/hash";
 import { normalizeSyncPath, validateRename, isDotPrefixed } from "../../utils/path";
-import { DotPathAdapter } from "./dot-path-adapter";
+import { DiskSurface } from "./disk-surface";
+import { VaultSurface } from "./vault-surface";
 
-/** IFileSystem implementation backed by an Obsidian Vault */
+/**
+ * `IFileSystem` over an Obsidian vault, composed from two authorities:
+ *
+ * - **Disk authority** (`DiskSurface`, the raw `DataAdapter`): current existence,
+ *   actual casing, direct-child occupancy, and mutation of paths the Vault index
+ *   cannot represent (dot-prefixed). It sees everything on disk.
+ * - **Vault authority** (`VaultSurface`, the indexed `Vault`/`FileManager` API):
+ *   mutation of representable paths, so Obsidian's index and change events stay
+ *   coherent, and the normal-path half of the discovery snapshot.
+ *
+ * This class owns only the composition: the authority rule, parent-directory
+ * creation across regimes, and a cross-regime rename. Each method states which
+ * authority it uses; nothing here reads the raw `vault`/`adapter` directly.
+ */
 export class LocalFs implements IFileSystem {
 	readonly name = "local";
-	private vault: Vault;
-	private app: App;
-	private dotPath: DotPathAdapter;
+	private readonly disk: DiskSurface;
+	private readonly indexed: VaultSurface;
 
 	constructor(app: App, getDotPaths: () => string[] = () => []) {
-		this.app = app;
-		this.vault = app.vault;
-		this.dotPath = new DotPathAdapter(
-			this.vault,
+		this.indexed = new VaultSurface(app);
+		this.disk = new DiskSurface(
+			app.vault,
 			(p) => this.mkdirRecursive(p),
 			getDotPaths,
 		);
 	}
 
 	/**
-	 * List the vault index. This returns the in-memory `getAllLoadedFiles()` snapshot,
-	 * which **can under-report before the workspace layout is ready**. It does NOT gate
-	 * on layout-ready itself — that is the CALLER's responsibility, and it is owned by
-	 * the sync engine: `SyncOrchestrator.runSync()` (and `shouldSync()`) early-return
-	 * until `isLayoutReady`, and the only path here runs through them
-	 * (runSync → executeSyncOnce → collectChanges → list). Keeping the gate in the
-	 * orchestrator (the timing authority) rather than in this low-level FS adapter
-	 * avoids coupling LocalFs to the workspace lifecycle. New callers of `list()` MUST
-	 * be in a layout-ready-gated context.
+	 * Discovery snapshot: the vault index for representable paths, plus a recursive
+	 * disk scan of the configured dot roots. The disk authority is consulted only to
+	 * resolve a case-collision alias the index may have retained. This view is scoped
+	 * to the vault's concept of its contents; it is not the occupancy authority.
 	 */
 	async list(): Promise<FileEntity[]> {
-		let entities: FileEntity[] = [];
-		const allFiles = this.vault.getAllLoadedFiles();
-
-		for (const file of allFiles) {
-			// Skip root
-			if (file.path === "/" || file.path === "") continue;
-
-			if (file instanceof TFile) {
-				entities.push({
-					path: file.path,
-					pathAuthority: "actual_resolved",
-					isDirectory: false,
-					size: file.stat.size,
-					mtime: file.stat.mtime,
-					// hash is "" by design: listing never reads file content. Change detection
-					// falls back to mtime+size for list-sourced entries; stat() pays the content
-					// read when a hash is needed (ADR 0005). Only casing collisions below add
-					// raw-adapter directory listings.
-					hash: "",
-				});
-			} else if (file instanceof TFolder) {
-				entities.push({
-					path: file.path,
-					pathAuthority: "actual_resolved",
-					isDirectory: true,
-					size: 0,
-					mtime: 0,
-					hash: "",
-				});
-			}
-		}
-		entities = await this.removeStaleCaseAliases(entities);
-
-		// Dot-prefixed paths are excluded from Vault index; scan via adapter
-		await this.dotPath.listAll(entities);
-
+		const entities = await this.removeStaleCaseAliases(this.indexed.snapshot());
+		await this.disk.scanRoots(entities);
 		return entities;
 	}
 
@@ -94,7 +67,7 @@ export class LocalFs implements IFileSystem {
 
 		const candidatePaths = collisions.flatMap((group) =>
 			[...new Set(group.map((entity) => entity.path))]);
-		const resolved = await this.dotPath.resolveActualPaths(candidatePaths);
+		const resolved = await this.disk.resolveActualPaths(candidatePaths);
 		const stalePaths = new Set<string>();
 		for (const group of collisions) {
 			const pathsByActual = new Map<string, string[]>();
@@ -118,23 +91,23 @@ export class LocalFs implements IFileSystem {
 		return entities.filter((entity) => !stalePaths.has(entity.path));
 	}
 
+	/** Authoritative absence and actual casing: the disk authority, for every path. */
 	async stat(path: string): Promise<FileEntity | null> {
-		path = normalizeSyncPath(path);
-		// stat() is the authoritative absence/casing check. Obsidian's in-memory
-		// index may be missing an entry or retain a stale alias after a case-only
-		// rename, so resolve through the raw adapter for every path.
-		return this.dotPath.stat(path);
+		return this.disk.stat(normalizeSyncPath(path));
+	}
+
+	/** Authoritative direct-child occupancy: the disk authority, for every path. */
+	async hasChildren(path: string): Promise<boolean> {
+		return this.disk.hasChildren(normalizeSyncPath(path));
 	}
 
 	async read(path: string): Promise<ArrayBuffer> {
 		path = normalizeSyncPath(path);
-		const file = this.vault.getAbstractFileByPath(path);
-		if (!file && isDotPrefixed(path)) {
-			return this.dotPath.read(path);
-		}
+		const file = this.indexed.entry(path);
+		if (!file && isDotPrefixed(path)) return this.disk.read(path);
 		if (!file) throw new Error(`File not found: ${path}`);
 		if (!(file instanceof TFile)) throw new Error(`Not a file (is a directory): ${path}`);
-		return this.vault.readBinary(file);
+		return this.indexed.readBinary(file);
 	}
 
 	async write(path: string, content: ArrayBuffer, mtime: number): Promise<FileEntity> {
@@ -142,34 +115,27 @@ export class LocalFs implements IFileSystem {
 		if (isDotPrefixed(path)) {
 			// Hidden paths can't go through the indexed Vault API: createBinary
 			// returns null (no TFile in the index) or throws "File already exists".
-			// Write via the adapter, which overwrites and is index-independent.
-			return this.dotPath.write(path, content, mtime);
+			// Write via the disk authority, which overwrites and is index-independent.
+			return this.disk.write(path, content, mtime);
 		}
-		const existing = this.vault.getAbstractFileByPath(path);
+		const existing = this.indexed.entry(path);
 		if (existing instanceof TFolder) {
 			throw new Error(`Cannot write file: "${path}" is an existing directory`);
 		}
-		let written: TFile;
 		if (existing instanceof TFile) {
-			await this.vault.modifyBinary(existing, content, { mtime });
-			written = existing;
-		} else {
-			// Ensure parent directories exist
-			const parentPath = path.substring(0, path.lastIndexOf("/"));
-			if (parentPath) {
-				await this.mkdirRecursive(parentPath);
-			}
-			written = await this.vault.createBinary(path, content, { mtime });
+			await this.indexed.modifyBinary(existing, content, mtime);
+			return {
+				path,
+				pathAuthority: "requested_echo",
+				isDirectory: false,
+				size: existing.stat.size,
+				mtime: existing.stat.mtime,
+				hash: await sha256(content),
+			};
 		}
-		const hash = await sha256(content);
-		return {
-			path,
-			pathAuthority: "requested_echo",
-			isDirectory: false,
-			size: written.stat.size,
-			mtime: written.stat.mtime,
-			hash,
-		};
+		const parentPath = path.substring(0, path.lastIndexOf("/"));
+		if (parentPath) await this.mkdirRecursive(parentPath);
+		return this.indexed.createBinary(path, content, mtime);
 	}
 
 	async mkdir(path: string): Promise<FileEntity> {
@@ -178,29 +144,11 @@ export class LocalFs implements IFileSystem {
 		return { path, pathAuthority: "requested_echo", isDirectory: true, size: 0, mtime: 0, hash: "" };
 	}
 
-	/**
-	 * Authoritative direct-child occupancy for empty-parent cleanup. Obsidian's vault
-	 * index excludes dot-prefixed paths, so a normal folder's `TFolder.children` can
-	 * omit a hidden child and make an occupied folder look empty. The raw adapter is
-	 * the disk authority for every path, hidden or not, and this needs no metadata, so
-	 * it reads names only.
-	 */
-	async hasChildren(path: string): Promise<boolean> {
-		path = normalizeSyncPath(path);
-		if (!(await this.vault.adapter.exists(path))) return false;
-		const listed = await this.vault.adapter.list(path);
-		return listed.files.length > 0 || listed.folders.length > 0;
-	}
-
 	async delete(path: string): Promise<void> {
 		path = normalizeSyncPath(path);
-		if (isDotPrefixed(path)) {
-			return this.dotPath.delete(path);
-		}
-		const file = this.vault.getAbstractFileByPath(path);
-		if (file) {
-			await this.app.fileManager.trashFile(file);
-		}
+		if (isDotPrefixed(path)) return this.disk.delete(path);
+		const file = this.indexed.entry(path);
+		if (file) await this.indexed.trash(file);
 	}
 
 	async rename(oldPath: string, newPath: string): Promise<void> {
@@ -210,29 +158,22 @@ export class LocalFs implements IFileSystem {
 		const oldHidden = isDotPrefixed(oldPath);
 		const newHidden = isDotPrefixed(newPath);
 		if (oldHidden && newHidden) {
-			// Both hidden: the adapter moves them natively (index-independent).
-			return this.dotPath.rename(oldPath, newPath);
+			// Both hidden: the disk authority moves them natively (index-independent).
+			return this.disk.rename(oldPath, newPath);
 		}
 		if (oldHidden !== newHidden) {
 			// Cross-regime move (hidden ↔ normal). Routing the whole rename through
-			// one API leaves the other side's vault index stale, so decompose into
-			// regime-aware read/write/delete (each routes by isDotPrefixed).
+			// one authority leaves the other side's vault index stale, so decompose
+			// into regime-aware read/write/delete (each routes by isDotPrefixed).
 			return this.renameAcrossRegime(oldPath, newPath);
 		}
 		// Both normal: native, index-aware Vault rename.
-		const file = this.vault.getAbstractFileByPath(oldPath);
-		if (!file) {
-			throw new Error(`File not found: ${oldPath}`);
-		}
-		if (this.vault.getAbstractFileByPath(newPath)) {
-			throw new Error(`Destination already exists: ${newPath}`);
-		}
-		// Ensure parent directories exist for the new path
+		const file = this.indexed.entry(oldPath);
+		if (!file) throw new Error(`File not found: ${oldPath}`);
+		if (this.indexed.entry(newPath)) throw new Error(`Destination already exists: ${newPath}`);
 		const parentPath = newPath.substring(0, newPath.lastIndexOf("/"));
-		if (parentPath) {
-			await this.mkdirRecursive(parentPath);
-		}
-		await this.vault.rename(file, newPath);
+		if (parentPath) await this.mkdirRecursive(parentPath);
+		await this.indexed.rename(file, newPath);
 	}
 
 	/**
@@ -259,31 +200,29 @@ export class LocalFs implements IFileSystem {
 		await this.delete(oldPath);
 	}
 
+	/**
+	 * Ensure every ancestor directory of `path` exists, on whichever authority owns
+	 * each segment: an indexed segment goes through the Vault API (so the index and
+	 * events stay coherent), a hidden segment through the disk authority. A segment
+	 * already on disk but absent from the index is left as-is.
+	 */
 	private async mkdirRecursive(path: string): Promise<void> {
-		const existing = this.vault.getAbstractFileByPath(path);
-		if (existing instanceof TFolder) return;
+		if (this.indexed.entry(path) instanceof TFolder) return;
 
 		const parts = path.split("/");
 		let current = "";
 		for (const part of parts) {
 			current = current ? `${current}/${part}` : part;
-			const entry = this.vault.getAbstractFileByPath(current);
+			const entry = this.indexed.entry(current);
 			if (entry instanceof TFile) {
 				throw new Error(`Cannot create directory "${path}": "${current}" is a file`);
 			}
-			if (!entry) {
-				// Folder may exist on disk but not in vault index (e.g. dot-prefixed dirs
-				// created by other plugins). Check disk before creating.
-				if (!(await this.vault.adapter.exists(current))) {
-					// Hidden dirs are excluded from the vault index; the indexed
-					// createFolder can't reliably create them (same class as createBinary),
-					// so use the raw adapter — matching how every hidden-path op is routed.
-					if (isDotPrefixed(current)) {
-						await this.vault.adapter.mkdir(current);
-					} else {
-						await this.vault.createFolder(current);
-					}
-				}
+			if (!entry && !(await this.disk.exists(current))) {
+				// Hidden dirs are excluded from the vault index; the indexed
+				// createFolder can't reliably create them (same class as createBinary),
+				// so use the disk authority — matching how every hidden-path op is routed.
+				if (isDotPrefixed(current)) await this.disk.mkdir(current);
+				else await this.indexed.createFolder(current);
 			}
 		}
 	}

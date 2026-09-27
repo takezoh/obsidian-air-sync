@@ -165,8 +165,8 @@ the following path model:
 
 - paths are relative to the bound root, use `/`, and have no leading or trailing slash;
 - all inputs are normalized consistently;
-- `list()` is recursive, `listDir()` returns direct children only, and both return
-  snapshots rather than mutable backend state;
+- `list()` is recursive, `hasChildren()` reports authoritative direct-child occupancy,
+  and both return snapshots rather than mutable backend state;
 - `stat()` returns `null` only for authoritative absence, and `read()` returns a detached
   `ArrayBuffer`;
 - `write()` creates parents, does not alias the caller's buffer, rejects an existing

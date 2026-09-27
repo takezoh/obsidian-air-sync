@@ -142,7 +142,7 @@ repair.
 remote vault is identified by folder name), but older vaults may have one and an older
 plugin version could write one, so the guards are retained. Google Drive keeps it out of the
 sync engine by never ingesting it into the metadata cache; because every read path is
-cache-backed, that one exclusion covers list/stat/read/delete/listDir/change-detection
+cache-backed, that one exclusion covers list/stat/read/delete/hasChildren/change-detection
 uniformly, and the one write path that bypasses the cache throws for it rather than
 fabricating a baseline. The sync engine also reserves the same path symmetrically so it is
 never pushed/pulled/deleted locally: remote-side hiding alone would be unsafe (a local copy

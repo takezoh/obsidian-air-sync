@@ -11,9 +11,9 @@ consulted:
 - change-20260927-empty-parent-cleanup
 confirmation: >-
   src/sync/plan-executor.test.ts pins that a listed ancestor is deleted only after an
-  empty listDir, that a child or a failed read keeps it, and that a shared directory is
-  read at most once per cycle across actions; src/fs/local/local-fs.test.ts pins that
-  listDir reports dot-prefixed children; both sync AST guards stay green with no fixture
+  empty hasChildren, that a child or a failed read keeps it, and that a shared directory
+  is read at most once per cycle across actions; src/fs/local/local-fs.test.ts pins that
+  hasChildren sees dot-prefixed children; both sync AST guards stay green with no fixture
   edits.
 relations:
 - {type: modifies, target: adr-20260916-gdrive-delta-relists-entered-folders}
@@ -38,8 +38,10 @@ consequences:
     authorization is a scope-approved candidate set plus a current-fact re-proof rather
     than an observed empty-chain fact.
   neutral:
-  - `LocalFs.listDir` is redefined to report actual on-disk children for all paths,
-    making the previously orphan API authoritative for occupancy.
+  - `IFileSystem.hasChildren` is added as the authoritative direct-child occupancy
+    query, and `listDir` (a metadata listing with no production caller) is retired; the
+    local filesystem composes a disk authority (existence, casing, occupancy, hidden-path
+    mutation) with an index authority (indexed mutation and discovery).
   - The pass runs after all serial removals and deduplicates shared directories, so a
     folder emptied by several actions is read once per cycle rather than once per action.
   - Full empty-folder synchronization (issue #77 / PR #78) remains a separate,
@@ -82,12 +84,11 @@ stopping before the sync root — is deleted on that filesystem.
   is an action-carried protocol, not a new `SyncActionType`.
 - **Execution proves emptiness from current facts in one deduplicated pass.** After every
   serial removal in the cycle, the executor takes the union of the succeeded actions'
-  candidate chains, keyed by side and directory, and reads each candidate's direct
-  children through `IFileSystem.listDir` at most once per cycle, deepest-first; it deletes
-  a directory only if the result is empty. Any child, any failed read, and any candidate
-  that is out of scope or the root prevents deletion and skips its ancestors unread. Local
-  `listDir` is made authoritative for actual on-disk children, including dot-prefixed and
-  hidden entries.
+  candidate chains, keyed by side and directory, and asks each candidate's
+  `IFileSystem.hasChildren` at most once per cycle, deepest-first; it deletes a directory
+  only when the answer is false. Any child, any failed read, and any candidate that is
+  out of scope or the root prevents deletion and skips its ancestors unread. The local
+  `hasChildren` reads the disk authority, so dot-prefixed and hidden entries count.
 - **Nothing is persisted.** No folder `SyncRecord`, prune intent, failure record,
   recovery marker, cursor change, or schema change.
 

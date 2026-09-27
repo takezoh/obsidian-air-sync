@@ -39,11 +39,18 @@ scope:
 - src/sync/prune-empty-parents.ts — the cycle-level deduplicated cleanup pass over
   succeeded actions' candidate chains, each directory read at most once.
 - src/sync/plan-executor.ts — invoke the pass once, after all serial removals.
-- src/fs/local/index.ts — make listDir authoritative for actual on-disk direct
-  children, including dot-prefixed and hidden entries.
+- src/fs/interface.ts — replace the unused metadata-rich `listDir` with `hasChildren`,
+  the authoritative direct-child occupancy query.
+- src/fs/local/disk-surface.ts — the disk authority (existence, actual casing, occupancy,
+  hidden-path mutation), renamed from DotPathAdapter.
+- src/fs/local/vault-surface.ts — the index authority (indexed mutation and discovery).
+- src/fs/local/index.ts — compose the two authorities; own the authority rule,
+  cross-regime parent creation, and cross-regime rename.
+- src/fs/caching/remote-fs.ts — answer `hasChildren` from the derived cache.
 - src/sync/plan-executor.test.ts, src/sync/plan-admission.test.ts,
-  src/sync/orchestrator.test.ts, src/fs/local/local-fs.test.ts — witnesses and negative
-  controls.
+  src/sync/orchestrator.test.ts, src/fs/local/local-fs.test.ts,
+  src/fs/local/disk-surface.test.ts, tests/fs/contracts/ifilesystem-writes.contract.ts —
+  witnesses and negative controls.
 - docs/adr/adr-20260927-receiver-side-empty-parent-cleanup.md — the accepted decision.
 - docs/adr/adr-20260916-gdrive-delta-relists-entered-folders.md — narrow the accepted
   empty-folder note to the cases still out of scope.
@@ -95,10 +102,14 @@ source_paths:
 - src/sync/identity-component-decision.ts
 - src/sync/prune-empty-parents.ts
 - src/sync/plan-executor.ts
+- src/fs/interface.ts
+- src/fs/local/disk-surface.ts
+- src/fs/local/vault-surface.ts
 - src/fs/local/index.ts
+- src/fs/caching/remote-fs.ts
 evidence_refs:
 - type: test
-  ref: npm run test:coverage (118 files, 2444 tests)
+  ref: npm run test:coverage (118 files, 2443 tests)
 - type: command
   ref: npm run lint
 - type: command
@@ -114,9 +125,10 @@ folder on the other device forever, because folders are not sync facts. This cha
 prunes, on the receiving side only, a directory emptied by a propagated opposite-side
 file delete or file rename, cascading through ancestors the cascade also empties and
 stopping before the sync root. Admission attaches the scope-filtered ancestor chain to
-the admitted action; execution re-proves each directory is empty from current facts
-before deleting it. The local direct-child read is made authoritative so a hidden or
-ignored child can never be mistaken for emptiness.
+the admitted action; execution re-proves each directory is empty from current facts with
+`IFileSystem.hasChildren`, so a hidden or ignored child can never be mistaken for
+emptiness. The local filesystem is split into a disk authority and an index authority
+that `LocalFs` composes.
 
 It is deliberately not full empty-folder sync: creating, renaming, or deleting an
 already-empty folder still propagates nothing.

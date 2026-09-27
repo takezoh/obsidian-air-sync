@@ -12,8 +12,13 @@ the gate.
 
 ## Witnesses added
 
-- `src/fs/local/local-fs.test.ts` — `listDir` reports actual on-disk direct children
-  including a dot-prefixed child, and is empty only for an empty/missing directory.
+- `src/fs/local/local-fs.test.ts` — `hasChildren` is true when a normal folder's only
+  child is hidden, and false for an empty directory, a missing path, or a file.
+- `src/fs/local/disk-surface.test.ts` — the disk authority's `hasChildren`, `scanRoots`,
+  `stat`, and `rename` behaviour.
+- Shared `IFileSystem` contract (`tests/fs/contracts/ifilesystem-writes.contract.ts`) —
+  `hasChildren` runs for the mock, `LocalFs`, and every managed remote harness: true for a
+  directory whose only child is hidden-named, false for empty/missing/file.
 - `src/sync/plan-admission.test.ts` — a `delete_local` carries the deepest-first
   scope-filtered ancestor chain; an out-of-scope ancestor yields no candidate (the
   un-ignore shape); a file at the sync root yields none; an admitted file rename carries
@@ -36,7 +41,7 @@ the gate.
   `sync-admission-authority-guard.test.mjs` and `sync-state-ownership-guard.test.mjs`
   with no fixture edits.
 - `npm run build` — pass.
-- `npm run test:coverage` — 118 files, 2444 tests pass; thresholds met.
+- `npm run test:coverage` — 118 files, 2443 tests pass; thresholds met.
 
 ## Residual risk
 

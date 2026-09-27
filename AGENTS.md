@@ -170,10 +170,14 @@ central `tests/fs/remote-backend-contracts.test.ts` unit composition root.
   authoritative `LocalFs.stat()` (falls back to the adapter).
 - **Dot-prefixed/hidden paths** (`.airsync`, `.obsidian`, nested `foo/.bar`) are
   excluded from the vault index: `vault.createBinary()` returns `null` or throws
-  `File already exists` for them. `LocalFs` routes any `isDotPrefixed()` path through
-  the raw adapter (`DotPathAdapter`) — this is mechanism, not policy. Whether a hidden
-  path *syncs* is separate policy (`syncDotPaths` + `ignorePatterns`, both must pass),
-  enforced in `SyncOrchestrator.isExcluded()`.
+  `File already exists` for them. `LocalFs` composes two authorities: the disk
+  authority (`DiskSurface`, the raw `DataAdapter`) owns existence, actual casing,
+  occupancy, and mutation of paths the index cannot represent; the index authority
+  (`VaultSurface`, `Vault`/`FileManager`) owns mutation of representable paths (so the
+  index and its events stay coherent) and the discovery snapshot. Routing a path by
+  `isDotPrefixed()` between them is mechanism, not policy. Whether a hidden path *syncs*
+  is separate policy (`syncDotPaths` + `ignorePatterns`, both must pass), enforced in
+  `SyncOrchestrator.isExcluded()`.
 - **Requested paths are addresses, not topology facts.** A cache-backed backend may
   use caller spelling to locate an object, but `requested_echo` must never re-key a
   stable identity or its descendants. Only provider-resolved metadata, or the
@@ -181,16 +185,18 @@ central `tests/fs/remote-backend-contracts.test.ts` unit composition root.
   Case-only parent transitions are decided once by Admission from complete current-cycle
   facts: child content is handled at the existing provider path, followed by one parent
   folder rename. Do not add per-child recovery, a new status/action, or cross-cycle state.
-- **Empty-parent cleanup is a consequence of an admitted delete/file-rename, not a new
-  action kind.** Admission attaches `pruneEmptyAncestors` (the removed source path's
-  deepest-first ancestry, scope-filtered, root-excluded) and execution runs one
-  deduplicated pass after all serial removals — each candidate directory read at most
-  once per cycle — deleting a directory only after `IFileSystem.listDir` proves it has
-  no children. It runs on the action's target filesystem — the side emptied by the
-  opposite-side operation — so the origin side keeps its folder. Never prune from
-  listing absence, the sync root, an out-of-scope directory, or a directory holding an
-  ignored/hidden child; `LocalFs.listDir` is the authoritative on-disk direct-child read
-  for this.
+- **Directory occupancy is a first-class filesystem semantic.** `IFileSystem.hasChildren`
+  answers "does this directory hold anything" from the backend's authority — the disk
+  authority for the local vault (the index omits hidden children), the derived cache for
+  a remote backend — with no per-child metadata. Empty-parent cleanup is a consequence of
+  an admitted delete/file-rename, not a new action kind: Admission attaches
+  `pruneEmptyAncestors` (the removed source path's deepest-first ancestry, scope-filtered,
+  root-excluded) and execution runs one deduplicated pass after all serial removals —
+  each candidate directory read at most once per cycle — deleting a directory only after
+  `IFileSystem.hasChildren` proves it empty. It runs on the action's target filesystem —
+  the side emptied by the opposite-side operation — so the origin side keeps its folder.
+  Never prune from listing absence, the sync root, an out-of-scope directory, or a
+  directory holding an ignored/hidden child.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the rationale behind these.
 

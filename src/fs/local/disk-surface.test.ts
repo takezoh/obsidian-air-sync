@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { Vault } from "obsidian";
-import { DotPathAdapter } from "./dot-path-adapter";
+import { DiskSurface } from "./disk-surface";
 
 function createAdapter(dotRoots: string[] = [".airsync"]): {
 	vault: Vault;
-	adapter: DotPathAdapter;
+	adapter: DiskSurface;
 } {
 	const vault = new Vault();
 	const mkdirFn = async (path: string) => {
@@ -12,11 +12,11 @@ function createAdapter(dotRoots: string[] = [".airsync"]): {
 			await vault.createFolder(path);
 		}
 	};
-	const adapter = new DotPathAdapter(vault, mkdirFn, () => dotRoots);
+	const adapter = new DiskSurface(vault, mkdirFn, () => dotRoots);
 	return { vault, adapter };
 }
 
-describe("DotPathAdapter", () => {
+describe("DiskSurface", () => {
 	describe("stat", () => {
 		it("resolves the actual spelling from the parent listing", async () => {
 			const { vault, adapter } = createAdapter();
@@ -32,7 +32,27 @@ describe("DotPathAdapter", () => {
 		});
 	});
 
-	describe("listAll", () => {
+	describe("hasChildren", () => {
+		it("is true for a directory whose only child is dot-prefixed", async () => {
+			const { vault, adapter } = createAdapter();
+			await vault.adapter.mkdir(".airsync");
+			await vault.adapter.writeBinary(".airsync/state.json", new ArrayBuffer(2));
+
+			expect(await adapter.hasChildren(".airsync")).toBe(true);
+		});
+
+		it("is false for an empty, missing, or file path", async () => {
+			const { vault, adapter } = createAdapter();
+			await vault.adapter.mkdir(".airsync");
+			await vault.adapter.writeBinary(".airsync/a.md", new ArrayBuffer(1));
+
+			expect(await adapter.hasChildren(".airsync/sub")).toBe(false);
+			expect(await adapter.hasChildren(".airsync/missing")).toBe(false);
+			expect(await adapter.hasChildren(".airsync/a.md")).toBe(false);
+		});
+	});
+
+	describe("scanRoots", () => {
 		it("marks raw adapter listings as resolved provider paths", async () => {
 			const { vault, adapter } = createAdapter();
 			const vaultInternal = vault as unknown as { files: Map<string, unknown> };
@@ -45,7 +65,7 @@ describe("DotPathAdapter", () => {
 			});
 
 			const entities: Array<{ pathAuthority?: string }> = [];
-			await adapter.listAll(entities as never);
+			await adapter.scanRoots(entities as never);
 
 			expect(entities).not.toHaveLength(0);
 			expect(entities.every((entity) => entity.pathAuthority === "actual_resolved")).toBe(true);
@@ -68,7 +88,7 @@ describe("DotPathAdapter", () => {
 			});
 
 			const entities: { path: string; isDirectory: boolean }[] = [];
-			await adapter.listAll(entities as never);
+			await adapter.scanRoots(entities as never);
 
 			const paths = entities.map((e) => e.path);
 			expect(paths).toContain(".airsync/state.json");
@@ -78,7 +98,7 @@ describe("DotPathAdapter", () => {
 		it("skips roots that do not exist", async () => {
 			const { adapter } = createAdapter([".airsync", ".missing"]);
 			const entities: { path: string }[] = [];
-			await adapter.listAll(entities as never);
+			await adapter.scanRoots(entities as never);
 			expect(entities).toHaveLength(0);
 		});
 	});

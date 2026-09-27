@@ -59,7 +59,7 @@ chore bolted on afterward.
    contract families are split by concern:
    - **`runIFileSystemContract`** (`tests/fs/contracts/ifilesystem.contract.ts` +
      `ifilesystem-writes.contract.ts`) — the
-     synchronous CRUD/rename/stat/read/list/listDir surface, path normalization, and
+     synchronous CRUD/rename/stat/read/list/hasChildren surface, path normalization, and
      snapshot isolation (buffers are copied in and out, never aliased).
    - **`runCachingRemoteFsContract`** (`tests/fs/contracts/caching-remote-fs.contract.ts`) — the ADR 0001
      crash-safety / **path-1** convergence guarantees of the `CachingRemoteFs` base:

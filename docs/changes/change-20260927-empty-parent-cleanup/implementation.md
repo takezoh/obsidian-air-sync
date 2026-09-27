@@ -26,12 +26,17 @@ and nothing is persisted.
    once from `executePlan` after every serial removal, while the structural permit is
    held. It unions the succeeded actions' `pruneEmptyAncestors` chains, keyed by side and
    directory, so each candidate is read at most once per cycle, and processes them
-   deepest-first. A candidate is deleted only after `listDir` returns empty; a child, an
-   out-of-scope/hidden child, or a failed read/delete keeps it and skips its ancestors
-   unread. A prune failure is logged at warn and never fails the cycle.
-4. **Authoritative local read** — `LocalFs.listDir` (`src/fs/local/index.ts`) now reads
-   actual on-disk direct children through the raw adapter for every path, so a folder
-   holding only a hidden child is not mistaken for empty.
+   deepest-first. A candidate is deleted only after `IFileSystem.hasChildren` answers
+   false; a child, an out-of-scope/hidden child, or a failed read/delete keeps it and skips
+   its ancestors unread. A prune failure is logged at warn and never fails the cycle.
+4. **Occupancy as a port semantic** — `IFileSystem.hasChildren` replaces the unused
+   metadata-rich `listDir` (`src/fs/interface.ts`), answered from each backend's authority:
+   `LocalFs` delegates to its disk authority (raw adapter, names only, no per-child stat),
+   `CachingRemoteFs` to the derived cache.
+5. **Local authority split** — `LocalFs` now composes `DiskSurface` (`src/fs/local/disk-surface.ts`:
+   existence, actual casing, occupancy, hidden-path mutation) and `VaultSurface`
+   (`src/fs/local/vault-surface.ts`: indexed mutation and discovery), owning only the
+   authority rule, cross-regime parent creation, and cross-regime rename.
 
 ## Notes
 

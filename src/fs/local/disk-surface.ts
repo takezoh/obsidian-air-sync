@@ -3,17 +3,33 @@ import type { FileEntity } from "../types";
 import { sha256 } from "../../utils/hash";
 
 /**
- * Handles filesystem operations for dot-prefixed paths (e.g. `.airsync/`)
- * that are excluded from Obsidian's Vault index. Uses the raw adapter API.
+ * The disk authority for the local vault: a thin wrapper over Obsidian's raw
+ * `DataAdapter`.
+ *
+ * It sees the filesystem as it actually is — every child including dot-prefixed
+ * entries the Vault index excludes — and is therefore the authority for current
+ * existence, actual casing, direct-child occupancy, and for mutating a path the
+ * Vault index cannot represent. It is deliberately not the authority for an
+ * indexed-path mutation, which must keep Obsidian's index and events coherent;
+ * that belongs to the Vault surface, and `LocalFs` composes the two.
  */
-export class DotPathAdapter {
+export class DiskSurface {
 	constructor(
 		private vault: Vault,
 		private mkdirFn: (path: string) => Promise<void>,
 		private getDotRoots: () => string[],
 	) {}
 
-	async listAll(entities: FileEntity[]): Promise<void> {
+	async exists(path: string): Promise<boolean> {
+		return this.vault.adapter.exists(path);
+	}
+
+	async mkdir(path: string): Promise<void> {
+		await this.vault.adapter.mkdir(path);
+	}
+
+	/** Recursively scan every configured dot root into `entities` (index-invisible). */
+	async scanRoots(entities: FileEntity[]): Promise<void> {
 		for (const root of this.getDotRoots()) {
 			await this.list(root, entities);
 		}
@@ -51,6 +67,17 @@ export class DotPathAdapter {
 		const content = await this.vault.adapter.readBinary(path);
 		const hash = await sha256(content);
 		return { path: resolvedPath, pathAuthority, isDirectory: false, size: s.size, mtime: s.mtime, hash };
+	}
+
+	/**
+	 * Authoritative direct-child occupancy, names only. Dot-prefixed and otherwise
+	 * index-invisible children count, so an empty-parent prune never mistakes an
+	 * occupied directory for an empty one.
+	 */
+	async hasChildren(path: string): Promise<boolean> {
+		if (!(await this.vault.adapter.exists(path))) return false;
+		const listed = await this.vault.adapter.list(path);
+		return listed.files.length > 0 || listed.folders.length > 0;
 	}
 
 	/** Resolve display casing from the raw adapter, sharing directory reads within one call. */

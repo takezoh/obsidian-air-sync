@@ -197,14 +197,14 @@ to the action: the deepest-first ancestry of the removed source path, filtered t
 directories that are themselves in sync scope and excluding the sync root. After every
 serial removal in the cycle, Execution runs one deduplicated pass over the union of the
 succeeded actions' chains, keyed by side and directory, so each candidate directory is
-read at most once per cycle; a directory is deleted only after `IFileSystem.listDir`
-proves it has no children at all (an in-scope sibling, an ignored or dot-prefixed child,
-or an unreadable directory keeps it and skips its ancestors unread). The target is the
+read at most once per cycle; a directory is deleted only after `IFileSystem.hasChildren`
+proves it empty (an in-scope sibling, an ignored or dot-prefixed child, or an unreadable
+directory keeps it and skips its ancestors unread). The target is the
 filesystem the action mutated, which is the side that received the opposite-side change,
 so the originating side keeps its own now-empty folder. Nothing is persisted and no
-action kind is added. `LocalFs.listDir` is the authoritative on-disk direct-child read
-(the vault index omits hidden children); `CachingRemoteFs.listDir` reads the derived
-cache, which holds out-of-scope objects too.
+action kind is added. `hasChildren` reads from each backend's authority: the local disk
+authority (the vault index omits hidden children); a remote backend's derived cache,
+which holds out-of-scope objects too.
 
 ## Identity-component action shaping
 

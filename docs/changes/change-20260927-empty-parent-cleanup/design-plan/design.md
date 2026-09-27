@@ -60,11 +60,11 @@ policy change.
 **2. Execution runs one deduplicated prune pass after the removals.** Once every
 serial removal in the cycle has completed, the executor takes the union of all
 succeeded actions' admitted candidate chains, keyed by `(side, directory)`, and walks
-it deepest-first. For each directory it calls `listDir` exactly once; only an empty
-result authorizes the `delete(directory)` that follows. A directory with any child — the
+it deepest-first. For each directory it asks `hasChildren` exactly once; only a `false`
+answer authorizes the `delete(directory)` that follows. A directory with any child — the
 in-scope files under consideration, an ignored file, a `.gitkeep`, a hidden child, or
 anything else — is kept, and its ancestors are skipped unread because each necessarily
-contains it. A `listDir`/`delete` error is logged at warn, keeps that directory (and
+contains it. A `hasChildren`/`delete` error is logged at warn, keeps that directory (and
 skips its ancestors, which it still occupies), and does not fail the cycle (see
 NFR-EPC-001 below). Running after all removals is what makes a shared folder—two
 sibling files deleted by two actions—read once rather than once per action.
@@ -74,14 +74,18 @@ This is a re-evaluation of current facts at execution, the same discipline
 scope-approved candidate set as part of the action; execution refuses any candidate
 whose condition does not hold.
 
-**3. Local emptiness must be authoritative.** `LocalFs.listDir` for a normal folder
-currently maps `TFolder.children` from the Obsidian vault index, which excludes
-dot-prefixed entries. A normal folder holding only `.hidden` would then look empty and
-be wrongly deleted. `listDir` (an orphan API with no production caller today) is
-redefined to return the actual on-disk direct children through the raw vault adapter
-for every path, exactly as the dot-path adapter already does for hidden paths. Remote
-`CachingRemoteFs.listDir` already reads the derived metadata cache, which holds
-out-of-scope objects too, so it is authoritative for provider children.
+**3. Occupancy is a first-class port semantic, sourced from the right authority.**
+The empty check only needs "does this directory hold anything". `IFileSystem` gains
+`hasChildren(path)` for exactly that, sourced from each backend's authority: the local
+disk authority — the raw vault adapter, which sees dot-prefixed entries the vault index
+omits, so a folder holding only `.hidden` is not reported empty — and, for a remote
+backend, its derived cache, which holds out-of-scope objects too. The old metadata-rich
+`listDir` (no production caller) is retired. The local filesystem is meanwhile split
+into the two authorities it always straddled: a **disk authority** (`DiskSurface`, raw
+`DataAdapter`) for existence/casing/occupancy and mutation of index-invisible paths, and
+an **index authority** (`VaultSurface`, `Vault`/`FileManager`) for indexed mutation and
+discovery; `LocalFs` composes them and owns the authority rule, cross-regime parent
+creation, and cross-regime rename.
 
 **4. Nothing is persisted and no new authority is created.** No folder record, no
 prune intent, no recovery marker, no cursor or checkpoint change, no IndexedDB
@@ -94,14 +98,16 @@ pass.
 - It is the minimal change that satisfies the policy: it touches `types.ts`
   (one optional action field), the admission action-construction site (attach the
   chain), a new `prune-empty-parents.ts` invoked once by `plan-executor.ts`,
-  `scope-projection.ts` / `types.ts` (`ScopeProjection.includes`), and `fs/local/index.ts`
-  (authoritative `listDir`).
+  `scope-projection.ts` / `types.ts` (`ScopeProjection.includes`), the port semantic
+  `IFileSystem.hasChildren`, and the local filesystem split into `DiskSurface` +
+  `VaultSurface` composed by `LocalFs`.
 - It introduces no `BatchObservation` / `IdentityComponent` member, so
   `sync-admission-authority-guard.test.mjs` is unaffected; it adds no
   `SyncOrchestrator` field or store writer, so `sync-state-ownership-guard.test.mjs`
   is unaffected.
-- It adds no `IFileSystem` method and no backend change; local and every remote
-  backend go through the existing `listDir` + `delete`.
+- It adds one port method (`hasChildren`, replacing the unused `listDir`) and no backend
+  module change; local and every remote backend answer `hasChildren` from their own
+  authority.
 
 ## Fit with the standing invariants
 
@@ -149,9 +155,15 @@ pass.
   delete only empty ones; best-effort and stateless.
 - `src/sync/plan-executor.ts` — call that pass once after all serial removals; no new
   action dispatch branch.
-- `src/fs/local/index.ts` — authoritative `listDir` through the raw adapter for all
-  paths, not only dot-prefixed ones.
-- Tests: local `listDir` hidden-child witness; executor prune witnesses; admission
+- `src/fs/interface.ts` — replace the unused metadata-rich `listDir` with the occupancy
+  query `hasChildren`.
+- `src/fs/local/disk-surface.ts` — the disk authority: existence, actual casing,
+  occupancy, hidden-path mutation.
+- `src/fs/local/vault-surface.ts` — the index authority: indexed mutation and discovery.
+- `src/fs/local/index.ts` — `LocalFs` composes the two authorities and owns the authority
+  rule, cross-regime parent creation, and cross-regime rename.
+- `src/fs/caching/remote-fs.ts` — `hasChildren` from the derived cache.
+- Tests: local `hasChildren` hidden-child witness; executor prune witnesses; admission
   chain/scope witnesses; orchestrator end-to-end deleted-last-file and renamed-out
   cases in both directions, plus the negative controls (sibling, ignored sibling,
   hidden sibling, root, out-of-scope ancestor, unknown occupancy).
@@ -198,8 +210,8 @@ best-effort prune; no prune on state-only `cleanup`; an explicit optional
 
 ## Verification plan
 
-- **Unit — local fs:** `LocalFs.listDir("notes")` reports `.hidden`, an ignored
-  sibling, and normal children; a folder is empty only when the disk says so.
+- **Unit — local fs:** `LocalFs.hasChildren("notes")` is true when the folder's only
+  child is hidden; a folder reads empty only when the disk authority says so.
 - **Unit — admission:** a `delete_local` on `notes/a.md` with `notes` in scope carries
   `pruneEmptyAncestors`; an ancestor excluded by ignore/dot-path/reserved carries
   neither it nor its descendants; a folder rename carries nothing.

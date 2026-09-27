@@ -145,27 +145,28 @@ overlap, or a retry after a partial cycle, must converge without error or duplic
 
 ### NFR-EPC-001 — Authority and lifecycle bound
 
-The prune rides the existing fact-first pipeline: Observation supplies folder
-occupancy facts, Admission authorizes, Execution performs the exact effects, and the
+The prune rides the existing fact-first pipeline: Admission binds the candidate set,
+Execution performs the exact effects and re-proves occupancy from current facts, and the
 existing per-action commit/checkpoint lifecycle is unchanged. It adds no durable or
 retained correctness owner, no store, and no recovery branch.
 
 ### NFR-EPC-002 — Cost bound
 
-At most one direct-child read per candidate ancestor per removal candidate, deduplicated
-by directory, on the receiving filesystem only. No full scan is introduced and no remote
-metadata is re-listed beyond the direct-child read.
+At most one `hasChildren` read per candidate directory per sync cycle, deduplicated across
+the actions that emptied it, on the receiving filesystem only. No full scan is introduced
+and no remote metadata is re-listed beyond that read.
 
 ### NFR-EPC-003 — Cross-backend through IFileSystem
 
-Behaviour is expressed only through `IFileSystem` (`listDir` + `delete`) and the existing
-scope filter; no backend identity is tested in the sync engine.
+Behaviour is expressed only through `IFileSystem` (`hasChildren` + `delete`) and the
+existing scope filter; no backend identity is tested in the sync engine.
 
-### NFR-EPC-004 — Authoritative local direct-child observation
+### NFR-EPC-004 — Authoritative local occupancy
 
-`LocalFs.listDir` currently reports a normal folder's children from the vault index,
-which excludes dot-prefixed entries. For prune decisions it must report the actual
-on-disk direct children, so a directory containing only a hidden child is not pruned.
+`hasChildren` answers from each backend's own authority: the local disk authority, which
+sees dot-prefixed entries the vault index omits, so a directory containing only a hidden
+child is not reported empty; a remote backend's derived cache, which holds out-of-scope
+objects.
 
 ## Accepted limitations (v1)
 
