@@ -19,7 +19,7 @@ import type { Logger } from "../logging/logger";
 import { commitAction, commitExactCleanup } from "./state-committer";
 import { resolveConflict } from "./conflict-resolver";
 import { classifyHttpError, isAuthFailure, toAuthError, toError } from "../backend-api/error-classification";
-import type { ErrorClassification } from "../backend-api/error-classification";
+import type { ErrorClassification, ErrorKind } from "../backend-api/error-classification";
 import { AsyncPool, AdaptivePool } from "../backend-api/async-queue";
 import type { AdaptivePoolOpts } from "../backend-api/async-queue";
 import { decideRetry, sleep } from "./error";
@@ -221,13 +221,55 @@ async function settleScheduled(
 }
 
 /**
+ * The neutral classification the retry site applied, attached to the error so the
+ * caller records what the retry policy actually decided (including a provider re-tag)
+ * without re-invoking the provider classifier at record time. Observational only.
+ */
+const APPLIED_CLASSIFICATION = Symbol("appliedClassification");
+
+function tagAppliedClassification(error: Error, kind: ErrorKind): Error {
+	Object.defineProperty(error, APPLIED_CLASSIFICATION, { value: kind, enumerable: false });
+	return error;
+}
+
+function readAppliedClassification(error: unknown): ErrorKind | undefined {
+	if (!error || typeof error !== "object") return undefined;
+	const kind = (error as Record<symbol, unknown>)[APPLIED_CLASSIFICATION];
+	return typeof kind === "string" ? (kind as ErrorKind) : undefined;
+}
+
+/** Unwrap a non-proof ContentProofError cause before the fatal/retry decision. */
+function unwrapFailure(err: unknown): unknown {
+	return err instanceof ContentProofError && err.kind !== "proof_mismatch" && err.cause !== undefined
+		? err.cause
+		: err;
+}
+
+/**
+ * The applied classification for a caught action failure: the retry site's tag (avoids a
+ * second provider-classifier call at record time), else the same classifier applied to
+ * the unwrapped failure (a rename tier bypasses withIoRetry, so it carries no tag). A
+ * provider classifier that throws yields no kind rather than breaking the failure record;
+ * the notice projection then falls back to the total neutral classifier.
+ */
+function appliedClassification(err: unknown, error: Error, ctx: ExecutionContext): ErrorKind | undefined {
+	const tagged = readAppliedClassification(err) ?? readAppliedClassification(error);
+	if (tagged !== undefined) return tagged;
+	try {
+		return (ctx.classifyError ?? classifyHttpError)(unwrapFailure(err)).kind;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
  * Run an action's network I/O with bounded in-cycle retry for transient /
  * rate-limit errors. `AuthError` is rethrown immediately — the ONLY cycle-abort
  * path, unchanged. Any other non-retryable classification rethrows the ORIGINAL
- * error so the caller's catch records it in `result.failed` (preserving today's
- * semantics: e.g. a permission-403 fails the action, it does NOT abort the cycle).
- * On a rate-limit, `onRateLimit` fires BEFORE the backoff sleep so an adaptive pool
- * can shrink immediately.
+ * error (tagged with the applied classification) so the caller's catch records it in
+ * `result.failed` (preserving today's semantics: e.g. a permission-403 fails the
+ * action, it does NOT abort the cycle). On a rate-limit, `onRateLimit` fires BEFORE
+ * the backoff sleep so an adaptive pool can shrink immediately.
  */
 async function withIoRetry<T>(
 	io: () => Promise<T>,
@@ -241,18 +283,12 @@ async function withIoRetry<T>(
 		try {
 			return await io();
 		} catch (err) {
-			// A non-proof ContentProofError wraps the external failure that caused it.
-			// That cause may be a plain structural BackendErrorShape (a module is
-			// allowed to throw one), so unwrap on any defined cause — not only an
-			// `Error` — before the fatal/retry decision.
-			const failure = err instanceof ContentProofError && err.kind !== "proof_mismatch" && err.cause !== undefined
-				? err.cause
-				: err;
+			const failure = unwrapFailure(err);
 			if (failure instanceof ContentProofError) throw failure;
 			if (isAuthFailure(failure)) throw toAuthError(failure);
 			const classification = classify(failure);
 			const decision = decideRetry(classification, attempt, MAX_ACTION_RETRIES, rng);
-			if (decision.action !== "retry") throw toError(failure);
+			if (decision.action !== "retry") throw tagAppliedClassification(toError(failure), classification.kind);
 			if (classification.kind === "rateLimit") onRateLimit?.();
 			await doSleep(decision.delayMs);
 		}
@@ -312,7 +348,7 @@ async function executeAction(
 			action: action.action,
 			error: error.message,
 		});
-		result.failed.push({ action, error });
+		result.failed.push({ action, error, classification: appliedClassification(err, error, ctx) });
 	} finally {
 		reportProgress();
 		permit?.release();
@@ -865,7 +901,7 @@ async function executeConflictAction(
 			path: action.path,
 			error: error.message,
 		});
-		result.failed.push({ action, error });
+		result.failed.push({ action, error, classification: appliedClassification(err, error, ctx) });
 	} finally {
 		reportProgress();
 		permit?.release();

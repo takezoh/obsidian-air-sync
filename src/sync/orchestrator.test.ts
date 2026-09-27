@@ -734,7 +734,7 @@ describe("SyncOrchestrator", () => {
 			expect(remoteDelete).not.toHaveBeenCalled();
 			expect(commitCheckpoint).not.toHaveBeenCalled();
 			expect(deps.onStatusChange).toHaveBeenLastCalledWith("partial_error");
-			expect(deps.notify).toHaveBeenCalledWith("Sync: 1 error");
+			expect(deps.notify).toHaveBeenCalledWith("Sync: 1 error — Admission failed (unclassified)");
 			await orchestrator.close();
 		});
 
@@ -1403,9 +1403,7 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.runSync();
 
 			expect(deps.onStatusChange).toHaveBeenCalledWith("error");
-			expect(deps.notify).toHaveBeenCalledWith(
-				"Authentication error. Please reconnect in settings.",
-			);
+			expect(deps.notify).toHaveBeenCalledWith("Cycle abort failed (401, auth). Please reconnect in settings.");
 			await orchestrator.close();
 		});
 
@@ -1446,9 +1444,7 @@ describe("SyncOrchestrator", () => {
 			await orchestrator.runSync();
 
 			expect(deps.onStatusChange).toHaveBeenCalledWith("error");
-			expect(deps.notify).toHaveBeenCalledWith(
-				expect.stringContaining("Sync error:"),
-			);
+			expect(deps.notify).toHaveBeenCalledWith("Cycle abort failed (unclassified)");
 			await orchestrator.close();
 		});
 
@@ -1460,14 +1456,16 @@ describe("SyncOrchestrator", () => {
 			deps.remoteFs = () => remoteFs;
 
 			// A module may throw a plain BackendErrorShape object (no Error identity);
-			// the cycle notice must carry its safe diagnostic, not "Unknown error".
+			// the cycle notice must carry the structured clause and never a raw provider
+			// message, so the diagnostic text stays out of the user-facing string.
 			vi.spyOn(localFs, "list").mockRejectedValue(backendError("transient", "network blip"));
 
 			const orchestrator = new SyncOrchestrator(deps);
 			await orchestrator.runSync();
 
 			expect(deps.onStatusChange).toHaveBeenCalledWith("error");
-			expect(deps.notify).toHaveBeenCalledWith("Sync error: network blip");
+			expect(deps.notify).toHaveBeenCalledWith("Cycle abort failed (unclassified)");
+			expect(JSON.stringify(vi.mocked(deps.notify).mock.calls)).not.toContain("network blip");
 			await orchestrator.close();
 		});
 
@@ -3133,7 +3131,7 @@ describe("SyncOrchestrator", () => {
 			expect(remoteListSpy).not.toHaveBeenCalled();
 			expect(abortWorkingView).toHaveBeenCalledTimes(3);
 			expect(deps.onStatusChange).toHaveBeenCalledWith("partial_error");
-			expect(deps.notify).toHaveBeenLastCalledWith("Sync: 1 error");
+			expect(deps.notify).toHaveBeenLastCalledWith("Sync: 1 error — Push failed (unclassified)");
 			await orchestrator.close();
 		});
 

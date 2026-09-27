@@ -6,7 +6,7 @@ module pointers below.
 
 ## Error classification
 
-Error classification is **backend-neutral and centralized** (`fs/errors.ts`), so the sync
+Error classification is **backend-neutral and centralized** (`src/backend-api/error-classification.ts`), so the sync
 engine and the fs-layer backends act on one taxonomy without knowing any backend's error
 shape. A thrown value is reduced to transport-level facts (HTTP status and a parsed
 `Retry-After`, handling both Fetch headers and plain header records; absence or unparseable
@@ -14,8 +14,8 @@ values become null), then mapped to a small retry-policy-facing classification:
 
 | `kind` | Trigger | Policy |
 |--------|---------|--------|
-| `auth` | `AuthError` or 401 | abort, prompt to reconnect |
-| `permission` | 403 (not a rate limit) | abort, prompt about permissions |
+| `auth` | `AuthError` or 401 | abort, notify with a reconnect prompt |
+| `permission` | 403 (not a rate limit) | abort, notify the failure fact (no user instruction) |
 | `rateLimit` | 429 | retry, honoring `Retry-After` |
 | `notFound` | 404 | stop retrying |
 | `transient` | network blip / 5xx / unknown | retry with backoff |
@@ -28,7 +28,7 @@ Drive-specific wrinkle the neutral classifier cannot know.
 
 ## Retry strategy
 
-The retry **policy** is one pure function (`decideRetry` in `fs/errors.ts`) shared by every
+The retry **policy** is one pure function (`decideRetry` in `src/backend-api/error-classification.ts`) shared by every
 retry site, so behaviour cannot drift and the policy is unit-testable with an injected RNG.
 Given a classification it returns abort (`auth`/`permission`), stop (`notFound`/`permanent`),
 retry with a delay, or exhausted; the delay honors a server-set `retryAfterMs` when present,
@@ -63,9 +63,11 @@ endpoints and never authorize a replayed effect.
 
 ### Non-retryable errors
 
-`AuthError` and a non-rate-limit 403 abort immediately (with a reconnect / permission
-notification). A 404 or a `permanent` error breaks the retry loop immediately with no
-backoff; as a per-action error it is recorded as failed without an in-cycle retry.
+`AuthError` and a non-rate-limit 403 abort immediately and raise a sync-failure notice:
+the auth notice names the reconnect action, the permission notice reports the failure
+fact with no user instruction. A 404 or a `permanent` error breaks the retry loop
+immediately with no backoff; as a per-action error it is recorded as failed without an
+in-cycle retry.
 
 ## Rate limiting
 
