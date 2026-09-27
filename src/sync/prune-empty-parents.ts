@@ -1,5 +1,4 @@
 import type { IFileSystem } from "../fs/interface";
-import type { FileEntity } from "../fs/types";
 import type { Logger } from "../logging/logger";
 import { toError } from "../backend-api/error-classification";
 import type { SyncAction } from "./types";
@@ -22,8 +21,8 @@ export interface EmptyParentPruneContext {
  * It runs once after every serial removal, over the union of the succeeded actions'
  * admitted `pruneEmptyAncestors` chains, keyed by side and directory, so each candidate
  * directory is read at most once per cycle. Emptiness is proven from current facts
- * through `listDir`; a directory with any child — in scope, ignored, dot-prefixed, or
- * otherwise — is kept, and its ancestors are skipped unread because each necessarily
+ * through `hasChildren`; a directory with any child — in scope, ignored, dot-prefixed,
+ * or otherwise — is kept, and its ancestors are skipped unread because each necessarily
  * contains it. An unreadable or undeletable directory is kept, logged, and never fails
  * the cycle. Nothing is persisted.
  */
@@ -48,9 +47,9 @@ export async function pruneEmptiedDirectories(
 	for (const [key, { side, directory }] of deepestFirst) {
 		if (blocked.has(key)) continue;
 		const fs = side === "local" ? ctx.localFs : ctx.remoteFs;
-		let children: FileEntity[];
+		let occupied: boolean;
 		try {
-			children = await fs.listDir(directory);
+			occupied = await fs.hasChildren(directory);
 		} catch (err) {
 			blockPruneAncestors(candidates, blocked, side, directory);
 			ctx.logger?.warn("executePlan: prune directory listing failed", {
@@ -58,7 +57,7 @@ export async function pruneEmptiedDirectories(
 			});
 			continue;
 		}
-		if (children.length > 0) {
+		if (occupied) {
 			blockPruneAncestors(candidates, blocked, side, directory);
 			continue;
 		}

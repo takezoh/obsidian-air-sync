@@ -179,31 +179,17 @@ export class LocalFs implements IFileSystem {
 	}
 
 	/**
-	 * Authoritative direct-child listing for occupancy decisions. Obsidian's vault
+	 * Authoritative direct-child occupancy for empty-parent cleanup. Obsidian's vault
 	 * index excludes dot-prefixed paths, so a normal folder's `TFolder.children` can
 	 * omit a hidden child and make an occupied folder look empty. The raw adapter is
-	 * the disk authority for every path, hidden or not — this owns the read itself
-	 * rather than borrowing the hidden-path adapter.
+	 * the disk authority for every path, hidden or not, and this needs no metadata, so
+	 * it reads names only.
 	 */
-	async listDir(path: string): Promise<FileEntity[]> {
+	async hasChildren(path: string): Promise<boolean> {
 		path = normalizeSyncPath(path);
-		const entities: FileEntity[] = [];
-		if (!(await this.vault.adapter.exists(path))) return entities;
+		if (!(await this.vault.adapter.exists(path))) return false;
 		const listed = await this.vault.adapter.list(path);
-		for (const folder of listed.folders) {
-			entities.push({
-				path: folder, pathAuthority: "actual_resolved", isDirectory: true,
-				size: 0, mtime: 0, hash: "",
-			});
-		}
-		for (const file of listed.files) {
-			const stat = await this.vault.adapter.stat(file);
-			entities.push({
-				path: file, pathAuthority: "actual_resolved", isDirectory: false,
-				size: stat?.size ?? 0, mtime: stat?.mtime ?? 0, hash: "",
-			});
-		}
-		return entities;
+		return listed.files.length > 0 || listed.folders.length > 0;
 	}
 
 	async delete(path: string): Promise<void> {

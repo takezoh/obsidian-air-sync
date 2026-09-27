@@ -213,7 +213,7 @@ export abstract class AbstractMetadataCache<TFile> {
 	/**
 	 * Reserved backend paths (e.g. the metadata file) are never tracked by the
 	 * cache, so they stay invisible to every cache-backed reader
-	 * (list/stat/read/listDir/getChangedPaths). See backend-api/remote-vault-contract.ts.
+	 * (list/stat/read/hasChildren/getChangedPaths). See backend-api/remote-vault-contract.ts.
 	 */
 	private isReserved(path: string): boolean {
 		return path === INTERNAL_METADATA_PATH;

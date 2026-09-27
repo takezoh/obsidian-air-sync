@@ -61,12 +61,16 @@ export interface IFileSystem {
 	mkdir(path: string): Promise<FileEntity>;
 
 	/**
-	 * List immediate children of a directory.
+	 * Authoritative direct-child occupancy: `true` iff `path` is a directory holding at
+	 * least one immediate child.
 	 *
-	 * Returns an empty array if the directory is empty or does not exist.
-	 * Only returns direct children — not recursive.
+	 * Hidden, ignored, and out-of-scope entries all count, so a directory reads empty
+	 * only when its authority (disk for the local vault, the derived cache for a remote
+	 * backend) holds nothing beneath it. `false` for an empty directory, a file, or an
+	 * absent path. This is the semantic an empty-parent cleanup needs; it is cheaper
+	 * than a metadata listing because it needs no per-child read.
 	 */
-	listDir(path: string): Promise<FileEntity[]>;
+	hasChildren(path: string): Promise<boolean>;
 
 	/**
 	 * Delete a file or directory (including children).

@@ -4,7 +4,7 @@ import type { IFileSystemContractCtx } from "./ifilesystem.contract";
 
 /**
  * The write-side and structural half of the {@link runIFileSystemContract} suite:
- * write / delete / mkdir, path normalization, listDir, and snapshot isolation.
+ * write / delete / mkdir, path normalization, hasChildren, and snapshot isolation.
  * Split out of `ifilesystem-contract.ts` purely to stay under the per-module line
  * cap; it registers under the same `describe` via the shared context. See that
  * file's header for the contract's rationale and scope.
@@ -194,24 +194,23 @@ export function registerWriteContract(ctx: IFileSystemContractCtx): void {
 		});
 	});
 
-	describe("listDir", () => {
-		it("returns immediate children only", async () => {
+	describe("hasChildren", () => {
+		it("is true for a directory whose only child is a hidden-named entry", async () => {
 			await seed("dir/a.txt", "aaa");
-			await seed("dir/b.txt", "bbb");
 			await seed("dir/sub/c.txt", "ccc");
-			const paths = (await ctx.fs().listDir("dir"))
-				.map((c) => c.path)
-				.sort();
-			expect(paths).toEqual(["dir/a.txt", "dir/b.txt", "dir/sub"]);
+			await seed("dir/.keep", "k");
+			expect(await ctx.fs().hasChildren("dir")).toBe(true);
 		});
 
-		it("returns empty array for empty directory", async () => {
+		it("is false for an empty directory", async () => {
 			await ctx.fs().mkdir("empty");
-			expect(await ctx.fs().listDir("empty")).toEqual([]);
+			expect(await ctx.fs().hasChildren("empty")).toBe(false);
 		});
 
-		it("returns empty array for non-existent directory", async () => {
-			expect(await ctx.fs().listDir("nope")).toEqual([]);
+		it("is false for a non-existent path or a file", async () => {
+			await seed("a.txt", "data");
+			expect(await ctx.fs().hasChildren("nope")).toBe(false);
+			expect(await ctx.fs().hasChildren("a.txt")).toBe(false);
 		});
 	});
 

@@ -129,7 +129,7 @@ const FULL_SCAN_PATH_LOG_CAP = 200;
  * and its three-phase `withCacheMutex` protocol, full-scan / cursor-restore / fresh
  * lifecycle, the atomic checkpoint commit (cache + cursor in one transaction),
  * incremental-replay buffering, the 410-style full-scan-and-diff-by-id fallback,
- * and the read-only ops (list/stat/listDir/read/delete) that just walk the cache.
+ * and the read-only ops (list/stat/hasChildren/read/delete) that just walk the cache.
  *
  * A concrete backend supplies the small set of seams below — how to capture a
  * start cursor, list everything, fetch a delta page, download/delete by id, and
@@ -162,7 +162,7 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 	 * waiting to be drained exactly once.
 	 *
 	 * A full scan is entered lazily, from whichever path-level call first needs the
-	 * cache — `list()`, `stat()`, `listDir()` — and `list()` replays the cursor on a
+	 * cache — `list()`, `stat()`, `hasChildren()` — and `list()` replays the cursor on a
 	 * restored checkpoint. None of them can return an address-level fact, so before
 	 * this their contentions were simply dropped and a withheld object stayed invisible
 	 * for as long as the checkpoint stood. They belong to the working view, share its
@@ -789,20 +789,12 @@ export abstract class CachingRemoteFs<TFile> implements IFileSystem {
 		return this.downloadFile(fileId);
 	}
 
-	async listDir(path: string): Promise<FileEntity[]> {
+	async hasChildren(path: string): Promise<boolean> {
 		path = normalizeSyncPath(path);
 		return this.cacheMutex.run(async () => {
 			await this.ensureInitialized();
 			const kids = this.cache.getChildren(path);
-			if (!kids) return [];
-			const entities: FileEntity[] = [];
-			for (const childPath of kids) {
-				const file = this.cache.getFile(childPath);
-				if (file) {
-					entities.push(this.cache.toEntity(childPath, file));
-				}
-			}
-			return entities;
+			return kids !== undefined && kids.size > 0;
 		});
 	}
 

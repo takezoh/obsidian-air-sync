@@ -143,18 +143,17 @@ export function createMockFs(
 				mkdirInternal(normalizeSyncPath(path)),
 			);
 		},
-		listDir(dirPath: string) {
+		hasChildren(dirPath: string) {
 			const prefix = normalizeSyncPath(dirPath) + "/";
-			const entities: FileEntity[] = [];
-			for (const [p, f] of files) {
+			for (const p of files.keys()) {
 				if (
 					p.startsWith(prefix) &&
 					!p.substring(prefix.length).includes("/")
 				) {
-					entities.push({ ...f.entity });
+					return Promise.resolve(true);
 				}
 			}
-			return Promise.resolve(entities);
+			return Promise.resolve(false);
 		},
 		delete(path: string) {
 			path = normalizeSyncPath(path);

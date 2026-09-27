@@ -1134,7 +1134,7 @@ describe("executePlan", () => {
 				path: "notes/a.md", hash: "", localMtime: 1000, remoteMtime: 1000,
 				localSize: 1, remoteSize: 1, remoteIdentityKey: "id:notes/a.md", syncedAt: 900,
 			});
-			vi.spyOn(remoteFs, "listDir").mockRejectedValue(new Error("listing unavailable"));
+			vi.spyOn(remoteFs, "hasChildren").mockRejectedValue(new Error("listing unavailable"));
 
 			const plan = makePlan([{ path: "notes/a.md", action: "delete_remote",
 				remote: (await remoteFs.stat("notes/a.md"))!, baseline: stateStore.records.get("notes/a.md"),
@@ -1161,7 +1161,7 @@ describe("executePlan", () => {
 					localSize: 1, remoteSize: 1, remoteIdentityKey: `id:${name}`, syncedAt: 900,
 				});
 			}
-			const listDir = vi.spyOn(remoteFs, "listDir");
+			const hasChildren = vi.spyOn(remoteFs, "hasChildren");
 			const plan = makePlan([
 				{ path: "notes/a.md", action: "delete_remote",
 					remote: (await remoteFs.stat("notes/a.md"))!, baseline: stateStore.records.get("notes/a.md"),
@@ -1176,7 +1176,7 @@ describe("executePlan", () => {
 			const result = await executePlan(plan, ctx);
 
 			expect(result.succeeded).toHaveLength(2);
-			expect(listDir.mock.calls.filter(([path]) => path === "notes")).toHaveLength(1);
+			expect(hasChildren.mock.calls.filter(([path]) => path === "notes")).toHaveLength(1);
 			expect(remoteFs.files.has("notes")).toBe(false);
 		});
 
@@ -1190,7 +1190,7 @@ describe("executePlan", () => {
 				path: "a/b/c.md", hash: "", localMtime: 1000, remoteMtime: 1000,
 				localSize: 1, remoteSize: 1, remoteIdentityKey: "id:a/b/c.md", syncedAt: 900,
 			});
-			const listDir = vi.spyOn(remoteFs, "listDir");
+			const hasChildren = vi.spyOn(remoteFs, "hasChildren");
 			const plan = makePlan([{ path: "a/b/c.md", action: "delete_remote",
 				remote: (await remoteFs.stat("a/b/c.md"))!, baseline: stateStore.records.get("a/b/c.md"),
 				pruneEmptyAncestors: ["a/b", "a"],
@@ -1200,7 +1200,7 @@ describe("executePlan", () => {
 
 			// `a/b` is occupied by keep.md, so it and its ancestor `a` are kept and `a`
 			// is never read: a kept directory proves every ancestor occupied.
-			expect(listDir.mock.calls.map(([path]) => path)).toEqual(["a/b"]);
+			expect(hasChildren.mock.calls.map(([path]) => path)).toEqual(["a/b"]);
 			expect(remoteFs.files.has("a/b/keep.md")).toBe(true);
 			expect(remoteFs.files.has("a")).toBe(true);
 		});

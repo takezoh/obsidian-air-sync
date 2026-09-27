@@ -816,7 +816,7 @@ describe("the three producers of RemoteDelta.deleted", () => {
 	/**
 	 * A delta is not the only thing that decides contentions. A FULL SCAN decides them
 	 * over the complete listing, and a scan is entered lazily from whichever path-level
-	 * call first needs the cache — `list()`, `stat()`, `listDir()` — none of which can
+	 * call first needs the cache — `list()`, `stat()`, `hasChildren()` — none of which can
 	 * return an address-level fact. Without a channel of its own, a cycle that acquires
 	 * its remote side by scanning reports no contention at all, and the withheld object
 	 * stays invisible for as long as the checkpoint stands.

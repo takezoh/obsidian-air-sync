@@ -248,8 +248,8 @@ export class TFile {
 
 export class TFolder {
 	path: string;
-	// Immediate children, populated by getAbstractFileByPath so listDir's
-	// `folder.children` walk (LocalFs's normal-path branch) has something to read.
+	// Immediate children, populated by getAbstractFileByPath so tests inspecting the
+	// Vault index can walk a folder's children.
 	children: (TFile | TFolder)[] = [];
 	constructor(path: string) {
 		this.path = path;

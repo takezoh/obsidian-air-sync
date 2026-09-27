@@ -11,7 +11,7 @@ import { registerWriteContract } from "./ifilesystem-writes.contract";
  * quietly diverges (skips path normalization, clobbers a rename destination,
  * aliases the caller's buffer, …) breaks sync in ways unit tests on the mock
  * alone never catch. So this suite asserts ONLY through the public interface
- * (`stat`/`read`/`list`/`listDir` for observation, `write`/`mkdir` for seeding) —
+ * (`stat`/`read`/`list`/`hasChildren` for observation, `write`/`mkdir` for seeding) —
  * never a backend's private store — and a new backend runs it in one line.
  *
  * **Scope.** This covers the synchronous CRUD/rename surface. The crash-safe

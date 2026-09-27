@@ -328,7 +328,7 @@ describe("LocalFs", () => {
 			expect(await vault.adapter.exists(".templates/note.md")).toBe(false);
 		});
 
-		it("listDir works for custom dot path", async () => {
+		it("hasChildren is true for a custom dot path with a child", async () => {
 			const { vault, fs } = createLocalFs([".templates"]);
 			const vaultInternal = vault as unknown as { files: Map<string, unknown> };
 			vaultInternal.files.set(".templates", { type: "folder" });
@@ -338,8 +338,7 @@ describe("LocalFs", () => {
 				mtime: 100,
 			});
 
-			const entities = await fs.listDir(".templates");
-			expect(entities.map((e) => e.path)).toContain(".templates/daily.md");
+			expect(await fs.hasChildren(".templates")).toBe(true);
 		});
 
 		it("rename works for custom dot path files", async () => {
@@ -518,29 +517,26 @@ describe("LocalFs", () => {
 		});
 	});
 
-	describe("listDir", () => {
-		it("reports the actual on-disk children of a normal folder, including hidden entries", async () => {
+	describe("hasChildren", () => {
+		it("is true for a normal folder whose only child is hidden", async () => {
 			// Obsidian's vault index excludes dot-prefixed paths, so an index-backed
-			// listing would omit `.keep` and make an occupied folder look empty. An
+			// occupancy read would miss `.keep` and mistake the folder for empty. An
 			// empty-parent prune must never mistake that for emptiness.
 			const { vault, fs } = createLocalFs();
 			await vault.adapter.mkdir("notes");
-			await vault.adapter.mkdir("notes/sub");
 			await vault.adapter.writeBinary("notes/.keep", new TextEncoder().encode("k").buffer);
-			await vault.adapter.writeBinary("notes/note.md", new TextEncoder().encode("n").buffer);
 
-			const children = await fs.listDir("notes");
-
-			expect(children.map((entry) => entry.path).sort())
-				.toEqual(["notes/.keep", "notes/note.md", "notes/sub"]);
+			expect(await fs.hasChildren("notes")).toBe(true);
 		});
 
-		it("returns an empty array for an empty or missing directory", async () => {
+		it("is false for an empty directory, a missing path, or a file", async () => {
 			const { vault, fs } = createLocalFs();
 			await vault.adapter.mkdir("empty");
+			await vault.adapter.writeBinary("note.md", new TextEncoder().encode("n").buffer);
 
-			expect(await fs.listDir("empty")).toEqual([]);
-			expect(await fs.listDir("missing")).toEqual([]);
+			expect(await fs.hasChildren("empty")).toBe(false);
+			expect(await fs.hasChildren("missing")).toBe(false);
+			expect(await fs.hasChildren("note.md")).toBe(false);
 		});
 	});
 });

@@ -627,7 +627,7 @@ export function runCachingRemoteFsContract<TFile>(
 		// ── Two live ids at one derived cache address ──
 		// A cache address is DERIVED for an id-addressed family: composed from a
 		// provider name plus a parent chain, so two live objects can compose the same
-		// one. Everything below is asserted through `list`, `stat`, `listDir` and the
+		// one. Everything below is asserted through `list`, `stat`, `hasChildren` and the
 		// delta result only — never through the cache, which is exactly the surface a
 		// regression would hide behind.
 
@@ -770,9 +770,12 @@ export function runCachingRemoteFsContract<TFile>(
 				];
 				collision.stage(d1First ? [...first, ...second] : [...second, ...first], "expired");
 				const delta = await fs.getChangedPaths();
+				const listed = paths(await fs.list());
+				const underDocs = listed.filter((path) =>
+					path.startsWith("docs/") && !path.slice("docs/".length).includes("/"));
 				const observed = {
-					listed: paths(await fs.list()),
-					underDocs: paths(await fs.listDir("docs")),
+					listed,
+					underDocs,
 					folder: (await fs.stat("docs"))?.identityKey,
 					announced: announced(fs),
 					deleted: [...(delta?.deleted ?? [])].sort(),

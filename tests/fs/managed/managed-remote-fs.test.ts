@@ -69,7 +69,8 @@ describe("ManagedRemoteFs — complete snapshot", () => {
 
 		expect((await fs.list()).map((entry) => entry.path).sort())
 			.toEqual(["docs", "docs/sub", "docs/sub/a.md"]);
-		expect((await fs.listDir("docs/sub")).map((entry) => entry.path)).toEqual(["docs/sub/a.md"]);
+		expect(await fs.hasChildren("docs/sub")).toBe(true);
+		expect(await fs.hasChildren("docs/sub/a.md")).toBe(false);
 	});
 
 	it("downloads file bytes and refuses to read a directory", async () => {
