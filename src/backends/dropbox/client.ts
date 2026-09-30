@@ -217,12 +217,17 @@ export class DropboxClient {
 		return this.rpc<DropboxEntry>("getMetadata", "files/get_metadata", { path });
 	}
 
-	/** Download file content, optionally bound to an exact `rev`. Metadata rides in the `Dropbox-API-Result` header (unused here). */
+	/**
+	 * Download file content, optionally bound to an exact `rev`. A bound revision is
+	 * encoded in the path as `rev:<rev>` (Dropbox deprecated the standalone `rev`
+	 * field and rejects it). Metadata rides in the `Dropbox-API-Result` header (unused
+	 * here).
+	 */
 	async download(path: string, rev?: string): Promise<ArrayBuffer> {
 		const res = await this.request("download", {
 			url: `${CONTENT_API}/files/download`,
 			method: "POST",
-			headers: { "Dropbox-API-Arg": toApiArgHeader(rev ? { path, rev } : { path }) },
+			headers: { "Dropbox-API-Arg": toApiArgHeader(rev ? { path: `rev:${rev}` } : { path }) },
 		});
 		return res.arrayBuffer;
 	}

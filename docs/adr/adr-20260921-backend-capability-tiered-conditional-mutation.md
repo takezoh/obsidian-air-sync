@@ -97,7 +97,8 @@ Provider facts (verified against primary sources):
 
 - **Dropbox** (`files.stone`): `WriteMode.add` refuses to overwrite, `WriteMode.update(rev)`
   overwrites only when `rev` matches, and `strict_conflict` forces a conflict even on
-  identical contents. `files/download` accepts a `rev`. `move_v2`/`delete_v2` carry no
+  identical contents. `files/download` accepts a revision encoded in the `path` as
+  `rev:<rev>` (the standalone `rev` field is deprecated). `move_v2`/`delete_v2` carry no
   revision precondition.
 - **OneDrive** (Graph v1.0): `PATCH /items/{id}` and `DELETE /items/{id}` accept
   `If-Match` (412 on mismatch); `createUploadSession` accepts `If-Match`/`If-None-Match`

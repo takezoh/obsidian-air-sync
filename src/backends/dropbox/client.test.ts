@@ -173,7 +173,9 @@ describe("DropboxClient.download", () => {
 		const client = await makeClient();
 		await client.download("/root/x.md", "rev-9");
 		const opts = spy.mock.calls[0]![0] as RequestUrlParam;
-		expect(JSON.parse(String(opts.headers?.["Dropbox-API-Arg"]))).toEqual({ path: "/root/x.md", rev: "rev-9" });
+		// The revision is encoded in the path (`rev:<rev>`); the deprecated standalone
+		// `rev` field must not appear. Exact equality pins both.
+		expect(JSON.parse(String(opts.headers?.["Dropbox-API-Arg"]))).toEqual({ path: "rev:rev-9" });
 	});
 });
 
