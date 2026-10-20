@@ -7,7 +7,7 @@ import type {
 	RemoteObject,
 	UpdateFileInput,
 } from "../../backend-api";
-import { isRemoteDirectory } from "../../backend-api";
+import { isBackendErrorShape, isRemoteDirectory } from "../../backend-api";
 import { AbstractMetadataCache } from "../caching/metadata-cache";
 import type { NormalizedMetadataCache } from "./normalized-metadata-cache";
 import { validateRemoteObject } from "./remote-object-validation";
@@ -23,6 +23,8 @@ export interface WritePlan {
 	targetPath: string;
 	existingId: string | undefined;
 	expected: ExpectedVersion | undefined;
+	/** The cached object the update is conditioned on; the baseline a refused update is re-proved against. */
+	existing: RemoteObject | undefined;
 	destination: DestinationAddress;
 }
 
@@ -171,18 +173,58 @@ export class MutationBridge {
 			targetPath,
 			existingId: existing?.id,
 			expected: existing === undefined ? undefined : this.expectedOf(existing),
+			existing,
 			destination: this.destination(parent, name, actualParentPath),
 		};
 	}
 
 	async performWrite(plan: WritePlan, content: ArrayBuffer, mtimeMs: number): Promise<RemoteObject> {
-		const input: CreateFileInput | UpdateFileInput = plan.existingId !== undefined && plan.expected !== undefined
-			? { id: plan.existingId, expected: plan.expected, content, mtimeMs }
-			: { destination: plan.destination, content, mtimeMs };
-		const object = plan.existingId !== undefined && plan.expected !== undefined
-			? await this.adapter.updateFile(input as UpdateFileInput)
-			: await this.adapter.createFile(input as CreateFileInput);
+		if (plan.existingId === undefined || plan.expected === undefined) {
+			const create: CreateFileInput = { destination: plan.destination, content, mtimeMs };
+			return validateRemoteObject(await this.adapter.createFile(create), this.adapter.addressing);
+		}
+		const update: UpdateFileInput = { id: plan.existingId, expected: plan.expected, content, mtimeMs };
+		let object: RemoteObject;
+		try {
+			object = await this.adapter.updateFile(update);
+		} catch (error) {
+			const reproved = await this.reproveVersionOnlyAdvance(plan, error);
+			if (reproved === undefined) throw error;
+			object = await this.adapter.updateFile({ ...update, expected: reproved });
+		}
 		return validateRemoteObject(object, this.adapter.addressing);
+	}
+
+	/**
+	 * Re-prove an update the provider refused with `target_changed`.
+	 *
+	 * A provider version token can advance without any content, name or location
+	 * change, and without a change-feed entry (Google Drive's `version` counts every
+	 * server-side change, including ones invisible to users). The cached token then
+	 * stays behind and the same push is refused on every cycle until a Rescan. When
+	 * the current object still has the plan's identity, name, location, size and
+	 * content checksum, nothing the update depends on has changed, so it may be
+	 * re-conditioned on the observed token. Any other difference keeps the refusal.
+	 *
+	 * @param plan - the write plan whose conditional update was refused.
+	 * @param error - what the adapter threw.
+	 * @returns the expected version to retry with, or `undefined` to keep the original failure.
+	 */
+	private async reproveVersionOnlyAdvance(plan: WritePlan, error: unknown): Promise<ExpectedVersion | undefined> {
+		if (!isBackendErrorShape(error) || error.kind !== "target_changed") return undefined;
+		const cached = plan.existing;
+		if (cached?.kind !== "file" || cached.checksum === undefined) return undefined;
+		const fetched = await this.adapter.getById(cached.id);
+		if (fetched === null) return undefined;
+		const current = validateRemoteObject(fetched, this.adapter.addressing);
+		if (current.kind !== "file" || current.checksum === undefined || current.versionToken === undefined) return undefined;
+		const unchanged = current.id === cached.id
+			&& current.name === cached.name
+			&& JSON.stringify(current.location) === JSON.stringify(cached.location)
+			&& current.size === cached.size
+			&& current.checksum.algorithm === cached.checksum.algorithm
+			&& current.checksum.value === cached.checksum.value;
+		return unchanged ? this.expectedOf(current) : undefined;
 	}
 
 	async planRename(oldPath: string, newPath: string): Promise<RenamePlan> {
